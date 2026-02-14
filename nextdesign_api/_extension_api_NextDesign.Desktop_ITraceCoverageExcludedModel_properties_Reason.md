@@ -1,0 +1,31 @@
+ITraceCoverageExcludedModel.Reason プロパティ
+========================================
+
+名前空間: NextDesign.Desktop
+
+説明​
+-----------------------
+
+除外理由
+
+    string Reason { get; set; }
+
+型​
+--------------------
+
+*   string
+
+例外​
+-----------------------
+
+名前
+
+例外クラス
+
+説明
+
+引数不正
+
+ExtensionArgumentException
+
+値域外の値が指定された場合

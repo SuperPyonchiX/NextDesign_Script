@@ -1,0 +1,16 @@
+EditorOnHideEventParams.Editor プロパティ
+====================================
+
+名前空間: NextDesign.Desktop
+
+説明​
+-----------------------
+
+エディタ
+
+    IEditor Editor { get; }
+
+型​
+--------------------
+
+*   [IEditor](_extension_api_NextDesign.Core_IEditor.md)

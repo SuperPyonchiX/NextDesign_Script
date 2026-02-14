@@ -1,0 +1,16 @@
+CustomNavigatorDescriptor.DisplayName プロパティ
+===========================================
+
+名前空間: NextDesign.Desktop.CustomUI
+
+説明​
+-----------------------
+
+ナビゲータの表示名。
+
+    string DisplayName { get; set; }
+
+型​
+--------------------
+
+*   string

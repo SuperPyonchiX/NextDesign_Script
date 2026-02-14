@@ -1,0 +1,40 @@
+{
+  "name": "<エクステンション名>",
+  "version": "1.0.0",
+  "description": "<エクステンションの説明>",
+  "author": "<作者名>",
+  "main": "main.cs",
+  "lifecycle": "application",
+  "extensionPoints": {
+    "ribbon": {
+      "tabs": [
+        {
+          "id": "<Prefix>.Tab",
+          "label": "<タブ名>",
+          "groups": [
+            {
+              "id": "<Prefix>.Group",
+              "label": "<グループ名>",
+              "controls": [
+                {
+                  "id": "<Prefix>.Button.<Action>",
+                  "type": "Button",
+                  "label": "<ボタン名>",
+                  "tooltip": "<ツールチップ>",
+                  "command": "<Prefix>.Command.<Action>"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "commands": [
+      {
+        "id": "<Prefix>.Command.<Action>",
+        "name": "<コマンド名>",
+        "execFunc": "<HandlerMethodName>"
+      }
+    ]
+  }
+}

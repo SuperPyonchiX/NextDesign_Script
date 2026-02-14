@@ -1,0 +1,52 @@
+{
+  "name": "ModelExporter",
+  "version": "1.0.0",
+  "description": "選択中モデルの子要素をCSV形式でエクスポートするエクステンション",
+  "author": "サンプル",
+  "main": "main.cs",
+  "lifecycle": "application",
+  "extensionPoints": {
+    "ribbon": {
+      "tabs": [
+        {
+          "id": "ModelExporter.Tab",
+          "label": "エクスポート",
+          "groups": [
+            {
+              "id": "ModelExporter.Group.Export",
+              "label": "CSV出力",
+              "controls": [
+                {
+                  "id": "ModelExporter.Button.ExportCsv",
+                  "type": "Button",
+                  "label": "CSVエクスポート",
+                  "tooltip": "選択中モデルの子要素をCSVファイルに出力します",
+                  "command": "ModelExporter.Command.ExportCsv"
+                },
+                {
+                  "id": "ModelExporter.Button.ShowSummary",
+                  "type": "Button",
+                  "label": "要素数表示",
+                  "tooltip": "選択中モデルの子要素数を出力ウィンドウに表示します",
+                  "command": "ModelExporter.Command.ShowSummary"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "commands": [
+      {
+        "id": "ModelExporter.Command.ExportCsv",
+        "name": "CSVエクスポート",
+        "execFunc": "ExportToCsv"
+      },
+      {
+        "id": "ModelExporter.Command.ShowSummary",
+        "name": "要素数表示",
+        "execFunc": "ShowSummary"
+      }
+    ]
+  }
+}
