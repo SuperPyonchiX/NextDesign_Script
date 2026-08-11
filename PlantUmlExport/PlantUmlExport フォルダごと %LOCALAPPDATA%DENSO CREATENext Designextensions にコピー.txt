@@ -1,0 +1,1 @@
+ PlantUmlExport フォルダごと %LOCALAPPDATA%DENSO CREATENext Designextensions にコピー

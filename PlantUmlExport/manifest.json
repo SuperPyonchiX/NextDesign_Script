@@ -1,0 +1,64 @@
+{
+  "name": "PlantUmlExport",
+  "displayName": "PlantUML Export",
+  "description": "シーケンス図を PlantUML 形式で出力します。",
+  "version": "1.0.0",
+  "publisher": "ksk01",
+  "main": "main.cs",
+  "lifecycle": "project",
+
+  "extensionPoints": {
+    "ribbon": {
+      "tabs": [
+        {
+          "id": "PlantUmlExport.Tab",
+          "label": "PlantUML",
+          "orderAfter": "System.View",
+          "groups": [
+            {
+              "id": "PlantUmlExport.Sequence",
+              "label": "シーケンス図",
+              "controls": [
+                {
+                  "id": "PlantUmlExport.ExportCurrentButton",
+                  "type": "Button",
+                  "label": "この図を出力",
+                  "description": "アクティブなシーケンス図を PlantUML 形式で出力します。",
+                  "command": "PlantUmlExport.ExportCurrent"
+                },
+                {
+                  "id": "PlantUmlExport.ExportAllButton",
+                  "type": "Button",
+                  "label": "配下をまとめて出力",
+                  "description": "選択モデル配下のすべてのシーケンス図を PlantUML 形式で出力します。",
+                  "command": "PlantUmlExport.ExportAll"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+
+    "commandGroups": [
+      { "name": "plantuml", "title": "PlantUML 出力" }
+    ],
+
+    "commands": [
+      {
+        "id": "PlantUmlExport.ExportCurrent",
+        "title": "この図を出力",
+        "group": "plantuml",
+        "execFunc": "ExportCurrentDiagram",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "PlantUmlExport.ExportAll",
+        "title": "配下をまとめて出力",
+        "group": "plantuml",
+        "execFunc": "ExportAllDiagrams",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      }
+    ]
+  }
+}
