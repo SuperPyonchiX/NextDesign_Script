@@ -1,0 +1,132 @@
+{
+  "name": "PlantUmlTool",
+  "displayName": "PlantUML 連携",
+  "description": "シーケンス図・クラス図を PlantUML 形式で出力し、PlantUML からシーケンス図を取り込みます。",
+  "version": "2.1.0",
+  "publisher": "ksk01",
+  "main": "main.cs",
+  "lifecycle": "project",
+
+  "extensionPoints": {
+    "ribbon": {
+      "tabs": [
+        {
+          "id": "PlantUmlTool.Tab",
+          "label": "PlantUML",
+          "orderAfter": "System.View",
+          "groups": [
+            {
+              "id": "PlantUmlTool.ExportGroup",
+              "label": "出力",
+              "controls": [
+                {
+                  "id": "PlantUmlTool.ExportCurrentButton",
+                  "type": "Button",
+                  "label": "この図を出力",
+                  "description": "アクティブなシーケンス図またはクラス図を PlantUML 形式で出力します。",
+                  "command": "PlantUmlTool.ExportCurrent"
+                },
+                {
+                  "id": "PlantUmlTool.ExportAllButton",
+                  "type": "Button",
+                  "label": "配下をまとめて出力",
+                  "description": "選択モデル配下のすべてのシーケンス図とクラス図を PlantUML 形式で出力します。",
+                  "command": "PlantUmlTool.ExportAll"
+                }
+              ]
+            },
+            {
+              "id": "PlantUmlTool.ImportGroup",
+              "label": "取り込み",
+              "controls": [
+                {
+                  "id": "PlantUmlTool.ImportFileButton",
+                  "type": "Button",
+                  "label": "ファイルから取り込み",
+                  "description": "PlantUML ファイルを読み、同名のシーケンス図を更新します。まず差分を表示します。",
+                  "command": "PlantUmlTool.ImportFile"
+                },
+                {
+                  "id": "PlantUmlTool.ImportFolderButton",
+                  "type": "Button",
+                  "label": "フォルダから一括取り込み",
+                  "description": "フォルダ配下の PlantUML ファイルをまとめて取り込みます。まず差分を表示します。",
+                  "command": "PlantUmlTool.ImportFolder"
+                }
+              ]
+            },
+            {
+              "id": "PlantUmlTool.DiagnosticsGroup",
+              "label": "診断",
+              "controls": [
+                {
+                  "id": "PlantUmlTool.ProbeButton",
+                  "type": "Button",
+                  "label": "メタモデル調査",
+                  "description": "アクティブなシーケンス図のメタモデル構造を出力ウィンドウにダンプします。",
+                  "command": "PlantUmlTool.Probe"
+                },
+                {
+                  "id": "PlantUmlTool.ProbeClassButton",
+                  "type": "Button",
+                  "label": "クラス図調査",
+                  "description": "アクティブなクラス図のノード・コネクタ・参照フィールドを出力ウィンドウにダンプします。",
+                  "command": "PlantUmlTool.ProbeClass"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+
+    "commandGroups": [
+      { "name": "plantuml", "title": "PlantUML 連携" }
+    ],
+
+    "commands": [
+      {
+        "id": "PlantUmlTool.ExportCurrent",
+        "title": "この図を出力",
+        "group": "plantuml",
+        "execFunc": "ExportCurrentDiagram",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "PlantUmlTool.ExportAll",
+        "title": "配下をまとめて出力",
+        "group": "plantuml",
+        "execFunc": "ExportAllDiagrams",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "PlantUmlTool.ImportFile",
+        "title": "ファイルから取り込み",
+        "group": "plantuml",
+        "execFunc": "ImportFromFile",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "PlantUmlTool.ImportFolder",
+        "title": "フォルダから一括取り込み",
+        "group": "plantuml",
+        "execFunc": "ImportFromFolder",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "PlantUmlTool.Probe",
+        "title": "メタモデル調査",
+        "group": "plantuml",
+        "execFunc": "ProbeMetamodel",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "PlantUmlTool.ProbeClass",
+        "title": "クラス図調査",
+        "group": "plantuml",
+        "execFunc": "ProbeClassDiagram",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      }
+    ]
+  }
+}
