@@ -6018,6 +6018,15 @@ public class ClassDiagramCollector
                         if (names.Count > 0) return string.Join(", ", names.ToArray());
                     }
                     catch (Exception) { }
+
+                    // 所有フィールドでも値が文字列のことがある（例: DeSIDE の State.Entry は
+                    // kind=所有 type=String）。モデルとして読めなければ文字列として読む
+                    try
+                    {
+                        var text = PlantUmlText.Normalize(m.GetFieldString(f.Name));
+                        if (text.Length > 0) return text;
+                    }
+                    catch (Exception) { }
                 }
                 else
                 {
@@ -6935,9 +6944,10 @@ public class ClassProbe
 //    StateKindMap / 各 FieldNames に追記して育てる。
 //
 //    図の種類の判別（クラス図か状態遷移図か）は EditorType では確定できない
-//    ため、ノードのメタクラス名を StateClassPatterns と突き合わせて行う。
-//    誤判定時は StateEditorTypes / NonStateEditorTypes / StateClassPatterns
-//    のいずれかを編集して救済する。
+//    （実機では状態遷移図もクラス図と同じ "ERDiagram"）ため、
+//    ViewDefinitionName の完全一致 → ノードのメタクラス名（StateClassNames と
+//    完全一致）の順で行う。誤判定時は StateViewDefinitionNames /
+//    NonStateViewDefinitionNames / StateClassNames を編集して救済する。
 // ============================================================
 
 // ------------------------------------------------------------
@@ -6955,17 +6965,31 @@ public class StatePlantUmlOptions
     public string DefaultArrow = "-->";         // 遷移の矢印
 
     // ---- 図種の判別 ----
+    //
+    // 実機で確認した事実（DeSIDE UML/SysML プロファイル・2026-08）:
+    //   状態遷移図の EditorType はクラス図と同じ "ERDiagram" で、
+    //   ViewDefinitionName（"ステートマシン図"）とノードのメタクラス
+    //   （State、親クラス Vertex）でしか区別できない
 
     // EditorType による明示指定（最優先の逃げ道。実機で判明したら追記する）
     public List<string> StateEditorTypes = new List<string>();      // 例: "StateMachineDiagram"
     public List<string> NonStateEditorTypes = new List<string>();   // 状態遷移図として扱わない EditorType
 
-    // ノードのメタクラス名（ClassName / 親クラス名）との部分一致で状態遷移図と判定する
-    public List<string> StateClassPatterns = new List<string>
+    // ViewDefinitionName による判別（完全一致・大文字小文字無視）。
+    // EditorType がクラス図と同じでもビュー定義名は図種ごとに異なるため、これを優先する
+    public List<string> StateViewDefinitionNames = new List<string>
+        { "ステートマシン図", "状態遷移図", "StateMachineDiagram", "StateMachine" };
+    public List<string> NonStateViewDefinitionNames = new List<string>
+        { "クラス図", "ClassDiagram" };
+
+    // ノードのメタクラス名（ClassName / 親クラス名）との完全一致で状態遷移図と判定する。
+    // 部分一致にすると "〜State〜" を含む無関係なメタクラスで誤判定するため完全一致に限る
+    public List<string> StateClassNames = new List<string>
     {
-        "State", "Pseudostate", "PseudoState", "Fork", "Join", "History",
+        "Vertex", "State", "StateMachine", "Pseudostate", "PseudoState",
+        "InitialState", "FinalState", "HistoryState", "ControlState",
         "EntryPoint", "ExitPoint",
-        "状態", "擬似状態", "疑似状態", "履歴",
+        "状態", "擬似状態", "疑似状態", "履歴状態",
     };
 
     // ---- ノードの種別 ----
@@ -6996,9 +7020,11 @@ public class StatePlantUmlOptions
         { "Fork", "fork" }, { "フォーク", "fork" },
         { "Join", "join" }, { "ジョイン", "join" },
 
-        { "ShallowHistory", "history" }, { "History", "history" },
-        { "履歴", "history" }, { "浅い履歴", "history" },
+        { "ShallowHistory", "history" }, { "History", "history" }, { "HistoryState", "history" },
+        { "履歴", "history" }, { "浅い履歴", "history" }, { "履歴状態", "history" },
         { "DeepHistory", "deephistory" }, { "深い履歴", "deephistory" },
+
+        { "ControlState", "choice" },   // DeSIDE プロファイルの判断ノード
 
         { "EntryPoint", "entrypoint" }, { "入場点", "entrypoint" },
         { "ExitPoint", "exitpoint" }, { "退場点", "exitpoint" },
@@ -7023,11 +7049,11 @@ public class StatePlantUmlOptions
 
     // 第一経路: 状態モデル自身のフィールド値
     public List<string> EntryFieldNames =
-        new List<string> { "Entry", "EntryAction", "EntryActivity", "入場", "入場時", "入場アクション", "エントリ" };
+        new List<string> { "Entry", "EntryAction", "EntryActivity", "EntryBehavior", "入場", "入場時", "入場アクション", "エントリ" };
     public List<string> ExitFieldNames =
-        new List<string> { "Exit", "ExitAction", "ExitActivity", "退場", "退場時", "退場アクション" };
+        new List<string> { "Exit", "ExitAction", "ExitActivity", "ExitBehavior", "退場", "退場時", "退場アクション" };
     public List<string> DoFieldNames =
-        new List<string> { "Do", "DoActivity", "DoAction", "実行", "実行時", "アクティビティ" };
+        new List<string> { "Do", "DoActivity", "DoAction", "DoBehavior", "実行", "実行時", "アクティビティ" };
 
     // 第二経路: 子モデルがアクションの場合。メタクラス名 → "entry" | "exit" | "do" | "internal" | "skip"
     public Dictionary<string, string> StateMemberKindMap =
@@ -7621,16 +7647,21 @@ public class StateExportRunner
         if (diagram == null || diagram is ISequenceDiagram) return false;
         options = options ?? new StatePlantUmlOptions();
 
-        // EditorType の明示指定が最優先（実機で判明した値の追記先）
+        // 1. EditorType の明示指定が最優先（実機で判明した値の追記先）
         var editor = diagram as IEditor;
         var editorType = editor != null ? (editor.EditorType ?? "") : "";
-        foreach (var t in options.StateEditorTypes)
-            if (string.Equals(t, editorType, StringComparison.OrdinalIgnoreCase)) return true;
-        foreach (var t in options.NonStateEditorTypes)
-            if (string.Equals(t, editorType, StringComparison.OrdinalIgnoreCase)) return false;
+        if (ContainsIgnoreCase(options.StateEditorTypes, editorType)) return true;
+        if (ContainsIgnoreCase(options.NonStateEditorTypes, editorType)) return false;
 
-        // 内容判定: ノードのメタクラス名を突き合わせる。
-        // 状態系がクラス系以上に多ければ状態遷移図とみなす
+        // 2. ViewDefinitionName による判別。
+        //    実機確認では状態遷移図も EditorType が "ERDiagram"（クラス図と同一）で、
+        //    ビュー定義名（"ステートマシン図"）が最も確実な判別材料だった
+        var viewName = editor != null ? (editor.ViewDefinitionName ?? "") : "";
+        if (ContainsIgnoreCase(options.StateViewDefinitionNames, viewName)) return true;
+        if (ContainsIgnoreCase(options.NonStateViewDefinitionNames, viewName)) return false;
+
+        // 3. 内容判定: ノードのメタクラス名（ClassName / 全親クラス名）を完全一致で突き合わせる。
+        //    状態系がクラス系以上に多ければ状態遷移図とみなす
         var stateHits = 0;
         var classHits = 0;
         var examined = 0;
@@ -7658,7 +7689,7 @@ public class StateExportRunner
                     catch (Exception) { }
                 }
 
-                if (MatchesAny(names, options.StateClassPatterns)) stateHits++;
+                if (names.Any(n => ContainsIgnoreCase(options.StateClassNames, n))) stateHits++;
                 else if (names.Any(n => ClassDefaults.KeywordMap.ContainsKey(n))) classHits++;
             }
         }
@@ -7667,11 +7698,11 @@ public class StateExportRunner
         return stateHits > 0 && stateHits >= classHits;
     }
 
-    private static bool MatchesAny(List<string> names, List<string> patterns)
+    private static bool ContainsIgnoreCase(List<string> list, string value)
     {
-        foreach (var name in names)
-            foreach (var pattern in patterns)
-                if (name.IndexOf(pattern, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        if (string.IsNullOrEmpty(value)) return false;
+        foreach (var item in list)
+            if (string.Equals(item, value, StringComparison.OrdinalIgnoreCase)) return true;
         return false;
     }
 

@@ -136,16 +136,20 @@ Next Design の拡張 API には状態遷移図専用のインタフェースが
 
 ### 図の種類の自動判別
 
-状態遷移図の EditorType は確定できないため、**図上ノードのメタクラス名**を
-`StatePlantUmlOptions.StateClassPatterns`（"State" / "Pseudostate" / "状態" 等の部分一致）と
-突き合わせ、状態系のノードがクラス系以上に多ければ状態遷移図と判定する。
+状態遷移図の **EditorType はクラス図と同じ `ERDiagram`**（実機確認済み）のため、次の順で判定する。
+
+1. `StateEditorTypes` / `NonStateEditorTypes`（EditorType の明示指定。既定は空）
+2. **`ViewDefinitionName` の完全一致** — 既定は `ステートマシン図` / `状態遷移図` / `StateMachineDiagram` が状態遷移図、`クラス図` / `ClassDiagram` はクラス図
+3. 図上ノードのメタクラス名（ClassName と全親クラス名）を `StateClassNames`
+   （`Vertex` / `State` / `Pseudostate` / `HistoryState` 等の**完全一致**）と突き合わせ、
+   状態系のノードがクラス系以上に多ければ状態遷移図
 
 判定が外れた場合の直し方（`main.cs` の `StatePlantUmlOptions`）:
 
 | 症状 | 直す場所 |
 |---|---|
-| 状態遷移図がクラス図として出る | `StateClassPatterns` に実際のメタクラス名を追加、または `StateEditorTypes` に EditorType を追加 |
-| クラス図が状態遷移図として出る | `NonStateEditorTypes` に EditorType を追加 |
+| 状態遷移図がクラス図として出る | `StateViewDefinitionNames` にビュー定義名を追加、または `StateClassNames` に実際のメタクラス名を追加 |
+| クラス図が状態遷移図として出る | `NonStateViewDefinitionNames` にビュー定義名を追加 |
 
 ### 対応表の埋め方
 
