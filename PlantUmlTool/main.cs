@@ -494,19 +494,55 @@ public class SequencePlantUmlExporter
             .ThenBy(e => e.Id, StringComparer.Ordinal)
             .ToList();
 
+        // PlantUML では activate/deactivate が「直前のメッセージ行」に束縛される。
+        // 同じメッセージに deactivate 済みの参加者を、新しいメッセージを挟まずに
+        // 再度 activate すると "Activate/Deactivate already done" になるため、
+        // そうなる activate だけ次のメッセージの直後まで先送りする
+        var deactivatedSinceMessage = new HashSet<string>(StringComparer.Ordinal);
+        var pendingActivates = new List<SeqEvent>();
+
         foreach (var ev in ordered)
         {
             CloseFragmentsAbove(ev.Y);
 
             if (ev.Kind == "fragment") OnFragment(ev.Fragment);
             else if (ev.Kind == "operand") OnOperand(ev.Operand, ev.FragmentId);
-            else if (ev.Kind == "message") OnMessage(ev.Message);
-            else if (ev.Kind == "activate") OnActivate(ev.Execution);
-            else if (ev.Kind == "deactivate") OnDeactivate(ev.Execution);
+            else if (ev.Kind == "message")
+            {
+                OnMessage(ev.Message);
+                deactivatedSinceMessage.Clear();
+                foreach (var pending in pendingActivates) OnActivate(pending.Execution);
+                pendingActivates.Clear();
+            }
+            else if (ev.Kind == "activate")
+            {
+                var lifeline = ev.Execution.Lifeline;
+                var alias = lifeline != null ? AliasOf(lifeline) : null;
+                if (alias != null && deactivatedSinceMessage.Contains(alias))
+                    pendingActivates.Add(ev);
+                else
+                    OnActivate(ev.Execution);
+            }
+            else if (ev.Kind == "deactivate")
+            {
+                // メッセージを 1 つも挟めなかったバーは activate/deactivate を対で捨てる
+                var pendingIndex = pendingActivates.FindIndex(p => p.Id == ev.Id);
+                if (pendingIndex >= 0)
+                {
+                    pendingActivates.RemoveAt(pendingIndex);
+                }
+                else if (OnDeactivate(ev.Execution))
+                {
+                    var lifeline = ev.Execution.Lifeline;
+                    if (lifeline != null) deactivatedSinceMessage.Add(AliasOf(lifeline));
+                }
+            }
             else if (ev.Kind == "use") OnInteractionUse(ev.Use);
             else if (ev.Kind == "destruction") OnDestruction(ev.Destruction);
             else if (ev.Kind == "note") OnNote(ev.Note);
         }
+        // 最後までメッセージが来なかった先送り分は出力しない
+        // （対応する deactivate は _activeCount のガードで自然にスキップ済み）
     }
 
     private List<IOperandShape> OperandsOf(IFragmentShape f)
@@ -742,16 +778,18 @@ public class SequencePlantUmlExporter
         Line("activate " + alias);
     }
 
-    private void OnDeactivate(IExecutionSpecificationShape e)
+    // 戻り値: deactivate 行を実際に出力したか
+    private bool OnDeactivate(IExecutionSpecificationShape e)
     {
         var l = e.Lifeline;
-        if (l == null) return;
+        if (l == null) return false;
 
         var alias = AliasOf(l);
         int count;
-        if (!_activeCount.TryGetValue(alias, out count) || count <= 0) return;
+        if (!_activeCount.TryGetValue(alias, out count) || count <= 0) return false;
         _activeCount[alias] = count - 1;
         Line("deactivate " + alias);
+        return true;
     }
 
     private void DeactivateAll()
