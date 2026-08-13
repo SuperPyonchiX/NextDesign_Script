@@ -156,6 +156,15 @@ public class PlantUmlText
         return alias;
     }
 
+    // プロファイルが自動生成するシステム・匿名フィールド名（$ / ____ 始まり）か
+    public static bool IsSystemName(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return false;
+        return s.StartsWith("$", StringComparison.Ordinal)
+            || s.StartsWith("____", StringComparison.Ordinal)
+            || s.StartsWith("___", StringComparison.Ordinal);
+    }
+
     public static string SafeFileName(string s)
     {
         var invalid = new HashSet<char>(System.IO.Path.GetInvalidFileNameChars());
@@ -6102,7 +6111,9 @@ public class ClassDiagramCollector
                         ToAlias = other.Alias,
                         Arrow = ArrowOf(f),
                         FieldName = f.Name,
-                        Label = _o.EmitRoleNames ? PlantUmlText.Inline(f.Name) : "",
+                        // 自動生成の匿名フィールド名（____anonymous____... 等）はラベルに出さない
+                        Label = _o.EmitRoleNames && !PlantUmlText.IsSystemName(f.Name)
+                                ? PlantUmlText.Inline(f.Name) : "",
                         ToMultiplicity = _o.EmitMultiplicity ? Multiplicity(f) : "",
                     });
                 }
@@ -6117,7 +6128,8 @@ public class ClassDiagramCollector
 
         if (f.IsEmbedded) return _o.EmbeddedLink;
 
-        if (!string.IsNullOrEmpty(f.Name) && _unknownLink.Add(f.Name))
+        // 自動生成の匿名フィールドは対応表に載りようがないため警告しない
+        if (!string.IsNullOrEmpty(f.Name) && !PlantUmlText.IsSystemName(f.Name) && _unknownLink.Add(f.Name))
             Warnings.Add("関連の種別が不明なため既定の矢印で出力しました : フィールド名='"
                          + f.Name + "'（ClassPlantUmlOptions.LinkMap に追加してください）");
         return _o.DefaultLink;
@@ -7147,7 +7159,30 @@ public class StateDiagramCollector
     {
         CollectNodes();
         CollectTransitions();
+        DropUnlabeledDuplicates();
         SortTransitions();
+    }
+
+    // 遷移が「ラベル付きの線」と「ラベル無しの線」の 2 系統のコネクタで
+    // 二重に描かれるプロファイルがある（ラベル無し側は参照関係の線などで、
+    // モデルが別なので Id の重複除去では消えない）。
+    // 同じ端点間にラベル付きの遷移が 1 本でもあれば、ラベル無しの遷移は落とす。
+    // ラベル無ししか無い端点間はそのまま残す（正当な無ラベル遷移を消さない）
+    private void DropUnlabeledDuplicates()
+    {
+        var labeledPairs = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var t in Transitions)
+            if (t.Label.Length > 0)
+                labeledPairs.Add(t.From.ModelId + "" + t.To.ModelId);
+
+        if (labeledPairs.Count == 0) return;
+
+        var kept = Transitions
+            .Where(t => t.Label.Length > 0
+                     || !labeledPairs.Contains(t.From.ModelId + "" + t.To.ModelId))
+            .ToList();
+        Transitions.Clear();
+        Transitions.AddRange(kept);
     }
 
     // ---------- ノード ----------
