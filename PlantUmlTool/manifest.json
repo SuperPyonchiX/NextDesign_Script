@@ -1,8 +1,8 @@
 {
-  "name": "DesignExporter",
-  "displayName": "設計情報出力",
-  "description": "設計情報を生成 AI へのインプット用に出力します。モデル配下を Markdown 1 ファイルに、シーケンス図・クラス図を PlantUML 形式に変換できます。",
-  "version": "3.0.0",
+  "name": "PlantUmlTool",
+  "displayName": "PlantUML 連携",
+  "description": "シーケンス図・クラス図を PlantUML 形式で出力します。（PlantUML からの取り込みは純正拡張 PlantUMLImporter を使用してください）",
+  "version": "2.1.0",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -11,64 +11,55 @@
     "ribbon": {
       "tabs": [
         {
-          "id": "DesignExporter.Tab",
-          "label": "設計情報出力",
+          "id": "PlantUmlTool.Tab",
+          "label": "PlantUML",
           "orderAfter": "System.View",
           "groups": [
             {
-              "id": "DesignExporter.ExportGroup",
+              "id": "PlantUmlTool.ExportGroup",
               "label": "出力",
               "controls": [
                 {
-                  "id": "DesignExporter.ExportCurrentButton",
+                  "id": "PlantUmlTool.ExportCurrentButton",
                   "type": "Button",
                   "label": "表示中の図を出力",
                   "description": "エディタで表示中のシーケンス図またはクラス図を PlantUML 形式で出力します。",
                   "imageSmall": "resources/export16.png",
                   "imageLarge": "resources/export32.png",
-                  "command": "DesignExporter.ExportCurrent"
+                  "command": "PlantUmlTool.ExportCurrent"
                 },
                 {
-                  "id": "DesignExporter.ExportAllButton",
+                  "id": "PlantUmlTool.ExportAllButton",
                   "type": "Button",
                   "label": "選択モデル配下を一括出力",
                   "description": "ナビゲータで選択中のモデル配下のすべてのシーケンス図とクラス図を PlantUML 形式で出力します。",
                   "imageSmall": "resources/exportall16.png",
                   "imageLarge": "resources/exportall32.png",
-                  "command": "DesignExporter.ExportAll"
-                },
-                {
-                  "id": "DesignExporter.ExportMarkdownButton",
-                  "type": "Button",
-                  "label": "設計情報を Markdown 出力",
-                  "description": "ナビゲータで選択中のモデル配下の設計情報（フィールドと図）を 1 つの Markdown ファイルに出力します。生成 AI へのインプットに利用できます。",
-                  "imageSmall": "resources/markdown16.png",
-                  "imageLarge": "resources/markdown32.png",
-                  "command": "DesignExporter.ExportMarkdown"
+                  "command": "PlantUmlTool.ExportAll"
                 }
               ]
             },
             {
-              "id": "DesignExporter.DiagnosticsGroup",
+              "id": "PlantUmlTool.DiagnosticsGroup",
               "label": "診断",
               "controls": [
                 {
-                  "id": "DesignExporter.ProbeButton",
+                  "id": "PlantUmlTool.ProbeButton",
                   "type": "Button",
                   "label": "メタモデル調査",
                   "description": "アクティブなシーケンス図のメタモデル構造を出力ウィンドウにダンプします。",
                   "imageSmall": "resources/probe16.png",
                   "imageLarge": "resources/probe32.png",
-                  "command": "DesignExporter.Probe"
+                  "command": "PlantUmlTool.Probe"
                 },
                 {
-                  "id": "DesignExporter.ProbeClassButton",
+                  "id": "PlantUmlTool.ProbeClassButton",
                   "type": "Button",
                   "label": "クラス図調査",
                   "description": "アクティブなクラス図のノード・コネクタ・参照フィールドを出力ウィンドウにダンプします。",
                   "imageSmall": "resources/probeclass16.png",
                   "imageLarge": "resources/probeclass32.png",
-                  "command": "DesignExporter.ProbeClass"
+                  "command": "PlantUmlTool.ProbeClass"
                 }
               ]
             }
@@ -78,42 +69,35 @@
     },
 
     "commandGroups": [
-      { "name": "designexporter", "title": "設計情報出力" }
+      { "name": "plantuml", "title": "PlantUML 連携" }
     ],
 
     "commands": [
       {
-        "id": "DesignExporter.ExportCurrent",
+        "id": "PlantUmlTool.ExportCurrent",
         "title": "表示中の図を出力",
-        "group": "designexporter",
+        "group": "plantuml",
         "execFunc": "ExportCurrentDiagram",
         "canExecWhen": { "uiState": "ProjectOpened" }
       },
       {
-        "id": "DesignExporter.ExportAll",
+        "id": "PlantUmlTool.ExportAll",
         "title": "選択モデル配下を一括出力",
-        "group": "designexporter",
+        "group": "plantuml",
         "execFunc": "ExportAllDiagrams",
         "canExecWhen": { "uiState": "ProjectOpened" }
       },
       {
-        "id": "DesignExporter.ExportMarkdown",
-        "title": "設計情報を Markdown 出力",
-        "group": "designexporter",
-        "execFunc": "ExportMarkdown",
-        "canExecWhen": { "uiState": "ProjectOpened" }
-      },
-      {
-        "id": "DesignExporter.Probe",
+        "id": "PlantUmlTool.Probe",
         "title": "メタモデル調査",
-        "group": "designexporter",
+        "group": "plantuml",
         "execFunc": "ProbeMetamodel",
         "canExecWhen": { "uiState": "ProjectOpened" }
       },
       {
-        "id": "DesignExporter.ProbeClass",
+        "id": "PlantUmlTool.ProbeClass",
         "title": "クラス図調査",
-        "group": "designexporter",
+        "group": "plantuml",
         "execFunc": "ProbeClassDiagram",
         "canExecWhen": { "uiState": "ProjectOpened" }
       }
