@@ -1,0 +1,160 @@
+{
+  "name": "AgentReview",
+  "displayName": "AI レビュー",
+  "description": "Claude Code / Codex のエージェントで設計レビューと修正提案の生成を行います。設計情報をエクスポートし、ターミナルでエージェントと対話します。",
+  "version": "0.1.0",
+  "publisher": "ksk01",
+  "main": "main.cs",
+  "lifecycle": "project",
+
+  "extensionPoints": {
+    "ribbon": {
+      "tabs": [
+        {
+          "id": "AgentReview.Tab",
+          "label": "AI レビュー",
+          "orderAfter": "System.View",
+          "groups": [
+            {
+              "id": "AgentReview.AgentGroup",
+              "label": "エージェント",
+              "controls": [
+                {
+                  "id": "AgentReview.StartButton",
+                  "type": "Button",
+                  "label": "レビュー開始",
+                  "description": "選択モデル配下の設計情報をエクスポートし、ターミナルでエージェントとの対話レビューを開始します。",
+                  "imageSmall": "resources/start16.png",
+                  "imageLarge": "resources/start32.png",
+                  "command": "AgentReview.Command.Start"
+                },
+                {
+                  "id": "AgentReview.ResumeButton",
+                  "type": "Button",
+                  "label": "ターミナル再開",
+                  "description": "最新のレビューセッションのターミナルを再度開き、対話の続きを行います。",
+                  "imageSmall": "resources/resume16.png",
+                  "imageLarge": "resources/resume32.png",
+                  "command": "AgentReview.Command.Resume"
+                }
+              ]
+            },
+            {
+              "id": "AgentReview.ResultGroup",
+              "label": "結果",
+              "controls": [
+                {
+                  "id": "AgentReview.OpenResultButton",
+                  "type": "Button",
+                  "label": "結果を開く",
+                  "description": "最新セッションのレビュー指摘（review.md）と修正提案（proposal.md）を開きます。",
+                  "imageSmall": "resources/result16.png",
+                  "imageLarge": "resources/result32.png",
+                  "command": "AgentReview.Command.OpenResult"
+                },
+                {
+                  "id": "AgentReview.OpenFolderButton",
+                  "type": "Button",
+                  "label": "フォルダを開く",
+                  "description": "最新のレビューセッションのフォルダをエクスプローラーで開きます。",
+                  "imageSmall": "resources/folder16.png",
+                  "imageLarge": "resources/folder32.png",
+                  "command": "AgentReview.Command.OpenFolder"
+                }
+              ]
+            },
+            {
+              "id": "AgentReview.SettingsGroup",
+              "label": "設定",
+              "controls": [
+                {
+                  "id": "AgentReview.SwitchAgentButton",
+                  "type": "Button",
+                  "label": "エージェント切替",
+                  "description": "使用するエージェント（Claude Code / Codex）を切り替えます。",
+                  "imageSmall": "resources/switch16.png",
+                  "imageLarge": "resources/switch32.png",
+                  "command": "AgentReview.Command.SwitchAgent"
+                },
+                {
+                  "id": "AgentReview.OpenConfigButton",
+                  "type": "Button",
+                  "label": "設定",
+                  "description": "設定ファイル（config.ini）をメモ帳で開きます。保存すると次の実行から反映されます。",
+                  "imageSmall": "resources/config16.png",
+                  "imageLarge": "resources/config32.png",
+                  "command": "AgentReview.Command.OpenConfig"
+                },
+                {
+                  "id": "AgentReview.CheckCliButton",
+                  "type": "Button",
+                  "label": "環境診断",
+                  "description": "claude / codex CLI のインストール状態とバージョンを出力ウィンドウに表示します。",
+                  "imageSmall": "resources/check16.png",
+                  "imageLarge": "resources/check32.png",
+                  "command": "AgentReview.Command.CheckCli"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+
+    "commandGroups": [
+      { "name": "agentreview", "title": "AI レビュー" }
+    ],
+
+    "commands": [
+      {
+        "id": "AgentReview.Command.Start",
+        "title": "レビュー開始",
+        "group": "agentreview",
+        "execFunc": "StartAgentReview",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "AgentReview.Command.Resume",
+        "title": "ターミナル再開",
+        "group": "agentreview",
+        "execFunc": "ResumeAgentSession",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "AgentReview.Command.OpenResult",
+        "title": "結果を開く",
+        "group": "agentreview",
+        "execFunc": "OpenReviewResult",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "AgentReview.Command.OpenFolder",
+        "title": "フォルダを開く",
+        "group": "agentreview",
+        "execFunc": "OpenWorkspaceFolder",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "AgentReview.Command.SwitchAgent",
+        "title": "エージェント切替",
+        "group": "agentreview",
+        "execFunc": "SwitchAgent",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "AgentReview.Command.OpenConfig",
+        "title": "設定を開く",
+        "group": "agentreview",
+        "execFunc": "OpenConfig",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "AgentReview.Command.CheckCli",
+        "title": "環境診断",
+        "group": "agentreview",
+        "execFunc": "CheckCliEnvironment",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      }
+    ]
+  }
+}
