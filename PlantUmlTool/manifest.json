@@ -77,6 +77,15 @@
                   "command": "PlantUmlTool.Probe"
                 },
                 {
+                  "id": "PlantUmlTool.ProbeCreateButton",
+                  "type": "Button",
+                  "label": "新規作成実験",
+                  "description": "シーケンス図をモデル API から新規作成できるかを検証し、結果を出力ウィンドウに記録します。",
+                  "imageSmall": "resources/probe16.png",
+                  "imageLarge": "resources/probe32.png",
+                  "command": "PlantUmlTool.ProbeCreate"
+                },
+                {
                   "id": "PlantUmlTool.ProbeClassButton",
                   "type": "Button",
                   "label": "クラス図調査",
@@ -130,6 +139,13 @@
         "title": "メタモデル調査",
         "group": "plantuml",
         "execFunc": "ProbeMetamodel",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "PlantUmlTool.ProbeCreate",
+        "title": "新規作成実験",
+        "group": "plantuml",
+        "execFunc": "ProbeCreateSequence",
         "canExecWhen": { "uiState": "ProjectOpened" }
       },
       {

@@ -5010,6 +5010,174 @@ public class MetaProbe
 }
 
 // ------------------------------------------------------------
+//  新規シーケンス図 作成実験
+//
+//  V3.x では既存シーケンス図の要素編集がプロファイルにブロックされる。
+//  「新規に図を作って要素を流し込む」ことが可能かを実機で確定させる
+//  ための診断コマンド。どのステップで失敗するかを出力ペインに残す。
+// ------------------------------------------------------------
+public class CreateProbe
+{
+    public const string Category = "PlantUmlImport";
+
+    public static void Run(IApplication app)
+    {
+        var w = new Action<string>(t => app.Output.WriteLine(Category, t));
+
+        var diagram = app.Workspace.CurrentEditor as ISequenceDiagram;
+        if (diagram == null || diagram.Model == null)
+        {
+            app.Window.UI.ShowInformationDialog(
+                "見本にするシーケンス図を開いた状態で実行してください。", Category);
+            return;
+        }
+
+        OutputPane.Show(app, Category);
+        w("=== 新規シーケンス図 作成実験 ===");
+        w("目的: モデル API からシーケンス図を新規作成できるか（どの操作で拒否されるか）の確定");
+        w("");
+
+        var map = MetaMap.Detect(diagram);
+        var sample = diagram.Model;
+        var owner = sample.Owner;
+        string ownerField = null;
+        try
+        {
+            var f = sample.GetOwnerField();
+            ownerField = f != null ? f.Name : null;
+        }
+        catch (Exception) { }
+
+        if (owner == null || string.IsNullOrEmpty(ownerField))
+        {
+            w("[NG] 見本の図の親モデル/所有フィールドを取得できないため中止します。");
+            return;
+        }
+
+        // ---- 1. 図モデルの作成 ----
+        IModel newDiagram = null;
+        var name = "PlantUML取込実験_" + DateTime.Now.ToString("HHmmss");
+        try
+        {
+            newDiagram = owner.AddNewModel(ownerField, sample.ClassName);
+            w("[OK] 1. 図モデルの作成 (" + sample.ClassName + " → " + owner.Name + "." + ownerField + ")");
+        }
+        catch (Exception ex)
+        {
+            w("[NG] 1. 図モデルの作成: " + ex.Message);
+            w("");
+            w("→ 図モデル自体を作成できないため、新規作成方式の取り込みは不可と判断できます。");
+            return;
+        }
+
+        Try(w, "2. 図の名前設定 (" + name + ")",
+            () => newDiagram.SetField("Name", name));
+
+        // ---- 2. ライフライン ----
+        IModel lifelineA = null, lifelineB = null;
+        if (map.CanWriteLifelines)
+        {
+            lifelineA = TryCreate(w, "3. ライフラインA の作成",
+                () => newDiagram.AddNewModel(map.InteractionLifelinesField, map.LifelineClass));
+            if (lifelineA != null)
+                Try(w, "4. ライフラインA の名前設定",
+                    () => lifelineA.SetField(map.LifelineNameField, "実験A"));
+
+            lifelineB = TryCreate(w, "5. ライフラインB の作成",
+                () => newDiagram.AddNewModel(map.InteractionLifelinesField, map.LifelineClass));
+            if (lifelineB != null)
+                Try(w, "6. ライフラインB の名前設定",
+                    () => lifelineB.SetField(map.LifelineNameField, "実験B"));
+        }
+        else w("[SKIP] ライフラインのメタモデル未判別のため 3〜6 を省略");
+
+        // ---- 3. 実行仕様（この UML プロファイルでは図の直下に所有される）----
+        var execA = CreateExecution(w, "7. 実行仕様A", newDiagram, lifelineA, map);
+        var execB = CreateExecution(w, "8. 実行仕様B", newDiagram, lifelineB, map);
+
+        // ---- 4. メッセージ ----
+        if (map.CanWriteMessages || (map.MessageClass != null && map.InteractionMessagesField != null))
+        {
+            var message = TryCreate(w, "9. メッセージの作成",
+                () => newDiagram.AddNewModel(map.InteractionMessagesField, map.MessageClass));
+            if (message != null)
+            {
+                if (!string.IsNullOrEmpty(map.MessageNameField))
+                    Try(w, "10. メッセージの名前設定",
+                        () => message.SetField(map.MessageNameField, "実験メッセージ"));
+                if (execA != null && !string.IsNullOrEmpty(map.MessageSendPortField))
+                    Try(w, "11. 送信元の接続 (Sender = 実行仕様A)",
+                        () => message.SetField(map.MessageSendPortField, execA));
+                if (execB != null && !string.IsNullOrEmpty(map.MessageReceivePortField))
+                    Try(w, "12. 受信先の接続 (Receiver = 実行仕様B)",
+                        () => message.SetField(map.MessageReceivePortField, execB));
+            }
+        }
+        else w("[SKIP] メッセージのメタモデル未判別のため 9〜12 を省略");
+
+        w("");
+        w("=== 実験終了 ===");
+        w("ナビゲータで「" + name + "」を開き、次を確認して結果を報告してください:");
+        w("  - 図がエラーなく開けるか");
+        w("  - ライフライン 実験A / 実験B が表示されるか");
+        w("  - メッセージ 実験メッセージ が矢印として表示されるか");
+        w("確認後、実験で作られた図は手動で削除して構いません。");
+    }
+
+    // 実行仕様は見本と同じ所有関係で作る。図直下が拒否されたらライフライン配下も試す
+    private static IModel CreateExecution(Action<string> w, string step,
+                                          IModel newDiagram, IModel lifeline, MetaMap map)
+    {
+        if (map.ExecutionClass == null || map.LifelineExecutionsField == null)
+        {
+            w("[SKIP] " + step + ": 実行仕様のメタモデル未判別");
+            return null;
+        }
+
+        var exec = TryCreate(w, step + " の作成（図の直下 " + map.LifelineExecutionsField + "）",
+            () => newDiagram.AddNewModel(map.LifelineExecutionsField, map.ExecutionClass));
+
+        if (exec == null && lifeline != null)
+            exec = TryCreate(w, step + " の作成（ライフライン配下）",
+                () => lifeline.AddNewModel(map.LifelineExecutionsField, map.ExecutionClass));
+
+        if (exec != null && lifeline != null)
+            Try(w, step + " と ライフラインの関連付け (OwnerLifeline)",
+                () => exec.SetField("OwnerLifeline", lifeline));
+
+        return exec;
+    }
+
+    private static void Try(Action<string> w, string step, Action action)
+    {
+        try
+        {
+            action();
+            w("[OK] " + step);
+        }
+        catch (Exception ex)
+        {
+            w("[NG] " + step + ": " + ex.Message);
+        }
+    }
+
+    private static IModel TryCreate(Action<string> w, string step, Func<IModel> create)
+    {
+        try
+        {
+            var model = create();
+            w(model != null ? "[OK] " + step : "[NG] " + step + ": null が返りました");
+            return model;
+        }
+        catch (Exception ex)
+        {
+            w("[NG] " + step + ": " + ex.Message);
+            return null;
+        }
+    }
+}
+
+// ------------------------------------------------------------
 //  1 ファイル分の取り込み計画
 // ------------------------------------------------------------
 public class ImportJob
@@ -5489,6 +5657,20 @@ public void ProbeMetamodel(ICommandContext context, ICommandParams commandParams
         context.App.Output.WriteLine(MetaProbe.Category, "[error] " + ex.ToString());
         context.App.Window.UI.ShowInformationDialog(
             "メタモデル調査に失敗しました。\n\n" + ex.Message, MetaProbe.Category);
+    }
+}
+
+public void ProbeCreateSequence(ICommandContext context, ICommandParams commandParams)
+{
+    try
+    {
+        CreateProbe.Run(context.App);
+    }
+    catch (Exception ex)
+    {
+        context.App.Output.WriteLine(CreateProbe.Category, "[error] " + ex.ToString());
+        context.App.Window.UI.ShowInformationDialog(
+            "新規作成実験に失敗しました。\n\n" + ex.Message, CreateProbe.Category);
     }
 }
 
