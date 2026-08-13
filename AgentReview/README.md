@@ -31,7 +31,7 @@ Claude Code / Codex エージェントと対話しながら設計レビューと
 2. リボン「AI レビュー」タブの **レビュー開始** を押す
    - 初回は基点フォルダを選択する（設定に記憶される）
    - セッションフォルダが作成され、設計情報が `design\design.md` にエクスポートされ、ターミナルでエージェントが起動する
-3. ターミナルで「レビューして」と入力する。指示書（CLAUDE.md / AGENTS.md）に従いレビューが始まる
+3. ターミナルで「レビューして」と入力する。**design-review スキル**に従い、エージェントが最初に開発工程（要求分析 / 基本設計 / 詳細設計）を質問し、工程別の観点表でレビューする
 4. 指摘は `review\review.md`、修正提案は `review\proposal.md` に出力される。リボンの **結果を開く** で参照できる
 5. 対話を中断した後は **ターミナル再開** で続きから再開できる
 
@@ -42,10 +42,23 @@ Claude Code / Codex エージェントと対話しながら設計レビューと
 ```
 <基点フォルダ>\<モデル名>_<日時>\
 ├── CLAUDE.md / AGENTS.md   指示書（拡張が生成。両エージェント分）
-├── design\                 入力（design.md ほか。エージェントは変更禁止）
+├── .agents\skills\design-review\   レビュースキル（SKILL.md + 工程別観点表）
+├── .claude\skills          → .agents\skills へのジャンクション（Claude Code 用。失敗時はコピー）
+├── design\                 入力（design.md / *.puml / _index.md。エージェントは変更禁止）
 ├── review\                 エージェントの出力（review.md / proposal.md / proposed\）
 └── session.ini             セッション情報（拡張が管理）
 ```
+
+## design-review スキル
+
+レビューの進め方と工程別観点は Agent Skill として渡す。エージェントは最初に対象工程を質問し、
+`references/` の観点表（要求分析 / 基本設計 / 詳細設計）を適用してレビューする。
+
+- **観点表のカスタマイズ**: 原本は `%USERPROFILE%\.nd-agent-review\skills\design-review\`。
+  初回実行時に既定内容が生成され、以降は上書きされない（ユーザー編集が保護される）。
+  編集すれば次回の「レビュー開始」から反映される（ND 再起動不要）
+- **既定内容の変更（開発者向け）**: リポジトリの `skills/design-review/` が正本。
+  編集後に `python AgentReview/tools/embed_skills.py` で main.cs へ再埋め込みする
 
 ## 設定
 
