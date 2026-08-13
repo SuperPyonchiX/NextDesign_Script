@@ -1,6 +1,10 @@
 // ============================================================
-//  Next Design エクステンション : PlantUML 連携（出力 / 取り込み）
+//  Next Design エクステンション : 設計情報出力（DesignExporter）
+//  設計情報を生成 AI へのインプット用に出力する。
+//  Markdown（モデル配下を 1 ファイル化）と PlantUML（シーケンス図 / クラス図）に対応。
 //  エントリポイント（C# スクリプト / Next Design V3.x）
+//  旧称 PlantUmlTool。内部クラス名（PlantUml* / ExportRunner 等）は
+//  PlantUML 変換エンジンの名前として据え置いている
 //
 //  構成:
 //    Part 0  出力エンジン  PlantUmlOptions / PlantUmlText / SeqEvent /
@@ -14,6 +18,8 @@
 //    Part 6  コマンドハンドラ（manifest.json の execFunc と名前を一致させる）
 //    Part 7  クラス図出力  ClassPlantUmlOptions / ClassDiagramCollector /
 //                          ClassPlantUmlExporter / ClassExportRunner / ClassProbe
+//    Part 8  Markdown出力  MarkdownExportOptions / MarkdownExporter /
+//                          MarkdownExportRunner（設計情報を生成AI向けに1ファイル化）
 //
 //  制約:
 //    - main に指定できるファイルは1つだけ。分割できない
@@ -5397,6 +5403,20 @@ public void ExportAllDiagrams(ICommandContext context, ICommandParams commandPar
     }
 }
 
+public void ExportMarkdown(ICommandContext context, ICommandParams commandParams)
+{
+    try
+    {
+        MarkdownExportRunner.Run(context.App, context, new MarkdownExportOptions());
+    }
+    catch (Exception ex)
+    {
+        context.App.Output.WriteLine(MarkdownExportRunner.Category, "[error] " + ex.ToString());
+        context.App.Window.UI.ShowInformationDialog(
+            "Markdown 出力に失敗しました。\n\n" + ex.Message, MarkdownExportRunner.Category);
+    }
+}
+
 // ============================================================
 //  Part 6 / 診断側のコマンドハンドラ
 //  （manifest.json の execFunc と名前を一致させる）
@@ -6888,5 +6908,385 @@ public class ClassProbe
             foreach (var pair in counts.OrderByDescending(p => p.Value).ThenBy(p => p.Key, StringComparer.Ordinal))
                 w("  " + pair.Key + " : " + pair.Value + " 件");
         w("");
+    }
+}
+
+// ============================================================
+//  Part 8 / 設計情報の Markdown 出力
+//
+//    選択モデル配下の全モデルを見出し階層の 1 ファイルにまとめる。
+//    用途は生成 AI へのインプット。図（クラス図・シーケンス図）は
+//    既存エクスポータで PlantUML 化し、```plantuml フェンスとして
+//    そのモデルのセクション内に埋め込む（別ファイルへの参照だと
+//    AI に渡す際に添付漏れ・対応関係の再構築が必要になるため）
+//
+//    出力規約:
+//      - 所有フィールド（IsEmbedded）はフィールドとして出さない。
+//        子は子セクション（見出し再帰）でのみ出力し、二重化を避ける
+//      - Name / $・____ 始まりのシステムフィールド / 空値は出さない
+//      - フィールド値はフェンスで囲まず箇条書き + インデント継続で出す
+//        （値に ``` が含まれても文書構造が壊れない）
+// ============================================================
+
+public class MarkdownExportOptions
+{
+    public string NewLine = "\n";           // 改行は LF 固定
+    public bool EmitTimestamp = true;       // 冒頭に出力日時を入れる
+    public bool IncludeDiagrams = true;     // 図を plantuml フェンスで埋め込む
+    public bool SkipEmptySequence = true;   // ライフライン 0 本のシーケンス図はスキップ
+    public int MaxHeadingLevel = 6;         // Markdown 見出しの上限（# の最大数）
+    public bool Confirm = true;             // 実行前に確認ダイアログを出す
+}
+
+// ------------------------------------------------------------
+//  変換エンジン（UI 非依存。テキストの組み立てのみを行う）
+// ------------------------------------------------------------
+public class MarkdownExporter
+{
+    private readonly MarkdownExportOptions _options;
+    private readonly ClassPlantUmlOptions _classOptions = new ClassPlantUmlOptions();
+    private readonly PlantUmlOptions _seqOptions = new PlantUmlOptions();
+    private readonly HashSet<string> _visited = new HashSet<string>(StringComparer.Ordinal);
+    private readonly HashSet<string> _seenEditors = new HashSet<string>(StringComparer.Ordinal);
+    private StringBuilder _sb;
+
+    public int ModelCount;
+    public int DiagramCount;
+    public int SkipCount;
+    public List<string> Warnings = new List<string>();
+
+    public MarkdownExporter(MarkdownExportOptions options)
+    {
+        _options = options ?? new MarkdownExportOptions();
+    }
+
+    public string Export(IModel root)
+    {
+        var nl = _options.NewLine;
+        _sb = new StringBuilder();
+        _visited.Clear();
+        _seenEditors.Clear();
+        ModelCount = 0;
+        DiagramCount = 0;
+        SkipCount = 0;
+        Warnings.Clear();
+
+        // 件数をプリアンブルに載せるため、本文を先に組み立てる
+        WriteModel(root, 0, null);
+        var body = _sb.ToString();
+
+        var head = new StringBuilder();
+        head.Append("<!-- Next Design 設計情報エクスポート (PlantUmlTool) -->").Append(nl);
+        head.Append(nl);
+        head.Append("- 起点モデルパス: ").Append(PathOf(root)).Append(nl);
+        head.Append("- モデル数: ").Append(ModelCount)
+            .Append(" / 図数: ").Append(DiagramCount);
+        if (SkipCount > 0) head.Append("（空の図 ").Append(SkipCount).Append(" 件をスキップ）");
+        head.Append(nl);
+        if (_options.EmitTimestamp)
+            head.Append("- 出力日時: ").Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")).Append(nl);
+        head.Append(nl);
+
+        return head.ToString() + body;
+    }
+
+    // trail: 見出しレベルが上限に達した祖先（上限レベルのモデル）からの名前の連なり。
+    //        上限未満の深さでは null
+    private void WriteModel(IModel m, int depth, List<string> trail)
+    {
+        if (m == null || m.IsDeleted || m.IsProxy) return;
+        if (!_visited.Add(m.Id)) return;   // 再訪ガード（循環・重複列挙の保険）
+
+        try
+        {
+            ModelCount++;
+            var nl = _options.NewLine;
+            var level = Math.Min(depth + 1, _options.MaxHeadingLevel);
+            var name = PlantUmlText.Normalize(m.Name);
+            if (name.Length == 0) name = "(無名)";
+
+            // 上限を超えた深さは、上限レベルの祖先からの相対パスを見出しにして階層を保つ
+            var capped = depth + 1 >= _options.MaxHeadingLevel;
+            List<string> myTrail = null;
+            var heading = name;
+            if (capped)
+            {
+                myTrail = trail != null ? new List<string>(trail) : new List<string>();
+                myTrail.Add(name);
+                heading = string.Join(" / ", myTrail.ToArray());
+            }
+
+            _sb.Append(new string('#', level)).Append(' ').Append(heading).Append(nl);
+            _sb.Append(nl);
+
+            var cls = m.Metaclass;
+            _sb.Append("> クラス: ").Append(cls != null ? cls.FullName : m.ClassName).Append(nl);
+            if (capped && trail != null)
+                _sb.Append("> パス: ").Append(PathOf(m)).Append(nl);
+            _sb.Append(nl);
+
+            WriteFields(m);
+
+            if (_options.IncludeDiagrams) WriteDiagrams(m, level);
+
+            List<IModel> children;
+            try { children = m.GetChildren().Cast<IModel>().ToList(); }
+            catch (Exception ex)
+            {
+                Warnings.Add(PathOf(m) + " : 子モデルの取得に失敗 : " + ex.Message);
+                return;
+            }
+            foreach (var child in children)
+                WriteModel(child, depth + 1, myTrail);
+        }
+        catch (Exception ex)
+        {
+            // 1 モデルの失敗で全体を落とさない
+            Warnings.Add(PathOf(m) + " : " + ex.Message);
+        }
+    }
+
+    private void WriteFields(IModel m)
+    {
+        var cls = m.Metaclass;
+        if (cls == null) return;
+
+        var nl = _options.NewLine;
+        List<IField> fields;
+        try { fields = cls.GetFields().Cast<IField>().ToList(); }
+        catch (Exception ex)
+        {
+            Warnings.Add(PathOf(m) + " : フィールド一覧の取得に失敗 : " + ex.Message);
+            return;
+        }
+
+        var wrote = false;
+        foreach (var f in fields)
+        {
+            try
+            {
+                if (f == null || IsSystemField(f)) continue;
+                if (f.IsEmbedded) continue;   // 所有は子セクションで出す（二重化回避）
+
+                if (f.IsReference)
+                {
+                    var names = new List<string>();
+                    foreach (var v in m.GetFieldValues(f.Name))
+                    {
+                        var target = v as IModel;
+                        if (target == null) continue;
+                        var refName = PlantUmlText.Normalize(target.Name);
+                        names.Add(refName.Length > 0 ? refName : "(無名)");
+                    }
+                    if (names.Count == 0) continue;
+                    _sb.Append("- ").Append(f.Name).Append(" (参照): ")
+                       .Append(string.Join(", ", names.ToArray())).Append(nl);
+                    wrote = true;
+                }
+                else
+                {
+                    string value = null;
+                    try { value = m.GetFieldString(f.Name); }
+                    catch (Exception) { }
+                    if (string.IsNullOrEmpty(value) || value.Trim().Length == 0) continue;
+
+                    var lines = value.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+                    if (lines.Length == 1)
+                    {
+                        _sb.Append("- ").Append(f.Name).Append(": ").Append(lines[0]).Append(nl);
+                    }
+                    else
+                    {
+                        // 複数行はインデント継続で崩さず出す
+                        _sb.Append("- ").Append(f.Name).Append(":").Append(nl);
+                        foreach (var line in lines)
+                            _sb.Append("  ").Append(line).Append(nl);
+                    }
+                    wrote = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Warnings.Add(PathOf(m) + " / " + f.Name + " : " + ex.Message);
+            }
+        }
+        if (wrote) _sb.Append(nl);
+    }
+
+    private void WriteDiagrams(IModel m, int ownerLevel)
+    {
+        var nl = _options.NewLine;
+        var level = Math.Min(ownerLevel + 1, _options.MaxHeadingLevel);
+
+        // クラス図 → シーケンス図の順、図名昇順で決定的に出す
+        var classDiagrams = new List<KeyValuePair<string, IDiagram>>();
+        var seqDiagrams = new List<KeyValuePair<string, ISequenceDiagram>>();
+
+        try
+        {
+            foreach (var editor in m.GetEditors())
+            {
+                if (editor == null || !_seenEditors.Add(editor.Id)) continue;
+
+                var seq = editor as ISequenceDiagram;
+                if (seq != null)
+                {
+                    var seqName = seq.Model != null && !string.IsNullOrEmpty(seq.Model.Name)
+                        ? seq.Model.Name
+                        : (string.IsNullOrEmpty(seq.ViewDefinitionName) ? "Sequence" : seq.ViewDefinitionName);
+                    seqDiagrams.Add(new KeyValuePair<string, ISequenceDiagram>(seqName, seq));
+                }
+                else if (ClassExportRunner.IsClassDiagramEditor(editor))
+                {
+                    var diagram = editor as IDiagram;
+                    if (diagram == null) continue;
+                    var representation = editor as IRepresentation;
+                    var clsName = representation != null && representation.Model != null
+                        ? representation.Model.Name : m.Name;
+                    classDiagrams.Add(new KeyValuePair<string, IDiagram>(clsName, diagram));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Warnings.Add(PathOf(m) + " : エディタ一覧の取得に失敗 : " + ex.Message);
+            return;
+        }
+
+        foreach (var pair in classDiagrams.OrderBy(p => p.Key, StringComparer.Ordinal))
+        {
+            try
+            {
+                var exporter = new ClassPlantUmlExporter(pair.Value, _classOptions);
+                var uml = exporter.Export();
+                foreach (var warning in exporter.Warnings) Warnings.Add(warning);
+                WriteDiagramFence(level, pair.Key, "クラス図", uml);
+                DiagramCount++;
+            }
+            catch (Exception ex)
+            {
+                Warnings.Add(PathOf(m) + " / " + pair.Key + " (クラス図) : " + ex.Message);
+            }
+        }
+
+        foreach (var pair in seqDiagrams.OrderBy(p => p.Key, StringComparer.Ordinal))
+        {
+            try
+            {
+                if (_options.SkipEmptySequence && !pair.Value.Lifelines.Cast<ILifelineShape>().Any())
+                {
+                    SkipCount++;
+                    continue;
+                }
+                var uml = new SequencePlantUmlExporter(pair.Value, _seqOptions).Export();
+                WriteDiagramFence(level, pair.Key, "シーケンス図", uml);
+                DiagramCount++;
+            }
+            catch (Exception ex)
+            {
+                Warnings.Add(PathOf(m) + " / " + pair.Key + " (シーケンス図) : " + ex.Message);
+            }
+        }
+    }
+
+    private void WriteDiagramFence(int level, string name, string kind, string uml)
+    {
+        var nl = _options.NewLine;
+        var title = PlantUmlText.Normalize(name);
+        if (title.Length == 0) title = kind;
+
+        _sb.Append(new string('#', level)).Append(" 図: ").Append(title)
+           .Append("（").Append(kind).Append("）").Append(nl);
+        _sb.Append(nl);
+        _sb.Append("```plantuml").Append(nl);
+        _sb.Append(uml.Replace("\r\n", "\n").Replace("\r", "\n").TrimEnd('\n')).Append(nl);
+        _sb.Append("```").Append(nl);
+        _sb.Append(nl);
+    }
+
+    private static bool IsSystemField(IField f)
+    {
+        var name = f.Name ?? "";
+        if (name == "Name") return true;   // 見出しと重複するため出さない
+        return name.StartsWith("$", StringComparison.Ordinal)
+            || name.StartsWith("____", StringComparison.Ordinal);
+    }
+
+    private static string PathOf(IModel m)
+    {
+        if (m == null) return "";
+        string path = null;
+        try { path = m.ModelPath; }
+        catch (Exception) { }
+        return string.IsNullOrEmpty(path) ? (m.Name ?? "") : path;
+    }
+}
+
+// ------------------------------------------------------------
+//  Markdown 出力の実行
+// ------------------------------------------------------------
+public class MarkdownExportRunner
+{
+    public const string Category = "PlantUML";
+
+    public static void Run(IApplication app, IContext context, MarkdownExportOptions options)
+    {
+        options = options ?? new MarkdownExportOptions();
+
+        var ui = app.Window.UI;
+
+        // 未表示エディタの詳細も取得できるようにする（バッチでは必須）
+        context.ContextOption.EditorAccessMode = EditorAccessMode.GetInactiveValue;
+
+        var root = ExportRunner.ResolveRoot(app);
+        if (root == null)
+        {
+            ui.ShowInformationDialog("プロジェクトが開かれていません。", Category);
+            return;
+        }
+
+        if (options.Confirm)
+        {
+            var message = "「" + root.Name + "」配下の設計情報を 1 つの Markdown ファイルに出力します。"
+                        + (options.IncludeDiagrams ? "\n（クラス図・シーケンス図は PlantUML として埋め込み）" : "")
+                        + "\n\n続行しますか？";
+            if (!ui.ShowConfirmDialog(message, Category)) return;
+        }
+
+        var baseName = PlantUmlText.SafeFileName(root.Name);
+        if (baseName.Length == 0) baseName = "design";
+
+        var path = ui.ShowSaveFileDialog(
+            "Markdown ファイルの保存",
+            "Markdown (*.md)|*.md|すべてのファイル (*.*)|*.*",
+            baseName + ".md");
+        if (string.IsNullOrEmpty(path)) return;
+
+        OutputPane.Show(app, Category);
+        app.Output.WriteLine(Category, "=== Markdown Export : " + root.Name + " ===");
+
+        var exporter = new MarkdownExporter(options);
+        var text = exporter.Export(root);
+
+        // 本文は巨大になり得るため出力ペインには流さない（統計と警告のみ）
+        System.IO.File.WriteAllText(path, text, new UTF8Encoding(false));
+        app.Output.WriteLine(Category, "[saved] " + path);
+
+        foreach (var warning in exporter.Warnings)
+            app.Output.WriteLine(Category, "[warn]  " + warning);
+
+        app.Output.WriteLine(Category, "");
+        app.Output.WriteLine(Category, "=== 完了 : モデル " + exporter.ModelCount
+                             + " / 図 " + exporter.DiagramCount
+                             + " / スキップ " + exporter.SkipCount
+                             + " / 警告 " + exporter.Warnings.Count + " ===");
+
+        ui.ShowInformationDialog(
+            "Markdown 出力が完了しました。\n\n"
+            + "モデル: " + exporter.ModelCount + " 件\n"
+            + "図: " + exporter.DiagramCount + " 件\n"
+            + "スキップ: " + exporter.SkipCount + " 件\n"
+            + "警告: " + exporter.Warnings.Count + " 件\n\n"
+            + "出力先: " + path, Category);
     }
 }
