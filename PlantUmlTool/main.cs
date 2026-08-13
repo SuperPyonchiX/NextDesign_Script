@@ -5561,9 +5561,11 @@ public class ClassPlantUmlOptions
     public Dictionary<string, string> VisibilityMap =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
-        { "public", "+" }, { "Public", "+" }, { "公開", "+" }, { "+", "+" },
-        { "private", "-" }, { "Private", "-" }, { "非公開", "-" }, { "-", "-" },
-        { "protected", "#" }, { "Protected", "#" }, { "限定公開", "#" }, { "#", "#" },
+        // 比較が OrdinalIgnoreCase のため大文字小文字違いを重複登録しないこと
+        // （"public" と "Public" を両方書くと初期化時に例外になる）
+        { "public", "+" }, { "公開", "+" }, { "+", "+" },
+        { "private", "-" }, { "非公開", "-" }, { "-", "-" },
+        { "protected", "#" }, { "限定公開", "#" }, { "#", "#" },
         { "package", "~" }, { "internal", "~" }, { "パッケージ", "~" }, { "~", "~" },
     };
 
