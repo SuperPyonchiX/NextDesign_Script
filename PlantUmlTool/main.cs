@@ -51,6 +51,7 @@ public class PlantUmlOptions
     public string NewLine = "\n";             // 改行は LF 固定
     public string AliasStyle = "Name";        // "Name" | "Id"
     public double BoundaryEpsilon = 1.0;      // フラグメント下端の判定誤差
+    public double ActivationSnapTolerance = 10.0;  // 実行仕様の端をメッセージに吸着させる許容距離
 
     // 複合フラグメントのテキスト先頭語 → PlantUML の演算子
     public Dictionary<string, string> OperatorMap =
@@ -399,18 +400,44 @@ public class SequencePlantUmlExporter
 
         if (_o.EmitActivation)
         {
+            var messages = _d.Messages.Cast<IMessageShape>().ToList();
+
             foreach (var e in _d.ExecutionSpecifications.Cast<IExecutionSpecificationShape>())
             {
+                var lifelineId = e.Lifeline != null ? e.Lifeline.Id : null;
+                var top = (double)e.LocationY;
+                var bottom = top + e.Length;
+
+                // PlantUML の入れ子は「トリガのメッセージ行の直後に activate」で決まるが、
+                // 図形上はバー上端とメッセージの Y が数ピクセルずれうる。
+                // 最寄りのメッセージに吸着させてから並べる
+                var activateY = top;
+                var activatePriority = 60;   // 受信メッセージ(50)の直後
+                var trigger = NearestMessage(messages, lifelineId, top, true);
+                if (trigger != null)
+                {
+                    activateY = trigger.SourceY;
+                }
+                else
+                {
+                    // 受信で立たないバーは送信メッセージが起点。activate をその送信より先に出す
+                    var origin = NearestMessage(messages, lifelineId, top, false);
+                    if (origin != null) { activateY = origin.SourceY; activatePriority = 45; }
+                }
+
+                // 下端は戻りメッセージ(50)の直後・次の activate(60) より前
+                var deactivateY = bottom;
+                var closer = NearestMessage(messages, lifelineId, bottom, false);
+                if (closer != null) deactivateY = closer.SourceY;
+
                 events.Add(new SeqEvent
                 {
-                    Y = e.LocationY, Priority = 60, X = e.LocationX,
+                    Y = activateY, Priority = activatePriority, X = e.LocationX,
                     Id = e.Id, Kind = "activate", Execution = e
                 });
-                // 同一 Y では「前のバーを閉じる → 次のバーを開く」の順にしたいので、
-                // deactivate は message(50) の後・activate(60) の前に置く
                 events.Add(new SeqEvent
                 {
-                    Y = e.LocationY + e.Length, Priority = 55, X = e.LocationX,
+                    Y = deactivateY, Priority = 55, X = e.LocationX,
                     Id = e.Id, Kind = "deactivate", Execution = e
                 });
             }
@@ -507,6 +534,30 @@ public class SequencePlantUmlExporter
         if (send != null) return send.LocationX;
         var receive = m.ReceivePort as ISequenceNodeShape;
         return receive != null ? receive.LocationX : 0;
+    }
+
+    // 指定 Y に最も近い、指定ライフラインが受信（wantReceiver=true）または
+    // 送信するメッセージを許容誤差内で探す
+    private IMessageShape NearestMessage(List<IMessageShape> messages, string lifelineId,
+                                         double y, bool wantReceiver)
+    {
+        if (lifelineId == null) return null;
+
+        IMessageShape best = null;
+        var bestDistance = _o.ActivationSnapTolerance + 1e-9;
+        foreach (var m in messages)
+        {
+            var end = wantReceiver ? m.Receiver : m.Sender;
+            if (end == null || end.Id != lifelineId) continue;
+
+            var distance = Math.Abs(m.SourceY - y);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = m;
+            }
+        }
+        return best;
     }
 
     // ---------- フラグメント ----------
