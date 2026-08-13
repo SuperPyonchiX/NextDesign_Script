@@ -2597,6 +2597,10 @@ public class MetaMap
             // UML プロファイルでは Name / Guard / Body などの文字列属性が
             // kind=所有(IsEmbedded) で定義されているため、参照だけを除外する
             if (f.IsReference) continue;
+            // $ParentName や ____anonymous____* などのシステム/匿名フィールドは
+            // 値が偶然一致しても書き込み先として不適切なので対象外にする
+            if (f.Name.StartsWith("$", StringComparison.Ordinal)
+                || f.Name.StartsWith("____", StringComparison.Ordinal)) continue;
             string actual;
             try { actual = m.GetFieldString(f.Name); }
             catch (Exception) { continue; }
@@ -4331,10 +4335,20 @@ public class SequenceWriter
                 model = hit.Model;
                 _lifelineExisting[l.Alias] = hit;
 
-                if (_s.UpdateLifelineNames && !string.Equals(model.Name, l.Label, StringComparison.Ordinal))
+                // 比較は表示ラベル同士で行う（プラン側 MatchLifelines と同じ基準）。
+                // model.Name は "インスタンス名 : 型名" のうち内部名だけを持つため、
+                // 表示ラベルと比較すると全件が誤って改名対象になる
+                if (_s.UpdateLifelineNames && !string.Equals(hit.Label, l.Label, StringComparison.Ordinal))
                 {
-                    model.SetField(_map.LifelineNameField, l.Label);
-                    _r.LifelinesUpdated++;
+                    try
+                    {
+                        model.SetField(_map.LifelineNameField, l.Label);
+                        _r.LifelinesUpdated++;
+                    }
+                    catch (Exception ex)
+                    {
+                        _r.AddWarning("ライフライン「" + hit.Label + "」を改名できませんでした: " + ex.Message);
+                    }
                 }
             }
             else
