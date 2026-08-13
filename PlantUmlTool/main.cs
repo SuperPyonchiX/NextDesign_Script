@@ -5604,6 +5604,21 @@ public class ClassNodeInfo
     public List<string> Operations = new List<string>();
     public List<string> PackagePath = new List<string>();
 
+    // 図上ノード同士の所有関係（package の入れ子出力に使う）
+    public ClassNodeInfo Parent;
+    public List<ClassNodeInfo> Children = new List<ClassNodeInfo>();
+
+    // package / component は PlantUML 上、中に書けるのが要素宣言だけ
+    //（属性のようなテキスト行は構文エラーになる）
+    public bool IsContainer
+    {
+        get
+        {
+            return string.Equals(Keyword, "package", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(Keyword, "component", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     public string PackageKey
     {
         get { return string.Join("/", PackagePath.ToArray()); }
@@ -5696,6 +5711,7 @@ public class ClassDiagramCollector
             .ThenBy(n => n.Id, StringComparer.Ordinal)
             .ToList();
 
+        // パス1: まず全ノードを登録する（親子解決とメンバ収集で全ノードの索引が要る）
         foreach (var node in ordered)
         {
             var model = MetaMap.ModelOf(node);
@@ -5712,11 +5728,34 @@ public class ClassDiagramCollector
             info.Alias = MakeAlias(info.Name, model.Id);
             info.Keyword = KeywordOf(model);
             info.Stereotype = StereotypeOf(model, info.Keyword);
-            if (_o.EmitMembers) CollectMembers(info);
-            if (_o.EmitPackages) info.PackagePath = PackagePathOf(model);
 
             Nodes.Add(info);
             _byModelId[model.Id] = info;
+        }
+
+        // パス2: 親子解決・メンバ収集・パッケージパス
+        foreach (var info in Nodes)
+        {
+            // 最も近い「図上ノードでもあるオーナー」を親にする
+            var owner = info.Model.Owner;
+            var guard = 0;
+            while (owner != null && guard++ < 32)
+            {
+                ClassNodeInfo parent;
+                if (_byModelId.TryGetValue(owner.Id, out parent))
+                {
+                    info.Parent = parent;
+                    parent.Children.Add(info);
+                    break;
+                }
+                owner = owner.Owner;
+            }
+
+            // package/component の中に書けるのは要素宣言だけなのでメンバは集めない
+            if (_o.EmitMembers && !info.IsContainer) CollectMembers(info);
+
+            // パッケージパスは最上位ノードだけに付ける（子は親の中に入れ子で出す）
+            if (_o.EmitPackages && info.Parent == null) info.PackagePath = PackagePathOf(info.Model);
         }
 
         if (Nodes.Count == 0) Warnings.Add("図上にモデルと対応するノードがありません。");
@@ -5820,6 +5859,8 @@ public class ClassDiagramCollector
         foreach (var child in children)
         {
             if (child == null || child.IsDeleted) continue;
+            // それ自体が図上のノードである子は、独立した要素として出すのでメンバにしない
+            if (_byModelId.ContainsKey(child.Id)) continue;
 
             var kind = MemberKindOf(child);
             if (kind == "skip") continue;
@@ -6269,10 +6310,13 @@ public class ClassPlantUmlExporter
     // パッケージごとにまとめる。パッケージの並びはノードの並び順（＝図の並び）で決まる
     private void WriteNodes()
     {
+        // 図上ノード同士の入れ子は WriteNode の再帰で出すため、ここは最上位ノードだけを回す
+        var roots = _c.Nodes.Where(n => n.Parent == null).ToList();
+
         var groups = new List<string>();
         var byPackage = new Dictionary<string, List<ClassNodeInfo>>(StringComparer.Ordinal);
 
-        foreach (var info in _c.Nodes)
+        foreach (var info in roots)
         {
             var key = _o.EmitPackages ? info.PackageKey : "";
             if (!byPackage.ContainsKey(key))
@@ -6311,18 +6355,39 @@ public class ClassPlantUmlExporter
         if (info.Stereotype.Length > 0)
             head.Append(" <<").Append(PlantUmlText.Inline(info.Stereotype)).Append(">>");
 
+        if (info.IsContainer)
+        {
+            // package / component の中に書けるのは要素宣言だけ。
+            // 属性行は出さず、図上の子ノードを入れ子で出す
+            if (info.Children.Count > 0)
+            {
+                LineAt(depth, head.ToString() + " {");
+                foreach (var child in info.Children) WriteNode(child, depth + 1);
+                LineAt(depth, "}");
+            }
+            else
+            {
+                LineAt(depth, head.ToString());
+            }
+            return;
+        }
+
         var hasBody = info.Attributes.Count > 0 || info.Operations.Count > 0;
         if (!hasBody)
         {
             LineAt(depth, head.ToString());
-            return;
+        }
+        else
+        {
+            LineAt(depth, head.ToString() + " {");
+            foreach (var attribute in info.Attributes) LineAt(depth + 1, attribute);
+            if (info.Attributes.Count > 0 && info.Operations.Count > 0) LineAt(depth + 1, "--");
+            foreach (var operation in info.Operations) LineAt(depth + 1, operation);
+            LineAt(depth, "}");
         }
 
-        LineAt(depth, head.ToString() + " {");
-        foreach (var attribute in info.Attributes) LineAt(depth + 1, attribute);
-        if (info.Attributes.Count > 0 && info.Operations.Count > 0) LineAt(depth + 1, "--");
-        foreach (var operation in info.Operations) LineAt(depth + 1, operation);
-        LineAt(depth, "}");
+        // クラスの中にクラスは書けないため、クラス系ノードの子ノードは同じ深さで続けて出す
+        foreach (var child in info.Children) WriteNode(child, depth);
     }
 
     private void WriteLinks()
