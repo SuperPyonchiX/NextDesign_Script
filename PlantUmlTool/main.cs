@@ -7369,11 +7369,13 @@ public class StateDiagramCollector
             return;
         }
 
-        var index = 0;
+        // 1 本の遷移が複数のコネクタ図形（線分・ラベル図形など）で構成される
+        // プロファイルがある（実機ではノード 6 件に対しコネクタ 44 件）。
+        // 同じ遷移モデルを指すコネクタは 1 本にまとめる
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         var noModelWarned = false;
         foreach (var connector in connectors)
         {
-            index++;
             var from = NodeInfoOf(connector.StartPoint);
             var to = NodeInfoOf(connector.EndPoint);
             if (from == null || to == null)
@@ -7382,20 +7384,27 @@ public class StateDiagramCollector
                 continue;
             }
 
-            // 自己遷移・同一状態間の複数遷移はそのまま全部出す（1 コネクタ = 1 本）
             var label = "";
-            var uniqueId = "c" + index.ToString(CultureInfo.InvariantCulture);
+            string uniqueId;
             var model = MetaMap.ModelOf(connector);
             if (model != null)
             {
+                // 遷移モデルの Id で重複除去する。平行遷移（同じ状態間の複数遷移）は
+                // 別モデルなので消えない。自己遷移もそのまま出す
                 label = BuildTransitionLabel(model);
                 uniqueId = model.Id;
             }
-            else if (!noModelWarned)
+            else
             {
-                noModelWarned = true;
-                Warnings.Add("モデルが取得できないコネクタをラベルなしの遷移として出力しました。");
+                // モデルが取れないコネクタは 端点 + ラベル の組で重複除去する
+                uniqueId = "c" + from.ModelId + "" + to.ModelId + "" + label;
+                if (!noModelWarned)
+                {
+                    noModelWarned = true;
+                    Warnings.Add("モデルが取得できないコネクタをラベルなしの遷移として出力しました。");
+                }
             }
+            if (!seen.Add(uniqueId)) continue;
 
             Transitions.Add(new StateTransition
             {
