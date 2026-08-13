@@ -5333,7 +5333,7 @@ private ImportSettings NewImportSettings()
     return new ImportSettings
     {
         DryRun = true,                       // 必ずドライラン → 確認ダイアログ → 適用
-        Orphans = OrphanPolicy.Keep,         // PlantUML 側に無い要素は残して警告する
+        Orphans = OrphanPolicy.Delete,       // .puml を正として ND 側の余剰要素を削除する
         Missing = MissingPolicy.Skip,        // 対応する図が無ければスキップ
         Ambiguous = AmbiguousPolicy.Error,   // 同名の図が複数あればエラー
         TemplateDiagramName = "",            // 要素が一通り揃った見本の図名（任意）
