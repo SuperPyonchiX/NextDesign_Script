@@ -121,6 +121,7 @@ public class AgentConfig
     public string ClaudeArgs = "";           // 対話起動時の追加引数（--permission-mode など）
     public string CodexCommand = "codex";
     public string CodexArgs = "";
+    public string InitialPrompt = "レビューを開始してください";   // 起動時に自動投入。空なら手入力
     public string Perspectives = "";   // 追加観点のみ。工程別観点は design-review スキル側で定義
 
     public static string ConfigDir()
@@ -152,6 +153,7 @@ public class AgentConfig
                 case "claude.args": config.ClaudeArgs = pair.Value; break;
                 case "codex.command": config.CodexCommand = pair.Value; break;
                 case "codex.args": config.CodexArgs = pair.Value; break;
+                case "initialPrompt": config.InitialPrompt = pair.Value; break;
                 case "perspectives": config.Perspectives = pair.Value; break;
             }
         }
@@ -182,6 +184,9 @@ public class AgentConfig
         sb.Append("claude.args=").Append(ClaudeArgs).Append(nl);
         sb.Append("codex.command=").Append(CodexCommand).Append(nl);
         sb.Append("codex.args=").Append(CodexArgs).Append(nl);
+        sb.Append(nl);
+        sb.Append("# レビュー開始時にエージェントへ自動投入する最初のプロンプト（空なら手入力）").Append(nl);
+        sb.Append("initialPrompt=").Append(InitialPrompt).Append(nl);
         sb.Append(nl);
         sb.Append("# 追加のレビュー観点（カンマ区切り）。工程別の観点表は").Append(nl);
         sb.Append("# %USERPROFILE%\\.nd-agent-review\\skills\\design-review\\ を直接編集する").Append(nl);
@@ -225,13 +230,15 @@ public class AgentProfile
     public string InstructionFileName;
     public string ResumeArgs;
 
-    // 対話モードの起動コマンドライン。初期プロンプトは引数で渡さず、
-    // 指示書（CLAUDE.md / AGENTS.md）の自動読み込みに任せる
-    // （cmd / wt 経由の引用符の入れ子事故を避けるため）
-    public string BuildLaunchCommand()
+    // 対話モードの起動コマンドライン。初期プロンプトを位置引数で渡すと
+    // 対話セッションの最初の入力として自動投入される（claude / codex 共通）。
+    // 引用符の入れ子事故を避けるため、プロンプト内の " は ' に置換する
+    public string BuildLaunchCommand(string initialPrompt)
     {
         var line = Command;
         if (!string.IsNullOrEmpty(ExtraArgs)) line += " " + ExtraArgs;
+        if (!string.IsNullOrEmpty(initialPrompt))
+            line += " \"" + initialPrompt.Replace("\"", "'") + "\"";
         return line;
     }
 
@@ -1256,7 +1263,7 @@ public static class TerminalLauncher
         Process.Start(psi);
     }
 
-    // エクスプローラーや既定アプリで開く（完了は待たない）
+    // ファイルを既定アプリで開く（完了は待たない）。フォルダには使わない
     public static void OpenWithShell(string path)
     {
         Process.Start(new ProcessStartInfo
@@ -1264,6 +1271,20 @@ public static class TerminalLauncher
             FileName = path,
             UseShellExecute = true
         });
+    }
+
+    // フォルダをエクスプローラーで開く。フォルダパスを FileName に直接渡す方式は
+    // 環境によって既定のエクスプローラー画面だけが開くため、explorer.exe に明示的に渡す
+    public static bool OpenFolder(string path)
+    {
+        if (string.IsNullOrEmpty(path) || !Directory.Exists(path)) return false;
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "explorer.exe",
+            Arguments = "\"" + path + "\"",
+            UseShellExecute = true
+        });
+        return true;
     }
 
     public static void OpenWithNotepad(string path)
@@ -1362,7 +1383,9 @@ public void StartAgentReview(ICommandContext context, ICommandParams commandPara
             + profile.DisplayName + " によるレビューを開始します。\n\n"
             + "エージェント: " + profile.DisplayName + "（コマンド: " + profile.Command + "）\n"
             + "作成先: " + config.WorkspaceRoot + "\n\n"
-            + "ターミナルが開いたら「レビューして」と入力してください。続行しますか？";
+            + (string.IsNullOrEmpty(config.InitialPrompt)
+                ? "ターミナルが開いたら「レビューして」と入力してください。続行しますか？"
+                : "起動と同時にレビュー依頼が自動投入されます。続行しますか？");
         if (!app.Window.UI.ShowConfirmDialog(message, category)) return;
 
         OutputPane.Show(app, category);
@@ -1398,11 +1421,13 @@ public void StartAgentReview(ICommandContext context, ICommandParams commandPara
                 ? "（図の構成要素 " + exporter.SkippedModelCount + " モデルはテキスト出力から除外）" : ""));
 
         app.Output.WriteLine(category, "[3/3] ターミナルで " + profile.DisplayName + " を起動しています...");
-        TerminalLauncher.Launch(session.Folder, profile.BuildLaunchCommand(), config.Terminal);
+        TerminalLauncher.Launch(session.Folder, profile.BuildLaunchCommand(config.InitialPrompt), config.Terminal);
 
         app.Output.WriteLine(category, "");
         app.Output.WriteLine(category, "=== 起動完了 ===");
-        app.Output.WriteLine(category, "ターミナルで「レビューして」と入力すると、指示書（" + profile.InstructionFileName + "）に従いレビューが始まります。");
+        app.Output.WriteLine(category, string.IsNullOrEmpty(config.InitialPrompt)
+            ? "ターミナルで「レビューして」と入力すると、指示書（" + profile.InstructionFileName + "）に従いレビューが始まります。"
+            : "起動と同時に「" + config.InitialPrompt + "」が自動投入され、design-review スキルに従いレビューが始まります（最初に開発工程を質問されます）。");
         app.Output.WriteLine(category, "指摘は review\\review.md、修正提案は review\\proposal.md に出力されます（リボンの「結果を開く」で参照）。");
     }
     catch (Exception ex)
@@ -1490,13 +1515,12 @@ public void OpenWorkspaceFolder(ICommandContext context, ICommandParams commandP
         var config = AgentConfig.Load();
         var session = SessionLocator.FindLatest(config.WorkspaceRoot);
         var target = session != null ? session.Folder : config.WorkspaceRoot;
-        if (string.IsNullOrEmpty(target) || !Directory.Exists(target))
+        if (!TerminalLauncher.OpenFolder(target))
         {
             app.Window.UI.ShowInformationDialog(
                 "開くフォルダがありません。\n先に「レビュー開始」を実行してください。", category);
             return;
         }
-        TerminalLauncher.OpenWithShell(target);
     }
     catch (Exception ex)
     {
@@ -1534,7 +1558,12 @@ public void OpenSkillFolder(ICommandContext context, ICommandParams commandParam
     try
     {
         SkillProvisioner.EnsureSource();   // 無ければ既定内容を生成（既存は上書きしない）
-        TerminalLauncher.OpenWithShell(SkillProvisioner.SourceDir());
+        if (!TerminalLauncher.OpenFolder(SkillProvisioner.SourceDir()))
+        {
+            app.Window.UI.ShowInformationDialog(
+                "スキルフォルダを開けませんでした。\n\n" + SkillProvisioner.SourceDir(), category);
+            return;
+        }
         app.Output.WriteLine(category, "design-review スキルの原本: " + SkillProvisioner.SourceDir());
         app.Output.WriteLine(category, "編集すると次回の「レビュー開始」から反映されます（Next Design の再起動は不要）。");
     }

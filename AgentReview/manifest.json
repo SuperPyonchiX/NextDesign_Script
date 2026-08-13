@@ -2,7 +2,7 @@
   "name": "AgentReview",
   "displayName": "AI レビュー",
   "description": "Claude Code / Codex のエージェントで設計レビューと修正提案の生成を行います。設計情報をエクスポートし、ターミナルでエージェントと対話します。",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
