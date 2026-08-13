@@ -1527,6 +1527,24 @@ public void SwitchAgent(ICommandContext context, ICommandParams commandParams)
     }
 }
 
+public void OpenSkillFolder(ICommandContext context, ICommandParams commandParams)
+{
+    var category = "AgentReview";
+    var app = context.App;
+    try
+    {
+        SkillProvisioner.EnsureSource();   // 無ければ既定内容を生成（既存は上書きしない）
+        TerminalLauncher.OpenWithShell(SkillProvisioner.SourceDir());
+        app.Output.WriteLine(category, "design-review スキルの原本: " + SkillProvisioner.SourceDir());
+        app.Output.WriteLine(category, "編集すると次回の「レビュー開始」から反映されます（Next Design の再起動は不要）。");
+    }
+    catch (Exception ex)
+    {
+        app.Output.WriteLine(category, "[error] " + ex.ToString());
+        app.Window.UI.ShowInformationDialog("スキルフォルダを開けませんでした。\n\n" + ex.Message, category);
+    }
+}
+
 public void OpenConfig(ICommandContext context, ICommandParams commandParams)
 {
     var category = "AgentReview";
@@ -1557,6 +1575,8 @@ public void CheckCliEnvironment(ICommandContext context, ICommandParams commandP
         app.Output.WriteLine(category, "基点フォルダ       : " + (string.IsNullOrEmpty(config.WorkspaceRoot) ? "(未設定)" : config.WorkspaceRoot));
         app.Output.WriteLine(category, "設定ファイル       : " + AgentConfig.ConfigPath()
             + (File.Exists(AgentConfig.ConfigPath()) ? "" : " (未作成。既定値で動作)"));
+        app.Output.WriteLine(category, "スキル原本         : " + SkillProvisioner.SourceDir()
+            + (File.Exists(Path.Combine(SkillProvisioner.SourceDir(), "SKILL.md")) ? "" : " (未生成。次回のレビュー開始か「スキルを開く」で生成)"));
         app.Output.WriteLine(category, "");
 
         app.Output.WriteLine(category, "[claude] where   : " + CliProbe.Run("where " + config.ClaudeCommand, 5000));
