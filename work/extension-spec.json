@@ -136,7 +136,19 @@
         "README の使い方に単体出力の節を追記",
         "manifest 0.5.0。validate_manifest --nd-version 3 で ERROR 0 / WARN 0"
       ],
-      "result": "ユーザー確認待ち（「設計情報を出力」→ フォルダ選択 → design.md + *.puml + _index.md が出力され、レビューセッションの design\\ と同内容であること。エージェントは起動しないこと）"
+      "result": "実機確認 OK（別PC）。追加要望: 全ファイル平置きで見にくいので図を種別フォルダに分ける"
+    },
+    {
+      "date": "2026-08-14",
+      "symptoms": [
+        "要望: design.md・_index.md・全 .puml が同一フォルダ平置きで見にくい。クラス図・シーケンス図・状態遷移図をフォルダ分けし、AIレビューも含め出力形態を見直す"
+      ],
+      "fixes": [
+        "MarkdownExporter.SaveDiagram に種別フォルダ引数を追加し、diagrams\\<クラス図|シーケンス図|状態遷移図>\\ へ出力（該当図がある種別のみ遅延作成。日本語フォルダ名・diagrams 親フォルダはユーザー合意）。design.md の参照行と _index.md は diagrams/<種別>/<ファイル> の相対パスに。_class/_seq/_state サフィックスは維持。重複判定は種別フォルダ込みの相対パスで実施",
+        "指示書生成・SKILL.md（正本 + embed_skills.py 再埋め込み）・README のフォルダ構成説明を新構造に更新。review\\ の構造は変更なし",
+        "manifest 0.6.0（ExportDesignButton の説明も更新）。validate_manifest --nd-version 3 で ERROR 0 / WARN 0"
+      ],
+      "result": "ユーザー確認待ち（別PC: 「設計情報を出力」と「レビュー開始」の design\\ が diagrams\\<種別>\\ 階層になり、design.md/_index.md のリンクが辿れること。実機の原本 %USERPROFILE%\\.nd-agent-review\\skills\\design-review は上書きされないため、未カスタマイズならフォルダ削除で新文言に再生成）"
     }
   ]
 }

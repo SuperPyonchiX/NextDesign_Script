@@ -37,9 +37,9 @@ Claude Code / Codex エージェントと対話しながら設計レビューと
 
 プロジェクトファイル（.ndproj）と同じディレクトリに `Attachment` フォルダがあれば、その中身（Excel 等の別紙）が `design\Attachment` から参照できる状態でエージェントに渡される（ジャンクション接続。原本なので変更禁止を指示書で宣言済み）。
 
-図（シーケンス図・クラス図・状態遷移図）は自動で `design\*.puml` に出力され、design.md の該当箇所から参照される（一覧は `design\_index.md`）。シーケンス図・状態遷移図の構成要素（メッセージ・状態など）はテキストには出力せず .puml に委ねる。出力エンジンは PlantUmlTool からの転記（修正は PlantUmlTool 側で検証してから反映すること）。
+図（シーケンス図・クラス図・状態遷移図）は自動で `design\diagrams\<種別>\*.puml`（種別フォルダ: クラス図／シーケンス図／状態遷移図。該当する図がある種別のみ作成）に出力され、design.md の該当箇所から参照される（一覧は `design\_index.md`）。シーケンス図・状態遷移図の構成要素（メッセージ・状態など）はテキストには出力せず .puml に委ねる。出力エンジンは PlantUmlTool からの転記（修正は PlantUmlTool 側で検証してから反映すること）。
 
-レビューなしで設計情報だけ出力する場合は、リボン「出力」グループの **設計情報を出力** を押す。出力先フォルダを毎回選択し、そこへ `design.md` + 図の `*.puml` + `_index.md` を直接出力する（セッションフォルダは作らず、エージェントも起動しない。Attachment のリンクも行わない）。
+レビューなしで設計情報だけ出力する場合は、リボン「出力」グループの **設計情報を出力** を押す。出力先フォルダを毎回選択し、そこへ `design.md` + `diagrams\<種別>\*.puml` + `_index.md` を直接出力する（セッションフォルダは作らず、エージェントも起動しない。Attachment のリンクも行わない）。
 
 ## セッションフォルダの構成
 
@@ -48,7 +48,13 @@ Claude Code / Codex エージェントと対話しながら設計レビューと
 ├── CLAUDE.md / AGENTS.md   指示書（拡張が生成。両エージェント分）
 ├── .agents\skills\design-review\   レビュースキル（SKILL.md + 工程別観点表）
 ├── .claude\skills          → .agents\skills へのジャンクション（Claude Code 用。失敗時はコピー）
-├── design\                 入力（design.md / *.puml / _index.md。エージェントは変更禁止）
+├── design\                 入力（エージェントは変更禁止）
+│   ├── design.md           設計情報の本文
+│   ├── _index.md           図一覧（図名・種別・ファイル・モデルパス）
+│   ├── diagrams\           図の PlantUML（該当する図がある種別のみ作成）
+│   │   ├── クラス図\       図名_class.puml
+│   │   ├── シーケンス図\   図名_seq.puml
+│   │   └── 状態遷移図\     図名_state.puml
 │   └── Attachment\         → プロジェクトファイルと同じ場所の Attachment へのジャンクション
 │                             （Excel 等の別紙。存在する場合のみ。失敗時はコピー）
 ├── review\                 エージェントの出力（review.md / proposal.md / proposed\）

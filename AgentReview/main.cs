@@ -334,7 +334,7 @@ public static class SessionLocator
 public static class WorkspaceBuilder
 {
     // セッションフォルダ一式を作り、SessionInfo を返す
-    // （design\ の中身＝design.md と .puml はエクスポータが後から書く）
+    // （design\ の中身＝design.md と diagrams\ 配下の .puml はエクスポータが後から書く）
     public static SessionInfo Build(string workspaceRoot, IModel root, AgentConfig config)
     {
         var baseName = AgentText.SafeFileName(root.Name);
@@ -381,7 +381,7 @@ public static class WorkspaceBuilder
 
         sb.Append("## 入力（読み取り専用）").Append(nl).Append(nl);
         sb.Append("- `design/design.md` : Next Design からエクスポートした設計情報（モデル階層・フィールド・ドキュメント本文）").Append(nl);
-        sb.Append("- `design/*.puml` : 図の PlantUML（シーケンス図・クラス図・状態遷移図。design.md の該当箇所に参照行がある）").Append(nl);
+        sb.Append("- `design/diagrams/<種別>/*.puml` : 図の PlantUML（種別フォルダ: クラス図 / シーケンス図 / 状態遷移図。design.md の該当箇所に参照行がある）").Append(nl);
         sb.Append("- `design/_index.md` : 図一覧（図名・種別・ファイル・モデルパスの対応表）").Append(nl);
         sb.Append("- `design/Attachment/` : 設計の別紙（Excel 等。存在する場合）。design.md に無い情報の参照先として活用すること").Append(nl).Append(nl);
         sb.Append("design.md にはシーケンス図・状態遷移図の中身は含まれない。挙動は参照先の .puml を読むこと。").Append(nl).Append(nl);
@@ -545,7 +545,7 @@ R1 入力の読み込み（design/ 全体）
 ### R1: 入力の読み込み
 
 1. `design/design.md` を読む。モデル階層・フィールド・ドキュメント本文（表を含む）が入っている
-2. `design/_index.md`（図一覧）があれば読み、design.md の「- 図:」で始まる参照行が指す `design/*.puml` のうちレビューに関係するものを読む。シーケンス図・状態遷移図の中身は design.md には無いので、挙動のレビューには .puml が必須
+2. `design/_index.md`（図一覧）があれば読み、design.md の「- 図:」で始まる参照行が指す `design/diagrams/<種別>/*.puml`（種別フォルダ: クラス図 / シーケンス図 / 状態遷移図）のうちレビューに関係するものを読む。シーケンス図・状態遷移図の中身は design.md には無いので、挙動のレビューには .puml が必須
 3. 設計の全体像（対象システム、主要な構成要素、図の種類と数）を 3〜5 行でユーザーに提示する
 
 ### R2: 工程の質問
@@ -838,7 +838,7 @@ public class MarkdownExporter
                             ? seq.Model.Name
                             : (string.IsNullOrEmpty(seq.ViewDefinitionName) ? "Sequence" : seq.ViewDefinitionName);
                         var uml = new SequencePlantUmlExporter(seq, _seqOptions).Export();
-                        var file = SaveDiagram(seqName, "_seq", uml);
+                        var file = SaveDiagram(seqName, "_seq", "シーケンス図", uml);
                         refs.Add("- 図: [" + seqName + "](" + file + ")（シーケンス図）");
                         AddIndexRow(seqName, "シーケンス図", file, m);
                         continue;
@@ -858,7 +858,7 @@ public class MarkdownExporter
                         var exporter = new StatePlantUmlExporter(diagram, _stateOptions);
                         var uml = exporter.Export();
                         foreach (var warning in exporter.Warnings) Warnings.Add(warning);
-                        var file = SaveDiagram(diagramName, "_state", uml);
+                        var file = SaveDiagram(diagramName, "_state", "状態遷移図", uml);
                         refs.Add("- 図: [" + diagramName + "](" + file + ")（状態遷移図）");
                         AddIndexRow(diagramName, "状態遷移図", file, m);
                     }
@@ -868,7 +868,7 @@ public class MarkdownExporter
                         var exporter = new ClassPlantUmlExporter(diagram, _classOptions);
                         var uml = exporter.Export();
                         foreach (var warning in exporter.Warnings) Warnings.Add(warning);
-                        var file = SaveDiagram(diagramName, "_class", uml);
+                        var file = SaveDiagram(diagramName, "_class", "クラス図", uml);
                         refs.Add("- 図: [" + diagramName + "](" + file + ")（クラス図）");
                         AddIndexRow(diagramName, "クラス図", file, m);
                     }
@@ -892,20 +892,24 @@ public class MarkdownExporter
         return skipChildren;
     }
 
-    private string SaveDiagram(string name, string suffix, string uml)
+    // 種別フォルダ（diagrams\<kindFolder>）へ書き、design.md からのリンクに使う相対パスを返す。
+    // フォルダは最初の図の出力時に作る（該当する図が無い種別の空フォルダは作らない）
+    private string SaveDiagram(string name, string suffix, string kindFolder, string uml)
     {
         var baseName = AgentText.SafeFileName(name);
         if (baseName.Length == 0) baseName = "diagram";
         var file = baseName + suffix + ".puml";
         var serial = 2;
-        while (!_usedFileNames.Add(file))
+        while (!_usedFileNames.Add(kindFolder + "/" + file))
         {
             file = baseName + suffix + "_" + serial + ".puml";
             serial++;
         }
-        File.WriteAllText(Path.Combine(_diagramDir, file), uml, new UTF8Encoding(false));
+        var dir = Path.Combine(_diagramDir, "diagrams", kindFolder);
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, file), uml, new UTF8Encoding(false));
         DiagramCount++;
-        return file;
+        return "diagrams/" + kindFolder + "/" + file;
     }
 
     private void AddIndexRow(string name, string kind, string file, IModel owner)
@@ -1430,7 +1434,7 @@ public void StartAgentReview(ICommandContext context, ICommandParams commandPara
     }
 }
 
-// design.md / *.puml / _index.md を outDir へ書き出し、警告と統計を Output に出す
+// design.md / diagrams\<種別>\*.puml / _index.md を outDir へ書き出し、警告と統計を Output に出す
 // （StartAgentReview とレビューなし単体出力 ExportDesignInfo の共通部）
 private void WriteDesignArtifacts(IApplication app, string category, MarkdownExporter exporter, IModel root, string outDir)
 {
@@ -1451,12 +1455,12 @@ private void WriteDesignArtifacts(IApplication app, string category, MarkdownExp
     foreach (var warning in exporter.Warnings)
         app.Output.WriteLine(category, "[warn]  " + warning);
     app.Output.WriteLine(category, "[info]  モデル " + exporter.ModelCount + " 件を design.md に出力");
-    app.Output.WriteLine(category, "[info]  図 " + exporter.DiagramCount + " 件を *.puml に出力"
+    app.Output.WriteLine(category, "[info]  図 " + exporter.DiagramCount + " 件を diagrams\\<種別>\\*.puml に出力"
         + (exporter.SkippedModelCount > 0
             ? "（図の構成要素 " + exporter.SkippedModelCount + " モデルはテキスト出力から除外）" : ""));
 }
 
-// レビューセッションを作らず、設計情報（design.md + 図の .puml + _index.md）だけを任意のフォルダへ出力する
+// レビューセッションを作らず、設計情報（design.md + diagrams\<種別>\*.puml + _index.md）だけを任意のフォルダへ出力する
 public void ExportDesignInfo(ICommandContext context, ICommandParams commandParams)
 {
     var category = "AgentReview";

@@ -2,7 +2,7 @@
   "name": "AgentReview",
   "displayName": "AI レビュー",
   "description": "Claude Code / Codex のエージェントで設計レビューと修正提案の生成を行います。設計情報をエクスポートし、ターミナルでエージェントと対話します。",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -47,7 +47,7 @@
                   "id": "AgentReview.ExportDesignButton",
                   "type": "Button",
                   "label": "設計情報を出力",
-                  "description": "レビューを開始せず、選択モデル配下の設計情報（design.md）と図（*.puml）を選択したフォルダへ出力します。",
+                  "description": "レビューを開始せず、選択モデル配下の設計情報（design.md）と図（diagrams フォルダ配下の *.puml）を選択したフォルダへ出力します。",
                   "imageSmall": "resources/export16.png",
                   "imageLarge": "resources/export32.png",
                   "command": "AgentReview.Command.ExportDesign"
