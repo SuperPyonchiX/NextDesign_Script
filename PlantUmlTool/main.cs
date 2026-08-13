@@ -1146,11 +1146,9 @@ public class ExportRunner
 
         foreach (var entry in entries)
         {
-            var owner = PlantUmlText.SafeFileName((entry.OwnerPath ?? "").Replace('/', '-').Replace('\\', '-'));
-            var name = PlantUmlText.SafeFileName(entry.Name);
-            if (name.Length == 0) name = "sequence";
-
-            var baseName = owner.Length == 0 ? name : owner + "__" + name;
+            // ファイル名は図名のみ。モデルパスとの対応は _index.md で追跡する
+            var baseName = PlantUmlText.SafeFileName(entry.Name);
+            if (baseName.Length == 0) baseName = "sequence";
             if (baseName.Length > 100) baseName = baseName.Substring(0, 100);
             baseNames[entry.Diagram.Id] = baseName;
         }
@@ -6483,11 +6481,9 @@ public class ClassExportRunner
 
         foreach (var entry in entries)
         {
-            var owner = PlantUmlText.SafeFileName((entry.OwnerPath ?? "").Replace('/', '-').Replace('\\', '-'));
-            var name = PlantUmlText.SafeFileName(entry.Name);
-            if (name.Length == 0) name = "class";
-
-            var baseName = owner.Length == 0 ? name : owner + "__" + name;
+            // ファイル名は図名のみ。モデルパスとの対応は _index.md で追跡する
+            var baseName = PlantUmlText.SafeFileName(entry.Name);
+            if (baseName.Length == 0) baseName = "class";
             if (baseName.Length > 100) baseName = baseName.Substring(0, 100);
             baseNames[entry.EditorId] = baseName;
         }
