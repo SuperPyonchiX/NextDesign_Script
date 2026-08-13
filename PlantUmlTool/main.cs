@@ -4165,7 +4165,7 @@ public class SequenceWriter
             }
             else
             {
-                model = interaction.AddNewModelAt(field, _map.LifelineClass, Clamp(interaction, field, ordered.Count));
+                model = AddNewModelAtIndex(interaction, field, _map.LifelineClass, ordered.Count);
                 model.SetField(_map.LifelineNameField, l.Label);
                 _r.LifelinesCreated++;
             }
@@ -4265,7 +4265,7 @@ public class SequenceWriter
             }
             else
             {
-                model = interaction.AddNewModelAt(field, _map.MessageClass, Clamp(interaction, field, ordered.Count));
+                model = AddNewModelAtIndex(interaction, field, _map.MessageClass, ordered.Count);
                 _r.MessagesCreated++;
             }
 
@@ -4346,7 +4346,7 @@ public class SequenceWriter
             }
             else
             {
-                model = interaction.AddNewModelAt(field, _map.FragmentClass, Clamp(interaction, field, ordered.Count));
+                model = AddNewModelAtIndex(interaction, field, _map.FragmentClass, ordered.Count);
                 _r.FragmentsCreated++;
             }
             if (model == null) continue;
@@ -4381,7 +4381,7 @@ public class SequenceWriter
             }
             else
             {
-                model = fragment.AddNewModelAt(field, _map.OperandClass, Clamp(fragment, field, ordered.Count));
+                model = AddNewModelAtIndex(fragment, field, _map.OperandClass, ordered.Count);
                 _r.OperandsCreated++;
             }
             if (model == null) continue;
@@ -4451,7 +4451,7 @@ public class SequenceWriter
             }
             else
             {
-                model = interaction.AddNewModelAt(field, _map.NoteClass, Clamp(interaction, field, ordered.Count));
+                model = AddNewModelAtIndex(interaction, field, _map.NoteClass, ordered.Count);
                 _r.NotesCreated++;
             }
             if (model == null) continue;
@@ -4495,7 +4495,7 @@ public class SequenceWriter
             }
             else
             {
-                model = interaction.AddNewModelAt(field, _map.InteractionUseClass, Clamp(interaction, field, ordered.Count));
+                model = AddNewModelAtIndex(interaction, field, _map.InteractionUseClass, ordered.Count);
                 _r.UsesCreated++;
             }
             if (model == null) continue;
@@ -4574,10 +4574,12 @@ public class SequenceWriter
         {
             for (var i = 0; i < desired.Count; i++)
             {
-                var current = owner.GetFieldValues(field).ToList();
+                var current = owner.GetFieldValues(field).Cast<IModel>().ToList();
                 var at = current.FindIndex(m => m != null && m.Id == desired[i].Id);
                 if (at < 0 || at == i) continue;
-                desired[i].MoveTo(owner, field, i);
+                // 先頭 i 個は確定済みなので移動対象は常に現在位置 > i にあり、
+                // 「index i の要素の前へ挿入」で位置 i に入る
+                desired[i].MoveTo(owner, field, "before", i);
                 _r.Reordered++;
             }
         }
@@ -4587,17 +4589,16 @@ public class SequenceWriter
         }
     }
 
-    private static int Clamp(IModel owner, string field, int index)
+    // V3 の AddNewModelAt は (fieldName, className, direction, index, fuzzy) の
+    // 1 オーバーロードのみ。挿入位置 index を before / last に読み替える
+    private static IModel AddNewModelAtIndex(IModel owner, string field, string className, int index)
     {
-        try
-        {
-            var count = owner.Count(field);
-            return index < 0 ? 0 : (index > count ? count : index);
-        }
-        catch (Exception)
-        {
-            return 0;
-        }
+        var count = 0;
+        try { count = owner.Count(field); } catch (Exception) { }
+
+        if (index < 0) index = 0;
+        if (index >= count) return owner.AddNewModelAt(field, className, "last", 0, true);
+        return owner.AddNewModelAt(field, className, "before", index, true);
     }
 
     private List<IModel> TargetModels(List<string> labels, PumlFlattener flat)
