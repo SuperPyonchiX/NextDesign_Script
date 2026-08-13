@@ -2387,7 +2387,7 @@ public class MetaMap
             LifelineClass = model.ClassName;
             InteractionLifelinesField = OwnerFieldOf(model);
             if (LifelineNameField == null)
-                LifelineNameField = FindValueField(model, model.Name);
+                LifelineNameField = FindValueField(model, model.Name) ?? FieldNamed(model, "Name");
             if (LifelineTypeModelField == null && shape.TypeModel != null)
                 LifelineTypeModelField = FindRefField(model, shape.TypeModel as IModel);
             if (LifelineNameField != null) break;
@@ -2419,9 +2419,11 @@ public class MetaMap
             InteractionMessagesField = OwnerFieldOf(message);
 
             if (MessageNameField == null)
-                MessageNameField = FindValueField(message, message.Name);
+                MessageNameField = FindValueField(message, message.Name) ?? FieldNamed(message, "Name");
             if (MessageKindField == null && !string.IsNullOrEmpty(message.Kind))
                 MessageKindField = FindValueField(message, message.Kind);
+            if (MessageKindField == null)
+                MessageKindField = FieldNamed(message, "MessageSort");
             if (MessageSendPortField == null && message.SendPort != null)
                 MessageSendPortField = FindRefField(message, message.SendPort as IModel);
             if (MessageReceivePortField == null && message.ReceivePort != null)
@@ -2431,6 +2433,30 @@ public class MetaMap
                 break;
         }
         if (MessageClass == null) Unavailable.Add("メッセージ（見本なし）");
+        else if (MessageKindField != null) HarvestKindValues(d);
+    }
+
+    // 種別フィールドの実値（列挙の文字列表現）を実データから採取する。
+    // 既定の "sync" などはプロファイルの列挙値と一致しないことがある
+    private void HarvestKindValues(ISequenceDiagram d)
+    {
+        foreach (var shape in d.Messages.Cast<IMessageShape>())
+        {
+            var message = shape.Model as IMessage;
+            if (message == null) continue;
+
+            string actual;
+            try { actual = message.GetFieldString(MessageKindField); }
+            catch (Exception) { continue; }
+            if (string.IsNullOrEmpty(actual)) continue;
+
+            var kind = (message.Kind ?? "").ToLowerInvariant();
+            if (kind == "async") KindValues[PumlKind.Async] = actual;
+            else if (kind == "reply") KindValues[PumlKind.Reply] = actual;
+            else if (kind == "create") KindValues[PumlKind.Create] = actual;
+            else if (kind == "destroy") KindValues[PumlKind.Destroy] = actual;
+            else KindValues[PumlKind.Sync] = actual;
+        }
     }
 
     private void DetectFragments(ISequenceDiagram d)
@@ -2443,7 +2469,8 @@ public class MetaMap
             FragmentClass = model.ClassName;
             InteractionFragmentsField = OwnerFieldOf(model);
             if (FragmentTextField == null)
-                FragmentTextField = FindValueField(model, shape.Text) ?? FindValueField(model, model.Name);
+                FragmentTextField = FindValueField(model, shape.Text) ?? FindValueField(model, model.Name)
+                                 ?? FieldNamed(model, "Operator");
 
             foreach (var operandShape in shape.Operands.Cast<IOperandShape>())
             {
@@ -2453,7 +2480,9 @@ public class MetaMap
                 OperandClass = operand.ClassName;
                 FragmentOperandsField = OwnerFieldOf(operand);
                 if (OperandGuardField == null)
-                    OperandGuardField = FindValueField(operand, operandShape.Guard) ?? FindValueField(operand, operand.Name);
+                    OperandGuardField = FindValueField(operand, operandShape.Guard)
+                                     ?? FieldNamed(operand, "Guard")
+                                     ?? FindValueField(operand, operand.Name);
                 if (OperandMessagesField == null)
                     OperandMessagesField = FindReferenceFieldName(operand.Metaclass, MessageClass, "Message");
                 break;
@@ -2474,9 +2503,11 @@ public class MetaMap
             NoteClass = model.ClassName;
             InteractionNotesField = OwnerFieldOf(model);
             if (NoteTextField == null)
-                NoteTextField = FindValueField(model, shape.Text) ?? FindValueField(model, model.Name);
+                NoteTextField = FindValueField(model, shape.Text) ?? FieldNamed(model, "Body")
+                             ?? FindValueField(model, model.Name);
             if (NoteTargetsField == null && LifelineClass != null)
-                NoteTargetsField = FindReferenceFieldName(model.Metaclass, LifelineClass, "Lifeline");
+                NoteTargetsField = FindReferenceFieldName(model.Metaclass, LifelineClass, "Lifeline")
+                                ?? FieldNamed(model, "CommentedTargets");
             break;
         }
         if (NoteClass == null) Unavailable.Add("ノート（見本なし）");
@@ -2492,9 +2523,11 @@ public class MetaMap
             InteractionUseClass = model.ClassName;
             InteractionUsesField = OwnerFieldOf(model);
             if (UseNameField == null)
-                UseNameField = FindValueField(model, shape.Text) ?? FindValueField(model, model.Name);
+                UseNameField = FindValueField(model, shape.Text) ?? FindValueField(model, model.Name)
+                            ?? FieldNamed(model, "Name");
             if (UseTargetsField == null && LifelineClass != null)
-                UseTargetsField = FindReferenceFieldName(model.Metaclass, LifelineClass, "Lifeline");
+                UseTargetsField = FindReferenceFieldName(model.Metaclass, LifelineClass, "Lifeline")
+                               ?? FieldNamed(model, "CoveredLifelines");
             break;
         }
         if (InteractionUseClass == null) Unavailable.Add("相互作用の利用（見本なし）");
@@ -2561,7 +2594,9 @@ public class MetaMap
         string loose = null;
         foreach (var f in cls.GetFields().Cast<IField>())
         {
-            if (f.IsEmbedded || f.IsReference) continue;
+            // UML プロファイルでは Name / Guard / Body などの文字列属性が
+            // kind=所有(IsEmbedded) で定義されているため、参照だけを除外する
+            if (f.IsReference) continue;
             string actual;
             try { actual = m.GetFieldString(f.Name); }
             catch (Exception) { continue; }
@@ -2608,7 +2643,7 @@ public class MetaMap
             if (!f.IsReference && !f.IsEmbedded) continue;
             var typeClass = f.TypeClass;
             var typeName = typeClass != null ? typeClass.Name : f.Type;
-            if (!string.Equals(typeName, typeClassName, StringComparison.Ordinal)) continue;
+            if (!TypeNameMatches(typeName, typeClassName)) continue;
 
             if (f.UpperBound < 0) return f.Name;
             if (fallback == null) fallback = f.Name;
@@ -2617,6 +2652,25 @@ public class MetaMap
                 fallback = f.Name;
         }
         return fallback;
+    }
+
+    // 'Message' と 'UmlInteractionMessage' のように、フィールドの型名と
+    // 実クラス名が基底/派生で食い違うプロファイルがあるため末尾一致も許す
+    private static bool TypeNameMatches(string a, string b)
+    {
+        if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+        if (string.Equals(a, b, StringComparison.Ordinal)) return true;
+        return a.EndsWith(b, StringComparison.Ordinal) || b.EndsWith(a, StringComparison.Ordinal);
+    }
+
+    // メタクラスに指定名のフィールドが実在すればその名前を返す。
+    // 値比較による自動判別が失敗したときの、既知の標準名への最終フォールバック
+    private static string FieldNamed(IModel m, string fieldName)
+    {
+        if (m == null || m.Metaclass == null) return null;
+        foreach (var f in m.Metaclass.GetFields().Cast<IField>())
+            if (string.Equals(f.Name, fieldName, StringComparison.Ordinal)) return fieldName;
+        return null;
     }
 
     // ========================================================
