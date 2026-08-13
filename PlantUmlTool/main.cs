@@ -52,6 +52,7 @@ public class PlantUmlOptions
     public string AliasStyle = "Name";        // "Name" | "Id"
     public double BoundaryEpsilon = 1.0;      // フラグメント下端の判定誤差
     public double ActivationSnapTolerance = 10.0;  // 実行仕様の端をメッセージに吸着させる許容距離
+    public string RefBackgroundColor = "#EFEFEF";  // ref（相互作用の利用）の背景色。空なら既定のまま
 
     // 複合フラグメントのテキスト先頭語 → PlantUML の演算子
     public Dictionary<string, string> OperatorMap =
@@ -342,6 +343,8 @@ public class SequencePlantUmlExporter
         if (!string.IsNullOrEmpty(_o.Theme)) LineAt(0, "!theme " + _o.Theme);
         LineAt(0, "skinparam sequenceMessageAlign left");
         LineAt(0, "skinparam maxMessageSize 200");
+        if (!string.IsNullOrEmpty(_o.RefBackgroundColor))
+            LineAt(0, "skinparam sequenceReferenceBackgroundColor " + _o.RefBackgroundColor);
         if (_o.IncludeTitle) LineAt(0, "title " + PlantUmlText.Inline(DiagramName()));
         if (_o.EmitTimestamp) LineAt(0, "' exported at " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
         if (_o.UseAutonumber) LineAt(0, "autonumber");
@@ -401,8 +404,9 @@ public class SequencePlantUmlExporter
         if (_o.EmitActivation)
         {
             var messages = _d.Messages.Cast<IMessageShape>().ToList();
+            var executions = _d.ExecutionSpecifications.Cast<IExecutionSpecificationShape>().ToList();
 
-            foreach (var e in _d.ExecutionSpecifications.Cast<IExecutionSpecificationShape>())
+            foreach (var e in executions)
             {
                 var lifelineId = e.Lifeline != null ? e.Lifeline.Id : null;
                 var top = (double)e.LocationY;
@@ -417,6 +421,14 @@ public class SequencePlantUmlExporter
                 if (trigger != null)
                 {
                     activateY = trigger.SourceY;
+
+                    // セルフメッセージでは送信元の外側バーと受信で立つ内側バーの
+                    // 両方が上端一致する。他のバーに包含されない最外殻のバーは
+                    // 送信元なので、activate をメッセージより前に出す
+                    var isSelf = trigger.Sender != null && trigger.Receiver != null
+                              && trigger.Sender.Id == trigger.Receiver.Id;
+                    if (isSelf && !executions.Any(o => ContainsExecution(o, e)))
+                        activatePriority = 45;
                 }
                 else
                 {
@@ -558,6 +570,27 @@ public class SequencePlantUmlExporter
             }
         }
         return best;
+    }
+
+    // 同一ライフライン上で outer が inner を包含するか。
+    // スパンがほぼ同一の場合は X の小さい方を外側とみなす
+    private bool ContainsExecution(IExecutionSpecificationShape outer, IExecutionSpecificationShape inner)
+    {
+        if (outer == null || inner == null || outer.Id == inner.Id) return false;
+        if (outer.Lifeline == null || inner.Lifeline == null) return false;
+        if (outer.Lifeline.Id != inner.Lifeline.Id) return false;
+
+        var eps = _o.BoundaryEpsilon;
+        var outerTop = (double)outer.LocationY;
+        var outerBottom = outerTop + outer.Length;
+        var innerTop = (double)inner.LocationY;
+        var innerBottom = innerTop + inner.Length;
+
+        if (outerTop > innerTop + eps || outerBottom < innerBottom - eps) return false;
+
+        var sameSpan = Math.Abs(outerTop - innerTop) <= eps && Math.Abs(outerBottom - innerBottom) <= eps;
+        if (sameSpan) return outer.LocationX < inner.LocationX;
+        return true;
     }
 
     // ---------- フラグメント ----------
