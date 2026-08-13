@@ -35,6 +35,8 @@ Claude Code / Codex エージェントと対話しながら設計レビューと
 4. 指摘は `review\review.md`、修正提案は `review\proposal.md` に出力される。リボンの **結果を開く** で参照できる
 5. 対話を中断した後は **ターミナル再開** で続きから再開できる
 
+プロジェクトファイル（.ndproj）と同じディレクトリに `Attachment` フォルダがあれば、その中身（Excel 等の別紙）が `design\Attachment` から参照できる状態でエージェントに渡される（ジャンクション接続。原本なので変更禁止を指示書で宣言済み）。
+
 図（シーケンス図・クラス図・状態遷移図）は自動で `design\*.puml` に出力され、design.md の該当箇所から参照される（一覧は `design\_index.md`）。シーケンス図・状態遷移図の構成要素（メッセージ・状態など）はテキストには出力せず .puml に委ねる。出力エンジンは PlantUmlTool からの転記（修正は PlantUmlTool 側で検証してから反映すること）。
 
 ## セッションフォルダの構成
@@ -45,6 +47,8 @@ Claude Code / Codex エージェントと対話しながら設計レビューと
 ├── .agents\skills\design-review\   レビュースキル（SKILL.md + 工程別観点表）
 ├── .claude\skills          → .agents\skills へのジャンクション（Claude Code 用。失敗時はコピー）
 ├── design\                 入力（design.md / *.puml / _index.md。エージェントは変更禁止）
+│   └── Attachment\         → プロジェクトファイルと同じ場所の Attachment へのジャンクション
+│                             （Excel 等の別紙。存在する場合のみ。失敗時はコピー）
 ├── review\                 エージェントの出力（review.md / proposal.md / proposed\）
 └── session.ini             セッション情報（拡張が管理）
 ```

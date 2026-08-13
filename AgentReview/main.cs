@@ -382,9 +382,12 @@ public static class WorkspaceBuilder
         sb.Append("## 入力（読み取り専用）").Append(nl).Append(nl);
         sb.Append("- `design/design.md` : Next Design からエクスポートした設計情報（モデル階層・フィールド・ドキュメント本文）").Append(nl);
         sb.Append("- `design/*.puml` : 図の PlantUML（シーケンス図・クラス図・状態遷移図。design.md の該当箇所に参照行がある）").Append(nl);
-        sb.Append("- `design/_index.md` : 図一覧（図名・種別・ファイル・モデルパスの対応表）").Append(nl).Append(nl);
+        sb.Append("- `design/_index.md` : 図一覧（図名・種別・ファイル・モデルパスの対応表）").Append(nl);
+        sb.Append("- `design/Attachment/` : 設計の別紙（Excel 等。存在する場合）。design.md に無い情報の参照先として活用すること").Append(nl).Append(nl);
         sb.Append("design.md にはシーケンス図・状態遷移図の中身は含まれない。挙動は参照先の .puml を読むこと。").Append(nl).Append(nl);
-        sb.Append("**`design/` 配下のファイルを変更・削除してはならない。** 入力の原本である。").Append(nl).Append(nl);
+        sb.Append("**`design/` 配下のファイルを変更・削除してはならない。** 入力の原本である。").Append(nl);
+        sb.Append("特に `design/Attachment/` は Next Design プロジェクト側の原本フォルダにリンクしており、").Append(nl);
+        sb.Append("変更すると原本が壊れる。読み取りのみとすること。").Append(nl).Append(nl);
 
         sb.Append("## 出力（このフォルダ規約に従うこと）").Append(nl).Append(nl);
         sb.Append("- `review/review.md` : レビュー指摘の一覧。次の表形式で書く。").Append(nl);
@@ -411,6 +414,53 @@ public static class WorkspaceBuilder
         }
 
         return sb.ToString();
+    }
+}
+
+// ------------------------------------------------------------
+//  ファイルシステムのリンク・コピー
+// ------------------------------------------------------------
+public static class FsLink
+{
+    // ジャンクションは管理者権限なしで作れる（シンボリックリンクは要権限のため使わない）
+    public static bool TryCreateJunction(string link, string target)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = "/c mklink /J \"" + link + "\" \"" + target + "\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using (var process = Process.Start(psi))
+            {
+                process.StandardOutput.ReadToEnd();
+                process.StandardError.ReadToEnd();
+                if (!process.WaitForExit(3000))
+                {
+                    try { process.Kill(); } catch (Exception) { }
+                    return false;
+                }
+                return process.ExitCode == 0 && Directory.Exists(link);
+            }
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    public static void CopyDirectory(string src, string dst)
+    {
+        Directory.CreateDirectory(dst);
+        foreach (var file in Directory.GetFiles(src))
+            File.Copy(file, Path.Combine(dst, Path.GetFileName(file)), true);
+        foreach (var sub in Directory.GetDirectories(src))
+            CopyDirectory(sub, Path.Combine(dst, Path.GetFileName(sub)));
     }
 }
 
@@ -454,57 +504,16 @@ public static class SkillProvisioner
     {
         EnsureSource();
         var agentsSkills = Path.Combine(sessionFolder, ".agents", "skills");
-        CopyDirectory(SourceDir(), Path.Combine(agentsSkills, "design-review"));
+        FsLink.CopyDirectory(SourceDir(), Path.Combine(agentsSkills, "design-review"));
 
         var claudeDir = Path.Combine(sessionFolder, ".claude");
         Directory.CreateDirectory(claudeDir);
         var claudeSkills = Path.Combine(claudeDir, "skills");
         if (Directory.Exists(claudeSkills)) return "既存";
 
-        if (TryCreateJunction(claudeSkills, agentsSkills)) return "ジャンクション";
-        CopyDirectory(SourceDir(), Path.Combine(claudeSkills, "design-review"));
+        if (FsLink.TryCreateJunction(claudeSkills, agentsSkills)) return "ジャンクション";
+        FsLink.CopyDirectory(SourceDir(), Path.Combine(claudeSkills, "design-review"));
         return "コピー";
-    }
-
-    // ジャンクションは管理者権限なしで作れる（シンボリックリンクは要権限のため使わない）
-    private static bool TryCreateJunction(string link, string target)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "cmd.exe",
-                Arguments = "/c mklink /J \"" + link + "\" \"" + target + "\"",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-            using (var process = Process.Start(psi))
-            {
-                process.StandardOutput.ReadToEnd();
-                process.StandardError.ReadToEnd();
-                if (!process.WaitForExit(3000))
-                {
-                    try { process.Kill(); } catch (Exception) { }
-                    return false;
-                }
-                return process.ExitCode == 0 && Directory.Exists(link);
-            }
-        }
-        catch (Exception)
-        {
-            return false;
-        }
-    }
-
-    private static void CopyDirectory(string src, string dst)
-    {
-        Directory.CreateDirectory(dst);
-        foreach (var file in Directory.GetFiles(src))
-            File.Copy(file, Path.Combine(dst, Path.GetFileName(file)), true);
-        foreach (var sub in Directory.GetDirectories(src))
-            CopyDirectory(sub, Path.Combine(dst, Path.GetFileName(sub)));
     }
 }
 
@@ -1413,6 +1422,9 @@ public void StartAgentReview(ICommandContext context, ICommandParams commandPara
             File.WriteAllText(Path.Combine(session.DesignDir(), "_index.md"), index.ToString(), utf8);
         }
 
+        // プロジェクトファイルと同じ場所の Attachment（Excel 等の別紙）を design\Attachment から参照できるようにする
+        LinkProjectAttachments(app, category, session);
+
         foreach (var warning in exporter.Warnings)
             app.Output.WriteLine(category, "[warn]  " + warning);
         app.Output.WriteLine(category, "[info]  モデル " + exporter.ModelCount + " 件を design\\design.md に出力");
@@ -1744,6 +1756,45 @@ public void ProbeExportTarget(ICommandContext context, ICommandParams commandPar
 }
 
 // ==================== 対象の決定 ====================
+
+// プロジェクトファイルのディレクトリ直下の Attachment を design\Attachment にリンクする。
+// 無い場合・未保存プロジェクトの場合はスキップ（エラーにしない）
+private void LinkProjectAttachments(IApplication app, string category, SessionInfo session)
+{
+    try
+    {
+        var project = app.Workspace.CurrentProject;
+        var projectPath = project != null ? project.Path : null;
+        if (string.IsNullOrEmpty(projectPath))
+        {
+            app.Output.WriteLine(category, "[info]  プロジェクトが未保存のため Attachment 連携をスキップします");
+            return;
+        }
+
+        var attachmentDir = Path.Combine(Path.GetDirectoryName(projectPath), "Attachment");
+        if (!Directory.Exists(attachmentDir))
+        {
+            app.Output.WriteLine(category, "[info]  別紙フォルダなし（" + attachmentDir + "）");
+            return;
+        }
+
+        var link = Path.Combine(session.DesignDir(), "Attachment");
+        if (FsLink.TryCreateJunction(link, attachmentDir))
+        {
+            app.Output.WriteLine(category, "[info]  別紙を design\\Attachment に接続（ジャンクション → " + attachmentDir + "）");
+        }
+        else
+        {
+            FsLink.CopyDirectory(attachmentDir, link);
+            app.Output.WriteLine(category, "[info]  別紙を design\\Attachment にコピー（" + attachmentDir + "）");
+        }
+    }
+    catch (Exception ex)
+    {
+        // 別紙が繋がらなくてもレビュー自体は成立するため、警告に留める
+        app.Output.WriteLine(category, "[warn]  Attachment 連携に失敗: " + ex.Message);
+    }
+}
 
 // ナビゲータの選択 → CurrentModel → プロジェクト の順に起点を決める
 // （PlantUmlTool の ExportRunner.ResolveRoot と同じ規則）
