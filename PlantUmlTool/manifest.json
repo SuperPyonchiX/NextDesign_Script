@@ -23,7 +23,7 @@
                   "id": "PlantUmlTool.ExportCurrentButton",
                   "type": "Button",
                   "label": "表示中の図を出力",
-                  "description": "エディタで表示中のシーケンス図またはクラス図を PlantUML 形式で出力します。",
+                  "description": "エディタで表示中のシーケンス図・クラス図・状態遷移図を PlantUML 形式で出力します。",
                   "imageSmall": "resources/export16.png",
                   "imageLarge": "resources/export32.png",
                   "command": "PlantUmlTool.ExportCurrent"
@@ -32,7 +32,7 @@
                   "id": "PlantUmlTool.ExportAllButton",
                   "type": "Button",
                   "label": "選択モデル配下を一括出力",
-                  "description": "ナビゲータで選択中のモデル配下のすべてのシーケンス図とクラス図を PlantUML 形式で出力します。",
+                  "description": "ナビゲータで選択中のモデル配下のすべてのシーケンス図・クラス図・状態遷移図を PlantUML 形式で出力します。",
                   "imageSmall": "resources/exportall16.png",
                   "imageLarge": "resources/exportall32.png",
                   "command": "PlantUmlTool.ExportAll"
