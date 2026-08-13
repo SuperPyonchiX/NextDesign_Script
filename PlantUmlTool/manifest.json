@@ -1,7 +1,7 @@
 {
   "name": "PlantUmlTool",
   "displayName": "PlantUML 連携",
-  "description": "シーケンス図・クラス図を PlantUML 形式で出力し、PlantUML からシーケンス図を取り込みます。",
+  "description": "シーケンス図・クラス図を PlantUML 形式で出力します。（PlantUML からの取り込みは純正拡張 PlantUMLImporter を使用してください）",
   "version": "2.1.0",
   "publisher": "ksk01",
   "main": "main.cs",
@@ -40,30 +40,6 @@
               ]
             },
             {
-              "id": "PlantUmlTool.ImportGroup",
-              "label": "取り込み",
-              "controls": [
-                {
-                  "id": "PlantUmlTool.ImportFileButton",
-                  "type": "Button",
-                  "label": "ファイルから取り込み",
-                  "description": "PlantUML ファイルを読み、同名のシーケンス図を更新します。まず差分を表示します。",
-                  "imageSmall": "resources/import16.png",
-                  "imageLarge": "resources/import32.png",
-                  "command": "PlantUmlTool.ImportFile"
-                },
-                {
-                  "id": "PlantUmlTool.ImportFolderButton",
-                  "type": "Button",
-                  "label": "フォルダから一括取り込み",
-                  "description": "フォルダ配下の PlantUML ファイルをまとめて取り込みます。まず差分を表示します。",
-                  "imageSmall": "resources/importall16.png",
-                  "imageLarge": "resources/importall32.png",
-                  "command": "PlantUmlTool.ImportFolder"
-                }
-              ]
-            },
-            {
               "id": "PlantUmlTool.DiagnosticsGroup",
               "label": "診断",
               "controls": [
@@ -75,15 +51,6 @@
                   "imageSmall": "resources/probe16.png",
                   "imageLarge": "resources/probe32.png",
                   "command": "PlantUmlTool.Probe"
-                },
-                {
-                  "id": "PlantUmlTool.ProbeCreateButton",
-                  "type": "Button",
-                  "label": "新規作成実験",
-                  "description": "シーケンス図をモデル API から新規作成できるかを検証し、結果を出力ウィンドウに記録します。",
-                  "imageSmall": "resources/probe16.png",
-                  "imageLarge": "resources/probe32.png",
-                  "command": "PlantUmlTool.ProbeCreate"
                 },
                 {
                   "id": "PlantUmlTool.ProbeClassButton",
@@ -121,31 +88,10 @@
         "canExecWhen": { "uiState": "ProjectOpened" }
       },
       {
-        "id": "PlantUmlTool.ImportFile",
-        "title": "ファイルから取り込み",
-        "group": "plantuml",
-        "execFunc": "ImportFromFile",
-        "canExecWhen": { "uiState": "ProjectOpened" }
-      },
-      {
-        "id": "PlantUmlTool.ImportFolder",
-        "title": "フォルダから一括取り込み",
-        "group": "plantuml",
-        "execFunc": "ImportFromFolder",
-        "canExecWhen": { "uiState": "ProjectOpened" }
-      },
-      {
         "id": "PlantUmlTool.Probe",
         "title": "メタモデル調査",
         "group": "plantuml",
         "execFunc": "ProbeMetamodel",
-        "canExecWhen": { "uiState": "ProjectOpened" }
-      },
-      {
-        "id": "PlantUmlTool.ProbeCreate",
-        "title": "新規作成実験",
-        "group": "plantuml",
-        "execFunc": "ProbeCreateSequence",
         "canExecWhen": { "uiState": "ProjectOpened" }
       },
       {
