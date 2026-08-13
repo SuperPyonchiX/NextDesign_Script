@@ -1,0 +1,142 @@
+{
+  "ndVersion": "V3.x",
+  "docBase": "https://docs.nextdesign.app/extension/v3.x/",
+  "scriptLanguage": "csharp",
+  "extensionName": "AgentReview",
+  "extensionDir": "D:\\Users\\ksk01\\Documents\\develop\\NextDesign_Script\\AgentReview",
+  "deployTarget": "user",
+  "lifecycle": "project",
+  "note": "PlantUmlTool の作業記録は work/extension-spec.plantumltool.json に保全",
+  "requirements": [
+    "Claude Code / Codex の CLI エージェントで Next Design の設計レビューと修正提案生成を行う（実装計画: ~/.claude/plans/nextdesign-codex-claude-code-linked-gosling.md）",
+    "対話はターミナル上のエージェント本来の UI に委ねる。ND 拡張はエクスポート・指示書生成・起動・結果表示のみ",
+    "レビュー開始: セッションフォルダ作成 → design.md エクスポート → CLAUDE.md/AGENTS.md 生成 → ターミナルでエージェント起動（WaitForExit しない）",
+    "自動修正は修正提案（review/review.md, proposal.md, proposed/*.puml）のファイル出力まで。ND モデルへの書き戻しはしない",
+    "エージェントは config で claude / codex を切替。設定は %USERPROFILE%\\.nd-agent-review\\config.ini（ハンドラ毎に読み直すので ND 再起動不要）",
+    "JSON パーサ（Newtonsoft 等）の利用可否が V3.x ドキュメントで確認できないため、設定・セッション情報は key=value 形式の .ini で持つ（計画の config.json から変更）",
+    "設計情報の Markdown 化は revert 済み DesignExporter (46ac9c9) の MarkdownExporter を図の埋め込み無しで自己完結化して移植。匿名参照フィールド（$ / ___ 始まり）は IsSystemName で除外（revert 原因のノイズ対策）",
+    "図の PlantUML は S3 で PlantUmlTool の Part 0/7/8 を転記予定。それまでは PlantUmlTool の一括出力を design/ に置く運用",
+    "S4（任意）: ヘッドレス一発レビュー（claude -p / codex exec のリダイレクト detached 起動）"
+  ],
+  "extensionPoints": {
+    "ribbon": true,
+    "commands": true,
+    "events": false
+  },
+  "phase": "E4",
+  "verifyRounds": [
+    {
+      "date": "2026-08-13",
+      "symptoms": [
+        "1周目: リボン表示・エクスポート（2330 モデル）・Codex 起動まで成功",
+        "design.md の全モデルに付く「> クラス: 完全修飾名」「> パス:」の灰色引用ブロックがノイズ",
+        "ドキュメントエディタの本文（説明文・errno 表など）が design.md に出ない",
+        "複数タブ（複数ビュー）のモデルは左端タブの情報しか出ていないように見える"
+      ],
+      "fixes": [
+        "V3.x 公式 API ドキュメントで原因確定: ドキュメント本文は RichText 型フィールドで GetFieldString では取得不能。IField.Type==\"RichText\" を GetRichTextField(name,\"html\") で取得し HtmlToMarkdown（新設）で Markdown 化（表→Markdown表、失敗時は \"text\" フォールバック）",
+        "子モデル出力を GetChildren 一括から所有（クラス型）フィールド単位の GetFieldValues 列挙に変更し、フィールド名の太字行で表・区画の文脈を保持。GetChildren は拾い残しの安全網に降格",
+        "クラス/パスの引用ブロックを廃止し、メタクラス短縮名を見出し末尾に（Property）形式で付記",
+        "StartAgentReview / ProbeExportTarget に EditorAccessMode.GetInactiveValue を設定",
+        "「エクスポート診断」ボタン（ProbeExportTarget）を追加: 選択モデルのフィールド構成（Type/Embedded/Reference/多重度/RichText プレビュー）・GetChildren・GetEditors をダンプ",
+        "manifest 0.2.0。validate_manifest --nd-version 3 で ERROR 0 / WARN 0"
+      ],
+      "result": "2周目: 本文・灰色ブロックは改善したが、シーケンス図の構成要素モデル（UmlInteractionMessage の Sender/Receiver/実行仕様参照）が数千行のテキストノイズに。.puml は未出力（S3 後回しの運用連携が実態に合わず）"
+    },
+    {
+      "date": "2026-08-13",
+      "symptoms": [
+        "design.md にシーケンス図のメッセージ・実行仕様のダンプが大量に出て AI 入力として無意味",
+        ".puml ファイルが一切出力されない（PlantUmlTool の手動一括出力を前提にしていた）",
+        "ユーザー要求: 図は .puml に自動出力し、Markdown からは参照だけにする"
+      ],
+      "fixes": [
+        "PlantUmlTool（50ae431 時点）の Part 0/7/8（出力エンジン）を AgentReview/main.cs 末尾へ転記（約 3,700 行）。OutputPane は AgentReview 側実装を使用、MetaMap は ModelOf のみのシムで代替、ClassProbe の MetaProbe 依存 2 箇所は簡易ダンプに置換",
+        "MarkdownExporter.WriteDiagrams を新設: GetEditors 走査で シーケンス図→図名_seq.puml / 状態遷移図→図名_state.puml / クラス図→図名_class.puml を design\\ に出力し、design.md に「- 図: [図名](ファイル)（種別）」の参照行を出力。_index.md（図名/種別/ファイル/モデルパス）も出力",
+        "シーケンス図・状態遷移図のエディタを持つモデルは子モデルへの再帰を打ち切り（図要素をテキストに出さない）。クラス図は子の再帰を継続（Property/Method のテキストは設計情報として有用）",
+        "指示書と README を .puml 自動出力前提に更新。完了ログに図の件数と除外モデル数の統計を追加",
+        "manifest 0.3.0。validate_manifest --nd-version 3 で ERROR 0 / WARN 0"
+      ],
+      "result": "ユーザー確認待ち（3周目: .puml 出力と design.md のノイズ消滅、PlantUmlTool 出力との一致確認）"
+    },
+    {
+      "date": "2026-08-13",
+      "symptoms": [
+        "ユーザー提案: レビュー観点は開発工程で変わるため、AGENTS.md ベタ書きではなく Agent Skill（SKILL.md）方式にする。最初に工程を質問してから工程別観点でレビュー。.agents/skills に置き .claude/skills をリンクすれば Claude/Codex 両対応"
+      ],
+      "fixes": [
+        "design-review スキルを新設（正本: AgentReview/skills/design-review/。SKILL.md + references/ 3 ファイル=要求分析/基本設計/詳細設計の観点表）。workflow-skill-architect の validate_skill.py で ERROR 0",
+        "SkillProvisioner を追加: 原本 %USERPROFILE%\\.nd-agent-review\\skills\\design-review\\（無ければ生成・既存は上書きしない）→ セッションの .agents\\skills へコピー → .claude\\skills を mklink /J でジャンクション（失敗時コピー）",
+        "スキル本文は tools/embed_skills.py で main.cs の DesignReviewSkillFiles（自動生成領域）に verbatim 文字列として埋め込み",
+        "指示書を薄化（工程別観点はスキルへ移管。スキル未認識環境向けに SKILL.md を直接読むフォールバック指示）。config の perspectives は追加観点のみに変更",
+        "manifest 0.4.0。validate_manifest --nd-version 3 で ERROR 0 / WARN 0"
+      ],
+      "result": "ユーザー確認待ち（4周目: 工程質問が最初に来ること、.claude/skills ジャンクション生成、スキル観点でのレビュー動作）"
+    },
+    {
+      "date": "2026-08-13",
+      "symptoms": [
+        "スキル原本の場所が UI から分からず管理できない（ユーザー指摘）"
+      ],
+      "fixes": [
+        "リボン設定グループに「スキルを開く」ボタン（OpenSkillFolder）を追加: EnsureSource で未生成なら既定内容を生成してからエクスプローラーで原本フォルダを開く",
+        "環境診断にスキル原本のパスと生成状態の行を追加",
+        "manifest 0.4.1。validate_manifest --nd-version 3 で ERROR 0 / WARN 0"
+      ],
+      "result": "実機確認: エクスプローラーは起動するがスキルフォルダが開かない（フォルダパスを ShellExecute の FileName に直接渡す方式が環境依存）。次ラウンドで修正"
+    },
+    {
+      "date": "2026-08-13",
+      "symptoms": [
+        "「スキルを開く」でエクスプローラーの既定画面だけが開き、スキル原本のフォルダが開かない",
+        "追加要望: 起動時に「レビューしてください」を自動投入したい（対話型のまま）"
+      ],
+      "fixes": [
+        "TerminalLauncher.OpenFolder を追加（explorer.exe \"<パス>\" の明示起動 + Directory.Exists 事前確認）。OpenSkillFolder / OpenWorkspaceFolder を切り替え。OpenWithShell はファイル用途に限定",
+        "config に initialPrompt（既定: レビューを開始してください）を追加し、BuildLaunchCommand が位置引数として付与（\" は ' に置換。空なら従来どおり手入力）。ターミナル再開には付けない",
+        "確認ダイアログ・完了ログの文言を自動投入前提に更新",
+        "manifest 0.4.2。validate_manifest --nd-version 3 で ERROR 0 / WARN 0"
+      ],
+      "result": "ユーザー確認待ち（スキルフォルダが直接開くこと・起動時に初期プロンプトが自動投入されること）"
+    },
+    {
+      "date": "2026-08-13",
+      "symptoms": [
+        "工程分類の呼称は現場用語の「アーキ設計」にしてほしい（「基本設計」からの変更要望）"
+      ],
+      "fixes": [
+        "スキル正本・main.cs（指示書文言 + 埋め込み再生成）・README の「基本設計（アーキテクチャ・方式設計）」「基本設計」を「アーキ設計」に統一（ファイル名 architecture-review.md は据え置き）",
+        "manifest 0.4.3。validate_skill / validate_manifest とも ERROR 0",
+        "注意: 実機の原本 %USERPROFILE%\\.nd-agent-review\\skills\\design-review は上書きしない設計のため旧文言が残る。未カスタマイズならフォルダ削除で新文言に再生成される"
+      ],
+      "result": "ユーザー確認待ち（工程質問の選択肢が「アーキ設計」になること）"
+    },
+    {
+      "date": "2026-08-13",
+      "symptoms": [
+        "要望: プロジェクトファイルと同じディレクトリの .\\Attachment（Excel 等の別紙）をエージェントから参照できるように design にリンクしてほしい"
+      ],
+      "fixes": [
+        "IProject.Path（V3.x で実在確認。未保存は null）からプロジェクトディレクトリを解決し、Attachment があれば design\\Attachment へジャンクション接続（FsLink.TryCreateJunction。失敗時はコピー）。無い/未保存はログを出してスキップ",
+        "ジャンクション/コピー処理を FsLink クラスに共通化（SkillProvisioner からも使用）",
+        "指示書の入力セクションに design/Attachment を追記し、原本リンクのため変更禁止を明記",
+        "manifest 0.4.4。validate_manifest --nd-version 3 で ERROR 0 / WARN 0"
+      ],
+      "result": "ユーザー確認待ち（Attachment ありのプロジェクトで design\\Attachment から別紙が見えること・無しでもエラーにならないこと）"
+    },
+    {
+      "date": "2026-08-13",
+      "symptoms": [
+        "要望: 設計情報エクスポート（design.md + *.puml + _index.md）をエージェント起動なしで単体でも使いたい（DesignExporter revert の正式代替。計画: ~/.claude/plans/nextdesign-codex-claude-code-linked-gosling.md）"
+      ],
+      "fixes": [
+        "ExportDesignInfo ハンドラを新設: GetInactiveValue 設定 → ResolveRoot → ShowSelectFolderDialog で出力先を毎回選択 → 確認ダイアログ → design.md/_index.md/*.puml を出力先直下に出力。セッションフォルダ・Attachment リンク・エージェント起動なし。統計（モデル/図/除外/警告）を Output とダイアログに表示",
+        "StartAgentReview と重複する書き出し部を WriteDesignArtifacts(app, category, exporter, root, outDir) に共通化し両方から呼ぶ",
+        "manifest に「出力」グループ（AgentReview.ExportGroup、エージェントグループの後）と ExportDesignButton / Command.ExportDesign（canExecWhen: ProjectOpened）を追加。resources/export16.png・export32.png（藍色・トレイへの下向き矢印）を生成",
+        "README の使い方に単体出力の節を追記",
+        "manifest 0.5.0。validate_manifest --nd-version 3 で ERROR 0 / WARN 0"
+      ],
+      "result": "ユーザー確認待ち（「設計情報を出力」→ フォルダ選択 → design.md + *.puml + _index.md が出力され、レビューセッションの design\\ と同内容であること。エージェントは起動しないこと）"
+    }
+  ]
+}

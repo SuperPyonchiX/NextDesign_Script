@@ -1408,29 +1408,10 @@ public void StartAgentReview(ICommandContext context, ICommandParams commandPara
 
         app.Output.WriteLine(category, "[2/3] 設計情報と図をエクスポートしています...");
         var exporter = new MarkdownExporter(new MarkdownExportOptions(), session.DesignDir());
-        var markdown = exporter.Export(root);
-
-        var utf8 = new UTF8Encoding(false);
-        File.WriteAllText(Path.Combine(session.DesignDir(), "design.md"), markdown, utf8);
-        if (exporter.IndexRows.Count > 0)
-        {
-            var index = new StringBuilder();
-            index.Append("# 図一覧\n\n");
-            index.Append("| 図名 | 種別 | ファイル | モデルパス |\n");
-            index.Append("|---|---|---|---|\n");
-            foreach (var row in exporter.IndexRows) index.Append(row).Append('\n');
-            File.WriteAllText(Path.Combine(session.DesignDir(), "_index.md"), index.ToString(), utf8);
-        }
+        WriteDesignArtifacts(app, category, exporter, root, session.DesignDir());
 
         // プロジェクトファイルと同じ場所の Attachment（Excel 等の別紙）を design\Attachment から参照できるようにする
         LinkProjectAttachments(app, category, session);
-
-        foreach (var warning in exporter.Warnings)
-            app.Output.WriteLine(category, "[warn]  " + warning);
-        app.Output.WriteLine(category, "[info]  モデル " + exporter.ModelCount + " 件を design\\design.md に出力");
-        app.Output.WriteLine(category, "[info]  図 " + exporter.DiagramCount + " 件を design\\*.puml に出力"
-            + (exporter.SkippedModelCount > 0
-                ? "（図の構成要素 " + exporter.SkippedModelCount + " モデルはテキスト出力から除外）" : ""));
 
         app.Output.WriteLine(category, "[3/3] ターミナルで " + profile.DisplayName + " を起動しています...");
         TerminalLauncher.Launch(session.Folder, profile.BuildLaunchCommand(config.InitialPrompt), config.Terminal);
@@ -1446,6 +1427,79 @@ public void StartAgentReview(ICommandContext context, ICommandParams commandPara
     {
         app.Output.WriteLine(category, "[error] " + ex.ToString());
         app.Window.UI.ShowInformationDialog("レビュー開始に失敗しました。\n\n" + ex.Message, category);
+    }
+}
+
+// design.md / *.puml / _index.md を outDir へ書き出し、警告と統計を Output に出す
+// （StartAgentReview とレビューなし単体出力 ExportDesignInfo の共通部）
+private void WriteDesignArtifacts(IApplication app, string category, MarkdownExporter exporter, IModel root, string outDir)
+{
+    var markdown = exporter.Export(root);
+
+    var utf8 = new UTF8Encoding(false);
+    File.WriteAllText(Path.Combine(outDir, "design.md"), markdown, utf8);
+    if (exporter.IndexRows.Count > 0)
+    {
+        var index = new StringBuilder();
+        index.Append("# 図一覧\n\n");
+        index.Append("| 図名 | 種別 | ファイル | モデルパス |\n");
+        index.Append("|---|---|---|---|\n");
+        foreach (var row in exporter.IndexRows) index.Append(row).Append('\n');
+        File.WriteAllText(Path.Combine(outDir, "_index.md"), index.ToString(), utf8);
+    }
+
+    foreach (var warning in exporter.Warnings)
+        app.Output.WriteLine(category, "[warn]  " + warning);
+    app.Output.WriteLine(category, "[info]  モデル " + exporter.ModelCount + " 件を design.md に出力");
+    app.Output.WriteLine(category, "[info]  図 " + exporter.DiagramCount + " 件を *.puml に出力"
+        + (exporter.SkippedModelCount > 0
+            ? "（図の構成要素 " + exporter.SkippedModelCount + " モデルはテキスト出力から除外）" : ""));
+}
+
+// レビューセッションを作らず、設計情報（design.md + 図の .puml + _index.md）だけを任意のフォルダへ出力する
+public void ExportDesignInfo(ICommandContext context, ICommandParams commandParams)
+{
+    var category = "AgentReview";
+    var app = context.App;
+    try
+    {
+        // 未表示エディタ配下でも最新値を取得できるようにする（バッチでは必須）
+        context.ContextOption.EditorAccessMode = EditorAccessMode.GetInactiveValue;
+
+        var root = ResolveRoot(app);
+        if (root == null)
+        {
+            app.Window.UI.ShowInformationDialog("プロジェクトが開かれていません。", category);
+            return;
+        }
+
+        var outDir = app.Window.UI.ShowSelectFolderDialog("設計情報の出力先フォルダを選択してください");
+        if (string.IsNullOrEmpty(outDir)) return;
+
+        if (!app.Window.UI.ShowConfirmDialog(
+            "「" + root.Name + "」配下の設計情報と図を出力します。\n\n"
+            + "出力先: " + outDir + "\n\n続行しますか？", category)) return;
+
+        OutputPane.Show(app, category);
+        app.Output.WriteLine(category, "=== 設計情報の出力 : " + root.Name + " ===");
+
+        var exporter = new MarkdownExporter(new MarkdownExportOptions(), outDir);
+        WriteDesignArtifacts(app, category, exporter, root, outDir);
+
+        app.Output.WriteLine(category, "=== 出力完了 : " + outDir + " ===");
+        app.Window.UI.ShowInformationDialog(
+            "設計情報を出力しました。\n\n"
+            + "出力先: " + outDir + "\n"
+            + "モデル " + exporter.ModelCount + " 件 / 図 " + exporter.DiagramCount + " 件"
+            + (exporter.SkippedModelCount > 0
+                ? "（図の構成要素 " + exporter.SkippedModelCount + " モデルはテキスト出力から除外）" : "")
+            + (exporter.Warnings.Count > 0
+                ? "\n警告 " + exporter.Warnings.Count + " 件（出力ウィンドウを確認してください）" : ""), category);
+    }
+    catch (Exception ex)
+    {
+        app.Output.WriteLine(category, "[error] " + ex.ToString());
+        app.Window.UI.ShowInformationDialog("設計情報の出力に失敗しました。\n\n" + ex.Message, category);
     }
 }
 
