@@ -16,9 +16,11 @@
 //                           AgentProfile（claude / codex の差異吸収）
 //      Part 2  セッション   SessionInfo / SessionLocator
 //      Part 3  ワークスペース WorkspaceBuilder（フォルダ・指示書・session.ini）
-//      Part 4  Markdown出力 MarkdownExportOptions / MarkdownExporter
+//      Part 4  Markdown出力 MarkdownExportOptions / MarkdownExporter / HtmlToMarkdown
 //                           （DesignExporter(46ac9c9) から図の埋め込みを外して移植。
-//                             修正は転記元 PlantUmlTool 系と独立に本ファイルで完結）
+//                             修正は転記元 PlantUmlTool 系と独立に本ファイルで完結。
+//                             ドキュメント本文は RichText 型フィールドに格納されるため
+//                             GetRichTextField(html) → Markdown 変換で出力する）
 //      Part 5  プロセス起動 TerminalLauncher / CliProbe
 //      Part 6  コマンドハンドラ
 // ============================================================
@@ -32,6 +34,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 
 // ============================================================
 //  Part 0 / 共通ヘルパ
@@ -404,8 +407,11 @@ public static class WorkspaceBuilder
 //    （$ / ___ 始まり）による除外で対策済み。
 //
 //    出力規約:
-//      - 所有フィールド（IsEmbedded）はフィールドとして出さない。
-//        子は子セクション（見出し再帰）でのみ出力し、二重化を避ける
+//      - リッチテキスト型フィールド（ドキュメントの本文）は
+//        GetRichTextField(html) → HtmlToMarkdown で Markdown 化して出す
+//      - 所有（クラス型）フィールドはフィールドとして出さず、
+//        フィールド名の太字行 + 子セクション（見出し再帰）で出力する
+//        （表の行モデルがどの表に属すかの文脈を保つため）
 //      - Name / $・___ 始まりのシステムフィールド / 空値は出さない
 //      - フィールド値はフェンスで囲まず箇条書き + インデント継続で出す
 // ============================================================
@@ -481,31 +487,79 @@ public class MarkdownExporter
                 heading = string.Join(" / ", myTrail.ToArray());
             }
 
-            _sb.Append(new string('#', level)).Append(' ').Append(heading).Append(nl);
+            // メタクラスは短縮名を見出しに付記するだけに留める
+            // （完全修飾名とパスの引用ブロックはノイズが大きく実機で不評だった）
+            _sb.Append(new string('#', level)).Append(' ').Append(heading);
+            var shortCls = ShortClassName(m);
+            if (shortCls.Length > 0) _sb.Append("（").Append(shortCls).Append("）");
             _sb.Append(nl);
-
-            var cls = m.Metaclass;
-            _sb.Append("> クラス: ").Append(cls != null ? cls.FullName : m.ClassName).Append(nl);
-            if (capped && trail != null)
-                _sb.Append("> パス: ").Append(PathOf(m)).Append(nl);
             _sb.Append(nl);
 
             WriteFields(m);
-
-            List<IModel> children;
-            try { children = m.GetChildren().Cast<IModel>().ToList(); }
-            catch (Exception ex)
-            {
-                Warnings.Add(PathOf(m) + " : 子モデルの取得に失敗 : " + ex.Message);
-                return;
-            }
-            foreach (var child in children)
-                WriteModel(child, depth + 1, myTrail);
+            WriteChildren(m, depth, myTrail);
         }
         catch (Exception ex)
         {
             // 1 モデルの失敗で全体を落とさない
             Warnings.Add(PathOf(m) + " : " + ex.Message);
+        }
+    }
+
+    // 子モデルの出力。所有フィールド単位で列挙し、フィールド名の小見出しで
+    // 表・区画の文脈を保つ（GetChildren は全所有フィールドを平坦化して返し、
+    // どのフィールドに属すかが失われるため）
+    private void WriteChildren(IModel m, int depth, List<string> myTrail)
+    {
+        var nl = _options.NewLine;
+        var cls = m.Metaclass;
+        if (cls != null)
+        {
+            List<IField> fields;
+            try { fields = cls.GetFields().Cast<IField>().ToList(); }
+            catch (Exception) { fields = new List<IField>(); }
+
+            foreach (var f in fields)
+            {
+                try
+                {
+                    if (f == null || !f.IsEmbedded || f.TypeClass == null) continue;
+
+                    var children = new List<IModel>();
+                    foreach (var v in m.GetFieldValues(f.Name))
+                    {
+                        var child = v as IModel;
+                        if (child == null || child.IsDeleted || child.IsProxy) continue;
+                        if (_visited.Contains(child.Id)) continue;
+                        children.Add(child);
+                    }
+                    if (children.Count == 0) continue;
+
+                    // システム・匿名フィールドは名前を出さず配下だけ出力する
+                    if (!AgentText.IsSystemName(f.Name))
+                        _sb.Append("**").Append(f.Name).Append("**").Append(nl).Append(nl);
+
+                    foreach (var child in children)
+                        WriteModel(child, depth + 1, myTrail);
+                }
+                catch (Exception ex)
+                {
+                    Warnings.Add(PathOf(m) + " / " + f.Name + " : 子モデルの列挙に失敗 : " + ex.Message);
+                }
+            }
+        }
+
+        // 安全網: フィールド列挙から漏れた所有子を GetChildren で拾う
+        try
+        {
+            foreach (var child in m.GetChildren().Cast<IModel>().ToList())
+            {
+                if (child == null || _visited.Contains(child.Id)) continue;
+                WriteModel(child, depth + 1, myTrail);
+            }
+        }
+        catch (Exception ex)
+        {
+            Warnings.Add(PathOf(m) + " : 子モデルの取得に失敗 : " + ex.Message);
         }
     }
 
@@ -529,7 +583,16 @@ public class MarkdownExporter
             try
             {
                 if (f == null || IsSystemField(f)) continue;
-                if (f.IsEmbedded) continue;   // 所有は子セクションで出す（二重化回避）
+
+                // ドキュメントエディタの本文はリッチテキスト型フィールドに
+                // 格納されており GetFieldString では取得できない
+                if (f.Type == "RichText")
+                {
+                    if (WriteRichTextField(m, f)) wrote = true;
+                    continue;
+                }
+
+                if (f.IsEmbedded) continue;   // 所有（クラス型）は子セクションで出す（二重化回避）
 
                 if (f.IsReference)
                 {
@@ -576,6 +639,47 @@ public class MarkdownExporter
         if (wrote) _sb.Append(nl);
     }
 
+    // リッチテキストは html で取得して Markdown 化する。失敗時は text にフォールバック
+    private bool WriteRichTextField(IModel m, IField f)
+    {
+        var nl = _options.NewLine;
+        string text = null;
+        try
+        {
+            var html = m.GetRichTextField(f.Name, "html");
+            if (!string.IsNullOrEmpty(html)) text = HtmlToMarkdown.Convert(html);
+        }
+        catch (Exception ex)
+        {
+            Warnings.Add(PathOf(m) + " / " + f.Name + " : リッチテキストの変換に失敗 : " + ex.Message);
+        }
+        if (string.IsNullOrEmpty(text) || text.Trim().Length == 0)
+        {
+            try { text = m.GetRichTextField(f.Name, "text"); }
+            catch (Exception) { }
+        }
+        if (string.IsNullOrEmpty(text) || text.Trim().Length == 0) return false;
+
+        _sb.Append("**").Append(f.Name).Append("**:").Append(nl).Append(nl);
+        _sb.Append(text.Replace("\r\n", "\n").Replace("\r", "\n").Trim('\n')).Append(nl);
+        _sb.Append(nl);
+        return true;
+    }
+
+    private static string ShortClassName(IModel m)
+    {
+        string full = null;
+        try
+        {
+            var cls = m.Metaclass;
+            full = cls != null ? cls.FullName : m.ClassName;
+        }
+        catch (Exception) { }
+        if (string.IsNullOrEmpty(full)) return "";
+        var dot = full.LastIndexOf('.');
+        return dot >= 0 ? full.Substring(dot + 1) : full;
+    }
+
     private static bool IsSystemField(IField f)
     {
         var name = f.Name ?? "";
@@ -590,6 +694,126 @@ public class MarkdownExporter
         try { path = m.ModelPath; }
         catch (Exception) { }
         return string.IsNullOrEmpty(path) ? (m.Name ?? "") : path;
+    }
+}
+
+// ------------------------------------------------------------
+//  リッチテキスト(HTML)の簡易 Markdown 変換
+//    Next Design のリッチテキストフィールドが返す HTML を、
+//    生成 AI が読みやすい Markdown に落とす。表は Markdown 表に、
+//    ブロック要素は改行に変換し、その他のタグは除去する
+// ------------------------------------------------------------
+public static class HtmlToMarkdown
+{
+    private static readonly Regex TableRe = new Regex("<table[^>]*>(.*?)</table>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+    private static readonly Regex RowRe = new Regex("<tr[^>]*>(.*?)</tr>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+    private static readonly Regex CellRe = new Regex("<t[hd][^>]*>(.*?)</t[hd]>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+    private static readonly Regex TagRe = new Regex("<[^>]+>", RegexOptions.Singleline);
+    private static readonly Regex StyleRe = new Regex("<(style|script)[^>]*>.*?</\\1>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+    public static string Convert(string html)
+    {
+        if (string.IsNullOrEmpty(html)) return "";
+        var s = html.Replace("\r\n", "\n").Replace("\r", "\n");
+        s = StyleRe.Replace(s, "");
+
+        // 表を先に Markdown 化して退避する（後段のタグ除去で壊さないため）
+        var tables = new List<string>();
+        s = TableRe.Replace(s, match =>
+        {
+            tables.Add(ConvertTable(match.Groups[1].Value));
+            return "\n[[TABLE" + (tables.Count - 1) + "]]\n";
+        });
+
+        s = Regex.Replace(s, "<br\\s*/?>", "\n", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, "<li[^>]*>", "\n- ", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, "<h[1-6][^>]*>", "\n**", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, "</h[1-6]>", "**\n", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, "</(p|div|li|ul|ol)>", "\n", RegexOptions.IgnoreCase);
+        s = TagRe.Replace(s, "");
+        s = DecodeEntities(s);
+
+        for (var i = 0; i < tables.Count; i++)
+            s = s.Replace("[[TABLE" + i + "]]", tables[i]);
+
+        // 行末空白と連続する空行を整理する
+        var sb = new StringBuilder();
+        var blank = 0;
+        foreach (var raw in s.Split('\n'))
+        {
+            var line = raw.TrimEnd();
+            if (line.Length == 0)
+            {
+                blank++;
+                if (blank >= 2) continue;
+            }
+            else blank = 0;
+            sb.Append(line).Append('\n');
+        }
+        return sb.ToString().Trim('\n');
+    }
+
+    private static string ConvertTable(string inner)
+    {
+        var rows = new List<List<string>>();
+        foreach (Match row in RowRe.Matches(inner))
+        {
+            var cells = new List<string>();
+            foreach (Match cell in CellRe.Matches(row.Groups[1].Value))
+                cells.Add(CellText(cell.Groups[1].Value));
+            if (cells.Count > 0) rows.Add(cells);
+        }
+        if (rows.Count == 0) return "";
+
+        var width = rows.Max(r => r.Count);
+        var sb = new StringBuilder();
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var row = rows[i];
+            sb.Append('|');
+            for (var c = 0; c < width; c++)
+                sb.Append(' ').Append(c < row.Count ? row[c] : "").Append(" |");
+            sb.Append('\n');
+            if (i == 0)   // 1 行目をヘッダとして区切り行を入れる
+            {
+                sb.Append('|');
+                for (var c = 0; c < width; c++) sb.Append("---|");
+                sb.Append('\n');
+            }
+        }
+        return sb.ToString();
+    }
+
+    // セル内は改行を <br> 表記にし、| をエスケープして 1 行に潰す
+    private static string CellText(string inner)
+    {
+        var s = Regex.Replace(inner, "<br\\s*/?>", "[[BR]]", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, "</(p|div|li)>", "[[BR]]", RegexOptions.IgnoreCase);
+        s = TagRe.Replace(s, "");
+        s = DecodeEntities(s);
+        s = s.Replace("\n", " ").Replace("|", "\\|");
+        s = AgentText.Normalize(s);
+        var text = s.Replace("[[BR]]", "<br>").Trim();
+        while (text.EndsWith("<br>", StringComparison.Ordinal))
+            text = text.Substring(0, text.Length - 4).TrimEnd();
+        return text;
+    }
+
+    private static string DecodeEntities(string s)
+    {
+        s = s.Replace("&nbsp;", " ").Replace("&quot;", "\"").Replace("&#39;", "'")
+             .Replace("&lt;", "<").Replace("&gt;", ">");
+        s = Regex.Replace(s, "&#(\\d+);", m =>
+        {
+            try { return char.ConvertFromUtf32(int.Parse(m.Groups[1].Value)); }
+            catch (Exception) { return ""; }
+        });
+        s = Regex.Replace(s, "&#x([0-9a-fA-F]+);", m =>
+        {
+            try { return char.ConvertFromUtf32(System.Convert.ToInt32(m.Groups[1].Value, 16)); }
+            catch (Exception) { return ""; }
+        });
+        return s.Replace("&amp;", "&");
     }
 }
 
@@ -712,6 +936,9 @@ public void StartAgentReview(ICommandContext context, ICommandParams commandPara
     {
         var config = AgentConfig.Load();
         var profile = config.ActiveProfile();
+
+        // 未表示エディタ配下でも最新値を取得できるようにする（バッチでは必須）
+        context.ContextOption.EditorAccessMode = EditorAccessMode.GetInactiveValue;
 
         var root = ResolveRoot(app);
         if (root == null)
@@ -928,6 +1155,126 @@ public void CheckCliEnvironment(ICommandContext context, ICommandParams commandP
     {
         app.Output.WriteLine(category, "[error] " + ex.ToString());
         app.Window.UI.ShowInformationDialog("環境診断に失敗しました。\n\n" + ex.Message, category);
+    }
+}
+
+// 選択モデル 1 件のフィールド構成・子モデル・エディタを出力ウィンドウにダンプする。
+// design.md に出ない情報がある場合の切り分け用（プロファイル依存の実測）
+public void ProbeExportTarget(ICommandContext context, ICommandParams commandParams)
+{
+    var category = "AgentReview";
+    var app = context.App;
+    try
+    {
+        context.ContextOption.EditorAccessMode = EditorAccessMode.GetInactiveValue;
+
+        var root = ResolveRoot(app);
+        if (root == null)
+        {
+            app.Window.UI.ShowInformationDialog("プロジェクトが開かれていません。", category);
+            return;
+        }
+
+        OutputPane.Show(app, category);
+        app.Output.WriteLine(category, "=== エクスポート診断 : " + (root.Name ?? "(無名)") + " ===");
+        app.Output.WriteLine(category, "ClassName : " + root.ClassName);
+        var cls = root.Metaclass;
+        app.Output.WriteLine(category, "Metaclass : " + (cls != null ? cls.FullName : "(null)"));
+        string modelPath = null;
+        try { modelPath = root.ModelPath; } catch (Exception) { }
+        app.Output.WriteLine(category, "ModelPath : " + (modelPath ?? ""));
+        app.Output.WriteLine(category, "");
+
+        app.Output.WriteLine(category, "--- フィールド ---");
+        if (cls != null)
+        {
+            foreach (var f in cls.GetFields().Cast<IField>())
+            {
+                if (f == null) continue;
+                app.Output.WriteLine(category, f.Name + " : Type=" + f.Type
+                    + " Embedded=" + f.IsEmbedded + " Reference=" + f.IsReference
+                    + " 多重度=" + f.LowerBound + ".." + f.UpperBound);
+                if (f.Type == "RichText")
+                {
+                    try
+                    {
+                        var html = root.GetRichTextField(f.Name, "html");
+                        var preview = html == null ? "(null)" : html.Replace("\r", "").Replace("\n", " ");
+                        if (preview.Length > 200) preview = preview.Substring(0, 200) + "...";
+                        app.Output.WriteLine(category, "    [richtext html] " + preview);
+                    }
+                    catch (Exception ex)
+                    {
+                        app.Output.WriteLine(category, "    [richtext html] 取得失敗: " + ex.Message);
+                    }
+                }
+                else if (!f.IsEmbedded && !f.IsReference)
+                {
+                    try
+                    {
+                        var value = root.GetFieldString(f.Name) ?? "";
+                        value = value.Replace("\r", "").Replace("\n", " ");
+                        if (value.Length > 80) value = value.Substring(0, 80) + "...";
+                        if (value.Trim().Length > 0)
+                            app.Output.WriteLine(category, "    [value] " + value);
+                    }
+                    catch (Exception) { }
+                }
+            }
+        }
+
+        app.Output.WriteLine(category, "");
+        app.Output.WriteLine(category, "--- 子モデル (GetChildren) ---");
+        try
+        {
+            var children = root.GetChildren().Cast<IModel>().ToList();
+            app.Output.WriteLine(category, "件数: " + children.Count);
+            var shown = 0;
+            foreach (var child in children)
+            {
+                if (child == null) continue;
+                app.Output.WriteLine(category, "  " + (child.Name ?? "(無名)") + " (" + child.ClassName + ")");
+                if (++shown >= 50)
+                {
+                    app.Output.WriteLine(category, "  ...（以降省略）");
+                    break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            app.Output.WriteLine(category, "取得失敗: " + ex.Message);
+        }
+
+        app.Output.WriteLine(category, "");
+        app.Output.WriteLine(category, "--- エディタ (GetEditors) ---");
+        try
+        {
+            foreach (var editor in root.GetEditors())
+            {
+                if (editor == null) continue;
+                var defName = "";
+                try
+                {
+                    var def = editor.EditorDefinition;
+                    if (def != null) defName = def.DisplayName ?? def.Name ?? "";
+                }
+                catch (Exception) { }
+                app.Output.WriteLine(category, "  EditorType=" + editor.EditorType
+                    + (defName.Length > 0 ? " 定義=" + defName : ""));
+            }
+        }
+        catch (Exception ex)
+        {
+            app.Output.WriteLine(category, "取得失敗: " + ex.Message);
+        }
+
+        app.Output.WriteLine(category, "=== 診断完了 ===");
+    }
+    catch (Exception ex)
+    {
+        app.Output.WriteLine(category, "[error] " + ex.ToString());
+        app.Window.UI.ShowInformationDialog("エクスポート診断に失敗しました。\n\n" + ex.Message, category);
     }
 }
 

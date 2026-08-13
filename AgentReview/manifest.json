@@ -2,7 +2,7 @@
   "name": "AgentReview",
   "displayName": "AI レビュー",
   "description": "Claude Code / Codex のエージェントで設計レビューと修正提案の生成を行います。設計情報をエクスポートし、ターミナルでエージェントと対話します。",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -93,6 +93,15 @@
                   "imageSmall": "resources/check16.png",
                   "imageLarge": "resources/check32.png",
                   "command": "AgentReview.Command.CheckCli"
+                },
+                {
+                  "id": "AgentReview.ProbeExportButton",
+                  "type": "Button",
+                  "label": "エクスポート診断",
+                  "description": "選択モデルのフィールド構成・子モデル・エディタを出力ウィンドウにダンプします。design.md に出ない情報がある場合の調査用です。",
+                  "imageSmall": "resources/probe16.png",
+                  "imageLarge": "resources/probe32.png",
+                  "command": "AgentReview.Command.ProbeExport"
                 }
               ]
             }
@@ -153,6 +162,13 @@
         "title": "環境診断",
         "group": "agentreview",
         "execFunc": "CheckCliEnvironment",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "AgentReview.Command.ProbeExport",
+        "title": "エクスポート診断",
+        "group": "agentreview",
+        "execFunc": "ProbeExportTarget",
         "canExecWhen": { "uiState": "ProjectOpened" }
       }
     ]

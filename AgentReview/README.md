@@ -63,6 +63,7 @@ Claude Code / Codex エージェントと対話しながら設計レビューと
 
 ## 制約・注意
 
+- design.md に出ない情報がある場合は、対象モデルを選択して **エクスポート診断** を実行すると、フィールド構成（RichText の有無など）・子モデル・エディタが出力ウィンドウにダンプされる（プロファイル依存の調査用）
 - スクリプトの変更は Next Design を再起動するまで反映されない
 - エージェントの実行完了を拡張は検知しない。「結果を開く」でファイルの有無を確認する
 - 配置前検証: `python <skills>/nextdesign-script-extension/scripts/validate_manifest.py AgentReview --nd-version 3`
