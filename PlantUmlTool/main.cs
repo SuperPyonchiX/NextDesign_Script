@@ -163,6 +163,24 @@ public class PlantUmlText
 }
 
 // ------------------------------------------------------------
+//  出力ペインの表示
+// ------------------------------------------------------------
+public static class OutputPane
+{
+    public static void Show(IApplication app, string category)
+    {
+        // CurrentOutputCategory は未登録のカテゴリを渡すと
+        // 「値域外の値」例外になるため、先に 1 行書いて登録してから切り替える
+        app.Output.WriteLine(category, "");
+        app.Output.Clear(category);
+        app.Window.IsInformationPaneVisible = true;
+        app.Window.ActiveInfoWindow = "Output";
+        try { app.Window.CurrentOutputCategory = category; }
+        catch (Exception) { }   // カテゴリ切替に失敗しても処理は続行できる
+    }
+}
+
+// ------------------------------------------------------------
 //  内部用：出力イベントと開いているフラグメント
 // ------------------------------------------------------------
 public class SeqEvent
@@ -173,6 +191,7 @@ public class SeqEvent
     public double Rank;          // フラグメントは面積の大きい順に並べるため負値を入れる
     public string Id = "";
     public string Kind = "";
+    public string FragmentId = "";   // operand イベントが属するフラグメント
     public IMessageShape Message;
     public IFragmentShape Fragment;
     public IOperandShape Operand;
@@ -366,12 +385,14 @@ public class SequencePlantUmlExporter
             });
 
             var operands = OperandsOf(f);
+            var operandYs = OperandYs(f, operands);
             for (var i = 1; i < operands.Count; i++)   // 先頭のガードはヘッダ行に出す
             {
                 events.Add(new SeqEvent
                 {
-                    Y = operands[i].Position, Priority = 20, X = f.LocationX,
-                    Id = operands[i].Id, Kind = "operand", Operand = operands[i]
+                    Y = operandYs[i], Priority = 20, X = f.LocationX,
+                    Id = operands[i].Id, Kind = "operand", Operand = operands[i],
+                    FragmentId = f.Id
                 });
             }
         }
@@ -385,9 +406,11 @@ public class SequencePlantUmlExporter
                     Y = e.LocationY, Priority = 60, X = e.LocationX,
                     Id = e.Id, Kind = "activate", Execution = e
                 });
+                // 同一 Y では「前のバーを閉じる → 次のバーを開く」の順にしたいので、
+                // deactivate は message(50) の後・activate(60) の前に置く
                 events.Add(new SeqEvent
                 {
-                    Y = e.LocationY + e.Length, Priority = 80, X = e.LocationX,
+                    Y = e.LocationY + e.Length, Priority = 55, X = e.LocationX,
                     Id = e.Id, Kind = "deactivate", Execution = e
                 });
             }
@@ -437,7 +460,7 @@ public class SequencePlantUmlExporter
             CloseFragmentsAbove(ev.Y);
 
             if (ev.Kind == "fragment") OnFragment(ev.Fragment);
-            else if (ev.Kind == "operand") OnOperand(ev.Operand);
+            else if (ev.Kind == "operand") OnOperand(ev.Operand, ev.FragmentId);
             else if (ev.Kind == "message") OnMessage(ev.Message);
             else if (ev.Kind == "activate") OnActivate(ev.Execution);
             else if (ev.Kind == "deactivate") OnDeactivate(ev.Execution);
@@ -453,6 +476,29 @@ public class SequencePlantUmlExporter
             .OrderBy(o => o.Position)
             .ThenBy(o => o.Id, StringComparer.Ordinal)
             .ToList();
+    }
+
+    // Operand.Position は環境によって絶対 Y とフラグメント上端からの相対の両方が
+    // ありうるため、フラグメントの範囲に収まるかどうかで判別して絶対 Y に揃える。
+    // さらにフラグメント範囲内へクランプし、else 行が自分の枠から漏れないようにする
+    private List<double> OperandYs(IFragmentShape f, List<IOperandShape> operands)
+    {
+        var top = (double)f.LocationY;
+        var bottom = top + f.Height;
+        var eps = _o.BoundaryEpsilon;
+
+        var absolute = operands.Count > 0
+            && operands.All(o => o.Position >= top - eps && o.Position <= bottom + eps);
+
+        var result = new List<double>();
+        foreach (var o in operands)
+        {
+            var y = absolute ? (double)o.Position : top + o.Position;
+            if (y < top) y = top;
+            if (y > bottom - 2 * eps) y = bottom - 2 * eps;
+            result.Add(y);
+        }
+        return result;
     }
 
     private double MessageX(IMessageShape m)
@@ -483,11 +529,29 @@ public class SequencePlantUmlExporter
         _stack.Add(new OpenFragment { Id = f.Id, Bottom = f.LocationY + f.Height });
     }
 
-    private void OnOperand(IOperandShape o)
+    private void OnOperand(IOperandShape o, string fragmentId)
     {
         var guard = PlantUmlText.Inline(PlantUmlText.Normalize(o.Guard));
-        var depth = _stack.Count > 0 ? _stack.Count - 1 : 0;
-        LineAt(depth, guard.Length > 0 ? "else " + guard : "else");
+
+        // 自分のフラグメントが開いていない位置で else を出すと構文エラーになる
+        var index = _stack.FindLastIndex(s => s.Id == fragmentId);
+        if (index < 0)
+        {
+            Line("' [warn] 分岐 '" + guard + "' の位置を特定できなかったため出力しません");
+            return;
+        }
+
+        // 前の分岐の中で開いたままの内側フラグメントを閉じてから else を出す
+        while (_stack.Count - 1 > index)
+        {
+            _stack.RemoveAt(_stack.Count - 1);
+            Line("end");
+        }
+
+        // ガードが「else」そのものの分岐は素の else にする（"else else" を避ける）
+        var line = guard.Length == 0 || string.Equals(guard, "else", StringComparison.OrdinalIgnoreCase)
+                 ? "else" : "else " + guard;
+        LineAt(_stack.Count - 1, line);
     }
 
     private string OperatorOf(IFragmentShape f)
@@ -1078,10 +1142,7 @@ public class ExportRunner
 
     private static void ShowPane(IApplication app)
     {
-        app.Output.Clear(Category);
-        app.Window.IsInformationPaneVisible = true;
-        app.Window.ActiveInfoWindow = "Output";
-        app.Window.CurrentOutputCategory = Category;
+        OutputPane.Show(app, Category);
     }
 
     private static void SaveText(string path, string text)
@@ -4610,6 +4671,7 @@ public class MetaProbe
         DumpModel(w, "破棄", FirstModel(diagram.Destructions));
 
         DumpMessageKinds(w, diagram);
+        DumpGeometry(w, diagram);
 
         w("");
         var map = MetaMap.Detect(diagram);
@@ -4713,6 +4775,35 @@ public class MetaProbe
               + " : " + PlantUmlText.Normalize(shape.Text));
         }
         if (!any) w("  (見本なし)");
+        w("");
+    }
+
+    // 座標系のトラブル（operand の Position が絶対か相対かなど）を実測するためのダンプ
+    private static void DumpGeometry(Action<string> w, ISequenceDiagram d)
+    {
+        w("---- 形状ジオメトリ ----");
+
+        foreach (var f in d.Fragments.Cast<IFragmentShape>()
+                           .OrderBy(x => x.LocationY).ThenBy(x => x.Id, StringComparer.Ordinal))
+        {
+            w("  fragment '" + Shorten(f.Text) + "'"
+              + " Y=" + f.LocationY + " H=" + f.Height + " X=" + f.LocationX);
+            foreach (var o in f.Operands.Cast<IOperandShape>()
+                               .OrderBy(x => x.Position).ThenBy(x => x.Id, StringComparer.Ordinal))
+                w("    operand Position=" + o.Position + " guard='" + Shorten(o.Guard) + "'");
+        }
+
+        foreach (var e in d.ExecutionSpecifications.Cast<IExecutionSpecificationShape>()
+                           .OrderBy(x => x.LocationY).ThenBy(x => x.Id, StringComparer.Ordinal))
+        {
+            var name = e.Lifeline != null ? Shorten(e.Lifeline.Text) : "(不明)";
+            w("  exec " + name + " Y=" + e.LocationY + " Len=" + e.Length + " X=" + e.LocationX);
+        }
+
+        foreach (var m in d.Messages.Cast<IMessageShape>()
+                           .OrderBy(x => x.SourceY).ThenBy(x => x.Id, StringComparer.Ordinal))
+            w("  message SourceY=" + m.SourceY + " : " + Shorten(m.Text));
+
         w("");
     }
 
@@ -5056,10 +5147,7 @@ public class ImportRunner
 
     private static void ShowPane(IApplication app)
     {
-        app.Output.Clear(Category);
-        app.Window.IsInformationPaneVisible = true;
-        app.Window.ActiveInfoWindow = "Output";
-        app.Window.CurrentOutputCategory = Category;
+        OutputPane.Show(app, Category);
     }
 }
 
@@ -5178,10 +5266,7 @@ public void ProbeClassDiagram(ICommandContext context, ICommandParams commandPar
             return;
         }
 
-        app.Output.Clear(ClassProbe.Category);
-        app.Window.IsInformationPaneVisible = true;
-        app.Window.ActiveInfoWindow = "Output";
-        app.Window.CurrentOutputCategory = ClassProbe.Category;
+        OutputPane.Show(app, ClassProbe.Category);
 
         ClassProbe.Run(app, diagram);
     }
@@ -5206,10 +5291,7 @@ public void ProbeMetamodel(ICommandContext context, ICommandParams commandParams
             return;
         }
 
-        app.Output.Clear(MetaProbe.Category);
-        app.Window.IsInformationPaneVisible = true;
-        app.Window.ActiveInfoWindow = "Output";
-        app.Window.CurrentOutputCategory = MetaProbe.Category;
+        OutputPane.Show(app, MetaProbe.Category);
 
         MetaProbe.Run(app, diagram);
     }
@@ -6386,10 +6468,7 @@ public class ClassExportRunner
 
     private static void ShowPane(IApplication app)
     {
-        app.Output.Clear(Category);
-        app.Window.IsInformationPaneVisible = true;
-        app.Window.ActiveInfoWindow = "Output";
-        app.Window.CurrentOutputCategory = Category;
+        OutputPane.Show(app, Category);
     }
 
     private static void SaveText(string path, string text)

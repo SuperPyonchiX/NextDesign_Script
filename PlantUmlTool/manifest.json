@@ -24,6 +24,8 @@
                   "type": "Button",
                   "label": "この図を出力",
                   "description": "アクティブなシーケンス図またはクラス図を PlantUML 形式で出力します。",
+                  "imageSmall": "resources/export16.png",
+                  "imageLarge": "resources/export32.png",
                   "command": "PlantUmlTool.ExportCurrent"
                 },
                 {
@@ -31,6 +33,8 @@
                   "type": "Button",
                   "label": "配下をまとめて出力",
                   "description": "選択モデル配下のすべてのシーケンス図とクラス図を PlantUML 形式で出力します。",
+                  "imageSmall": "resources/exportall16.png",
+                  "imageLarge": "resources/exportall32.png",
                   "command": "PlantUmlTool.ExportAll"
                 }
               ]
@@ -44,6 +48,8 @@
                   "type": "Button",
                   "label": "ファイルから取り込み",
                   "description": "PlantUML ファイルを読み、同名のシーケンス図を更新します。まず差分を表示します。",
+                  "imageSmall": "resources/import16.png",
+                  "imageLarge": "resources/import32.png",
                   "command": "PlantUmlTool.ImportFile"
                 },
                 {
@@ -51,6 +57,8 @@
                   "type": "Button",
                   "label": "フォルダから一括取り込み",
                   "description": "フォルダ配下の PlantUML ファイルをまとめて取り込みます。まず差分を表示します。",
+                  "imageSmall": "resources/importall16.png",
+                  "imageLarge": "resources/importall32.png",
                   "command": "PlantUmlTool.ImportFolder"
                 }
               ]
@@ -64,6 +72,8 @@
                   "type": "Button",
                   "label": "メタモデル調査",
                   "description": "アクティブなシーケンス図のメタモデル構造を出力ウィンドウにダンプします。",
+                  "imageSmall": "resources/probe16.png",
+                  "imageLarge": "resources/probe32.png",
                   "command": "PlantUmlTool.Probe"
                 },
                 {
@@ -71,6 +81,8 @@
                   "type": "Button",
                   "label": "クラス図調査",
                   "description": "アクティブなクラス図のノード・コネクタ・参照フィールドを出力ウィンドウにダンプします。",
+                  "imageSmall": "resources/probeclass16.png",
+                  "imageLarge": "resources/probeclass32.png",
                   "command": "PlantUmlTool.ProbeClass"
                 }
               ]
