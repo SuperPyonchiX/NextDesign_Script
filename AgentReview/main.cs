@@ -1033,6 +1033,9 @@ public class MarkdownExporter
                     string value = null;
                     try { value = m.GetFieldString(f.Name); }
                     catch (Exception) { }
+                    // 多値プリミティブ等で GetFieldString が空になるフィールドの保険
+                    if (string.IsNullOrEmpty(value) || value.Trim().Length == 0)
+                        value = JoinScalarValues(m, f.Name);
                     if (string.IsNullOrEmpty(value) || value.Trim().Length == 0) continue;
 
                     var lines = value.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
@@ -1077,12 +1080,38 @@ public class MarkdownExporter
             try { text = m.GetRichTextField(f.Name, "text"); }
             catch (Exception) { }
         }
+        // RichText として取得できない環境・フィールドの保険（文字列取得に落とす）
+        if (string.IsNullOrEmpty(text) || text.Trim().Length == 0)
+        {
+            try { text = m.GetFieldString(f.Name); }
+            catch (Exception) { }
+        }
+        if (string.IsNullOrEmpty(text) || text.Trim().Length == 0)
+            text = JoinScalarValues(m, f.Name);
         if (string.IsNullOrEmpty(text) || text.Trim().Length == 0) return false;
 
         _sb.Append("**").Append(f.Name).Append("**:").Append(nl).Append(nl);
         _sb.Append(text.Replace("\r\n", "\n").Replace("\r", "\n").Trim('\n')).Append(nl);
         _sb.Append(nl);
         return true;
+    }
+
+    // GetFieldValues を列挙し、モデル以外のスカラー値を ToString で連結する
+    // （GetFieldString が空を返す多値・特殊型フィールドの最終フォールバック）
+    private static string JoinScalarValues(IModel m, string fieldName)
+    {
+        var values = new List<string>();
+        try
+        {
+            foreach (var v in m.GetFieldValues(fieldName))
+            {
+                if (v == null || v is IModel) continue;
+                var s = v.ToString();
+                if (!string.IsNullOrEmpty(s) && s.Trim().Length > 0) values.Add(s);
+            }
+        }
+        catch (Exception) { }
+        return values.Count > 0 ? string.Join(", ", values.ToArray()) : null;
     }
 
     private static string ShortClassName(IModel m)
@@ -1113,6 +1142,173 @@ public class MarkdownExporter
         try { path = m.ModelPath; }
         catch (Exception) { }
         return string.IsNullOrEmpty(path) ? (m.Name ?? "") : path;
+    }
+}
+
+// 選択モデル配下の実フィールド構成・値の所在を再帰ダンプする診断ヘルパ（ProbeExportTarget 用）。
+// design.md に出ない情報がどの取得経路（GetFieldString / GetRichTextField / GetFieldValues）に
+// あるのかをプロファイル依存で実測する
+public class ExportProbe
+{
+    public const int MaxModels = 200;
+    public int ModelCount;
+    public bool Truncated;
+    private readonly StringBuilder _sb = new StringBuilder();
+    private readonly HashSet<string> _visited = new HashSet<string>(StringComparer.Ordinal);
+
+    public string Text() { return _sb.ToString(); }
+
+    public void Dump(IModel root)
+    {
+        _sb.Append("Next Design エクスポート診断 ")
+           .Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")).Append('\n').Append('\n');
+        DumpModel(root, 0);
+    }
+
+    private void DumpModel(IModel m, int depth)
+    {
+        if (m == null || Truncated) return;
+        if (!_visited.Add(m.Id)) return;
+        if (ModelCount >= MaxModels)
+        {
+            Truncated = true;
+            _sb.Append("...（上限 ").Append(MaxModels).Append(" 件で打ち切り。より深い階層は対象モデルを選び直して実行）\n");
+            return;
+        }
+        ModelCount++;
+
+        var indent = new string(' ', depth * 2);
+        var cls = m.Metaclass;
+        _sb.Append(indent).Append("■ ").Append(string.IsNullOrEmpty(m.Name) ? "(無名)" : m.Name)
+           .Append("  [Class=").Append(m.ClassName ?? "")
+           .Append(" Meta=").Append(cls != null ? cls.FullName : "(null)").Append("]\n");
+
+        if (cls != null)
+        {
+            List<IField> fields;
+            try { fields = cls.GetFields().Cast<IField>().ToList(); }
+            catch (Exception ex)
+            {
+                fields = new List<IField>();
+                _sb.Append(indent).Append("  フィールド一覧の取得失敗: ").Append(ex.Message).Append('\n');
+            }
+            foreach (var f in fields)
+            {
+                if (f == null) continue;
+                try { DumpField(m, f, indent); }
+                catch (Exception ex)
+                {
+                    _sb.Append(indent).Append("  - ").Append(f.Name)
+                       .Append(" : ダンプ失敗 ").Append(ex.Message).Append('\n');
+                }
+            }
+        }
+
+        try
+        {
+            foreach (var editor in m.GetEditors())
+            {
+                if (editor == null) continue;
+                var defName = "";
+                try
+                {
+                    var def = editor.EditorDefinition;
+                    if (def != null) defName = def.DisplayName ?? def.Name ?? "";
+                }
+                catch (Exception) { }
+                _sb.Append(indent).Append("  [editor] ").Append(editor.EditorType)
+                   .Append(defName.Length > 0 ? " 定義=" + defName : "").Append('\n');
+            }
+        }
+        catch (Exception) { }
+
+        try
+        {
+            foreach (var child in m.GetChildren().Cast<IModel>().ToList())
+                DumpModel(child, depth + 1);
+        }
+        catch (Exception ex)
+        {
+            _sb.Append(indent).Append("  子モデルの取得失敗: ").Append(ex.Message).Append('\n');
+        }
+    }
+
+    private void DumpField(IModel m, IField f, string indent)
+    {
+        _sb.Append(indent).Append("  - ").Append(f.Name)
+           .Append(" : Type=").Append(f.Type)
+           .Append(" Embedded=").Append(f.IsEmbedded)
+           .Append(" Reference=").Append(f.IsReference)
+           .Append(" 多重度=").Append(f.LowerBound).Append("..").Append(f.UpperBound).Append('\n');
+
+        if (f.IsEmbedded) return;   // 中身は子モデルの行として出る
+
+        var got = false;
+        try
+        {
+            var s = m.GetFieldString(f.Name);
+            if (!string.IsNullOrEmpty(s) && s.Trim().Length > 0)
+            {
+                _sb.Append(indent).Append("      [string] ").Append(Clip(s, 80)).Append('\n');
+                got = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _sb.Append(indent).Append("      [string] 取得失敗: ").Append(ex.Message).Append('\n');
+        }
+
+        if (f.Type == "RichText")
+        {
+            try
+            {
+                var html = m.GetRichTextField(f.Name, "html");
+                _sb.Append(indent).Append("      [richtext html] ")
+                   .Append(string.IsNullOrEmpty(html) ? "(空)" : Clip(html, 120)).Append('\n');
+                if (!string.IsNullOrEmpty(html)) got = true;
+            }
+            catch (Exception ex)
+            {
+                _sb.Append(indent).Append("      [richtext html] 取得失敗: ").Append(ex.Message).Append('\n');
+            }
+            try
+            {
+                var text = m.GetRichTextField(f.Name, "text");
+                _sb.Append(indent).Append("      [richtext text] ")
+                   .Append(string.IsNullOrEmpty(text) ? "(空)" : Clip(text, 120)).Append('\n');
+                if (!string.IsNullOrEmpty(text)) got = true;
+            }
+            catch (Exception ex)
+            {
+                _sb.Append(indent).Append("      [richtext text] 取得失敗: ").Append(ex.Message).Append('\n');
+            }
+        }
+
+        if (!got)
+        {
+            try
+            {
+                foreach (var v in m.GetFieldValues(f.Name))
+                {
+                    if (v == null) continue;
+                    var model = v as IModel;
+                    _sb.Append(indent).Append("      [value ").Append(v.GetType().Name).Append("] ")
+                       .Append(model != null
+                            ? (string.IsNullOrEmpty(model.Name) ? "(無名)" : model.Name)
+                            : Clip(v.ToString(), 80)).Append('\n');
+                }
+            }
+            catch (Exception ex)
+            {
+                _sb.Append(indent).Append("      [values] 取得失敗: ").Append(ex.Message).Append('\n');
+            }
+        }
+    }
+
+    private static string Clip(string s, int max)
+    {
+        s = (s ?? "").Replace("\r", "").Replace("\n", " ");
+        return s.Length > max ? s.Substring(0, max) + "..." : s;
     }
 }
 
@@ -1693,8 +1889,9 @@ public void CheckCliEnvironment(ICommandContext context, ICommandParams commandP
     }
 }
 
-// 選択モデル 1 件のフィールド構成・子モデル・エディタを出力ウィンドウにダンプする。
-// design.md に出ない情報がある場合の切り分け用（プロファイル依存の実測）
+// 選択モデル配下を再帰的にダンプする（モデルごとの全フィールドの型・値・RichText・
+// GetFieldValues の実行時型まで）。design.md に出ない情報がある場合の切り分け用。
+// 長大になるため出力ウィンドウには要約のみ出し、全文はファイルに保存する
 public void ProbeExportTarget(ICommandContext context, ICommandParams commandParams)
 {
     var category = "AgentReview";
@@ -1712,99 +1909,22 @@ public void ProbeExportTarget(ICommandContext context, ICommandParams commandPar
 
         OutputPane.Show(app, category);
         app.Output.WriteLine(category, "=== エクスポート診断 : " + (root.Name ?? "(無名)") + " ===");
-        app.Output.WriteLine(category, "ClassName : " + root.ClassName);
-        var cls = root.Metaclass;
-        app.Output.WriteLine(category, "Metaclass : " + (cls != null ? cls.FullName : "(null)"));
-        string modelPath = null;
-        try { modelPath = root.ModelPath; } catch (Exception) { }
-        app.Output.WriteLine(category, "ModelPath : " + (modelPath ?? ""));
-        app.Output.WriteLine(category, "");
 
-        app.Output.WriteLine(category, "--- フィールド ---");
-        if (cls != null)
-        {
-            foreach (var f in cls.GetFields().Cast<IField>())
-            {
-                if (f == null) continue;
-                app.Output.WriteLine(category, f.Name + " : Type=" + f.Type
-                    + " Embedded=" + f.IsEmbedded + " Reference=" + f.IsReference
-                    + " 多重度=" + f.LowerBound + ".." + f.UpperBound);
-                if (f.Type == "RichText")
-                {
-                    try
-                    {
-                        var html = root.GetRichTextField(f.Name, "html");
-                        var preview = html == null ? "(null)" : html.Replace("\r", "").Replace("\n", " ");
-                        if (preview.Length > 200) preview = preview.Substring(0, 200) + "...";
-                        app.Output.WriteLine(category, "    [richtext html] " + preview);
-                    }
-                    catch (Exception ex)
-                    {
-                        app.Output.WriteLine(category, "    [richtext html] 取得失敗: " + ex.Message);
-                    }
-                }
-                else if (!f.IsEmbedded && !f.IsReference)
-                {
-                    try
-                    {
-                        var value = root.GetFieldString(f.Name) ?? "";
-                        value = value.Replace("\r", "").Replace("\n", " ");
-                        if (value.Length > 80) value = value.Substring(0, 80) + "...";
-                        if (value.Trim().Length > 0)
-                            app.Output.WriteLine(category, "    [value] " + value);
-                    }
-                    catch (Exception) { }
-                }
-            }
-        }
+        var probe = new ExportProbe();
+        probe.Dump(root);
 
-        app.Output.WriteLine(category, "");
-        app.Output.WriteLine(category, "--- 子モデル (GetChildren) ---");
-        try
-        {
-            var children = root.GetChildren().Cast<IModel>().ToList();
-            app.Output.WriteLine(category, "件数: " + children.Count);
-            var shown = 0;
-            foreach (var child in children)
-            {
-                if (child == null) continue;
-                app.Output.WriteLine(category, "  " + (child.Name ?? "(無名)") + " (" + child.ClassName + ")");
-                if (++shown >= 50)
-                {
-                    app.Output.WriteLine(category, "  ...（以降省略）");
-                    break;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            app.Output.WriteLine(category, "取得失敗: " + ex.Message);
-        }
+        var dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nd-agent-review");
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, "probe_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".txt");
+        File.WriteAllText(file, probe.Text(), new UTF8Encoding(false));
 
-        app.Output.WriteLine(category, "");
-        app.Output.WriteLine(category, "--- エディタ (GetEditors) ---");
-        try
-        {
-            foreach (var editor in root.GetEditors())
-            {
-                if (editor == null) continue;
-                var defName = "";
-                try
-                {
-                    var def = editor.EditorDefinition;
-                    if (def != null) defName = def.DisplayName ?? def.Name ?? "";
-                }
-                catch (Exception) { }
-                app.Output.WriteLine(category, "  EditorType=" + editor.EditorType
-                    + (defName.Length > 0 ? " 定義=" + defName : ""));
-            }
-        }
-        catch (Exception ex)
-        {
-            app.Output.WriteLine(category, "取得失敗: " + ex.Message);
-        }
-
+        app.Output.WriteLine(category, "モデル " + probe.ModelCount + " 件をダンプしました"
+            + (probe.Truncated ? "（上限 " + ExportProbe.MaxModels + " 件で打ち切り。より深い階層は対象モデルを選び直して実行）" : ""));
+        app.Output.WriteLine(category, "保存先: " + file);
         app.Output.WriteLine(category, "=== 診断完了 ===");
+
+        TerminalLauncher.OpenWithNotepad(file);
     }
     catch (Exception ex)
     {

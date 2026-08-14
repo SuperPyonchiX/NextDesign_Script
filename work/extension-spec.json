@@ -148,7 +148,21 @@
         "指示書生成・SKILL.md（正本 + embed_skills.py 再埋め込み）・README のフォルダ構成説明を新構造に更新。review\\ の構造は変更なし",
         "manifest 0.6.0（ExportDesignButton の説明も更新）。validate_manifest --nd-version 3 で ERROR 0 / WARN 0"
       ],
-      "result": "ユーザー確認待ち（別PC: 「設計情報を出力」と「レビュー開始」の design\\ が diagrams\\<種別>\\ 階層になり、design.md/_index.md のリンクが辿れること。実機の原本 %USERPROFILE%\\.nd-agent-review\\skills\\design-review は上書きされないため、未カスタマイズならフォルダ削除で新文言に再生成）"
+      "result": "diagrams 階層化は OK。ただし実機で (1) 改訂履歴が行のバージョン（見出し）のみで改訂内容等の列値が出ない (2) はじめに配下の「ドキュメントの目的」等のテキストが出ない、の欠落を確認"
+    },
+    {
+      "date": "2026-08-14",
+      "symptoms": [
+        "改訂履歴: 各行の見出し（バージョン=Name）だけで改訂内容・日付などの列値が design.md に出ない",
+        "はじめに: 配下の「ドキュメントの目的」などのテキストベースの情報が出ない",
+        "コード精査では単純な見落とし無し（GetFields は V3.x 公式で継承フィールドを含むと確認。値の取得経路だけが失敗/空とみられる）。原因確定には実機のフィールド実測が必要"
+      ],
+      "fixes": [
+        "MarkdownExporter に取得フォールバックを追加: RichText は html→text→GetFieldString→GetFieldValues、非埋め込み・非参照は GetFieldString が空なら GetFieldValues のスカラー値を連結（JoinScalarValues 新設）",
+        "ProbeExportTarget を再帰ダンプに刷新: 選択モデル配下（上限200件）の全フィールドの Type/Embedded/Reference/多重度 + GetFieldString / GetRichTextField(html,text) / GetFieldValues の実行時型と値プレビューを %USERPROFILE%\\.nd-agent-review\\probe_<日時>.txt に保存しメモ帳で開く（ExportProbe クラス新設）",
+        "manifest 0.6.1（診断ボタンの説明を更新）。validate_manifest --nd-version 3 で ERROR 0 / WARN 0"
+      ],
+      "result": "ユーザー確認待ち（別PC: まず「設計情報を出力」を再実行し欠落が直ったか確認。直らない場合は「はじめに」等を選択して「エクスポート診断」を実行し probe_*.txt を報告 → 原因確定して追修正）"
     }
   ]
 }
