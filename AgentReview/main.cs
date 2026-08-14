@@ -1011,7 +1011,10 @@ public class MarkdownExporter
                     continue;
                 }
 
-                if (f.IsEmbedded) continue;   // 所有（クラス型）は子セクションで出す（二重化回避）
+                // 所有（クラス型）は子セクションで出す（二重化回避）。
+                // String 等のプリミティブにも IsEmbedded が立つプロファイルがあるため
+                // クラス型（TypeClass あり）に限定してスキップする
+                if (f.IsEmbedded && f.TypeClass != null) continue;
 
                 if (f.IsReference)
                 {
@@ -1241,7 +1244,8 @@ public class ExportProbe
            .Append(" Reference=").Append(f.IsReference)
            .Append(" 多重度=").Append(f.LowerBound).Append("..").Append(f.UpperBound).Append('\n');
 
-        if (f.IsEmbedded) return;   // 中身は子モデルの行として出る
+        // 所有クラス型の中身は子モデルの行として出る。埋め込みスカラーは値をダンプする
+        if (f.IsEmbedded && f.TypeClass != null) return;
 
         var got = false;
         try

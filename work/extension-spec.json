@@ -162,7 +162,19 @@
         "ProbeExportTarget を再帰ダンプに刷新: 選択モデル配下（上限200件）の全フィールドの Type/Embedded/Reference/多重度 + GetFieldString / GetRichTextField(html,text) / GetFieldValues の実行時型と値プレビューを %USERPROFILE%\\.nd-agent-review\\probe_<日時>.txt に保存しメモ帳で開く（ExportProbe クラス新設）",
         "manifest 0.6.1（診断ボタンの説明を更新）。validate_manifest --nd-version 3 で ERROR 0 / WARN 0"
       ],
-      "result": "ユーザー確認待ち（別PC: まず「設計情報を出力」を再実行し欠落が直ったか確認。直らない場合は「はじめに」等を選択して「エクスポート診断」を実行し probe_*.txt を報告 → 原因確定して追修正）"
+      "result": "フォールバックでは直らず。ユーザーが probe_*.txt を実行・報告し原因確定: DeSIDE プロファイルでは String 等のプリミティブフィールドにも IsEmbedded=True が立ち（例: Description : Type=String Embedded=True）、WriteFields の『if (f.IsEmbedded) continue;』が本文・列値を一律スキップしていた"
+    },
+    {
+      "date": "2026-08-14",
+      "symptoms": [
+        "probe で確定した原因への対処: 埋め込みスカラー（String だが IsEmbedded=True）のフィールド値が WriteFields で捨てられ、改訂詳細の列値・Description（ドキュメント本文）が design.md に出ない"
+      ],
+      "fixes": [
+        "WriteFields のスキップ条件を IsEmbedded 単独から『IsEmbedded && TypeClass != null』（所有クラス型のみ）に修正。埋め込みスカラーは通常の値として出力",
+        "ExportProbe.DumpField の同一条件も修正（embedded スカラーの値が probe に出るように）",
+        "manifest 0.6.2。validate_manifest --nd-version 3 で ERROR 0 / WARN 0"
+      ],
+      "result": "ユーザー確認待ち（別PC: 「設計情報を出力」再実行で改訂履歴の列値と「ドキュメントの目的」等の本文が出ること）"
     }
   ]
 }
