@@ -716,6 +716,7 @@ public class MarkdownExporter
     private readonly string _diagramDir;
     private readonly HashSet<string> _seenEditors = new HashSet<string>(StringComparer.Ordinal);
     private readonly HashSet<string> _usedFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _seenDiagramWarnings = new HashSet<string>(StringComparer.Ordinal);
     private readonly PlantUmlOptions _seqOptions = new PlantUmlOptions();
     private readonly ClassPlantUmlOptions _classOptions = new ClassPlantUmlOptions();
     private readonly StatePlantUmlOptions _stateOptions = new StatePlantUmlOptions();
@@ -730,6 +731,29 @@ public class MarkdownExporter
     {
         _options = options ?? new MarkdownExportOptions();
         _diagramDir = diagramDir;
+        RegisterDesideMaps(_classOptions);
+    }
+
+    // DeSIDE プロファイル向けの対応表（既定表は Part 7 側なので触らず、ここで追記する）。
+    // 実機の warn（対応表に無いメタクラス・フィールド名）から採録
+    private static void RegisterDesideMaps(ClassPlantUmlOptions o)
+    {
+        // 型定義の構成要素は属性として出力する（従来の既定動作を明示して警告を止める）
+        var attrs = new[] { "StructureType", "PointerType", "NumericalType", "ArrayType",
+            "EnumeratorType", "StringType", "ImplementationDataType", "BooleanType", "VoidType" };
+        foreach (var name in attrs)
+            if (!o.MemberKindMap.ContainsKey(name)) o.MemberKindMap[name] = "attribute";
+
+        // 双方向フィールドは逆側を逆向き矢印にする（フィールド名からの推定。実図と違えば要調整）
+        var links = new Dictionary<string, string>
+        {
+            { "SuperClasses", "--|>" }, { "SubClasses", "<|--" },
+            { "Whole", "--*" }, { "Parts", "*--" },
+            { "Related", "-->" }, { "RelateFrom", "<--" },
+            { "Children", "o--" },
+        };
+        foreach (var pair in links)
+            if (!o.LinkMap.ContainsKey(pair.Key)) o.LinkMap[pair.Key] = pair.Value;
     }
 
     public string Export(IModel root)
@@ -857,7 +881,12 @@ public class MarkdownExporter
                         skipChildren = true;
                         var exporter = new StatePlantUmlExporter(diagram, _stateOptions);
                         var uml = exporter.Export();
-                        foreach (var warning in exporter.Warnings) Warnings.Add(warning);
+                        AddDiagramWarnings(diagramName, exporter.Warnings);
+                        if (exporter.NodeCount == 0)
+                        {
+                            Warnings.Add("図「" + diagramName + "」: 対応するノードが無いため出力をスキップ");
+                            continue;
+                        }
                         var file = SaveDiagram(diagramName, "_state", "状態遷移図", uml);
                         refs.Add("- 図: [" + diagramName + "](" + file + ")（状態遷移図）");
                         AddIndexRow(diagramName, "状態遷移図", file, m);
@@ -867,7 +896,12 @@ public class MarkdownExporter
                         // クラス図は図要素＝クラス設計そのものなので子の再帰は続ける
                         var exporter = new ClassPlantUmlExporter(diagram, _classOptions);
                         var uml = exporter.Export();
-                        foreach (var warning in exporter.Warnings) Warnings.Add(warning);
+                        AddDiagramWarnings(diagramName, exporter.Warnings);
+                        if (exporter.NodeCount == 0)
+                        {
+                            Warnings.Add("図「" + diagramName + "」: 対応するノードが無いため出力をスキップ");
+                            continue;
+                        }
                         var file = SaveDiagram(diagramName, "_class", "クラス図", uml);
                         refs.Add("- 図: [" + diagramName + "](" + file + ")（クラス図）");
                         AddIndexRow(diagramName, "クラス図", file, m);
@@ -910,6 +944,19 @@ public class MarkdownExporter
         File.WriteAllText(Path.Combine(dir, file), uml, new UTF8Encoding(false));
         DiagramCount++;
         return "diagrams/" + kindFolder + "/" + file;
+    }
+
+    // エクスポータの警告に図名を付けて写す。同一内容の繰り返しは初出だけ残す
+    // （対応表に無いメタクラス等の警告は図の枚数分だけ重複するため）
+    private void AddDiagramWarnings(string diagramName, List<string> warnings)
+    {
+        foreach (var warning in warnings)
+        {
+            // ノード0件の図はスキップ行で報告するため、エクスポータ側の同旨の警告は写さない
+            if (warning == "図上にモデルと対応するノードがありません。") continue;
+            if (!_seenDiagramWarnings.Add(warning)) continue;
+            Warnings.Add("図「" + diagramName + "」: " + warning);
+        }
     }
 
     private void AddIndexRow(string name, string kind, string file, IModel owner)

@@ -174,7 +174,19 @@
         "ExportProbe.DumpField の同一条件も修正（embedded スカラーの値が probe に出るように）",
         "manifest 0.6.2。validate_manifest --nd-version 3 で ERROR 0 / WARN 0"
       ],
-      "result": "実機確認 OK（別PC・0.6.2）: 改訂履歴の列値（日付・改訂内容等）と「ドキュメントの目的」等の本文が design.md に出力されることを確認。改訂履歴の probe（0.6.2 反映前に実行）も同じ埋め込みスカラーのパターンで本修正の範囲内と確認済み"
+      "result": "実機確認 OK（別PC・0.6.2）: 改訂履歴の列値（日付・改訂内容等）と「ドキュメントの目的」等の本文が design.md に出力されることを確認。改訂履歴の probe（0.6.2 反映前に実行）も同じ埋め込みスカラーのパターンで本修正の範囲内と確認済み。ただし出力ウィンドウに大量の [warn]（次ラウンド）"
+    },
+    {
+      "date": "2026-08-14",
+      "symptoms": [
+        "「設計情報を出力」時に大量の [warn]: (1) MemberKindMap に無い DeSIDE 型定義メタクラス9種（StructureType/PointerType/NumericalType/ArrayType/EnumeratorType/StringType/ImplementationDataType/BooleanType/VoidType） (2) LinkMap に無いフィールド名7種（Related/RelateFrom/Children/SuperClasses/SubClasses/Whole/Parts） (3) 図名の無い「図上にモデルと対応するノードがありません」の多数繰り返し（ノード0件でも空 .puml を保存していた）"
+      ],
+      "fixes": [
+        "Part 7 は不変更。MarkdownExporter コンストラクタの RegisterDesideMaps で _classOptions に追記: 型定義9種 → attribute、SuperClasses=--|> / SubClasses=<|-- / Whole=--* / Parts=*-- / Related=--> / RelateFrom=<-- / Children=o--（フィールド名からの推定。実図と違えば要調整）",
+        "WriteDiagrams: NodeCount==0 の図は .puml 保存・参照行・_index 行をやめ「図「名」: 対応するノードが無いため出力をスキップ」1行に集約。エクスポータ警告は AddDiagramWarnings で図名接頭辞 + 同一内容 dedupe",
+        "manifest 0.6.3。validate_manifest --nd-version 3 で ERROR 0 / WARN 0"
+      ],
+      "result": "ユーザー確認待ち（別PC: warn が消える/集約されること、空 .puml が出ないこと、クラス図の矢印が実図と一致すること）"
     }
   ]
 }
