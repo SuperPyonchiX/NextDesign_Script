@@ -391,9 +391,13 @@ public static class WorkspaceBuilder
 
         sb.Append("## 出力（このフォルダ規約に従うこと）").Append(nl).Append(nl);
         sb.Append("- `review/review.md` : レビュー指摘の一覧。次の表形式で書く。").Append(nl);
-        sb.Append("  `| No | 重要度(高/中/低) | 対象（モデルパスまたは図名） | 指摘 | 根拠 | 修正方針 |`").Append(nl);
+        sb.Append("  `| No | 重要度(高/中/低) | 工程 | 対象（モデルパスまたは図名） | 指摘 | 根拠（観点） | 修正方針 |`").Append(nl);
         sb.Append("- `review/proposal.md` : 修正提案。指摘 No と対応付け、修正後の設計を具体的に書く").Append(nl);
         sb.Append("- `review/proposed/*.puml` : 修正後の図（図の変更を提案する場合）").Append(nl).Append(nl);
+        sb.Append("指摘・提案の対象参照は Next Design のモデルパスと内容で示すこと。モデルパスは").Append(nl);
+        sb.Append("design.md の各見出し直下の `<!-- modelpath: ... -->` コメントに記載がある").Append(nl);
+        sb.Append("（図の指摘は `_index.md` のモデルパス＋図名）。ユーザーは Next Design 上でしか").Append(nl);
+        sb.Append("指摘個所を辿れないため、design.md 等の変換後ファイルの行番号で参照を書いてはならない。").Append(nl).Append(nl);
         sb.Append("Next Design のモデルを直接編集することはできない。提案は必ず上記ファイルに書く。").Append(nl);
         sb.Append("修正提案はユーザーが Next Design 上で手作業で反映できる粒度（対象モデルパス・").Append(nl);
         sb.Append("フィールド名・変更前後の値）まで具体化すること。").Append(nl).Append(nl);
@@ -588,7 +592,8 @@ R1 入力の読み込み（design/ 全体）
    ```
 
    - 重要度は 高（設計不備・実装したら不具合になる）/ 中（品質・保守性の問題）/ 低（改善提案・軽微）
-   - 対象は design.md の見出しパスまたは _index.md の図名で、ユーザーが Next Design 上で辿れる粒度にする
+   - 対象は Next Design のモデルパスで書く。design.md の各見出し直下の `<!-- modelpath: ... -->` コメントに記載がある。図への指摘は `_index.md` のモデルパス＋図名で書く
+   - 指摘文には該当のフィールド名や原文の短い引用を添え、ユーザーが Next Design 上でその場所を特定できるようにする
 3. 会話では全件を貼らず、件数（重要度別）と高重要度の指摘の要約を提示する
 
 ### R5: 対話ループ
@@ -611,6 +616,7 @@ R1 入力の読み込み（design/ 全体）
 - **Next Design のモデルを直接編集できるかのような提案を書くことを禁止する。** 反映は人間が行う前提で書く
 - **工程を質問せずに観点表を当てることを禁止する。** 推定が確実に見えても確認する
 - **観点表に無い独自観点だけでレビューを済ませることを禁止する。** 追加観点はよいが、表の観点を網羅した上で行う
+- **指摘・提案の対象参照に design.md 等の変換後ファイルのファイル名・行番号を使うことを禁止する。** ユーザーは Next Design 上でしか指摘個所を辿れない。参照は必ずモデルパスと内容（フィールド名・原文引用）で示す
 
 ## 参照ファイル
 
@@ -815,10 +821,14 @@ public class MarkdownExporter
 
             // メタクラスは短縮名を見出しに付記するだけに留める
             // （完全修飾名とパスの引用ブロックはノイズが大きく実機で不評だった）
+            // モデルパスは HTML コメントで埋め込む。レンダリング表示には出ないため
+            // ノイズにならず、レビューエージェントが指摘の対象参照
+            // （Next Design のモデルパス）として引用できる
             _sb.Append(new string('#', level)).Append(' ').Append(heading);
             var shortCls = ShortClassName(m);
             if (shortCls.Length > 0) _sb.Append("（").Append(shortCls).Append("）");
             _sb.Append(nl);
+            _sb.Append("<!-- modelpath: ").Append(PathOf(m)).Append(" -->").Append(nl);
             _sb.Append(nl);
 
             WriteFields(m);
