@@ -2,7 +2,7 @@
   "name": "AgentReview",
   "displayName": "AI レビュー",
   "description": "Claude Code / Codex のエージェントで設計レビューと修正提案の生成を行います。設計情報をエクスポートし、ターミナルでエージェントと対話します。",
-  "version": "0.6.5",
+  "version": "0.7.0",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -95,7 +95,7 @@
                   "id": "AgentReview.OpenSkillButton",
                   "type": "Button",
                   "label": "スキルを開く",
-                  "description": "レビュー手順と工程別観点表（design-review スキル）の原本フォルダ（%USERPROFILE%\\.nd-agent-review\\skills\\design-review）を開きます。編集すると次回のレビュー開始から反映されます。",
+                  "description": "拡張機能に同梱したチーム共通のレビュー手順と工程別観点表（skills/design-review）を開きます。変更は拡張機能一式として配布してください。",
                   "imageSmall": "resources/skill16.png",
                   "imageLarge": "resources/skill32.png",
                   "command": "AgentReview.Command.OpenSkill"

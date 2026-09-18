@@ -16,10 +16,7 @@
 //                           AgentProfile（claude / codex の差異吸収）
 //      Part 2  セッション   SessionInfo / SessionLocator
 //      Part 3  ワークスペース WorkspaceBuilder（フォルダ・指示書・session.ini）
-//                           SkillProvisioner / DesignReviewSkillFiles
-//                           （design-review スキルの原本管理とセッション配置。
-//                             スキル本文の編集は skills/design-review/ を直して
-//                             tools/embed_skills.py で再生成する）
+//                           SkillProvisioner（同梱 skills をセッションから直接参照）
 //      Part 4  Markdown出力 MarkdownExportOptions / MarkdownExporter / HtmlToMarkdown
 //                           （DesignExporter(46ac9c9) から図の埋め込みを外して移植。
 //                             修正は転記元 PlantUmlTool 系と独立に本ファイルで完結。
@@ -189,7 +186,7 @@ public class AgentConfig
         sb.Append("initialPrompt=").Append(InitialPrompt).Append(nl);
         sb.Append(nl);
         sb.Append("# 追加のレビュー観点（カンマ区切り）。工程別の観点表は").Append(nl);
-        sb.Append("# %USERPROFILE%\\.nd-agent-review\\skills\\design-review\\ を直接編集する").Append(nl);
+        sb.Append("# 拡張機能に同梱した skills/design-review/ でチーム共通管理する").Append(nl);
         sb.Append("perspectives=").Append(Perspectives).Append(nl);
 
         Directory.CreateDirectory(ConfigDir());
@@ -405,6 +402,8 @@ public static class WorkspaceBuilder
         sb.Append("## レビューの進め方").Append(nl).Append(nl);
         sb.Append("レビューは **design-review スキル**に従うこと。スキルとして認識できない環境では").Append(nl);
         sb.Append("`.agents/skills/design-review/SKILL.md` を読み、その手順に従うこと。").Append(nl);
+        sb.Append("`.agents/skills/` と `.claude/skills/` は拡張機能のチーム共通スキルを直接参照している。").Append(nl);
+        sb.Append("リンク先を含め、スキルのファイルを変更・削除してはならない。読み取りのみとすること。").Append(nl);
         sb.Append("要点: 最初に対象の開発工程（要求分析 / アーキ設計 / 詳細設計）をユーザーに質問し、").Append(nl);
         sb.Append("工程別の観点表（`.agents/skills/design-review/references/`）を適用してレビューする。").Append(nl).Append(nl);
 
@@ -429,31 +428,46 @@ public static class FsLink
     // ジャンクションは管理者権限なしで作れる（シンボリックリンクは要権限のため使わない）
     public static bool TryCreateJunction(string link, string target)
     {
+        string error;
+        return TryCreateJunction(link, target, out error);
+    }
+
+    public static bool TryCreateJunction(string link, string target, out string error)
+    {
+        error = "";
         try
         {
             var psi = new ProcessStartInfo
             {
                 FileName = "cmd.exe",
-                Arguments = "/c mklink /J \"" + link + "\" \"" + target + "\"",
+                Arguments = "/d /v:off /c mklink /J \"%ND_FS_LINK%\" \"%ND_FS_TARGET%\"",
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
+            // パス中の % や ! を cmd の変数として再展開させない。
+            psi.EnvironmentVariables["ND_FS_LINK"] = link;
+            psi.EnvironmentVariables["ND_FS_TARGET"] = target;
             using (var process = Process.Start(psi))
             {
-                process.StandardOutput.ReadToEnd();
-                process.StandardError.ReadToEnd();
+                var stdout = process.StandardOutput.ReadToEndAsync();
+                var stderr = process.StandardError.ReadToEndAsync();
                 if (!process.WaitForExit(3000))
                 {
                     try { process.Kill(); } catch (Exception) { }
+                    error = "ジャンクション作成がタイムアウトしました。";
                     return false;
                 }
-                return process.ExitCode == 0 && Directory.Exists(link);
+                if (process.ExitCode == 0 && Directory.Exists(link)) return true;
+                error = "mklink 終了コード: " + process.ExitCode
+                    + "\n" + stderr.Result.Trim() + "\n" + stdout.Result.Trim();
+                return false;
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            error = ex.Message;
             return false;
         }
     }
@@ -469,230 +483,47 @@ public static class FsLink
 }
 
 // ------------------------------------------------------------
-//  design-review スキルの配置
-//
-//    レビューの進め方・工程別観点は Agent Skill（SKILL.md）として渡す。
-//    原本: %USERPROFILE%\.nd-agent-review\skills\design-review\
-//          （無ければ既定内容を生成。既存ファイルは上書きしない＝ユーザー編集を保護）
-//    配置: <セッション>\.agents\skills\design-review\ にコピーし、
-//          <セッション>\.claude\skills を .agents\skills へのジャンクションにする
-//          （Codex は .agents/skills、Claude Code は .claude/skills を読むため）
+//  同梱 skills の参照（ユーザー用の複製や埋め込みは持たない）
 // ------------------------------------------------------------
 public static class SkillProvisioner
 {
-    public static string SourceDir()
+    public static string SourceDir(string extensionPath)
     {
-        return Path.Combine(AgentConfig.ConfigDir(), "skills", "design-review");
+        if (string.IsNullOrWhiteSpace(extensionPath) || !Path.IsPathRooted(extensionPath))
+            throw new InvalidOperationException("拡張機能の配置パスを取得できませんでした。");
+        return Path.Combine(extensionPath, "skills");
     }
 
-    // 原本が無ければ既定内容を書き出す（既存ファイルは上書きしない）
-    public static void EnsureSource()
+    public static void ValidateSource(string skillsDir)
     {
-        var dir = SourceDir();
-        var refDir = Path.Combine(dir, "references");
-        Directory.CreateDirectory(refDir);
-        var utf8 = new UTF8Encoding(false);
-        WriteIfMissing(Path.Combine(dir, "SKILL.md"), DesignReviewSkillFiles.SkillMd, utf8);
-        WriteIfMissing(Path.Combine(refDir, "requirements-review.md"), DesignReviewSkillFiles.RequirementsMd, utf8);
-        WriteIfMissing(Path.Combine(refDir, "architecture-review.md"), DesignReviewSkillFiles.ArchitectureMd, utf8);
-        WriteIfMissing(Path.Combine(refDir, "detailed-design-review.md"), DesignReviewSkillFiles.DetailedDesignMd, utf8);
+        var reviewDir = Path.Combine(skillsDir, "design-review");
+        var required = new[] {
+            Path.Combine(reviewDir, "SKILL.md"),
+            Path.Combine(reviewDir, "references", "requirements-review.md"),
+            Path.Combine(reviewDir, "references", "architecture-review.md"),
+            Path.Combine(reviewDir, "references", "detailed-design-review.md")
+        };
+        foreach (var path in required)
+            if (!File.Exists(path))
+                throw new FileNotFoundException("同梱スキルが不足しています。拡張機能一式を再配置してください。\n" + path, path);
     }
 
-    private static void WriteIfMissing(string path, string content, Encoding encoding)
+    public static void LinkToSession(string sessionFolder, string skillsDir)
     {
-        if (!File.Exists(path)) File.WriteAllText(path, content, encoding);
-    }
-
-    // セッションへ配置し、.claude/skills の方式（ジャンクション/コピー）を返す
-    public static string CopyToSession(string sessionFolder)
-    {
-        EnsureSource();
-        var agentsSkills = Path.Combine(sessionFolder, ".agents", "skills");
-        FsLink.CopyDirectory(SourceDir(), Path.Combine(agentsSkills, "design-review"));
-
-        var claudeDir = Path.Combine(sessionFolder, ".claude");
-        Directory.CreateDirectory(claudeDir);
-        var claudeSkills = Path.Combine(claudeDir, "skills");
-        if (Directory.Exists(claudeSkills)) return "既存";
-
-        if (FsLink.TryCreateJunction(claudeSkills, agentsSkills)) return "ジャンクション";
-        FsLink.CopyDirectory(SourceDir(), Path.Combine(claudeSkills, "design-review"));
-        return "コピー";
+        ValidateSource(skillsDir);
+        foreach (var agentDir in new[] { ".agents", ".claude" })
+        {
+            var parent = Path.Combine(sessionFolder, agentDir);
+            Directory.CreateDirectory(parent);
+            var link = Path.Combine(parent, "skills");
+            string error;
+            if (!FsLink.TryCreateJunction(link, skillsDir, out error))
+                throw new IOException("共通スキルへのジャンクションを作成できませんでした。"
+                    + "\nリンク元: " + link + "\nリンク先: " + skillsDir + "\n" + error);
+        }
     }
 }
 
-// ---- BEGIN GENERATED SKILL FILES (tools/embed_skills.py が skills/design-review から生成。手で編集しない) ----
-public static class DesignReviewSkillFiles
-{
-    public const string SkillMd = @"---
-name: design-review
-description: Next Design からエクスポートされた設計情報（design/ 配下）を開発工程別の観点でレビューし、指摘を review/review.md、修正提案を review/proposal.md に出力するスキル。「レビューして」「レビュー開始」「設計を見て」「指摘して」「設計レビューをお願い」「この設計どう？」といった話が出たら、明示的に「スキル」という言及がなくても必ずこのスキルを使うこと。最初に対象の開発工程（要求分析 / アーキ設計 / 詳細設計）をユーザーに質問し、工程に対応する観点表に従ってレビューする。
----
-
-# design-review — 開発工程別の設計レビュー
-
-Next Design からエクスポートされた設計レビュー用ワークスペースで動くスキル。設計上の勘所は2つ。(1) **レビュー観点は開発工程で変わる** — 要求分析の設計に詳細設計の観点を当てても的外れな指摘になる。だから観点表を当てる前に必ず工程を確定させる。(2) **Next Design のモデルは直接編集できない** — 修正はすべて `review/` 配下への提案ファイルとして書き、反映は人間が Next Design 上で行う。
-
-## ワークフロー
-
-```
-R1 入力の読み込み（design/ 全体）
- → R2 工程の質問（ユーザー回答が確定するまで先に進まない）
- → R3 工程別の観点表を読む（references/、選択された工程の分だけ）
- → R4 レビュー実施 → review/review.md に指摘一覧を書き、要約を会話で提示
- → R5 対話ループ（深掘り・取捨選択。ユーザー主導）
- → R6 合意した指摘を review/proposal.md（必要なら review/proposed/*.puml）にまとめる
-```
-
-## 手順
-
-### R1: 入力の読み込み
-
-1. `design/design.md` を読む。モデル階層・フィールド・ドキュメント本文（表を含む）が入っている
-2. `design/_index.md`（図一覧）があれば読み、design.md の「- 図:」で始まる参照行が指す `design/diagrams/<種別>/*.puml`（種別フォルダ: クラス図 / シーケンス図 / 状態遷移図）のうちレビューに関係するものを読む。シーケンス図・状態遷移図の中身は design.md には無いので、挙動のレビューには .puml が必須
-3. 設計の全体像（対象システム、主要な構成要素、図の種類と数）を 3〜5 行でユーザーに提示する
-
-### R2: 工程の質問
-
-**観点表を当てる前に、必ずユーザーに対象工程を質問する。** 設計内容から工程が推定できても、推定で進めずに確認する。
-
-> この設計はどの工程のレビューですか？（複数選択可）
-> 1. 要求分析 — 要求の妥当性・検証可能性・網羅性
-> 2. アーキ設計 — 構造分割・インタフェース・非機能
-> 3. 詳細設計 — クラス/関数の責務・振る舞いの整合・エラー処理
-
-回答が得られるまで R3 に進まない。上記のどれにも当てはまらない工程（テスト設計など）を指定された場合は、観点表が無い旨を伝え、汎用観点（整合性・網羅性・一貫性）でよいか確認してから進める。
-
-### R3: 観点表の読み込み
-
-選択された工程に対応するファイルだけを読む。
-
-| 工程 | 読むファイル |
-|---|---|
-| 要求分析 | `references/requirements-review.md` |
-| アーキ設計 | `references/architecture-review.md` |
-| 詳細設計 | `references/detailed-design-review.md` |
-
-複数工程が選択された場合は該当ファイルをすべて読み、観点を工程ごとに分けて適用する。
-
-### R4: レビュー実施
-
-1. 観点表の**全観点**を設計に当てる。該当する設計要素が無い観点は「対象なし」として飛ばしてよいが、観点を勝手に間引かない
-2. 指摘を `review/review.md` に次の表形式で書く。
-
-   ```markdown
-   # レビュー指摘一覧
-
-   - 対象: <起点モデル名>
-   - 工程: <選択された工程>
-   - 実施日: <日付>
-
-   | No | 重要度 | 工程 | 対象（モデルパスまたは図名） | 指摘 | 根拠（観点） | 修正方針 |
-   |---|---|---|---|---|---|---|
-   ```
-
-   - 重要度は 高（設計不備・実装したら不具合になる）/ 中（品質・保守性の問題）/ 低（改善提案・軽微）
-   - 対象は Next Design のモデルパスで書く。design.md の各見出し直下の `<!-- modelpath: ... -->` コメントに記載がある。図への指摘は `_index.md` のモデルパス＋図名で書く
-   - 指摘文には該当のフィールド名や原文の短い引用を添え、ユーザーが Next Design 上でその場所を特定できるようにする
-3. 会話では全件を貼らず、件数（重要度別）と高重要度の指摘の要約を提示する
-
-### R5: 対話ループ
-
-ユーザーと指摘を深掘りする。この工程はユーザー主導で、往復回数の上限は設けない。
-
-- 指摘への反論・背景説明を受けたら、妥当なら指摘を取り下げ/修正して review.md を更新する（履歴は消さず、取り下げは重要度欄を「取下」にする）
-- 「この指摘を詳しく」と言われたら、該当する設計要素と観点に基づいて具体化する
-- **終了条件**: ユーザーが「提案をまとめて」「レビュー終了」等で次に進むことを宣言したとき。エージェント側から一方的に打ち切らない
-
-### R6: 修正提案のまとめ
-
-1. R5 で合意（取り下げられなかった）指摘について、`review/proposal.md` に修正提案を書く。指摘 No と対応付け、**ユーザーが Next Design 上で手作業で反映できる粒度**（対象モデルパス・フィールド名・変更前 → 変更後）まで具体化する
-2. 図の変更を提案する場合は `review/proposed/<図名>.puml` に修正後の図を書き、proposal.md から参照する
-3. 提案の要約を会話で提示して完了。**完了条件**: 合意済みの全指摘が proposal.md に反映され、ユーザーに要約を提示したこと
-
-## 禁止事項
-
-- **`design/` 配下のファイルを変更・削除することを禁止する。** 入力の原本である
-- **Next Design のモデルを直接編集できるかのような提案を書くことを禁止する。** 反映は人間が行う前提で書く
-- **工程を質問せずに観点表を当てることを禁止する。** 推定が確実に見えても確認する
-- **観点表に無い独自観点だけでレビューを済ませることを禁止する。** 追加観点はよいが、表の観点を網羅した上で行う
-- **指摘・提案の対象参照に design.md 等の変換後ファイルのファイル名・行番号を使うことを禁止する。** ユーザーは Next Design 上でしか指摘個所を辿れない。参照は必ずモデルパスと内容（フィールド名・原文引用）で示す
-
-## 参照ファイル
-
-| ファイル | 読むタイミング |
-|---|---|
-| `references/requirements-review.md` | R3 で「要求分析」が選択されたとき |
-| `references/architecture-review.md` | R3 で「アーキ設計」が選択されたとき |
-| `references/detailed-design-review.md` | R3 で「詳細設計」が選択されたとき |
-";
-
-    public const string RequirementsMd = @"# 要求分析レビューの観点表
-
-R3 で「要求分析」が選択されたときに読む。全観点を当て、該当要素が無い観点は「対象なし」として飛ばす。
-
-| # | 観点 | 確認内容 | 典型的な指摘例 |
-|---|---|---|---|
-| R-1 | 一意性・明確性 | 各要求が一通りにしか解釈できない表現か。「高速に」「適切に」「など」等の曖昧語が無いか | 「応答は高速であること」→ 数値目標（例: 100ms 以内）が無く検証できない |
-| R-2 | 検証可能性 | 要求ごとに合否を判定する手段（試験・レビュー・解析）を想定できるか | 「使いやすいこと」は試験項目に落とせない。操作手数などの測定可能な条件に置き換える |
-| R-3 | 網羅性（機能） | ユースケース・運用シナリオに対して機能要求が揃っているか。正常系だけでなく異常系・縮退運転が書かれているか | 通信断発生時の振る舞いの要求が無い |
-| R-4 | 網羅性（非機能） | 性能・容量・信頼性・保守性・セキュリティ・法規制の各カテゴリが検討されているか（不要なら「不要」と明示されているか） | メモリ使用量の上限が未定義のまま詳細化されている |
-| R-5 | 無矛盾性 | 要求同士が矛盾していないか。優先度・トレードオフが決められているか | 「常時ログ出力」と「フラッシュ書込み回数制限」が両立しない |
-| R-6 | 実現可能性 | 制約（ハード資源・期間・既存資産）の下で実現の目処があるか。リスクの高い要求が識別されているか | 選定 SoC の帯域では成立しない転送要求 |
-| R-7 | 出所と根拠 | 各要求の出所（上位仕様・法規・顧客要望）が辿れるか。根拠不明の要求が混じっていないか。要求が必要な背景・理由が、顧客・エンドユーザ・関連コンポーネントを意識して記載されているか（ソフトウェア仕様への適切な反映と、顧客への確認・提案を可能にするため） | 出所欄が空の要求。上位仕様に無い独自要求が紛れている。理由欄が「顧客要望のため」だけで、誰が何のために必要とするかが読み取れない |
-| R-8 | 用語の一貫性 | 同じ概念に複数の用語、同じ用語に複数の意味が無いか。用語集と一致しているか | 「端末」「デバイス」「ノード」が混在し境界が不明 |
-| R-9 | 変更容易性への影響 | 将来変更が予想される要求が識別され、影響範囲を局所化する意図が示されているか | 通信プロトコルが将来差し替え予定なのに要求が特定プロトコルの用語で書かれている |
-| R-10 | スコープ境界 | システムの責務範囲（やらないこと）が明示されているか。外部システムとの責任分界が書かれているか | 時刻同期を自システムと外部のどちらが担うか未定義 |
-| R-11 | 関連コンポーネントの洗い出し | 要求を実現するために必要な関連コンポーネント（ステークホルダ）が漏れなく洗い出されているか。開発依頼・評価・リリース計画を遂行できる粒度か | 要求の実現に他コンポーネントの変更が必要なのに、関連コンポーネント一覧に挙がっていない |
-| R-12 | 仕様記述の形式 | ソフトウェア仕様に落とした各文で、どんなトリガ（いつ）・誰（どのコンポーネント）・動作・出力が明確か。主体・相手の名称が洗い出した関連コンポーネント名と一致しているか（コンポーネント責務を明確にするため） | 「XXX は、aaa を受信した時、bbb パラメータを ccc に丸め込んで、YYY に送信する」の形になっておらず、主体やトリガが読み取れない仕様 |
-| R-13 | 仕様の分割粒度 | 1 つの仕様に複数の動作が無理にまとめられていないか。設計工程・評価工程でポイントを明確にできる単位に分割されているか | 「無応答検知時、リトライオーバー未満なら待ちタイマを再開始し YYY に再送、リトライオーバーなら ZZZ に異常応答」が 1 文に同居（再送・タイマ再設定・異常応答の 3 仕様に分割すべき） |
-";
-
-    public const string ArchitectureMd = @"# アーキ設計レビューの観点表
-
-R3 で「アーキ設計」が選択されたときに読む。全観点を当て、該当要素が無い観点は「対象なし」として飛ばす。
-
-| # | 観点 | 確認内容 | 典型的な指摘例 |
-|---|---|---|---|
-| A-1 | 構造分割の妥当性 | コンポーネント分割の基準（責務・変更理由・チーム境界）が一貫しているか。1 コンポーネントに複数の変更理由が同居していないか | 通信処理とビジネスロジックが同一コンポーネントに同居 |
-| A-2 | 責務の明確性 | 各コンポーネントの責務が 1〜2 文で言えるか。「〜管理」「〜制御」だけで中身が不明な要素が無いか | 「データ管理部」が保持・変換・配信のどこまで担うか不明 |
-| A-3 | インタフェース定義 | コンポーネント間 IF の入出力・呼び出し方向・同期/非同期・エラー通知方法が定義されているか。関連コンポーネントとの IF（API）が明確で、関連コンポーネントとレビュー・合意済みか。自コンポーネントの機能実現に外部から必要な情報が洗い出されているか | IF 一覧に戻り値とエラー通知の規定が無い。相手コンポーネントと未確認の IF 前提で設計が進んでいる |
-| A-4 | 依存関係の方向 | 依存が上位→下位の一方向か。循環依存・下位から上位への逆依存が無いか。共通部への依存が管理されているか | ドライバ層がアプリ層のデータ構造を参照している |
-| A-5 | 状態・動的構造 | システム状態（起動・停止・縮退・復帰）が定義され、遷移契機と各状態での各コンポーネントの振る舞いが決まっているか | 縮退から通常への復帰条件が未定義 |
-| A-6 | 並行性・リソース方式 | スレッド/プロセス構成、排他（mutex/セマフォ）、優先度、キュー設計が根拠付きで決められているか。デッドロック・優先度逆転の検討があるか | 2 つの mutex の取得順序が規定されていない |
-| A-7 | 非機能の実現方式 | 性能・メモリ・起動時間・信頼性の各要求に対し、実現方式（見積り含む）が対応付いているか | 起動時間要求に対する初期化順序・遅延初期化の方式検討が無い |
-| A-8 | 異常設計の方針 | エラーの分類（回復可能/不可能）、検出箇所、通知経路、フェイルセーフの方針が全体で統一されているか | コンポーネントごとにエラー通知方法（戻り値/コールバック/ログのみ）がバラバラ |
-| A-9 | 外部境界 | 外部システム・ハードとの境界での前提（プロトコル、タイミング、失敗時の振る舞い）が明記されているか | 外部サービス無応答時のタイムアウト値と再試行方針が未定義 |
-| A-10 | 要求とのトレース | 全要求がいずれかの構成要素・方式に割り付けられているか。どの要求にも紐付かない構成要素が無いか | 要求一覧の 3 件がどのコンポーネントにも割り付いていない |
-| A-11 | 変更容易性 | 変更が予想される箇所（プロトコル・ハード依存・設定値）が抽象化・局所化されているか | ハード依存コードが複数コンポーネントに分散 |
-| A-12 | 図と記述の整合 | クラス図・構成図・シーケンス図・状態遷移図と本文記述が一致しているか（要素名・関係・多重度） | 構成図に存在するコンポーネントが IF 一覧に無い |
-| A-13 | 入出力データの変換設計 | Input データを加工して Output データを作成する箇所で、変換設計（丸め込み等）が明確か。目的に合った情報量・パラメータが Input として必要十分か（同じパラメータでも Output 時に値変換が必要なものを、次工程の設計・評価ポイントとして引き渡すため） | 丸め込みが必要なパラメータの変換仕様が未定義のまま次工程に渡っている |
-";
-
-    public const string DetailedDesignMd = @"# 詳細設計レビューの観点表
-
-R3 で「詳細設計」が選択されたときに読む。全観点を当て、該当要素が無い観点は「対象なし」として飛ばす。
-
-| # | 観点 | 確認内容 | 典型的な指摘例 |
-|---|---|---|---|
-| D-1 | クラス/関数の責務 | 各クラス・関数の責務が単一か。肥大化（多責務・巨大クラス）や、逆に意味の無い分割が無いか | 1 クラスが通信・解析・保持・通知の 4 責務を持つ |
-| D-2 | シーケンスとクラス設計の整合 | シーケンス図に現れる呼び出しが、クラス図のメソッドとして定義されているか（名前・引数・方向の一致） | シーケンス図の `notify()` 呼び出しがクラス図に存在しない |
-| D-3 | 状態遷移の完全性 | 状態遷移表を作成しマトリクスで網羅しているか。ありえないケースも空白とせず Ignore / NotCase を明記し、異常処理を実施しているか。異常で動作が困難な場合でも初期状態に戻る等のフェールセーフ処理（リカバリ可否）を検討したか。リカバリできない場合は検討結果を状態遷移設計の方針として残しているか。到達不能状態・脱出不能状態が無いか | エラー状態から抜ける遷移が無い。状態×イベントのマトリクスに空白セルが残っている |
-| D-4 | インタフェース詳細 | 引数・戻り値の型と意味、値域、null/空の扱い、所有権（誰が確保し誰が解放するか）が決まっているか | ポインタ引数の生存期間と解放責任が未定義 |
-| D-5 | エラー処理 | 失敗しうる処理（I/O・通信・メモリ確保）ごとに検出と対処が設計されているか。エラーの握りつぶしが無いか。errno 等の分類が網羅されているか | 戻り値のエラーコード一覧に該当しない値を受けた場合の扱いが無い |
-| D-6 | 境界値・数値設計 | バッファ長・配列サイズ・タイムアウト・リトライ回数に根拠があるか。オーバーフロー・切り捨て・単位（ms/s、byte/bit）の混乱が無いか | リトライ回数 3 の根拠が無く、上位のタイムアウトと積算で矛盾する |
-| D-7 | 並行性の詳細 | 実行コンテキスト一覧（D-13）を基に、各コンテキストからアクセスするリソースを抽出したか。設計をシンプルにするため 1 つのコンテキストへの集約（排他不要）を優先検討し、複数コンテキストからのアクセスが必須の場合のみ排他制御としているか。排他が必要な場合、必要最低限のリソースアクセス範囲に絞られているか（不要な区間排他による性能劣化を回避し CPU リソースを活用するため）。コールバック・割り込みコンテキストでの禁止事項が守られているか | 共有バッファへの参照返しでロック区間外アクセスが可能 |
-| D-8 | リソース管理 | メモリ・ハンドル・ソケット等の確保と解放が対で設計されているか。異常経路でも解放されるか。1 つのトリガ処理（シーケンス）が終わったタイミングで必要なリソースの解放・初期化を行っているか。解放漏れのフェールセーフとして処理開始時にリソースを初期化する設計になっているか（メモリリークと、次の動作へ影響する不具合を回避するため） | エラー分岐でソケットがクローズされない経路がある。前回シーケンスの残留データを次のトリガ処理が参照しうる |
-| D-9 | 命名・一貫性 | 命名がプロジェクト規約と一致し、同種の概念に同じパターンが使われているか | 同じ意味の関数が get/fetch/read と不統一 |
-| D-10 | アーキ設計とのトレース | アーキ設計の IF・方式決定と矛盾していないか。詳細化の過程で勝手に追加・変更された仕様が無いか | アーキ設計は非同期通知と定めたのに同期呼び出しで詳細化されている |
-| D-11 | テスト容易性 | 単体テストで検証できる構造か（外部依存の分離、観測点の有無）。テスト不能な私的ロジックの塊が無いか | ハード依存呼び出しが直接埋め込まれておりスタブ差し替え不能 |
-| D-12 | ドキュメント整合 | 本文の説明・表（エラー一覧等）と図・フィールド定義が一致しているか。古い記述の残骸が無いか | 本文のエラー表に 12 種、状態遷移図には 8 種しか現れない |
-| D-13 | 実行コンテキストの棚卸し | 自コンポーネント内で自身が生成しているスレッドだけでなく、提供ライブラリのコールバック・Timer コールバック・ディスパッチ先なども含めた実行コンテキストの一覧として整理されているか（複数コンテキストでのリソースアクセス制御・ディスパッチ先を意識した設計とするため） | ライブラリの Timer コールバックがどのスレッドで実行されるか整理されておらず、排他検討から漏れている |
-| D-14 | 単純代入と atomic | テーブルの変更などだけでなく、単純な変数の代入レベルであっても排他設計の対象としているか。atomic を使う場合は、処理系のアーキテクチャに依存すること・性能面への影響を考慮したうえで、atomic の修飾子を明示的に付与しているか | フラグ変数への代入が「単純だから」と排他検討から除外されている。atomic 前提の設計なのに修飾子が明示されていない |
-| D-15 | デッドロック回避 | 排他区間・ロック取得順序によりデッドロックが発生しない設計か。入れ子のロックで取得順序がスレッド間で逆転していないか。mutex を保持したまま他スレッドへディスパッチし、その完了を同期待ちする設計になっていないか（処理継続不可状態を回避するため） | スレッド 1 が mutex1→mutex2、スレッド 2 が mutex2→mutex1 の順で取得している。mutex を保持したままディスパッチ先の処理完了を待ち、ディスパッチ先が同じ mutex を待って停止する |
-";
-}
-// ---- END GENERATED SKILL FILES ----
 
 // ============================================================
 //  Part 4 / 設計情報の Markdown 出力
@@ -1669,10 +1500,12 @@ public void StartAgentReview(ICommandContext context, ICommandParams commandPara
         app.Output.WriteLine(category, "=== レビュー開始 : " + root.Name + " (" + profile.DisplayName + ") ===");
 
         app.Output.WriteLine(category, "[1/3] ワークスペースを作成しています...");
+        var skillsDir = SkillProvisioner.SourceDir(context.ExtensionInfo.ExtensionPath);
+        SkillProvisioner.ValidateSource(skillsDir);
         var session = WorkspaceBuilder.Build(config.WorkspaceRoot, root, config);
         app.Output.WriteLine(category, "[dir]   " + session.Folder);
-        var skillLinkMode = SkillProvisioner.CopyToSession(session.Folder);
-        app.Output.WriteLine(category, "[info]  design-review スキルを配置（.claude\\skills: " + skillLinkMode + "）");
+        SkillProvisioner.LinkToSession(session.Folder, skillsDir);
+        app.Output.WriteLine(category, "[info]  共通スキルへ接続（.agents/skills、.claude/skills → " + skillsDir + "）");
 
         app.Output.WriteLine(category, "[2/3] 設計情報と図をエクスポートしています...");
         var exporter = new MarkdownExporter(new MarkdownExportOptions(), session.DesignDir());
@@ -1891,15 +1724,17 @@ public void OpenSkillFolder(ICommandContext context, ICommandParams commandParam
     var app = context.App;
     try
     {
-        SkillProvisioner.EnsureSource();   // 無ければ既定内容を生成（既存は上書きしない）
-        if (!TerminalLauncher.OpenFolder(SkillProvisioner.SourceDir()))
+        var skillsDir = SkillProvisioner.SourceDir(context.ExtensionInfo.ExtensionPath);
+        SkillProvisioner.ValidateSource(skillsDir);
+        var reviewSkillDir = Path.Combine(skillsDir, "design-review");
+        if (!TerminalLauncher.OpenFolder(reviewSkillDir))
         {
             app.Window.UI.ShowInformationDialog(
-                "スキルフォルダを開けませんでした。\n\n" + SkillProvisioner.SourceDir(), category);
+                "スキルフォルダを開けませんでした。\n\n" + reviewSkillDir, category);
             return;
         }
-        app.Output.WriteLine(category, "design-review スキルの原本: " + SkillProvisioner.SourceDir());
-        app.Output.WriteLine(category, "編集すると次回の「レビュー開始」から反映されます（Next Design の再起動は不要）。");
+        app.Output.WriteLine(category, "design-review 共通スキル: " + reviewSkillDir);
+        app.Output.WriteLine(category, "チーム共通の原本です。変更は拡張機能一式として配布してください。既存セッションも更新後の内容を参照します。");
     }
     catch (Exception ex)
     {
@@ -1938,8 +1773,17 @@ public void CheckCliEnvironment(ICommandContext context, ICommandParams commandP
         app.Output.WriteLine(category, "基点フォルダ       : " + (string.IsNullOrEmpty(config.WorkspaceRoot) ? "(未設定)" : config.WorkspaceRoot));
         app.Output.WriteLine(category, "設定ファイル       : " + AgentConfig.ConfigPath()
             + (File.Exists(AgentConfig.ConfigPath()) ? "" : " (未作成。既定値で動作)"));
-        app.Output.WriteLine(category, "スキル原本         : " + SkillProvisioner.SourceDir()
-            + (File.Exists(Path.Combine(SkillProvisioner.SourceDir(), "SKILL.md")) ? "" : " (未生成。次回のレビュー開始か「スキルを開く」で生成)"));
+        var skillsDir = SkillProvisioner.SourceDir(context.ExtensionInfo.ExtensionPath);
+        app.Output.WriteLine(category, "共通スキル         : " + Path.Combine(skillsDir, "design-review"));
+        try
+        {
+            SkillProvisioner.ValidateSource(skillsDir);
+            app.Output.WriteLine(category, "同梱スキル         : OK（セッションからジャンクションで参照）");
+        }
+        catch (Exception ex)
+        {
+            app.Output.WriteLine(category, "[error] " + ex.Message);
+        }
         app.Output.WriteLine(category, "");
 
         app.Output.WriteLine(category, "[claude] where   : " + CliProbe.Run("where " + config.ClaudeCommand, 5000));
@@ -5812,4 +5656,3 @@ public class StateExportRunner
         System.IO.File.WriteAllText(path, text, new UTF8Encoding(false));
     }
 }
-

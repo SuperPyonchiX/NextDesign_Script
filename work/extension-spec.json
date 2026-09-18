@@ -16,7 +16,8 @@
     "JSON パーサ（Newtonsoft 等）の利用可否が V3.x ドキュメントで確認できないため、設定・セッション情報は key=value 形式の .ini で持つ（計画の config.json から変更）",
     "設計情報の Markdown 化は revert 済み DesignExporter (46ac9c9) の MarkdownExporter を図の埋め込み無しで自己完結化して移植。匿名参照フィールド（$ / ___ 始まり）は IsSystemName で除外（revert 原因のノイズ対策）",
     "図の PlantUML は S3 で PlantUmlTool の Part 0/7/8 を転記予定。それまでは PlantUmlTool の一括出力を design/ に置く運用",
-    "S4（任意）: ヘッドレス一発レビュー（claude -p / codex exec のリダイレクト detached 起動）"
+    "S4（任意）: ヘッドレス一発レビュー（claude -p / codex exec のリダイレクト detached 起動）",
+    "0.7.0: 同梱 skills をチーム共通の正本とし、各セッションの .agents/skills と .claude/skills から直接ジャンクションで参照。個人用生成・コピー・埋め込み・コピーへのフォールバックを廃止。旧スキルは更新時に手動削除し、互換対応・スキル履歴記録は設けない。"
   ],
   "extensionPoints": {
     "ribbon": true,
@@ -187,6 +188,26 @@
         "manifest 0.6.3。validate_manifest --nd-version 3 で ERROR 0 / WARN 0"
       ],
       "result": "ユーザー確認待ち（別PC: warn が消える/集約されること、空 .puml が出ないこと、クラス図の矢印が実図と一致すること）"
+    },
+    {
+      "date": "2026-09-19",
+      "symptoms": [
+        "チーム共通スキルを拡張機能更新と同時に反映したい。旧方式はユーザー用スキルを上書きせず、更新が反映されない。"
+      ],
+      "fixes": [
+        "V3.x 公式 API の IContext.ExtensionInfo と IExtensionInfo.ExtensionPath を確認。実行中の拡張機能の配置先から同梱 skills を解決する。",
+        "両エージェントの skills を同梱フォルダへ直接リンクし、不足ファイル・リンク作成失敗時はレビュー開始を中止する。",
+        "ユーザー用スキル生成・セッションへのコピー・埋め込みデータと生成ツールを削除。UI・診断・指示書・README を更新。manifest 0.7.0。"
+      ],
+      "validation": [
+        "validate_manifest --nd-version 3: ERROR 0 / WARN 0。",
+        "変更した FsLink / SkillProvisioner を PowerShell Add-Type でコンパイルし、一時フォルダで両ジャンクション・更新反映・日本語/空白/%/!/&を含むパス・既存パス衝突の診断・観点表不足時の中止・添付資料用リンク/コピーを検証して PASS。初回はサンドボックスの重複 Path/PATH により失敗し、サンドボックス外の一時フォルダで再検証。"
+      ],
+      "apiReferences": [
+        "https://docs.nextdesign.app/extension/v3.x/api/NextDesign.Desktop/IContext/",
+        "https://docs.nextdesign.app/extension/v3.x/api/NextDesign.Desktop/IExtensionInfo/"
+      ],
+      "result": "コード変更とローカル検証済み。Next Design への配置・再起動後のコマンド実行（レビュー開始・スキルを開く・環境診断）は未確認。ユーザーによる実機確認待ち。"
     }
   ]
 }
