@@ -1,0 +1,27 @@
+[project]
+name = "nd-mcp-bridge"
+version = "0.1.0"
+description = "Next Design (NdMcp 拡張) を MCP クライアントへ橋渡しする stdio MCP サーバー"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=2,<3",
+]
+
+[project.scripts]
+nd-mcp-bridge = "nd_mcp_bridge.server:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nd_mcp_bridge"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

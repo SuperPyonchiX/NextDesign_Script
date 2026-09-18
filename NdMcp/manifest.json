@@ -1,0 +1,69 @@
+{
+  "name": "NdMcp",
+  "displayName": "NdMcp",
+  "description": "Next Design のモデルを MCP クライアント（Claude Code 等）から読み出すための HTTP サーバー（読み取り専用）",
+  "version": "0.1.0",
+  "publisher": "ksk01",
+  "main": "main.cs",
+  "lifecycle": "project",
+
+  "extensionPoints": {
+    "ribbon": {
+      "tabs": [
+        {
+          "id": "NdMcp.MainTab",
+          "label": "NdMcp",
+          "groups": [
+            {
+              "id": "NdMcp.ServerGroup",
+              "label": "MCP サーバー",
+              "controls": [
+                {
+                  "id": "NdMcp.StartButton",
+                  "type": "Button",
+                  "label": "サーバー開始",
+                  "description": "MCP ブリッジ用の HTTP サーバーを 127.0.0.1（既定ポート 3560）で開始します",
+                  "command": "NdMcp.Command.Start"
+                },
+                {
+                  "id": "NdMcp.StopButton",
+                  "type": "Button",
+                  "label": "サーバー停止",
+                  "description": "HTTP サーバーを停止します",
+                  "command": "NdMcp.Command.Stop"
+                },
+                {
+                  "id": "NdMcp.StatusButton",
+                  "type": "Button",
+                  "label": "状態確認",
+                  "description": "稼働状態と受信ログを出力ウィンドウに表示します",
+                  "command": "NdMcp.Command.Status"
+                }
+              ]
+            },
+            {
+              "id": "NdMcp.SettingsGroup",
+              "label": "設定",
+              "controls": [
+                {
+                  "id": "NdMcp.ConfigButton",
+                  "type": "Button",
+                  "label": "設定を開く",
+                  "description": "config.ini（ポート・出力先）をメモ帳で開きます",
+                  "command": "NdMcp.Command.OpenConfig"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+
+    "commands": [
+      { "id": "NdMcp.Command.Start", "execFunc": "StartNdMcpServer" },
+      { "id": "NdMcp.Command.Stop", "execFunc": "StopNdMcpServer" },
+      { "id": "NdMcp.Command.Status", "execFunc": "ShowNdMcpStatus" },
+      { "id": "NdMcp.Command.OpenConfig", "execFunc": "OpenNdMcpConfig" }
+    ]
+  }
+}
