@@ -1,8 +1,8 @@
 # Next Design
 # Local company knowledge (sources, summaries and index)
 /.local/nd-knowledge/
-# Local PlantUmlTool investigation history
-/work/extension-spec.plantumltool.json
+# Local development and investigation records
+/work/
 *.ndproj
 *.ndbak
 *.ndlock
