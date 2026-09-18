@@ -1,4 +1,6 @@
 # Next Design
+# Local company knowledge (sources, summaries and index)
+/.local/nd-knowledge/
 *.ndproj
 *.ndbak
 *.ndlock
