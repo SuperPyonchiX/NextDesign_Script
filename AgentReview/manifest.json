@@ -2,7 +2,7 @@
   "name": "AgentReview",
   "displayName": "AI レビュー",
   "description": "Claude Code / Codex のエージェントで設計レビューと修正提案の生成を行います。設計情報をエクスポートし、ターミナルでエージェントと対話します。",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -22,7 +22,7 @@
                   "id": "AgentReview.StartButton",
                   "type": "Button",
                   "label": "レビュー開始",
-                  "description": "選択モデルの設計と指定された上位文書を出力し、設計自体と上位要求との整合をまとめてレビューします。",
+                  "description": "工程と上位文書を選び、選択モデルの設計と上位要求との整合をまとめてレビューします。",
                   "imageSmall": "resources/start16.png",
                   "imageLarge": "resources/start32.png",
                   "command": "AgentReview.Command.Start"
@@ -137,7 +137,7 @@
                   "id": "AgentReview.InputsButton",
                   "type": "Button",
                   "label": "レビュー入力設定",
-                  "description": "上位文書の指定とモデルID一覧を作成し、入力設定を開きます。",
+                  "description": "工程と上位モデル・資料を選ぶ画面を開き、工程ごとの選択を保存します。",
                   "command": "AgentReview.Command.Inputs"
                 },
                 {

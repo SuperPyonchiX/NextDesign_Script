@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  AgentReview / Claude Code・Codex による設計レビュー支援
 //
 //    Next Design V3.x のスクリプト拡張。役割分担:
@@ -283,6 +283,7 @@ public static class IniFile
 // プロジェクト本体に設定を書かず、ユーザー領域にプロジェクトパス別で保持する。
 public class ReviewInputs
 {
+    public string Phase = "";
     public readonly List<string> ModelIds = new List<string>();
     public readonly List<string> Files = new List<string>();
     public bool IntentionalNone;
@@ -463,8 +464,172 @@ public static class ReviewSnapshot
     }
 }
 
+public static class ReviewInputPicker
+{
+    public static readonly string[] Phases = { "requirements", "architecture", "detailed" };
+    public static string PhaseLabel(string phase)
+    {
+        switch (phase) {
+            case "requirements": return "要件分析";
+            case "architecture": return "アーキ設計";
+            case "detailed": return "詳細設計";
+            default: throw new InvalidDataException("レビュー工程が未選択または不正です: " + phase);
+        }
+    }
+    public static string SettingsFile(string projectPath)
+    {
+        return string.IsNullOrWhiteSpace(projectPath) ? null
+            : Path.Combine(Path.GetDirectoryName(ReviewInputs.SettingsPath(projectPath)), "review-selection.xml");
+    }
+    public static System.Xml.XmlDocument ReadXml(string path)
+    {
+        var doc = new System.Xml.XmlDocument();
+        doc.XmlResolver = null;
+        var options = new System.Xml.XmlReaderSettings();
+        options.DtdProcessing = System.Xml.DtdProcessing.Prohibit;
+        options.XmlResolver = null;
+        using (var reader = System.Xml.XmlReader.Create(path, options)) doc.Load(reader);
+        return doc;
+    }
+    private static System.Xml.XmlElement Add(System.Xml.XmlNode parent, string name, string value)
+    {
+        var node = parent.OwnerDocument.CreateElement(name);
+        node.InnerText = value ?? ""; parent.AppendChild(node); return node;
+    }
+    public static System.Xml.XmlDocument Request(IProject project, IModel target, bool settingsOnly)
+    {
+        var doc = new System.Xml.XmlDocument();
+        var root = doc.CreateElement("request"); doc.AppendChild(root);
+        root.SetAttribute("settingsOnly", settingsOnly ? "true" : "false");
+        Add(root, "target", target.ModelPath);
+        var choices = Add(root, "choices", "");
+        foreach (var model in new[] { (IModel)project }.Concat(project.GetAllChildren())) {
+            var node = Add(choices, "model", "");
+            node.SetAttribute("id", model.Id);
+            node.SetAttribute("parent", model.Owner == null ? "" : model.Owner.Id);
+            node.SetAttribute("name", model.Name);
+            node.SetAttribute("path", model.ModelPath);
+            node.SetAttribute("available", model.IsDeleted || model.IsProxy ? "false" : "true");
+        }
+        var settings = Add(root, "settings", "");
+        var path = SettingsFile(project.Path);
+        if (path != null && File.Exists(path)) {
+            var saved = ReadXml(path).DocumentElement;
+            if (saved.Name != "settings") throw new InvalidDataException("選択設定の形式が不正です。");
+            root.ReplaceChild(doc.ImportNode(saved, true), settings);
+        } else if (path != null && File.Exists(ReviewInputs.SettingsPath(project.Path))) {
+            var legacy = ReviewInputs.Load(ReviewInputs.SettingsPath(project.Path), project.Path);
+            foreach (var phase in Phases) {
+                var node = Add(settings, "phase", ""); node.SetAttribute("key", phase);
+                foreach (var id in legacy.ModelIds) Add(node, "model", id);
+                foreach (var file in legacy.Files) Add(node, "file", file);
+            }
+        }
+        return doc;
+    }
+    public static ReviewInputs Result(System.Xml.XmlDocument response, IProject project)
+    {
+        var root = response.DocumentElement;
+        if (root == null || root.Name != "result") throw new InvalidDataException("選択結果の形式が不正です。");
+        var action = root.GetAttribute("action");
+        if (action == "cancel") return null;
+        if (action != "accept" && action != "none") throw new InvalidDataException("選択結果の操作が不正です。");
+        var input = new ReviewInputs { Phase = root.GetAttribute("phase") };
+        PhaseLabel(input.Phase);
+        if (action == "none") {
+            input.IntentionalNone = true;
+            input.NoneReason = "開始画面で今回は上位文書なしを選択";
+            input.NoneConfirmedAt = DateTime.UtcNow.ToString("o");
+        } else {
+            var selection = root.SelectSingleNode("selection");
+            if (selection == null) throw new InvalidDataException("選択一覧がありません。");
+            foreach (System.Xml.XmlNode node in selection.SelectNodes("model"))
+                if (!input.ModelIds.Contains(node.InnerText)) input.ModelIds.Add(node.InnerText);
+            foreach (System.Xml.XmlNode node in selection.SelectNodes("file")) {
+                if (!Path.IsPathRooted(node.InnerText)) throw new InvalidDataException("資料は絶対パスで指定してください。");
+                var path = Path.GetFullPath(node.InnerText);
+                if (!input.Files.Contains(path, StringComparer.OrdinalIgnoreCase)) input.Files.Add(path);
+            }
+            ResolveModels(project, input);
+            if (input.ModelIds.Count == 0 && input.Files.Count == 0) throw new InvalidDataException("上位文書を選択してください。");
+        }
+        input.ValidateUpstream();
+        return input;
+    }
+    public static List<IModel> ResolveModels(IProject project, ReviewInputs inputs)
+    {
+        var all = new[] { (IModel)project }.Concat(project.GetAllChildren()).ToList();
+        var selected = new List<IModel>();
+        foreach (var id in inputs.ModelIds) {
+            var matches = all.Where(m => m.Id == id).ToList();
+            if (matches.Count != 1 || matches[0].IsDeleted || matches[0].IsProxy)
+                throw new InvalidDataException("上位モデルが削除済み・未ロード、または一意ではありません: " + id);
+            selected.Add(matches[0]);
+        }
+        // 選択された親から既に出力される子は二重出力しない。
+        return selected.Where(model => {
+            var seen = new HashSet<string>();
+            for (var owner = model.Owner; owner != null; owner = owner.Owner) {
+                if (!seen.Add(owner.Id)) throw new InvalidDataException("モデルの所有関係が循環しています。");
+                if (inputs.ModelIds.Contains(owner.Id)) return false;
+            }
+            return true;
+        }).ToList();
+    }
+    public static void SaveSelection(string projectPath, System.Xml.XmlDocument response)
+    {
+        var path = SettingsFile(projectPath);
+        if (path == null || response.DocumentElement.GetAttribute("action") == "cancel") return;
+        var settings = response.DocumentElement.SelectSingleNode("settings");
+        if (settings == null) throw new InvalidDataException("工程別の選択設定がありません。");
+        var doc = new System.Xml.XmlDocument(); doc.AppendChild(doc.ImportNode(settings, true));
+        Directory.CreateDirectory(Path.GetDirectoryName(path));
+        var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try {
+            doc.Save(temporary);
+            // 内容は原子的に置換する。旧ファイルの ACL 等のメタデータ統合失敗は許容する。
+            if (File.Exists(path)) File.Replace(temporary, path, null, true); else File.Move(temporary, path);
+        } finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+    public static ReviewInputs Show(string extensionPath, IProject project, IModel target, bool settingsOnly)
+    {
+        var script = Path.Combine(extensionPath, "resources", "Select-ReviewInputs.ps1");
+        if (!File.Exists(script)) throw new FileNotFoundException("選択画面のスクリプトがありません。", script);
+        var directory = Path.Combine(Path.GetTempPath(), "AgentReview-picker-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try {
+            var request = Path.Combine(directory, "request.xml");
+            var response = Path.Combine(directory, "response.xml");
+            Request(project, target, settingsOnly).Save(request);
+            var exe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+            var info = new ProcessStartInfo { FileName = exe, UseShellExecute = false, CreateNoWindow = true,
+                Arguments = "-NoProfile -STA -File " + ReviewResultViewer.QuoteArgument(script)
+                    + " -RequestPath " + ReviewResultViewer.QuoteArgument(request)
+                    + " -ResponsePath " + ReviewResultViewer.QuoteArgument(response) };
+            using (var process = Process.Start(info)) {
+                if (process == null) throw new IOException("選択画面を起動できません。");
+                process.WaitForExit();
+                if (process.ExitCode != 0) throw new IOException("選択画面を実行できません。PowerShell の実行制限と拡張の配置を確認してください。終了コード: " + process.ExitCode);
+            }
+            if (!File.Exists(response)) throw new IOException("選択画面の結果がありません。");
+            var document = ReadXml(response);
+            var result = Result(document, project);
+            if (result != null) SaveSelection(project.Path, document);
+            return result;
+        } finally {
+            // この呼び出しで作成した一時ファイルだけを削除する。
+            foreach (var file in new[] { "request.xml", "response.xml" }) {
+                var path = Path.Combine(directory, file); if (File.Exists(path)) File.Delete(path);
+            }
+            Directory.Delete(directory, false);
+        }
+    }
+}
+
+
 public class SessionInfo
 {
+    public string Phase = "";
     public string Folder;        // セッションフォルダのフルパス
     public string Agent;         // 作成時に使ったエージェント
     public string RootModel;     // 起点モデル名
@@ -485,6 +650,7 @@ public class SessionInfo
         sb.Append("rootModel=").Append(RootModel).Append(nl);
         sb.Append("created=").Append(Created).Append(nl);
         sb.Append("mode=").Append(Mode).Append(nl);
+        sb.Append("phase=").Append(Phase).Append(nl);
         sb.Append("state=").Append(State).Append(nl);
         File.WriteAllText(SessionIniPath(), sb.ToString(), new UTF8Encoding(false));
     }
@@ -502,6 +668,7 @@ public class SessionInfo
                 case "rootModel": info.RootModel = pair.Value; break;
                 case "created": info.Created = pair.Value; break;
                 case "mode": info.Mode = pair.Value; break;
+                case "phase": info.Phase = pair.Value; break;
                 case "state": info.State = pair.Value; break;
             }
         }
@@ -607,8 +774,8 @@ public static class WorkspaceBuilder
         sb.Append("`.agents/skills/design-review/SKILL.md` を読み、その手順に従うこと。").Append(nl);
         sb.Append("`.agents/skills/` と `.claude/skills/` は拡張機能のチーム共通スキルを直接参照している。").Append(nl);
         sb.Append("リンク先を含め、スキルのファイルを変更・削除してはならない。読み取りのみとすること。").Append(nl);
-        sb.Append("要点: 最初に対象の開発工程（要求分析 / アーキ設計 / 詳細設計）をユーザーに質問し、").Append(nl);
-        sb.Append("工程別の観点表（`.agents/skills/design-review/references/`）を適用してレビューする。").Append(nl).Append(nl);
+        sb.Append("要点: session.ini の phase は開始画面で確定済み。工程を再質問せず、").Append(nl);
+        sb.Append("工程別の観点表（`.agents/skills/design-review/references/`）を適用してレビューする。工程情報のない旧セッションだけはユーザーに質問する。").Append(nl).Append(nl);
 
         if (perspectives.Count > 0)
         {
@@ -2030,62 +2197,9 @@ public void StartAgentReview(ICommandContext context, ICommandParams commandPara
         }
 
         var project = app.Workspace.CurrentProject;
-        var inputs = new ReviewInputs();
-        var upperModels = new List<IModel>();
-        var description = new StringBuilder();
-        if (!string.IsNullOrWhiteSpace(project.Path))
-        {
-            var settingsPath = ReviewInputs.SettingsPath(project.Path);
-            if (File.Exists(settingsPath)) inputs = ReviewInputs.Load(settingsPath, project.Path);
-        }
-        inputs.ValidateUpstream();
-        if (inputs.ModelIds.Count > 0)
-        {
-            var models = new[] { (IModel)project }.Concat(project.GetAllChildren()).ToList();
-            foreach (var id in inputs.ModelIds)
-            {
-                var matches = models.Where(m => m.Id == id).ToList();
-                if (matches.Count != 1)
-                    throw new InvalidDataException("上位モデルIDを一意に取得できません: " + id);
-                if (matches[0].IsProxy || matches[0].IsDeleted)
-                    throw new InvalidDataException("上位モデルが未ロードまたは削除済みです: " + id);
-                upperModels.Add(matches[0]);
-                description.Append("上位モデル: ").Append(matches[0].ModelPath).Append(" [").Append(id).Append("]\n");
-            }
-        }
-        foreach (var file in inputs.Files) description.Append("上位資料: ").Append(file).Append('\n');
-        if (inputs.IntentionalNone)
-        {
-            if (!app.Window.UI.ShowConfirmDialog(
-                "上位文書は「意図的になし」と設定されています。\n保存された理由: " + inputs.NoneReason
-                + "\n\n今回も上位文書なしでレビューしますか？\n"
-                + "上位要求との整合は未確認として記録します。\n\n"
-                + "いいえ: レビュー入力設定を開き、今回は開始しません。", category))
-            {
-                OpenReviewInputs(context, commandParams);
-                return;
-            }
-            inputs.NoneConfirmedAt = DateTime.UtcNow.ToString("o");
-            description.Append("上位文書: 意図的になし\n理由: ").Append(inputs.NoneReason)
-                .Append("\n上位要求との整合は未確認として記録します。\n");
-        }
-        else if (inputs.ModelIds.Count == 0 && inputs.Files.Count == 0)
-        {
-            if (app.Window.UI.ShowConfirmDialog(
-                "上位モデル・上位資料が設定されていません。\n上位文書を設定してからレビューしますか？\n\n"
-                + "はい: レビュー入力設定を開き、今回は開始しません。\n"
-                + "いいえ: 上位文書なしで続けるか確認します。", category))
-            {
-                OpenReviewInputs(context, commandParams);
-                return;
-            }
-            if (!app.Window.UI.ShowConfirmDialog(
-                "今回は上位文書なしでレビューを開始しますか？\n"
-                + "設計自体のレビューを行い、上位要求との整合は未確認として記録します。\n\n"
-                + "いいえ: レビューを中止します。", category)) return;
-            description.Append("上位文書: 未指定。設計自体のレビューは行いますが、上位要求との整合は未確認として結果に残します。\n");
-        }
-
+        var inputs = ReviewInputPicker.Show(context.ExtensionInfo.ExtensionPath, project, root, false);
+        if (inputs == null) return;
+        var upperModels = ReviewInputPicker.ResolveModels(project, inputs);
         // 基点フォルダが未設定なら選ばせて設定に記憶する
         if (string.IsNullOrEmpty(config.WorkspaceRoot) || !Directory.Exists(config.WorkspaceRoot))
         {
@@ -2098,16 +2212,6 @@ public void StartAgentReview(ICommandContext context, ICommandParams commandPara
             config.Save();
         }
 
-        var message = "「" + root.Name + "」配下の設計情報をエクスポートし、"
-            + profile.DisplayName + " によるレビューを開始します。\n\n"
-            + "エージェント: " + profile.DisplayName + "（コマンド: " + profile.Command + "）\n"
-            + "作成先: " + config.WorkspaceRoot + "\n\n"
-            + description.ToString()
-            + (string.IsNullOrEmpty(config.InitialPrompt)
-                ? "ターミナルが開いたら「レビューして」と入力してください。続行しますか？"
-                : "起動と同時にレビュー依頼が自動投入されます。続行しますか？");
-        if (!app.Window.UI.ShowConfirmDialog(message, category)) return;
-
         OutputPane.Show(app, category);
         app.Output.WriteLine(category, "=== レビュー開始 : " + root.Name + " (" + profile.DisplayName + ") ===");
 
@@ -2116,6 +2220,7 @@ public void StartAgentReview(ICommandContext context, ICommandParams commandPara
         SkillProvisioner.ValidateSource(skillsDir);
         session = WorkspaceBuilder.Build(config.WorkspaceRoot, root, config);
         session.Mode = "review";
+        session.Phase = inputs.Phase;
         session.Save();
         app.Output.WriteLine(category, "[dir]   " + session.Folder);
         SkillProvisioner.LinkToSession(session.Folder, skillsDir);
@@ -2132,13 +2237,14 @@ public void StartAgentReview(ICommandContext context, ICommandParams commandPara
         session.Save();
 
         app.Output.WriteLine(category, "[3/3] ターミナルで " + profile.DisplayName + " を起動しています...");
-        TerminalLauncher.Launch(session.Folder, profile.BuildLaunchCommand(config.InitialPrompt), config.Terminal);
+        TerminalLauncher.Launch(session.Folder, profile.BuildLaunchCommand(string.IsNullOrEmpty(config.InitialPrompt) ? "" : config.InitialPrompt
+            + "。session.ini の phase はユーザーが確定済みです。工程を再質問せず、その工程でレビューしてください。"), config.Terminal);
 
         app.Output.WriteLine(category, "");
         app.Output.WriteLine(category, "=== 起動完了 ===");
         app.Output.WriteLine(category, string.IsNullOrEmpty(config.InitialPrompt)
             ? "ターミナルで「レビューして」と入力すると、指示書（" + profile.InstructionFileName + "）に従いレビューが始まります。"
-            : "起動と同時に「" + config.InitialPrompt + "」が自動投入され、design-review スキルに従いレビューが始まります（最初に開発工程を質問されます）。");
+            : "起動と同時に「" + config.InitialPrompt + "」が自動投入され、design-review スキルに従いレビューが始まります（選択した工程で開始します）。");
         app.Output.WriteLine(category, "指摘は review\\review.md、修正提案は review\\proposal.md に出力されます（リボンの「結果を開く」で参照）。");
     }
     catch (Exception ex)
@@ -2157,6 +2263,7 @@ private void WriteReviewInputs(IApplication app, AgentConfig config, IProject pr
     SessionInfo session, ReviewInputs inputs, List<IModel> upperModels, MarkdownExporter exporter)
 {
     var inventory = new StringBuilder("# レビュー入力\n\n");
+    if (!string.IsNullOrEmpty(session.Phase)) inventory.Append("- レビュー工程（選択済み）: ").Append(ReviewInputPicker.PhaseLabel(session.Phase)).Append("\n");
     inventory.Append("- 種別: ").Append(session.Mode).Append("\n- 取得日時 (UTC): ")
         .Append(DateTime.UtcNow.ToString("o")).Append("\n- プロジェクト: ").Append(ReviewSnapshot.Cell(project.Path))
         .Append("\n- 対象: ").Append(ReviewSnapshot.Cell(root.ModelPath)).Append(" [")
@@ -2226,14 +2333,9 @@ public void OpenReviewInputs(ICommandContext context, ICommandParams commandPara
     try
     {
         var project = context.App.Workspace.CurrentProject;
-        var path = ReviewInputs.SettingsPath(project == null ? null : project.Path);
-        ReviewInputs.CreateTemplate(path);
-        var catalog = new StringBuilder("ModelId\tModelPath\n");
-        foreach (var model in new[] { (IModel)project }.Concat(project.GetAllChildren()))
-            catalog.Append(ReviewSnapshot.Cell(model.Id)).Append('\t').Append(ReviewSnapshot.Cell(model.ModelPath)).Append('\n');
-        File.WriteAllText(Path.Combine(Path.GetDirectoryName(path), "model-catalog.tsv"), catalog.ToString(), new UTF8Encoding(true));
-        TerminalLauncher.OpenWithNotepad(path);
-        context.App.Output.WriteLine("AgentReview", "入力設定とモデル一覧: " + Path.GetDirectoryName(path));
+        if (project == null) throw new InvalidOperationException("プロジェクトを開いてください。");
+        var root = ResolveRoot(context.App) ?? (IModel)project;
+        ReviewInputPicker.Show(context.ExtensionInfo.ExtensionPath, project, root, true);
     }
     catch (Exception ex)
     {

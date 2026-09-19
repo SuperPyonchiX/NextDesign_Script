@@ -141,7 +141,7 @@ public static class ExportTests
     public static void Main(string[] args)
     {
         try { Run(args); }
-        catch (Exception ex) { Console.Error.WriteLine("FAIL after " + _checks + " assertions: " + ex.Message); Environment.Exit(1); }
+        catch (Exception ex) { Console.Error.WriteLine("FAIL after " + _checks + " assertions: " + ex); Environment.Exit(1); }
     }
     private static void Run(string[] args)
     {

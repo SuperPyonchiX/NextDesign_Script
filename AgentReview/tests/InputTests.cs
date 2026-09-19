@@ -35,6 +35,19 @@ public static class TerminalLauncher
     public static void Launch(string folder, string command, string terminal) { Launches++; }
     public static void OpenWithNotepad(string path) { }
 }
+public static class FakePicker
+{
+    public static bool None;
+    public static ReviewInputs Show(ICommandContext context, IProject project)
+    {
+        if (!context.App.Window.UI.Confirm) return null;
+        if (None) return new ReviewInputs { Phase = "detailed", IntentionalNone = true,
+            NoneReason = "開始画面で今回は上位文書なしを選択", NoneConfirmedAt = DateTime.UtcNow.ToString("o") };
+        var input = ReviewInputs.Load(ReviewInputs.SettingsPath(project.Path), project.Path);
+        input.Phase = "detailed"; input.ValidateUpstream();
+        return input;
+    }
+}
 public static class InputTests
 {
     private static int checks;
@@ -165,105 +178,61 @@ public static class InputTests
         Check(Directory.GetFiles(workspace, "failure.txt", SearchOption.AllDirectories).Length == 1, "Load failure recorded");
         Check(context.App.Workspace.CurrentProject == project, "Failure does not replace current project");
         var count = TerminalLauncher.Launches;
-        File.Delete(setting);
-        command.StartAgentReview(context, new ICommandParams());
-        Check(TerminalLauncher.Launches == count && File.Exists(setting), "Configure choice opens settings without review");
-        var sessionsBeforeCancel = Directory.GetDirectories(workspace).Length;
-        context.App.Window.UI.ConfirmAnswers.Enqueue(false);
-        context.App.Window.UI.ConfirmAnswers.Enqueue(false);
-        command.StartAgentReview(context, new ICommandParams());
-        Check(TerminalLauncher.Launches == count && Directory.GetDirectories(workspace).Length == sessionsBeforeCancel,
-            "Declining no-upstream review cancels without session");
-        File.Delete(setting);
-        context.App.Window.UI.ConfirmAnswers.Enqueue(false);
-        context.App.Window.UI.ConfirmAnswers.Enqueue(true);
+        FakePicker.None = true;
+        var saved = File.ReadAllText(setting);
         command.StartAgentReview(context, new ICommandParams());
         session = SessionLocator.FindLatest(workspace);
-        Check(TerminalLauncher.Launches == count + 1, "Missing config allows review");
-        Check(File.ReadAllText(Path.Combine(session.Folder, "inputs.md")).Contains("上位文書未指定のため整合は未確認"),
-            "No upstream recorded explicitly");
-        Check(File.ReadAllText(Path.Combine(session.Folder, "inputs.md")).Contains("開始前にユーザーが選択"),
-            "Explicit choice recorded");
-        Check(File.ReadAllText(Path.Combine(session.Folder, "AGENTS.md")).Contains("工程別の単体観点と上位要求との整合を両方確認"),
-            "Both review perspectives always instructed");
-        ReviewInputs.CreateTemplate(setting);
-        context.App.Window.UI.ConfirmAnswers.Enqueue(false);
-        context.App.Window.UI.ConfirmAnswers.Enqueue(true);
+        Check(TerminalLauncher.Launches == count + 1, "Explicit none launches");
+        Check(session.Phase == "detailed", "Phase survives session save/load");
+        Check(File.ReadAllText(Path.Combine(session.Folder, "inputs.md")).Contains("詳細設計"), "Phase in inventory");
+        Check(File.ReadAllText(Path.Combine(session.Folder, "inputs.md")).Contains("上位整合: 未確認"), "No upstream marked unverified");
+        Check(File.ReadAllText(setting) == saved, "None does not overwrite prior choices");
+        Check(File.ReadAllText(Path.Combine(session.Folder, "AGENTS.md")).Contains("工程を再質問せず"), "No repeated phase instruction");
+        context.App.Window.UI.Confirm = false;
+        var before = Directory.GetDirectories(workspace).Length;
         command.StartAgentReview(context, new ICommandParams());
-        Check(TerminalLauncher.Launches == count + 2, "Empty upstream settings allow review");
+        Check(Directory.GetDirectories(workspace).Length == before && TerminalLauncher.Launches == count + 1, "Picker cancel stops all work");
+        context.App.Window.UI.Confirm = true;
         project.Path = null;
         command.StartAgentReview(context, new ICommandParams());
-        Check(TerminalLauncher.Launches == count + 2 && context.App.Window.UI.Messages.Last().Contains("保存済み"),
-            "Unsaved project explains settings requirement without starting review");
-        context.App.Window.UI.ConfirmAnswers.Enqueue(false);
-        context.App.Window.UI.ConfirmAnswers.Enqueue(true);
-        command.StartAgentReview(context, new ICommandParams());
-        Check(TerminalLauncher.Launches == count + 3, "Unsaved project can be reviewed with no upstream");
+        Check(TerminalLauncher.Launches == count + 2, "Unsaved project review allowed");
+        Check(ReviewInputPicker.SettingsFile(null) == null, "Unsaved project has no stored choices");
         project.Path = projectFile;
-        File.WriteAllText(setting, "upstream.file.1=requirement.md");
-        var messageStart = context.App.Window.UI.Messages.Count;
-        command.StartAgentReview(context, new ICommandParams());
-        session = SessionLocator.FindLatest(workspace);
-        Check(TerminalLauncher.Launches == count + 4
-            && File.Exists(Path.Combine(session.Folder, "upstream/files/001/requirement.md")), "External-only upstream included");
-        Check(!File.ReadAllText(Path.Combine(session.Folder, "inputs.md")).Contains("上位文書未指定"),
-            "External-only input is not marked missing");
-        Check(!context.App.Window.UI.Messages.Skip(messageStart).Any(m => m.Contains("上位文書を設定してから")),
-            "Configured external document does not ask missing-input question");
-        File.WriteAllText(setting, "upstream.modle.1=upper");
-        command.StartAgentReview(context, new ICommandParams());
-        Check(TerminalLauncher.Launches == count + 4, "Malformed config cannot silently omit upstream");
-        File.WriteAllText(setting, "upstream.intentionalNone=true\nupstream.noneReason=このプロジェクトが最上位の要求を定義するため");
-        messageStart = context.App.Window.UI.Messages.Count;
-        command.StartAgentReview(context, new ICommandParams());
-        session = SessionLocator.FindLatest(workspace);
-        Check(TerminalLauncher.Launches == count + 5, "Explicit none starts review");
-        var manifest = File.ReadAllText(Path.Combine(session.Folder, "inputs.md"));
-        Check(manifest.Contains("設定状態: 意図的になし") && manifest.Contains("最上位の要求を定義するため"),
-            "Intentional none and reason captured in session");
-        Check(manifest.Contains("今回の確認: 上位文書なしで続行するとユーザーが回答")
-            && manifest.Contains("今回の確認日時 (UTC):"), "Current answer and timestamp recorded separately");
-        Check(ReviewInputs.Load(setting, projectFile).NoneConfirmedAt == "", "Confirmation is never restored from saved config");
-        Check(!context.App.Window.UI.Messages.Skip(messageStart).Any(m => m.Contains("上位文書を設定してから")),
-            "Intentional none bypasses unset question");
-        Check(context.App.Window.UI.Messages.Last().Contains("最上位の要求を定義するため"),
-            "Reason visible in review-start confirmation");
-        Check(context.App.Window.UI.Messages.Skip(messageStart).Count(m => m.Contains("今回も上位文書なしでレビューしますか")) == 1,
-            "Explicit none asks for this review");
-        messageStart = context.App.Window.UI.Messages.Count;
-        command.StartAgentReview(context, new ICommandParams());
-        Check(TerminalLauncher.Launches == count + 6, "Intentional none persists for next review");
-        Check(context.App.Window.UI.Messages.Skip(messageStart).Count(m => m.Contains("今回も上位文書なしでレビューしますか")) == 1,
-            "Next review asks again despite saved reason");
-        sessionsBeforeCancel = Directory.GetDirectories(workspace).Length;
-        var savedIntent = File.ReadAllText(setting);
-        context.App.Window.UI.ConfirmAnswers.Enqueue(false);
-        command.StartAgentReview(context, new ICommandParams());
-        Check(TerminalLauncher.Launches == count + 6 && Directory.GetDirectories(workspace).Length == sessionsBeforeCancel,
-            "Declining intentional none does not create session or launch AI");
-        Check(File.ReadAllText(setting) == savedIntent, "Declining does not overwrite saved intent");
-        File.WriteAllText(setting, "upstream.intentionalNone=true\n");
-        command.StartAgentReview(context, new ICommandParams());
-        Check(TerminalLauncher.Launches == count + 6 && context.App.Window.UI.Messages.Last().Contains("理由"),
-            "Intentional none without reason rejected");
-        File.WriteAllText(setting, "upstream.intentionalNone=true\nupstream.noneReason=理由\nupstream.model.1=upper");
-        command.StartAgentReview(context, new ICommandParams());
-        Check(TerminalLauncher.Launches == count + 6 && context.App.Window.UI.Messages.Last().Contains("併用"),
-            "Conflicting none and model rejected");
-        File.WriteAllText(setting, "upstream.intentionalNone=true\nupstream.noneReason=理由\nupstream.file.1=requirement.md");
-        Throws(() => ReviewInputs.Load(setting, projectFile).ValidateUpstream(), "Conflicting none and file rejected");
-        File.WriteAllText(setting, "upstream.intentionalNone=maybe");
-        Throws(() => ReviewInputs.Load(setting, projectFile), "Invalid intent rejected");
-        File.WriteAllText(setting, "upstream.noneReason=stale");
-        Throws(() => ReviewInputs.Load(setting, projectFile).ValidateUpstream(), "Stale reason rejected");
-        File.WriteAllText(setting, "upstream.intentionalNone=false\nupstream.noneReason=");
-        context.App.Window.UI.ConfirmAnswers.Enqueue(false);
-        context.App.Window.UI.ConfirmAnswers.Enqueue(false);
-        messageStart = context.App.Window.UI.Messages.Count;
-        command.StartAgentReview(context, new ICommandParams());
-        Check(TerminalLauncher.Launches == count + 6
-            && context.App.Window.UI.Messages.Skip(messageStart).Any(m => m.Contains("上位文書を設定してから")),
-            "Clearing intentional none restores unset question");
+        File.WriteAllText(setting, "upstream.model.1=upper\nprobe.project=keep.nproj");
+        saved = File.ReadAllText(setting);
+        var request = ReviewInputPicker.Request(project, root, false);
+        Check(request.SelectNodes("/request/settings/phase/model").Count == 3, "Legacy choices offered for each phase");
+        var response = new System.Xml.XmlDocument();
+        response.LoadXml("<result action='accept' phase='detailed'><selection><model>upper</model><model>target</model></selection><settings lastPhase='detailed'><phase key='detailed'><model>upper</model></phase><phase key='architecture'><model>project</model></phase></settings></result>");
+        var selected = ReviewInputPicker.Result(response, project);
+        Check(selected.Phase == "detailed" && selected.ModelIds.Count == 2, "XML result");
+        ReviewInputPicker.SaveSelection(project.Path, response);
+        request = ReviewInputPicker.Request(project, root, false);
+        Check(request.SelectSingleNode("/request/settings/phase[@key='architecture']/model").InnerText == "project", "Independent phase memory");
+        Check(File.ReadAllText(setting) == saved, "Legacy probe config retained");
+        selected.ModelIds.Add("project");
+        Check(ReviewInputPicker.ResolveModels(project, selected).Count == 1, "Parent/child deduplication");
+        response.DocumentElement.SetAttribute("phase", "unknown");
+        Throws(() => ReviewInputPicker.Result(response, project), "Unknown phase rejected");
+        response.DocumentElement.SetAttribute("phase", "detailed");
+        upper.IsProxy = true;
+        Throws(() => ReviewInputPicker.Result(response, project), "Unloaded model rejected");
+        upper.IsProxy = false;
+        response.SelectSingleNode("/result/selection/model").InnerText = "deleted";
+        Throws(() => ReviewInputPicker.Result(response, project), "Deleted model rejected");
+        response.DocumentElement.SetAttribute("action", "cancel");
+        Check(ReviewInputPicker.Result(response, project) == null, "XML cancel");
+        response.DocumentElement.SetAttribute("action", "none");
+        Check(ReviewInputPicker.Result(response, project).IntentionalNone, "XML none does not export stale choices");
+        var extension = Path.Combine(area, "picker extension 日本語");
+        Directory.CreateDirectory(Path.Combine(extension, "resources"));
+        var helper = Path.Combine(extension, "resources", "Select-ReviewInputs.ps1");
+        File.WriteAllText(helper, "param([string]$RequestPath,[string]$ResponsePath)\n[xml]$r = Get-Content -LiteralPath $RequestPath -Encoding UTF8 -Raw\nif ($r.request.target -notlike '*Design*') { exit 3 }\n[IO.File]::WriteAllText($ResponsePath, '<result action=\"none\" phase=\"detailed\"><settings lastPhase=\"detailed\" /></result>')", new UTF8Encoding(true));
+        Check(ReviewInputPicker.Show(extension, project, root, false).Phase == "detailed", "Real helper process and paths with spaces/Japanese");
+        File.WriteAllText(helper, "exit 3", new UTF8Encoding(true));
+        Throws(() => ReviewInputPicker.Show(extension, project, root, false), "Helper failure stops review");
+        File.WriteAllText(helper, "exit 0", new UTF8Encoding(true));
+        Throws(() => ReviewInputPicker.Show(extension, project, root, false), "Missing helper response rejected");
         Console.WriteLine("PASS: " + checks + " input/command assertions (real Next Design still requires verification).");
     }
 }
