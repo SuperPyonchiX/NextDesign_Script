@@ -54,6 +54,13 @@ public static class PayloadTest {
     exe = work / 'Tests.exe'
     subprocess.run([str(compiler), '/nologo', '/warnaserror+', '/out:' + str(exe), str(pure_file)], check=True)
     subprocess.run([str(exe), str(work), str(root/'samples')], check=True)
+    update_seed = json.loads((work/'update-seed.json').read_text(encoding='utf-8-sig'))
+    update_changed = json.loads((work/'update-changed.json').read_text(encoding='utf-8-sig'))
+    for entity in update_seed['Entities']:
+        if entity['EntityType']=='Message':
+            entity['Name']='updatedProbe()'
+            entity['Fields']['Name']='updatedProbe()'
+    assert update_seed == update_changed, 'Update probe must preserve all IDs, relations and shapes'
     for path in sorted(work.glob('0*.json')):
         data = json.loads(path.read_text(encoding='utf-8-sig'))
         entities = {e['Id']: e for e in data['Entities']}

@@ -10,6 +10,12 @@ public static class PumlTests
         { try { PumlTypeSelection.Destruction(candidate,new string[0]); } catch(InvalidOperationException) { rejectedTypes++; } }
         try { PumlTypeSelection.Destruction(new[]{"a"},new[]{"b"}); } catch(InvalidOperationException) { rejectedTypes++; }
         if(rejectedTypes!=3)throw new Exception("Missing or conflicting view types accepted");
+        var seed=SequencePayload.Build(new[]{"root","frame","ll","ll","exec","exec","message"},"view","13.0");
+        var changed=SequenceUpdateProbe.Payload(seed.Json);
+        if(changed==seed.Json || changed.Contains(SequencePayload.Q("probe()")) || !changed.Contains(SequencePayload.Q("updatedProbe()")))throw new Exception("Update probe label failed");
+        foreach(var id in seed.Ids)if(!changed.Contains(id))throw new Exception("Update probe changed an ID");
+        File.WriteAllText(Path.Combine(directory,"update-seed.json"),seed.Json);
+        File.WriteAllText(Path.Combine(directory,"update-changed.json"),changed);
         var profile=new PumlProfile();
         foreach(string type in new[]{"Interaction","Frame","Lifeline","ExecutionSpecification","Message","CombinedFragment","InteractionOperand","InteractionUse","InteractionNote","MessageEnd","Destruction"})profile.Types[type]="fake-"+type;
         foreach(string key in new[]{"Frame","Lifelines","ExecutionSpecifications","Messages","OwnedExecutionSpecification","SendMessage","ReceiveMessage","Fragments","Operands","CrossingFragmentCoveredLifeline","OperandTargetMessage","NestedInteractionFragment","InteractionUses","Notes","MessageEnds","Destructions","DestructionTargetLifeline"})profile.Relations[key]=key;

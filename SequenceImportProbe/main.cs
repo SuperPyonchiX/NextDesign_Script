@@ -11,18 +11,19 @@ using NextDesign.Desktop;
 
 public void CreateMinimalSequence(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App); }
 public void ImportPlantUml(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, true); }
+public void ProbeSequenceUpdate(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, false, true); }
 public void ShowSequenceResult(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Show(context.App); }
 public void ShowSequenceDetails(ICommandContext context, ICommandParams parameters) { context.App.Window.UI.ShowInformationDialog(SequenceExperiment.Details, SequenceExperiment.Title); }
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.3.10";
+    public const string Title = "シーケンス生成実験 / 0.4.0";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
 
     public static void Run(IApplication app) { Run(app, false); }
-    public static void Run(IApplication app, bool fromPlantUml)
+    public static void Run(IApplication app, bool fromPlantUml, bool updateProbe=false)
     {
         string stage = "事前検査", directory = null, rootId = null;
         bool called = false, committed = false, rolledBack = false;
@@ -64,7 +65,7 @@ public static class SequenceExperiment
             var ownerField = sample.GetOwnerField();
             if (owner == null || ownerField == null || !owner.IsEditable || owner.IsDeleted || owner.IsProxy)
                 throw new InvalidOperationException("E102: 新しい図を置く親モデルを取得できないか、編集できません。");
-            if (!app.Window.UI.ShowConfirmDialog("実プロジェクトのコピーを開いていますか？\n新しい検証用シーケンス図を同じ親に追加する実験です。\n既存図の内容は入力にコピーしません。自動保存しません。\n失敗時はトランザクションの取消を試みますが、実機での復元動作は未確認です。", Title)) return;
+            if (!app.Window.UI.ShowConfirmDialog(updateProbe ? "コピーのプロジェクトで実行してください。\n一時図を作り、同じIDでメッセージ名を再取り込みします。\n最後に一時図を含む操作を取り消します。既存図を更新する検証ではありません。\n自動保存はしません。" : "実プロジェクトのコピーを開いていますか？\n新しい検証用シーケンス図を同じ親に追加する実験です。\n既存図の内容は入力にコピーしません。自動保存しません。\n失敗時はトランザクションの取消を試みますが、実機での復元動作は未確認です。", Title)) return;
             var folder = app.Window.UI.ShowSelectFolderDialog("会社PC内の実験結果の保存先");
             if (string.IsNullOrEmpty(folder)) return;
             directory = Path.Combine(folder, "sequence_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + Guid.NewGuid().ToString("N").Substring(0,8));
@@ -119,7 +120,7 @@ public static class SequenceExperiment
             stage = "生成データの記録";
             Write(Path.Combine(directory, "input.json"), payload.Json);
             Write(Path.Combine(directory, "before.txt"), detail.ToString());
-            if (!app.Window.UI.ShowConfirmDialog("新しい図「" + payload.Name + "」を追加します。\n" + (plan == null ? "A → B : probe()\nライフライン2本・同期メッセージ1本" : plan.Summary()) + "\n入力データの記録: 済み\n続けますか？", Title))
+            if (!app.Window.UI.ShowConfirmDialog(updateProbe ? "同じIDへの再取り込みを一時図で検証します。\nprobe()をupdatedProbe()へ変更したデータを再取り込みし、取消後に一時モデルが消えたことを確認します。\n続けますか？" : "新しい図「" + payload.Name + "」を追加します。\n" + (plan == null ? "A → B : probe()\nライフライン2本・同期メッセージ1本" : plan.Summary()) + "\n入力データの記録: 済み\n続けますか？", Title))
             { Summary = "キャンセル / インポートAPI呼出: なし"; Show(app); return; }
             var current = app.Workspace.CurrentProject;
             if (current == null || current.Id != projectId || !string.Equals(current.Path, projectPath, StringComparison.OrdinalIgnoreCase))
@@ -131,6 +132,7 @@ public static class SequenceExperiment
                 throw new InvalidOperationException("E110: 作成先が変わりました。");
             foreach (string id in payload.Ids)
                 if (current.GetModelById(id) != null) throw new InvalidOperationException("E111: 生成IDが既存モデルと衝突しました。");
+            var originalChildren=new HashSet<string>(owner.GetChildren().Select(m=>m.Id));
             stage = "トランザクション開始";
             transaction = current.BeginUndoTransaction(false);
             if (transaction == null) throw new InvalidOperationException("E117: トランザクションを開始できませんでした。");
@@ -172,12 +174,42 @@ public static class SequenceExperiment
             if (importedDiagram == null || importedDiagram.Lifelines.Count() != 2 || importedDiagram.Messages.Count() != 1)
                 throw new InvalidOperationException("E116: 表示用シェイプの数が一致しません。");
             }
+            if(updateProbe)
+            {
+                stage="同一ID再インポート";
+                string updateJson=SequenceUpdateProbe.Payload(payload.Json);
+                Write(Path.Combine(directory,"update-input.json"),updateJson);
+                var updated=current.ImportUnitFromJson(updateJson,null,null);
+                if(updated==null)throw new InvalidOperationException("E130: 再取り込み結果がnullです。");
+                apiState=updated.State; apiIssues=updated.Errors.Count();
+                detail.AppendLine("update state="+updated.State);
+                foreach(var error in updated.Errors)detail.AppendLine(error.Kind+": "+error.Message);
+                if(updated.State!="success" || updated.Errors.Any(e=>e.Kind!=UnitImportErrorKind.Info))
+                    throw new InvalidOperationException("E131: 同じIDへの再取り込みが拒否されました。");
+                var changed=current.GetModelById(payload.Ids[6]) as IMessage;
+                var sameRoot=current.GetModelById(rootId) as IInteraction;
+                if(changed==null || changed.Name!="updatedProbe()" || sameRoot==null || sameRoot.Owner==null || sameRoot.Owner.Id!=ownerId || sameRoot.Messages.Count()!=1)
+                    throw new InvalidOperationException("E132: 同じIDのモデルへ変更が反映されませんでした。");
+                var updatedDiagram=updated.ImportedEditors.OfType<ISequenceDiagram>().SingleOrDefault(e=>e.ModelId==rootId);
+                if(updatedDiagram==null || updatedDiagram.Messages.Count()!=1 || updatedDiagram.Messages.Single().Model.Id!=changed.Id || updatedDiagram.Messages.Single().Model.Name!="updatedProbe()")
+                    throw new InvalidOperationException("E133: 再取り込み後の図形を確認できませんでした。");
+                if(updated.ImportedModels.Any(m=>!payload.Ids.Contains(m.Id)))throw new InvalidOperationException("E134: 別IDのモデルが生成されました。");
+                stage="検証操作の取消";
+                completion.Cancel(delegate { transaction.Rollback(); }); rolledBack=true;
+                if(payload.Ids.Any(id=>current.GetModelById(id)!=null) || !originalChildren.SetEquals(owner.GetChildren().Select(m=>m.Id)))
+                    throw new InvalidOperationException("E135: 一時モデルの削除または親配下の復元を確認できませんでした。");
+                detail.AppendLine("same-ID rename and temporary model removal: verified");
+                Summary="ケース: UPDATE001 / 同じIDへの名称更新: 一致\n一時図・一時モデル: 取消後の除去を確認\n既存図への更新: 未実施 / プロジェクト保存: していません\n要素追加・削除・図形置換・参照保持は未検証です。\nこの結果画面を撮影してください。";
+            }
+            else
+            {
             // Require a successful journal write before committing; failures enter rollback.
             Write(Path.Combine(directory, "checked.txt"), detail + "\nモデル・送受信・シェイプ照合: 一致\ncommit: 未実行");
             stage = "確定";
             completion.Commit(delegate { transaction.Commit(); }); committed = true;
-            Summary = "ケース: " + (fromPlantUml ? "IMPORT001" : "CREATE001") + " / モデル・シェイプ照合: 一致\n新しい図: " + payload.Name
+            Summary = "ケース: " + (updateProbe ? "UPDATE001" : fromPlantUml ? "IMPORT001" : "CREATE001") + " / モデル・シェイプ照合: 一致\n新しい図: " + payload.Name
                 + "\n" + (plan == null ? "ライフライン: 2 / メッセージ: 1" : plan.Summary()) + "\n確定: 済み / プロジェクト保存: していません\n親モデルの配下で新しい図を開き、図とこの画面を撮影してください。\n図表示・Undo/Redo・再読込: 未確認";
+            }
         }
         catch (Exception ex)
         {
@@ -187,7 +219,7 @@ public static class SequenceExperiment
                 try { completion.Cancel(delegate { transaction.Rollback(); }); rolledBack = true; }
                 catch (Exception rollbackError) { detail.AppendLine("ROLLBACK: " + rollbackError); }
             }
-            Summary = "ケース: " + (fromPlantUml ? "IMPORT001" : "CREATE001") + " / 停止段階: " + stage
+            Summary = "ケース: " + (updateProbe ? "UPDATE001" : fromPlantUml ? "IMPORT001" : "CREATE001") + " / 停止段階: " + stage
                 + "\nインポートAPI呼出: " + (called ? "あり" : "なし")
                 + "\nAPI結果: " + apiState + " / 診断件数: " + apiIssues
                 + "\n取消API: " + (rolledBack ? "正常終了（復元は未確認）" : transaction == null ? "未呼出" : "未確認・失敗")
@@ -806,5 +838,15 @@ public static class PumlTypeSelection
         }
         if(samples.Length==1 && (candidates.Length==0 || candidates.Contains(samples[0])))return samples[0];
         throw new InvalidOperationException("E121: 破棄点の表示用の型を一意に取得できません。破棄点がある既存の図を開いて取り込んでください。");
+    }
+}
+
+public static class SequenceUpdateProbe
+{
+    public static string Payload(string seed)
+    {
+        string before=SequencePayload.Q("probe()");
+        if(string.IsNullOrEmpty(seed) || !seed.Contains(before))throw new ArgumentException("Probe seed label missing");
+        return seed.Replace(before,SequencePayload.Q("updatedProbe()"));
     }
 }
