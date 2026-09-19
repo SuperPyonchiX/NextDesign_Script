@@ -16,7 +16,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.3.6";
+    public const string Title = "シーケンス生成実験 / 0.3.7";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -241,7 +241,7 @@ public static class PumlRuntime
             var c=Child(p,source[0].Metaclass,"Destructions","Destructions","___Interaction_Destruction");
             c=Concrete(diagram.Destructions.Select(e=>e.Model),c,"破棄");
             p.Types["Destruction"]=c.Id;
-            Child(p,source[2].Metaclass,"OwnedDestruction","Destruction","OwnedDestruction");
+            Child(p,c,"DestructionTargetLifeline","Lifeline","DestructionTargetLifeline");
         }
         if(plan.All().Any(n=>n.Left=="[" || n.Right=="]"))
         {
@@ -645,7 +645,7 @@ public class PumlBuild
                 foreach(var execution in executions.Where(v=>executionAliases[v.Key]==n.Left))
                 { var bar=execution.Value; int length=live.Contains(execution.Key)?at-(int)bar["Y"]:Math.Min((int)bar["Length"],at-(int)bar["Y"]); bar["Length"]=length; bar["Height"]=length; }
                 active.Remove(n.Left); activities.Remove(n.Left); pendingAlias=null;
-                string id=Entity("Destruction",""); Owned("Destructions",id); Link("OwnedDestruction",lifelines[n.Left],id);
+                string id=Entity("Destruction",""); Owned("Destructions",id); Link("DestructionTargetLifeline",id,lifelines[n.Left],false,0);
                 Shape("Destructions",id,"X",x[n.Left],"Y",at,"Width",20,"Height",20);
                 payload.Expected.Add(new PumlExpected{Id=id,Kind="destruction",Left=lifelines[n.Left],Y=at});
                 y+=20; continue;

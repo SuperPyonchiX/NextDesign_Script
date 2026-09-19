@@ -70,7 +70,11 @@ public static class PayloadTest {
             assert len(editor['Destructions']) == 2
             lifelines = {e['Name']:e['Id'] for e in entities.values() if e['EntityType']=='Lifeline'}
             for name in ('Worker','Idle'):
-                destruction = next(r['TargetId'] for r in relations if r['MetamodelId']=='OwnedDestruction' and r['SourceId']==lifelines[name])
+                link = next(r for r in relations if r['MetamodelId']=='DestructionTargetLifeline' and r['TargetId']==lifelines[name])
+                destruction = link['SourceId']
+                assert entities[link['SourceId']]['EntityType']=='Destruction'
+                assert entities[link['TargetId']]['EntityType']=='Lifeline'
+                assert link['RelationType']=='Ref'
                 point = next(v for v in editor['Destructions'] if v['ModelId']==destruction)
                 owned = {r['TargetId'] for r in relations if r['MetamodelId']=='OwnedExecutionSpecification' and r['SourceId']==lifelines[name]}
                 bars = [v for v in editor['ExecutionSpecifications'] if v['ModelId'] in owned]
