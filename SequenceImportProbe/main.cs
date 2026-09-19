@@ -19,7 +19,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.5.3";
+    public const string Title = "シーケンス生成実験 / 0.5.4";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -210,7 +210,8 @@ public static class SequenceExperiment
                 if(deltaProbe)
                 {
                     stage="差分追加・削除の検証";
-                    addedId=SequenceDeltaProbe.Run(current,payload,updatedDiagram,schema,directory,detail);
+                    apiState="未取得（差分追加）"; apiIssues=0;
+                    addedId=SequenceDeltaProbe.Run(current,payload,updatedDiagram,schema,directory,detail,delegate(string state,int issues){apiState=state;apiIssues=issues;});
                 }
                 stage="検証操作の取消";
                 completion.Cancel(delegate { transaction.Rollback(); }); rolledBack=true;
@@ -276,18 +277,19 @@ public static class SequenceDeltaProbe
 {
     static string[] Relations(IModel model)
     { return model.GetRelationsWhere((r,f)=>true).Select(r=>r.Id+":"+r.Source.Id+":"+r.Target.Id).Distinct().OrderBy(x=>x).ToArray(); }
-    public static string Run(IProject project,SequencePayload seed,ISequenceDiagram diagram,string schema,string directory,StringBuilder log)
+    public static string Run(IProject project,SequencePayload seed,ISequenceDiagram diagram,string schema,string directory,StringBuilder log,Action<string,int> report)
     {
         var prior=seed.Ids.Select(project.GetModelById).ToArray();
         var priorNames=prior.Select(m=>m.Name).ToArray();
         var priorRelations=prior.Select(Relations).ToArray();
         var priorShapes=diagram.Shapes.Select(s=>s.Id+":"+s.ModelId).OrderBy(x=>x).ToArray();
         var message=prior[6] as IMessage;
-        var input=SequenceDeltaInput.Build(seed.Ids,message.Metaclass.Id,diagram.Id,diagram.EditorDefinition.Id,schema);
+        var input=SequenceDeltaInput.Build(seed,message.Metaclass.Id,schema);
         SequenceExperiment.Write(Path.Combine(directory,"delta-input.json"),input.Json);
         log.AppendLine("delta addition id="+input.Ids[0]);
         var result=project.ImportUnitFromJson(input.Json,null,null);
         if(result==null)throw new InvalidOperationException("E150: 差分追加の結果がnullです。");
+        report(result.State,result.Errors.Count());
         log.AppendLine("delta import state="+result.State);
         foreach(var error in result.Errors)log.AppendLine(error.Kind+": "+error.Message);
         if(result.State!="success" || result.Errors.Any(e=>e.Kind!=UnitImportErrorKind.Info))throw new InvalidOperationException("E151: 差分追加が失敗しました。");
@@ -531,7 +533,7 @@ public class SequencePayload
     public const string Prefix = "System.Behavior.Interaction.";
     public static readonly string[] RelationTypes = { "___Interaction_Frame", "___Interaction_Lifeline", "___Interaction_ExecutionSpecification", "___Interaction_Message", "OwnedExecutionSpecification", "SendMessage", "ReceiveMessage" };
     public string[] Ids;
-    public string Name, Json;
+    public string Name, Json, EditorJson;
     public static string Q(string s)
     {
         if (s == null) throw new ArgumentNullException("s");
@@ -561,6 +563,7 @@ public class SequencePayload
             + ",\"Lifelines\":["+shape(2,",\"LeftPadding\":20,\"LaneLength\":240,\"X\":20,\"Width\":100")+","+shape(3,",\"LeftPadding\":100,\"LaneLength\":240,\"X\":220,\"Width\":100")+"]"
             + ",\"ExecutionSpecifications\":["+shape(4,",\"Length\":120,\"X\":70,\"Y\":50,\"Height\":120")+","+shape(5,",\"Length\":80,\"X\":270,\"Y\":80,\"Height\":80")+"]"
             + ",\"Messages\":["+shape(6,",\"SourceY\":80,\"TargetY\":80,\"IsRightAtFrame\":false,\"SelfloopBendsX\":0")+"]}";
+        p.EditorJson=editor;
         p.Json = "{\"Type\":\"Model\",\"SchemaVersion\":"+Q(schema)+",\"TopElementId\":"+Q(p.Ids[0])
             + ",\"Entities\":["+string.Join(",",entities)+"],\"Relations\":["+string.Join(",",relations)+"],\"Editors\":["+editor+"]}";
         return p;
@@ -979,18 +982,23 @@ public class SequenceIdentity
 
 public static class SequenceDeltaInput
 {
-    public static SequencePayload Build(string[] ids,string messageType,string editor,string definition,string schema)
+    public static SequencePayload Build(SequencePayload seed,string messageType,string schema)
     {
-        if(ids==null || ids.Length!=7 || ids.Any(string.IsNullOrEmpty) || ids.Distinct().Count()!=7 || string.IsNullOrEmpty(messageType) || string.IsNullOrEmpty(editor) || string.IsNullOrEmpty(definition))throw new ArgumentException("Missing delta metadata");
+        var ids=seed==null?null:seed.Ids;
+        if(ids==null || ids.Length!=7 || ids.Any(string.IsNullOrEmpty) || ids.Distinct().Count()!=7 || string.IsNullOrEmpty(messageType) || string.IsNullOrEmpty(seed.EditorJson) || !seed.EditorJson.EndsWith("]}",StringComparison.Ordinal))throw new ArgumentException("Missing delta metadata");
         string id=Guid.NewGuid().ToString();
         var p=new SequencePayload{Ids=new[]{id},Name="deltaProbe()"};
         var relations=new List<object>();
         int[] sources={0,4,5}; int[] types={3,5,6};
         for(int i=0;i<3;i++)relations.Add(PumlBuild.Obj("Id",Guid.NewGuid().ToString(),"RelationType",i==0?"Embed":"Ref","MetamodelId",SequencePayload.Prefix+SequencePayload.RelationTypes[types[i]],"SourceId",ids[sources[i]],"TargetId",id,"SourceIndex",1,"TargetIndex",i==0?-1:0));
-        p.Json=PumlBuild.Json(PumlBuild.Obj("Type","Model","SchemaVersion",schema,"TopElementId",ids[0],
+        // This editor belongs to the temporary seed we generated, not an arbitrary existing diagram.
+        // Replay every original shape with its original ID and values; append only the new message.
+        string shape=PumlBuild.Json(PumlBuild.Obj("Id",Guid.NewGuid().ToString(),"ModelId",id,"SourceY",120,"TargetY",120,"IsRightAtFrame",false,"SelfloopBendsX",0));
+        string editor=seed.EditorJson.Substring(0,seed.EditorJson.Length-2)+","+shape+"]}";
+        string body=PumlBuild.Json(PumlBuild.Obj("Type","Model","SchemaVersion",schema,"TopElementId",ids[0],
             "Entities",new[]{PumlBuild.Obj("Id",id,"EntityType","Message","MetamodelId",messageType,"Name",p.Name,"Fields",PumlBuild.Obj("Name",p.Name,"MessageSort","Sync"))},
-            "Relations",relations,"Editors",new[]{PumlBuild.Obj("Id",editor,"ViewType","SequenceDiagram","MetamodelId","DensoCreate.Indio.IMF.Extensions.Sequence.ViewInstance.SequenceDiagramViewInstance","DefinitionId",definition,"ModelId",ids[0],
-            "Messages",new[]{PumlBuild.Obj("Id",Guid.NewGuid().ToString(),"ModelId",id,"SourceY",120,"TargetY",120,"IsRightAtFrame",false,"SelfloopBendsX",0)})}));
+            "Relations",relations));
+        p.Json=body.Substring(0,body.Length-1)+",\"Editors\":["+editor+"]}";
         return p;
     }
 }
