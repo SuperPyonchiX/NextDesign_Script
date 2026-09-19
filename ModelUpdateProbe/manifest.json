@@ -2,7 +2,7 @@
   "name": "ModelUpdateProbe",
   "displayName": "設計更新検証",
   "description": "単値文字列の更新と手動Undo/Redo後の状態を記録する実機検証用拡張。",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",

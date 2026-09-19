@@ -1,4 +1,4 @@
-// ModelUpdateProbe 0.3.0 — v3.x. Update success on the real runtime is unverified.
+// ModelUpdateProbe 0.3.1 — v3.x. Update success on the real runtime is unverified.
 using NextDesign.Core;
 using NextDesign.Desktop;
 using NextDesign.Extension;
@@ -26,7 +26,7 @@ public void ShowProbeFields(ICommandContext context, ICommandParams parameters) 
 
 public static class ProbeHost
 {
-    public const string Version = "0.3.0";
+    public const string Version = "0.3.1";
     public const string Title = "設計更新検証 / " + Version;
     public static ProbeSession Session;
     public static string LastSummary = "検証準備を実行してください。";
@@ -186,11 +186,13 @@ public static class ProbeHost
             var start = new ProcessStartInfo(executable, "-NoProfile -STA -File " + ProbeDialog.Argument(script)
                 + " -InputPath " + ProbeDialog.Argument(input) + " -OutputPath " + ProbeDialog.Argument(output))
                 {UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden};
-            using (var process = Process.Start(start))
-            {
-                process.WaitForExit();
-                if (process.ExitCode != 0) throw new ProbeCheckException("U002", "入力画面を起動できませんでした。会社PCのPowerShell実行制限などを確認してください。設定変更は不要です。この画面を渡してください。");
-            }
+            var result = ProbeProcess.Run(start);
+            var processDetail = result.Detail();
+            try { ProbeCore.WriteNew(Path.Combine(session.DirectoryPath, "dialog-process.txt"), processDetail); }
+            catch (Exception ex) { processDetail += "\r\n診断保存失敗: " + ex.GetType().FullName; }
+            if (result.ExitCode != 0 || result.StartError.Length != 0)
+                throw new ProbeDialogException(processDetail);
+
             if (!File.Exists(output)) { LastSummary = Title + "\nキャンセルしました。モデル変更: なし"; Show(app); return; }
             if (new FileInfo(output).Length > 1048576) throw new FormatException("入力結果が大きすぎます。");
             var config = ProbeDialog.Selection(File.ReadAllText(output, Encoding.UTF8), ids);
@@ -589,6 +591,60 @@ public class ProbeJsonReader
             else throw new FormatException("JSONエスケープが不正です。");
         }
         throw new FormatException("JSON文字列が閉じていません。");
+    }
+}
+
+public class ProbeDialogException : ProbeCheckException
+{
+    private readonly string detail;
+    public ProbeDialogException(string text) : base("U002", "入力画面が終了しました。原因はまだ未確定です。\n「詳細（会社PC内）」を押し、エラー部分を撮影してください。\n設定変更・テキスト編集は不要です。") { detail = text; }
+    public override string ToString() { return base.ToString() + "\r\n\r\n" + detail; }
+}
+
+public class ProbeProcess
+{
+    public int ExitCode = -1;
+    public string StartError = "";
+    private readonly StringBuilder output = new StringBuilder(), error = new StringBuilder();
+    private static void Append(StringBuilder target, string line)
+    {
+        if (line == null) return;
+        lock (target)
+        {
+            const int limit = 32768;
+            if (target.Length >= limit) return;
+            var text = line + "\r\n";
+            target.Append(text, 0, Math.Min(text.Length, limit - target.Length));
+        }
+    }
+    public string Detail()
+    {
+        return "入力画面のプロセス診断\r\n終了コード: " + ExitCode
+            + "\r\n起動例外: " + (StartError.Length == 0 ? "なし" : StartError)
+            + "\r\n\r\n標準エラー（最大32768文字）:\r\n" + (error.Length == 0 ? "<出力なし>" : error.ToString())
+            + "\r\n\r\n標準出力（最大32768文字）:\r\n" + (output.Length == 0 ? "<出力なし>" : output.ToString());
+    }
+    public static ProbeProcess Run(ProcessStartInfo start)
+    {
+        var result = new ProbeProcess();
+        start.UseShellExecute = false; start.CreateNoWindow = true;
+        start.RedirectStandardOutput = true; start.RedirectStandardError = true;
+        using (var process = new Process())
+        {
+            process.StartInfo = start;
+            process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e) { Append(result.output, e.Data); };
+            process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e) { Append(result.error, e.Data); };
+            try
+            {
+                process.Start();
+                // Drain both pipes while the dialog is open; never wait with a full error pipe.
+                process.BeginOutputReadLine(); process.BeginErrorReadLine();
+                process.WaitForExit();
+                result.ExitCode = process.ExitCode;
+            }
+            catch (Exception ex) { result.StartError = ex.ToString(); }
+        }
+        return result;
     }
 }
 

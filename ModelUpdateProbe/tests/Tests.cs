@@ -31,6 +31,12 @@ public static class Tests
     private static void WriteConfig(Dictionary<string, string> map) { File.WriteAllText(Path.Combine(ProbeHost.Session.DirectoryPath,"case.json"), ProbeJson.Write(map)); }
     public static void Main(string[] args)
     {
+        if (args[0] == "--child-error")
+        {
+            Console.Error.WriteLine("FAKE_UI_ERROR");
+            for (int i = 0; i < 5000; i++) { Console.Error.WriteLine(new string('e', 100)); Console.WriteLine(new string('o', 100)); }
+            Environment.Exit(7); return;
+        }
         root = args[0];
         var map = Config(); map["newValue"] = "日本語\n\t\"\\😀";
         Check(ProbeCase.Parse(ProbeJson.Write(map)).NewValue == map["newValue"], "JSON roundtrip");
@@ -245,6 +251,18 @@ public static class Tests
         Reject(() => ProbeDialog.Selection("{\"index\":\"1\",\"value\":\"x\"}", new[] {"first"}));
         Reject(() => ProbeDialog.Selection("{\"index\":\"0\",\"value\":\"x\",\"targetModelId\":\"other\"}", new[] {"first"}));
         Check(ProbeDialog.Argument(@"C:\a b\data.json") == "\"C:\\a b\\data.json\"", "argument quoting");
+
+        var processResult = ProbeProcess.Run(new System.Diagnostics.ProcessStartInfo(
+            System.Reflection.Assembly.GetExecutingAssembly().Location, "--child-error"));
+        Check(processResult.ExitCode == 7 && processResult.Detail().Contains("FAKE_UI_ERROR"), "child error lost");
+        Check(processResult.Detail().Length < 67000, "child output unbounded");
+        var dialogError = new ProbeDialogException(processResult.Detail());
+        Check(dialogError.ToString().Contains("FAKE_UI_ERROR") && !dialogError.Message.Contains("FAKE_UI_ERROR"), "details not separated from summary");
+        app = Setup(); model = (Model)app.Workspace.CurrentModel;
+        ProbeHost.Failure(app, "入力画面", dialogError);
+        Check(ProbeHost.LastDetail.Contains("FAKE_UI_ERROR") && !app.Window.UI.Last.Contains("FAKE_UI_ERROR") && model.Writes == 0, "UI failure reporting boundary");
+        processResult = ProbeProcess.Run(new System.Diagnostics.ProcessStartInfo(Path.Combine(root,"missing-executable.exe")));
+        Check(processResult.StartError.Length > 0, "process start exception lost");
 
         var collision = Path.Combine(root,"existing.txt"); File.WriteAllText(collision,"original");
         bool threw = false; try { ProbeCore.WriteNew(collision,"replacement"); } catch (IOException) { threw=true; }
