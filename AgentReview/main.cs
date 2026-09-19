@@ -390,60 +390,99 @@ public static class ReviewSnapshot
             .Replace("|", "&#124;").Replace("\r", " ").Replace("\n", " ").Replace("\t", " ");
     }
 
+    // Resolve junctions/symlinks using the opened object, including links in parent directories.
+    // https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string name, uint access, uint share,
+        IntPtr security, uint creation, uint flags, IntPtr template);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandleW(Microsoft.Win32.SafeHandles.SafeFileHandle handle,
+        StringBuilder path, uint length, uint flags);
+    public static string ResolvePath(string path)
+    {
+        var full = Path.GetFullPath(path);
+        using (var handle = CreateFileW(full, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+            if (handle.IsInvalid) throw new IOException("資料の実体パスを取得できません: " + full,
+                new System.ComponentModel.Win32Exception(System.Runtime.InteropServices.Marshal.GetLastWin32Error()));
+            var buffer = new StringBuilder(512);
+            var length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
+            if (length >= buffer.Capacity) {
+                buffer = new StringBuilder(checked((int)length + 1));
+                length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
+            }
+            if (length == 0 || length >= buffer.Capacity) throw new IOException("資料の実体パスを解決できません: " + full,
+                new System.ComponentModel.Win32Exception(System.Runtime.InteropServices.Marshal.GetLastWin32Error()));
+            var result = buffer.ToString();
+            if (result.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) result = @"\\" + result.Substring(8);
+            else if (result.StartsWith(@"\\?\", StringComparison.Ordinal)) result = result.Substring(4);
+            return Path.GetFullPath(result);
+        }
+    }
+    private static string ResolveDestination(string path)
+    {
+        var existing = Path.GetFullPath(path); var tail = new Stack<string>();
+        while (!File.Exists(existing) && !Directory.Exists(existing)) {
+            // A dangling reparse point must fail resolution, not be mistaken for a new directory.
+            try { if ((File.GetAttributes(existing) & FileAttributes.ReparsePoint) != 0) return ResolvePath(existing); }
+            catch (FileNotFoundException) { }
+            catch (DirectoryNotFoundException) { }
+            var parent = Path.GetDirectoryName(existing);
+            if (string.IsNullOrEmpty(parent) || parent == existing) throw new IOException("コピー先の親フォルダを取得できません: " + path);
+            tail.Push(Path.GetFileName(existing)); existing = parent;
+        }
+        var resolved = ResolvePath(existing);
+        foreach (var part in tail) resolved = Path.Combine(resolved, part);
+        return resolved;
+    }
+    private static bool Within(string path, string root)
+    {
+        var prefix = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return string.Equals(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), prefix, StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith(prefix + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    }
     public static void CheckFile(string path)
     {
-        if (!File.Exists(path)) throw new FileNotFoundException("資料が見つかりません。", path);
-        RejectLinks(path);
-        using (File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read)) { }
+        var resolved = ResolvePath(path);
+        if (!File.Exists(resolved)) throw new FileNotFoundException("資料が見つかりません。", path);
+        using (File.Open(resolved, FileMode.Open, FileAccess.Read, FileShare.Read)) { }
     }
-
-    public static void RejectLinks(string path)
-    {
-        var item = Path.GetFullPath(path);
-        while (!string.IsNullOrEmpty(item))
-        {
-            if ((File.GetAttributes(item) & FileAttributes.ReparsePoint) != 0)
-                throw new IOException("リンク経由の資料は固定コピーできません。実体のパスを指定してください: " + item);
-            var parent = Path.GetDirectoryName(item);
-            if (parent == item) break;
-            item = parent;
-        }
-    }
-
     public static string CopyFile(string source, string destination)
     {
-        CheckFile(source);
-        Directory.CreateDirectory(Path.GetDirectoryName(destination));
-        // 書き込み共有を拒否してコピー中の変更を防ぐ。
-        using (var input = File.Open(source, FileMode.Open, FileAccess.Read, FileShare.Read))
-        using (var output = File.Open(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            input.CopyTo(output);
+        var resolved = ResolvePath(source);
+        var outputPath = ResolveDestination(destination);
+        if (string.Equals(resolved, outputPath, StringComparison.OrdinalIgnoreCase)) throw new IOException("コピー元とコピー先が同じ資料です。");
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
+        // Copy bytes, never recreate a link. Deny writers while reading the source.
+        using (var input = File.Open(resolved, FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (var output = File.Open(outputPath, FileMode.CreateNew, FileAccess.Write, FileShare.None)) input.CopyTo(output);
         using (var hash = System.Security.Cryptography.SHA256.Create())
-        using (var input = File.OpenRead(destination))
-            return BitConverter.ToString(hash.ComputeHash(input)).Replace("-", "").ToLowerInvariant();
+        using (var input = File.OpenRead(outputPath)) return BitConverter.ToString(hash.ComputeHash(input)).Replace("-", "").ToLowerInvariant();
     }
-
     public static void CopyTree(string source, string destination, StringBuilder inventory, string relative)
     {
-        var src = Path.GetFullPath(source).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        var dst = Path.GetFullPath(destination).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        if (dst.StartsWith(src, StringComparison.OrdinalIgnoreCase))
-            throw new IOException("コピー先をコピー元の配下には置けません。");
-        RejectLinks(source);
-        Directory.CreateDirectory(destination);
-        foreach (var file in Directory.GetFiles(source).OrderBy(p => p, StringComparer.Ordinal))
-        {
-            var name = Path.GetFileName(file);
-            var sha = CopyFile(file, Path.Combine(destination, name));
-            inventory.Append("| ").Append(Cell(file)).Append(" | ").Append(Cell(relative + "/" + name))
-                .Append(" | ").Append(sha).Append(" |\n");
-        }
-        foreach (var dir in Directory.GetDirectories(source).OrderBy(p => p, StringComparer.Ordinal))
-        {
-            var name = Path.GetFileName(dir);
-            if (name == ".git") continue;
-            CopyTree(dir, Path.Combine(destination, name), inventory, relative + "/" + name);
-        }
+        var dst = ResolveDestination(destination);
+        CopyTreeCore(source, dst, inventory, relative, dst, new HashSet<string>(StringComparer.OrdinalIgnoreCase), 0);
+    }
+    private static void CopyTreeCore(string source, string destination, StringBuilder inventory, string relative,
+        string outputRoot, HashSet<string> ancestors, int depth)
+    {
+        var src = ResolvePath(source); var dst = ResolveDestination(destination);
+        if (Within(dst, src) || Within(src, outputRoot)) throw new IOException("コピー元とコピー先が重なっています（リンク解決後）: " + source);
+        if (depth > 256 || !ancestors.Add(src)) throw new IOException("資料フォルダのリンクが循環、または階層が深すぎます: " + source);
+        try {
+            Directory.CreateDirectory(dst);
+            foreach (var file in Directory.GetFiles(src).OrderBy(p => p, StringComparer.Ordinal)) {
+                var name = Path.GetFileName(file); var actual = ResolvePath(file);
+                if (Within(actual, outputRoot)) throw new IOException("コピー先を参照する資料リンクがあります: " + file);
+                var sha = CopyFile(actual, Path.Combine(dst, name));
+                inventory.Append("| ").Append(Cell(Path.Combine(source, name))).Append(" → ").Append(Cell(actual))
+                    .Append(" | ").Append(Cell(relative + "/" + name)).Append(" | ").Append(sha).Append(" |\n");
+            }
+            foreach (var dir in Directory.GetDirectories(src).OrderBy(p => p, StringComparer.Ordinal)) {
+                var name = Path.GetFileName(dir); if (string.Equals(name, ".git", StringComparison.OrdinalIgnoreCase)) continue;
+                CopyTreeCore(dir, Path.Combine(dst, name), inventory, relative + "/" + name, outputRoot, ancestors, depth + 1);
+            }
+        } finally { ancestors.Remove(src); }
     }
 
     public static void AppendInstructions(string sessionFolder, string mode)
@@ -2492,7 +2531,7 @@ private void WriteReviewInputs(IApplication app, AgentConfig config, IProject pr
             var file = inputs.Files[i];
             var relative = "upstream/files/" + (i + 1).ToString("D3") + "/" + Path.GetFileName(file);
             var sha = ReviewSnapshot.CopyFile(file, Path.Combine(session.Folder, relative));
-            inventory.Append("| ").Append(ReviewSnapshot.Cell(file)).Append(" | ")
+            inventory.Append("| ").Append(ReviewSnapshot.Cell(file)).Append(" → ").Append(ReviewSnapshot.Cell(ReviewSnapshot.ResolvePath(file))).Append(" | ")
                 .Append(ReviewSnapshot.Cell(relative)).Append(" | ").Append(sha).Append(" |\n");
         }
     }

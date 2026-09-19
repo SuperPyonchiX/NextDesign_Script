@@ -51,6 +51,7 @@ with tempfile.TemporaryDirectory(prefix="agentreview-tests-") as tmp:
         f.write((root / "tests/ViewerTests.cs").read_text(encoding="utf-8"))
         f.write((root / "tests/InputTests.cs").read_text(encoding="utf-8"))
         f.write((root / "tests/NativePickerTests.cs").read_text(encoding="utf-8"))
+        f.write((root / "tests/SnapshotLinkTests.cs").read_text(encoding="utf-8"))
     recorder = directory / "Recorder.cs"
     recorder.write_text('''using System;
 using System.IO;

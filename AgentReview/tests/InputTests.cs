@@ -225,6 +225,7 @@ public static class InputTests
         response.DocumentElement.SetAttribute("action", "none");
         Check(ReviewInputPicker.Result(response, project).IntentionalNone, "XML none does not export stale choices");
         NativePickerTests.Run();
+        SnapshotLinkTests.Run(temp);
         Console.WriteLine("PASS: " + checks + " input/command assertions (real Next Design still requires verification).");
     }
 }

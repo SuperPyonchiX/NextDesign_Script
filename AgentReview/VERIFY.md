@@ -1,4 +1,4 @@
-# AgentReview 0.12.0 実機確認
+# AgentReview 0.12.1 実機確認
 
 ## 現在の状態
 
@@ -51,3 +51,10 @@ APIの引数は [V3 OpenProject](https://docs.nextdesign.app/extension/v3.x/api/
 0.12.0 は PowerShell の実行に依存しない。旧版で「スクリプトの実行が無効」「UnauthorizedAccess」が出た場合は、拡張フォルダ一式を更新して Next Design を再起動する。旧 `resources/Select-ReviewInputs.ps1` は不要で、残っていても読み込まない。実行ポリシーの変更は不要。
 
 C# の画面表示・入力検証・設定保存で失敗した場合は、例外本文をダイアログへ表示し、詳細を `%USERPROFILE%\.nd-agent-review\diagnostics\picker-*.txt` に保存する。ログのフルパスも表示する。Next Design 実機での表示は未確認。
+
+## リンク経由の資料コピー（0.12.1）
+
+- プロジェクトの親フォルダがジャンクションでも、Attachment が固定コピーされることを確認する。
+- 上位資料をリンク経由で指定し、`inputs.md` の出典・実体パス・SHA-256とコピー内容を確認する。原本を後から変更しても出力は変化しないこと。
+- 実体解決後にコピー先がコピー元配下になる配置、循環リンク、コピー先を指すリンク、切れたリンクは開始失敗となり、AIを起動しないこと。通常データと分離した検証用フォルダで確認する。
+- 実際のジャンクションによるローカル回帰テストは `run_export_tests.py` に含める。Next Design実機のリンク構成でのコピーは未確認。
