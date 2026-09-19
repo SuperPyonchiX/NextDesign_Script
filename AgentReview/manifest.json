@@ -2,7 +2,7 @@
   "name": "AgentReview",
   "displayName": "AI レビュー",
   "description": "Claude Code / Codex のエージェントで設計レビューと修正提案の生成を行います。設計情報をエクスポートし、ターミナルでエージェントと対話します。",
-  "version": "0.12.2",
+  "version": "0.12.3",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -112,7 +112,7 @@
                   "id": "AgentReview.OpenConfigButton",
                   "type": "Button",
                   "label": "設定",
-                  "description": "設定ファイル（config.ini）をメモ帳で開きます。保存すると次の実行から反映されます。",
+                  "description": "設定画面でエージェント・保存先・VS Codeなどを選択します。保存すると次の実行から反映されます。",
                   "imageSmall": "resources/config16.png",
                   "imageLarge": "resources/config32.png",
                   "command": "AgentReview.Command.OpenConfig"

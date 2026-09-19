@@ -850,6 +850,113 @@ public sealed class ReviewNativeDialog : IDisposable
 }
 
 
+// Uses only configuration values on the STA thread, never Next Design SDK objects.
+public sealed class AgentSettingsDialog : IDisposable
+{
+    private readonly System.Reflection.Assembly forms = System.Reflection.Assembly.Load("System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089");
+    private readonly Dictionary<string, object> fields = new Dictionary<string, object>();
+    public readonly object Form, SaveButton, ErrorLabel;
+    public AgentConfig Result;
+    private static object Get(object o, string p) { return ReviewNativeDialog.Get(o, p); }
+    private static void Set(object o, string p, object v) { ReviewNativeDialog.Set(o, p, v); }
+    private static object Call(object o, string m, params object[] args) { return ReviewNativeDialog.Call(o, m, args); }
+    private object New(string type) { return Activator.CreateInstance(forms.GetType("System.Windows.Forms." + type, true)); }
+    private object Add(object parent, string type, string text, int x, int y, int w, int h)
+    {
+        var c = New(type); Set(c, "Text", text); Set(c, "Left", x); Set(c, "Top", y); Set(c, "Width", w); Set(c, "Height", h);
+        Call(Get(parent, "Controls"), "Add", c); return c;
+    }
+    private void Field(object page, string key, string label, string value, int row, string browse)
+    {
+        int y = 18 + row * 58;
+        Add(page, "Label", label, 14, y, 680, 22);
+        var field = Add(page, "TextBox", value ?? "", 14, y + 24, browse == null ? 672 : 562, 26);
+        fields.Add(key, field);
+        if (browse == null) return;
+        var button = Add(page, "Button", "参照…", 586, y + 22, 100, 28);
+        button.GetType().GetEvent("Click").AddEventHandler(button, new EventHandler(delegate {
+            var dialog = New(browse == "folder" ? "FolderBrowserDialog" : "OpenFileDialog");
+            try {
+                if (browse == "folder") Set(dialog, "Description", label);
+                else { Set(dialog, "Title", label); Set(dialog, "Filter", browse); }
+                if (Call(dialog, "ShowDialog", Form).ToString() == "OK")
+                    Set(field, "Text", Get(dialog, browse == "folder" ? "SelectedPath" : "FileName"));
+            } finally { ((IDisposable)dialog).Dispose(); }
+        }));
+    }
+    private void Choice(object page, string key, string label, string[] labels, int index, int row)
+    {
+        Field(page, key, label, "", row, null);
+        var old = fields[key]; int y = (int)Get(old, "Top"); ((IDisposable)old).Dispose();
+        var combo = Add(page, "ComboBox", "", 14, y, 672, 28); fields[key] = combo;
+        Set(combo, "DropDownStyle", "DropDownList");
+        foreach (var item in labels) Call(Get(combo, "Items"), "Add", item);
+        Set(combo, "SelectedIndex", index);
+    }
+    public AgentSettingsDialog(AgentConfig config)
+    {
+        Form = New("Form"); Set(Form, "Text", "AgentReview 設定"); Set(Form, "Width", 750); Set(Form, "Height", 680);
+        Set(Form, "StartPosition", "CenterScreen"); Set(Form, "AutoScaleMode", "Dpi");
+        Set(Form, "FormBorderStyle", "FixedDialog"); Set(Form, "MaximizeBox", false); Set(Form, "MinimizeBox", false); Set(Form, "TopMost", true);
+        var tabs = Add(Form, "TabControl", "", 12, 12, 710, 530);
+        var basic = New("TabPage"); Set(basic, "Text", "基本設定"); Call(Get(tabs, "TabPages"), "Add", basic);
+        var advanced = New("TabPage"); Set(advanced, "Text", "詳細設定"); Call(Get(tabs, "TabPages"), "Add", advanced);
+        Choice(basic, "Agent", "使用するエージェント", new[] { "Codex", "Claude Code" }, config.Agent == "claude" ? 1 : 0, 0);
+        Field(basic, "WorkspaceRoot", "レビュー保存先（空欄ならレビュー開始時に選択）", config.WorkspaceRoot, 1, "folder");
+        Field(basic, "VsCodeExecutable", "VS Code（空欄なら自動検出）", config.VsCodeExecutable, 2, "Code.exe|Code.exe");
+        Choice(basic, "Terminal", "ターミナル", new[] { "自動選択", "Windows Terminal", "コマンドプロンプト" }, config.Terminal == "wt" ? 1 : config.Terminal == "cmd" ? 2 : 0, 3);
+        Field(basic, "Perspectives", "追加のレビュー観点（任意・カンマ区切り）", config.Perspectives, 4, null);
+        Add(basic, "Label", "工程と上位文書は、レビュー開始時に選択します。\r\n通常は基本設定だけで利用できます。", 14, 330, 672, 60);
+        Field(advanced, "CodexCommand", "Codex コマンド（通常は codex）", config.CodexCommand, 0, "コマンド (*.exe;*.cmd;*.bat)|*.exe;*.cmd;*.bat|すべてのファイル|*.*");
+        Field(advanced, "CodexArgs", "Codex 追加引数（任意）", config.CodexArgs, 1, null);
+        Field(advanced, "ClaudeCommand", "Claude Code コマンド（通常は claude）", config.ClaudeCommand, 2, "コマンド (*.exe;*.cmd;*.bat)|*.exe;*.cmd;*.bat|すべてのファイル|*.*");
+        Field(advanced, "ClaudeArgs", "Claude Code 追加引数（任意）", config.ClaudeArgs, 3, null);
+        Field(advanced, "InitialPrompt", "開始時のメッセージ（空欄なら自動送信しない）", config.InitialPrompt, 4, null);
+        Field(advanced, "DiagramGroupsRulesFile", "図の階層ルール（任意の既存ファイル・空欄なら自動判別）", config.DiagramGroupsRulesFile, 5, "ルール (*.ini)|*.ini|すべてのファイル|*.*");
+        ErrorLabel = Add(Form, "Label", "", 16, 550, 700, 40);
+        SaveButton = Add(Form, "Button", "保存", 486, 597, 110, 32);
+        var cancel = Add(Form, "Button", "キャンセル", 608, 597, 110, 32);
+        Set(cancel, "DialogResult", "Cancel"); Set(Form, "CancelButton", cancel);
+        SaveButton.GetType().GetEvent("Click").AddEventHandler(SaveButton, new EventHandler(delegate {
+            try { var candidate = ReadValues(); candidate.Save(); Result = candidate; Call(Form, "Close"); }
+            catch (Exception ex) { Set(ErrorLabel, "Text", ex.GetBaseException().Message); }
+        }));
+    }
+    public object FieldControl(string key) { return fields[key]; }
+    public AgentConfig ReadValues()
+    {
+        var candidate = new AgentConfig();
+        foreach (var pair in fields) {
+            if (pair.Key == "Agent") candidate.Agent = (int)Get(pair.Value, "SelectedIndex") == 1 ? "claude" : "codex";
+            else if (pair.Key == "Terminal") candidate.Terminal = new[] { "auto", "wt", "cmd" }[(int)Get(pair.Value, "SelectedIndex")];
+            else {
+                var value = (string)Get(pair.Value, "Text");
+                if (value.IndexOfAny(new[] { '\r', '\n' }) >= 0) throw new InvalidDataException("設定値は1行で入力してください。");
+                typeof(AgentConfig).GetField(pair.Key).SetValue(candidate, value);
+            }
+        }
+        if (candidate.WorkspaceRoot.Length > 0 && (!Path.IsPathRooted(candidate.WorkspaceRoot) || !Directory.Exists(candidate.WorkspaceRoot)))
+            throw new InvalidDataException("レビュー保存先は、存在するフォルダを参照ボタンで選んでください。");
+        foreach (var path in new[] { candidate.VsCodeExecutable, candidate.DiagramGroupsRulesFile })
+            if (path.Length > 0 && (!Path.IsPathRooted(path) || !File.Exists(path)))
+                throw new InvalidDataException("指定ファイルが見つかりません。参照ボタンで選び直してください: " + path);
+        if (candidate.VsCodeExecutable.Length > 0 && !string.Equals(Path.GetFileName(candidate.VsCodeExecutable), "Code.exe", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("VS Code は Code.exe を選んでください。");
+        return candidate;
+    }
+    public static void Show(AgentConfig config)
+    {
+        Exception failure = null;
+        var thread = new System.Threading.Thread(delegate() {
+            try { using (var dialog = new AgentSettingsDialog(config)) { Call(dialog.Form, "ShowDialog"); } }
+            catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(System.Threading.ApartmentState.STA); thread.Start(); thread.Join();
+        if (failure != null) throw new InvalidOperationException("設定画面を表示できませんでした。", failure);
+    }
+    public void Dispose() { ((IDisposable)Form).Dispose(); }
+}
+
 public class SessionInfo
 {
     public string Phase = "";
@@ -2287,7 +2394,7 @@ public static class ReviewResultViewer
         }
         foreach (var candidate in candidates)
             if (File.Exists(candidate)) return Path.GetFullPath(candidate);
-        throw new FileNotFoundException("VS Code が見つかりません。VS Code をインストールするか、設定の vscode.executable に Code.exe の絶対パスを指定してください。");
+        throw new FileNotFoundException("VS Code が見つかりません。VS Code をインストールするか、「設定」画面の「VS Code」で参照ボタンから Code.exe を選んでください。");
     }
 
     // Windows の argv 規則で引用する。シェルの変数展開やメタ文字解釈を通さない。
@@ -2566,19 +2673,27 @@ public void ProbeHistoricalExport(ICommandContext context, ICommandParams comman
     IProject historical = null;
     var current = app.Workspace.CurrentProject;
     string outDir = null;
+    string copiedProject = null;
+    string currentPath = null;
+    string currentId = null;
+    bool ownsHistorical = false;
     try
     {
         if (current == null) throw new InvalidOperationException("プロジェクトを開いてください。");
-        var inputs = ReviewInputs.Load(ReviewInputs.SettingsPath(current.Path), current.Path);
-        if (!Path.IsPathRooted(inputs.ProbeFolder) || !Directory.Exists(inputs.ProbeFolder)
-            || string.IsNullOrWhiteSpace(inputs.ProbeProject) || Path.IsPathRooted(inputs.ProbeProject))
-            throw new InvalidDataException("入力設定に probe.folder（過去版一式の絶対パス）と probe.project（相対パス）を指定してください。");
-        var source = Path.GetFullPath(inputs.ProbeFolder).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        var sourceProject = Path.GetFullPath(Path.Combine(source, inputs.ProbeProject));
+        currentPath = ProbeProjectPath(current);
+        currentId = current.Id;
+        var folder = app.Window.UI.ShowSelectFolderDialog("過去版一式のフォルダを選択（参照ファイルも含む）");
+        if (string.IsNullOrWhiteSpace(folder)) return;
+        var selected = app.Window.UI.ShowOpenFileDialog("過去版フォルダ内のプロジェクトファイルを選択: " + folder,
+            "Next Design プロジェクト (*.nproj;*.iproj)|*.nproj;*.iproj|すべてのファイル (*.*)|*.*");
+        if (string.IsNullOrWhiteSpace(selected)) return;
+        var source = ReviewSnapshot.ResolvePath(folder).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var sourceProject = ReviewSnapshot.ResolvePath(selected);
         if (!sourceProject.StartsWith(source, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("probe.project は probe.folder 内のファイルにしてください。");
+            throw new InvalidDataException("選択した過去版フォルダ内のプロジェクトファイルを選んでください。");
+        var relativeProject = sourceProject.Substring(source.Length);
         ReviewSnapshot.CheckFile(sourceProject);
-        if (string.Equals(sourceProject, Path.GetFullPath(current.Path), StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(sourceProject, currentPath, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("現在開いているプロジェクトではなく、別途取り出した過去版を指定してください。");
         var config = AgentConfig.Load();
         var baseDir = config.WorkspaceRoot;
@@ -2593,17 +2708,19 @@ public void ProbeHistoricalExport(ICommandContext context, ICommandParams comman
         report.Append("| コピー元 | コピー先 | SHA-256 |\n|---|---|---|\n");
         ReviewSnapshot.CopyTree(source, copyDir, report, "project");
         context.ContextOption.EditorAccessMode = EditorAccessMode.GetInactiveValue;
-        historical = app.Workspace.OpenProject(Path.Combine(copyDir, inputs.ProbeProject), false, false);
-        if (historical == null || object.ReferenceEquals(historical, current))
+        copiedProject = ReviewSnapshot.ResolvePath(Path.Combine(copyDir, relativeProject));
+        historical = app.Workspace.OpenProject(copiedProject, false, false);
+        ownsHistorical = historical != null && string.Equals(ProbeProjectPath(historical), copiedProject, StringComparison.OrdinalIgnoreCase);
+        if (!ownsHistorical)
             throw new InvalidOperationException("過去版を独立したプロジェクトとして取得できませんでした。");
-        if (!object.ReferenceEquals(app.Workspace.CurrentProject, current))
+        if (!ProbeMatchesProject(app.Workspace.CurrentProject, currentPath, currentId))
             throw new InvalidOperationException("カレントプロジェクトが変化しました。検証を中断します。");
         var designDir = Path.Combine(outDir, "design");
         Directory.CreateDirectory(designDir);
         var exporter = new MarkdownExporter(new MarkdownExportOptions(), designDir,
             DiagramGroupRules.Load(config.DiagramGroupsRulesFile));
         WriteDesignArtifacts(app, "AgentReview", exporter, historical, designDir);
-        if (!object.ReferenceEquals(app.Workspace.CurrentProject, current))
+        if (!ProbeMatchesProject(app.Workspace.CurrentProject, currentPath, currentId))
             throw new InvalidOperationException("出力後にカレントプロジェクトが変化しました。検証を中断します。");
         report.Append("\n## 出力結果\n\n- モデル: ").Append(exporter.ModelCount).Append("\n- 図: ")
             .Append(exporter.DiagramCount).Append("\n- カレント維持: 確認\n");
@@ -2623,11 +2740,15 @@ public void ProbeHistoricalExport(ICommandContext context, ICommandParams comman
     }
     finally
     {
-        if (historical != null && !object.ReferenceEquals(historical, current))
+        if (ownsHistorical)
         {
             try
             {
+                if (app.Workspace.CurrentProject != null && string.Equals(ProbeProjectPath(app.Workspace.CurrentProject), copiedProject, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("検証用プロジェクトがカレントになったため、自動で閉じません。編集状態を確認してください。");
                 app.Workspace.CloseProject(historical);
+                if (!ProbeMatchesProject(app.Workspace.CurrentProject, currentPath, currentId))
+                    throw new InvalidOperationException("過去版解放後のカレントプロジェクトが一致しません。");
                 if (outDir != null && File.Exists(Path.Combine(outDir, "probe.md")))
                     File.AppendAllText(Path.Combine(outDir, "probe.md"), "- 過去版の解放: API呼び出し正常終了\n", new UTF8Encoding(false));
             }
@@ -2643,6 +2764,17 @@ public void ProbeHistoricalExport(ICommandContext context, ICommandParams comman
             }
         }
     }
+}
+
+private static string ProbeProjectPath(IProject project)
+{
+    return string.IsNullOrWhiteSpace(project.Path) ? "" : ReviewSnapshot.ResolvePath(project.Path);
+}
+
+private static bool ProbeMatchesProject(IProject project, string path, string id)
+{
+    return project != null && project.Id == id
+        && string.Equals(ProbeProjectPath(project), path, StringComparison.OrdinalIgnoreCase);
 }
 
 // design.md / diagrams\<種別>\<階層>\*.puml / _index.md を outDir へ書き出し、警告と統計を Output に出す
@@ -2865,9 +2997,7 @@ public void OpenConfig(ICommandContext context, ICommandParams commandParams)
     var app = context.App;
     try
     {
-        if (!File.Exists(AgentConfig.ConfigPath()))
-            new AgentConfig().Save();   // 既定値 + コメント付きで生成
-        TerminalLauncher.OpenWithNotepad(AgentConfig.ConfigPath());
+        AgentSettingsDialog.Show(AgentConfig.Load());
     }
     catch (Exception ex)
     {

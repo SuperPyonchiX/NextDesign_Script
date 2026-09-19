@@ -90,7 +90,9 @@ public class TestUI
         Messages.Add(message);
         return ConfirmAnswers.Count > 0 ? ConfirmAnswers.Dequeue() : Confirm;
     }
-    public string ShowSelectFolderDialog(string message) { return null; }
+    public string SelectedFolder, SelectedFile;
+    public string ShowSelectFolderDialog(string message) { return SelectedFolder; }
+    public string ShowOpenFileDialog(string message, string filter) { return SelectedFile; }
 }
 public class ICommandContext
 {

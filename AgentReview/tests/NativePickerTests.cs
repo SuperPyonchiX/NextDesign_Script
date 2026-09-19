@@ -1,4 +1,4 @@
-public static class NativePickerTests
+﻿public static class NativePickerTests
 {
     private static int checks;
     private static void Check(bool condition, string description) { if (!condition) throw new Exception(description); checks++; }
@@ -15,6 +15,44 @@ public static class NativePickerTests
     }
     private static void Exercise()
     {
+        var configPath = AgentConfig.ConfigPath();
+        var original = File.ReadAllText(configPath);
+        var existing = AgentConfig.Load();
+        using (var settings = new AgentSettingsDialog(existing)) {
+            var settingsRender = Environment.GetEnvironmentVariable("AGENTREVIEW_SETTINGS_RENDER");
+            if (!string.IsNullOrEmpty(settingsRender)) {
+                ReviewNativeDialog.Set(settings.Form, "Opacity", 0d);
+                ReviewNativeDialog.Set(settings.Form, "ShowInTaskbar", false);
+                ReviewNativeDialog.Call(settings.Form, "Show");
+                var drawing = System.Reflection.Assembly.Load("System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a");
+                var bitmap = Activator.CreateInstance(drawing.GetType("System.Drawing.Bitmap"), new object[] { (int)ReviewNativeDialog.Get(settings.Form, "Width"), (int)ReviewNativeDialog.Get(settings.Form, "Height") });
+                try {
+                    var rect = Activator.CreateInstance(drawing.GetType("System.Drawing.Rectangle"), new object[] { 0, 0, (int)ReviewNativeDialog.Get(settings.Form, "Width"), (int)ReviewNativeDialog.Get(settings.Form, "Height") });
+                    ReviewNativeDialog.Call(settings.Form, "DrawToBitmap", bitmap, rect);
+                    ReviewNativeDialog.Call(bitmap, "Save", settingsRender);
+                } finally { ((IDisposable)bitmap).Dispose(); }
+            }
+            Check((int)ReviewNativeDialog.Get(settings.FieldControl("Agent"), "SelectedIndex") == (existing.Agent == "claude" ? 1 : 0), "Existing agent restored");
+            ReviewNativeDialog.Set(settings.FieldControl("Perspectives"), "Text", "保存しない変更");
+            Check(File.ReadAllText(configPath) == original && settings.Result == null, "Editing settings does not save");
+        }
+        Check(File.ReadAllText(configPath) == original, "Closing settings without save preserves file");
+        using (var settings = new AgentSettingsDialog(existing)) {
+            ReviewNativeDialog.Set(settings.FieldControl("WorkspaceRoot"), "Text", "relative-missing");
+            settings.SaveButton.GetType().GetMethod("OnClick", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).Invoke(settings.SaveButton, new object[] { EventArgs.Empty });
+            Check(settings.Result == null && ((string)ReviewNativeDialog.Get(settings.ErrorLabel, "Text")).Contains("保存先"), "Invalid folder shown inline");
+            Check(File.ReadAllText(configPath) == original, "Invalid settings do not overwrite file");
+            ReviewNativeDialog.Set(settings.FieldControl("WorkspaceRoot"), "Text", existing.WorkspaceRoot);
+            ReviewNativeDialog.Set(settings.FieldControl("Agent"), "SelectedIndex", 1);
+            ReviewNativeDialog.Set(settings.FieldControl("Terminal"), "SelectedIndex", 2);
+            ReviewNativeDialog.Set(settings.FieldControl("Perspectives"), "Text", "境界値,排他制御");
+            var candidate = settings.ReadValues();
+            Check(candidate.Agent == "claude" && candidate.Terminal == "cmd" && candidate.Perspectives == "境界値,排他制御", "Controls map to config");
+            Check(candidate.CodexCommand == existing.CodexCommand && candidate.ClaudeArgs == existing.ClaudeArgs && candidate.InitialPrompt == existing.InitialPrompt, "Advanced settings retained");
+            settings.SaveButton.GetType().GetMethod("OnClick", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).Invoke(settings.SaveButton, new object[] { EventArgs.Empty });
+            Check(settings.Result != null && AgentConfig.Load().Perspectives == "境界値,排他制御", "Save persists and accepts");
+        }
+        File.WriteAllText(configPath, original);
         var request = new System.Xml.XmlDocument();
         request.LoadXml("<request><target>設計/日本語 &amp; target</target><choices>"
             + "<model id='root' parent='' name='プロジェクト' path='プロジェクト' available='true'/>"

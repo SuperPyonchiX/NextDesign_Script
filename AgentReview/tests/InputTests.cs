@@ -7,13 +7,17 @@ public class TestWorkspace
 {
     public IProject CurrentProject, Historical;
     public IModel CurrentModel;
-    public bool Opened, Closed, ThrowOpen;
+    public bool Opened, Closed, ThrowOpen, ReturnCurrent, RewrapCurrent, SwitchCurrent;
     public IProject OpenProject(string path, bool current, bool exclude)
     {
         if (current || exclude) throw new Exception("Unsafe OpenProject options");
         if (!File.Exists(path)) throw new FileNotFoundException(path);
         Opened = true;
         if (ThrowOpen) throw new IOException("fake load failure");
+        if (ReturnCurrent) return CurrentProject;
+        Historical.Path = path;
+        if (RewrapCurrent) CurrentProject = new IProject { Path = CurrentProject.Path, Id = CurrentProject.Id };
+        if (SwitchCurrent) CurrentProject = Historical;
         return Historical;
     }
     public void CloseProject(IProject project)
@@ -163,7 +167,9 @@ public static class InputTests
         var pastDir = Path.Combine(area, "past");
         Directory.CreateDirectory(pastDir);
         File.WriteAllText(Path.Combine(pastDir, "sample.nproj"), "past");
-        File.WriteAllText(setting, "probe.folder=" + pastDir + "\nprobe.project=sample.nproj");
+        File.WriteAllText(setting, ""); // No legacy probe settings required.
+        context.App.Window.UI.SelectedFolder = pastDir;
+        context.App.Window.UI.SelectedFile = Path.Combine(pastDir, "sample.nproj");
         var past = Project(Path.Combine(pastDir, "sample.nproj"), "past");
         context.App.Workspace.Historical = past;
         command.ProbeHistoricalExport(context, new ICommandParams());
@@ -177,6 +183,41 @@ public static class InputTests
         command.ProbeHistoricalExport(context, new ICommandParams());
         Check(Directory.GetFiles(workspace, "failure.txt", SearchOption.AllDirectories).Length == 1, "Load failure recorded");
         Check(context.App.Workspace.CurrentProject == project, "Failure does not replace current project");
+        context.App.Workspace.ThrowOpen = false;
+        context.App.Workspace.Opened = context.App.Workspace.Closed = false;
+        var probeCount = Directory.GetDirectories(workspace).Length;
+        context.App.Window.UI.SelectedFolder = null;
+        command.ProbeHistoricalExport(context, new ICommandParams());
+        Check(!context.App.Workspace.Opened && Directory.GetDirectories(workspace).Length == probeCount, "Folder cancel creates nothing");
+        context.App.Window.UI.SelectedFolder = pastDir;
+        context.App.Window.UI.SelectedFile = null;
+        command.ProbeHistoricalExport(context, new ICommandParams());
+        Check(!context.App.Workspace.Opened && Directory.GetDirectories(workspace).Length == probeCount, "File cancel creates nothing");
+        context.App.Window.UI.SelectedFile = projectFile;
+        command.ProbeHistoricalExport(context, new ICommandParams());
+        Check(!context.App.Workspace.Opened && context.App.Window.UI.Messages.Last().Contains("フォルダ内"), "Outside bundle rejected");
+        context.App.Window.UI.SelectedFolder = projectDir;
+        command.ProbeHistoricalExport(context, new ICommandParams());
+        Check(!context.App.Workspace.Opened && context.App.Window.UI.Messages.Last().Contains("別途取り出した"), "Current source rejected");
+        context.App.Window.UI.SelectedFolder = pastDir;
+        context.App.Window.UI.SelectedFile = Path.Combine(pastDir, "sample.nproj");
+        context.App.Workspace.ReturnCurrent = true;
+        command.ProbeHistoricalExport(context, new ICommandParams());
+        Check(!context.App.Workspace.Closed, "Unexpected returned current project never closed");
+        context.App.Workspace.ReturnCurrent = false;
+        context.App.Workspace.RewrapCurrent = true;
+        past.Id = project.Id; // Versions share model IDs, paths distinguish ownership.
+        command.ProbeHistoricalExport(context, new ICommandParams());
+        Check(context.App.Workspace.Closed && Directory.GetFiles(workspace, "probe.md", SearchOption.AllDirectories).Length == 2,
+            "Different SDK wrapper accepted and same-ID historical copy closed");
+        context.App.Workspace.RewrapCurrent = false;
+        context.App.Workspace.Closed = false;
+        context.App.Workspace.SwitchCurrent = true;
+        command.ProbeHistoricalExport(context, new ICommandParams());
+        Check(!context.App.Workspace.Closed && context.App.Window.UI.Messages.Last().Contains("解放に失敗"), "Unexpectedly current historical copy never closed");
+        context.App.Workspace.SwitchCurrent = false;
+        context.App.Workspace.CurrentProject = project;
+        context.App.Window.UI.SelectedFolder = context.App.Window.UI.SelectedFile = null;
         var count = TerminalLauncher.Launches;
         FakePicker.None = true;
         var saved = File.ReadAllText(setting);
