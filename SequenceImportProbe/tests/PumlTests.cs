@@ -25,6 +25,14 @@ public static class PumlTests
             var plan=PumlPlan.Parse(File.ReadAllText(file));
             if(Path.GetFileName(file).StartsWith("06-") && (plan.StyleDirectives!=3 || !plan.Summary().Contains("既定表示")))throw new Exception("Style compatibility warning missing");
             var payload=PumlBuild.Build(plan,profile,"fake-view","13.0");
+            if(Path.GetFileName(file).StartsWith("05-"))
+            {
+                var identity=new SequenceIdentity{Root="existing-root",Frame="existing-frame",FrameRelation="existing-frame-relation",Editor="existing-editor",FrameShape="existing-frame-shape"};
+                var replacement=PumlBuild.Build(plan,profile,"fake-view","13.0",identity);
+                File.WriteAllText(Path.Combine(directory,"replacement.json"),replacement.Json);
+                var again=PumlBuild.Build(plan,profile,"fake-view","13.0",identity);
+                if(replacement.Ids.Intersect(again.Ids).Count()!=2)throw new Exception("Replacement reused child IDs");
+            }
             File.WriteAllText(Path.Combine(directory,Path.GetFileNameWithoutExtension(file)+".json"),payload.Json);
         }
         var cases=new[]{

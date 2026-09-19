@@ -54,6 +54,19 @@ public static class PayloadTest {
     exe = work / 'Tests.exe'
     subprocess.run([str(compiler), '/nologo', '/warnaserror+', '/out:' + str(exe), str(pure_file)], check=True)
     subprocess.run([str(exe), str(work), str(root/'samples')], check=True)
+    replacement = json.loads((work/'replacement.json').read_text(encoding='utf-8-sig'))
+    assert replacement['TopElementId']=='existing-root'
+    replacement_entities={e['Id']:e for e in replacement['Entities']}
+    assert replacement_entities['existing-root']['EntityType']=='Interaction'
+    assert replacement_entities['existing-frame']['EntityType']=='Frame'
+    frame_relation=next(r for r in replacement['Relations'] if r['Id']=='existing-frame-relation')
+    assert frame_relation['SourceId']=='existing-root' and frame_relation['TargetId']=='existing-frame'
+    replacement_editor,=replacement['Editors']
+    assert replacement_editor['Id']=='existing-editor' and replacement_editor['ModelId']=='existing-root'
+    assert replacement_editor['Frame']['Id']=='existing-frame-shape'
+    assert replacement_editor['Frame']['ModelId']=='existing-frame'
+    assert all(r['SourceId'] in replacement_entities and r['TargetId'] in replacement_entities for r in replacement['Relations'])
+    assert len({r['Id'] for r in replacement['Relations']})==len(replacement['Relations'])
     update_seed = json.loads((work/'update-seed.json').read_text(encoding='utf-8-sig'))
     update_changed = json.loads((work/'update-changed.json').read_text(encoding='utf-8-sig'))
     for entity in update_seed['Entities']:

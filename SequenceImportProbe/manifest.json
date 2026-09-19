@@ -2,7 +2,7 @@
   "name": "SequenceImportProbe",
   "displayName": "シーケンス生成実験",
   "description": "PlantUMLから新しいシーケンス図を生成する実験用拡張。",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -15,13 +15,19 @@
           "groups": [
             {
               "id": "SequenceImportProbe.Run",
-              "label": "新規図の検証",
+              "label": "生成・更新の検証",
               "controls": [
                 {
                   "id": "SequenceImportProbe.ImportButton",
                   "type": "Button",
                   "label": "PlantUMLを取り込む",
                   "command": "SequenceImportProbe.Import"
+                },
+                {
+                  "id": "SequenceImportProbe.ReplaceButton",
+                  "type": "Button",
+                  "label": "現在の図を更新（実験）",
+                  "command": "SequenceImportProbe.Replace"
                 },
                 {
                   "id": "SequenceImportProbe.CreateButton",
@@ -73,6 +79,10 @@
       {
         "id": "SequenceImportProbe.UpdateProbe",
         "execFunc": "ProbeSequenceUpdate"
+      },
+      {
+        "id": "SequenceImportProbe.Replace",
+        "execFunc": "ReplaceSequence"
       }
     ]
   }

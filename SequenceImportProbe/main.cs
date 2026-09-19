@@ -11,19 +11,20 @@ using NextDesign.Desktop;
 
 public void CreateMinimalSequence(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App); }
 public void ImportPlantUml(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, true); }
+public void ReplaceSequence(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, true, false, true); }
 public void ProbeSequenceUpdate(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, false, true); }
 public void ShowSequenceResult(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Show(context.App); }
 public void ShowSequenceDetails(ICommandContext context, ICommandParams parameters) { context.App.Window.UI.ShowInformationDialog(SequenceExperiment.Details, SequenceExperiment.Title); }
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.4.0";
+    public const string Title = "シーケンス生成実験 / 0.5.0";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
 
     public static void Run(IApplication app) { Run(app, false); }
-    public static void Run(IApplication app, bool fromPlantUml, bool updateProbe=false)
+    public static void Run(IApplication app, bool fromPlantUml, bool updateProbe=false, bool replaceExisting=false)
     {
         string stage = "事前検査", directory = null, rootId = null;
         bool called = false, committed = false, rolledBack = false;
@@ -32,6 +33,8 @@ public static class SequenceExperiment
         var detail = new StringBuilder();
         IUndoTransaction transaction = null;
         var completion = new SequenceCompletion();
+        SequenceReplacement replacement=null;
+        bool mutationStarted=false;
         try
         {
             var project = app.Workspace.CurrentProject;
@@ -65,7 +68,7 @@ public static class SequenceExperiment
             var ownerField = sample.GetOwnerField();
             if (owner == null || ownerField == null || !owner.IsEditable || owner.IsDeleted || owner.IsProxy)
                 throw new InvalidOperationException("E102: 新しい図を置く親モデルを取得できないか、編集できません。");
-            if (!app.Window.UI.ShowConfirmDialog(updateProbe ? "コピーのプロジェクトで実行してください。\n一時図を作り、同じIDでメッセージ名を再取り込みします。\n最後に一時図を含む操作を取り消します。既存図を更新する検証ではありません。\n自動保存はしません。" : "実プロジェクトのコピーを開いていますか？\n新しい検証用シーケンス図を同じ親に追加する実験です。\n既存図の内容は入力にコピーしません。自動保存しません。\n失敗時はトランザクションの取消を試みますが、実機での復元動作は未確認です。", Title)) return;
+            if (!app.Window.UI.ShowConfirmDialog(replaceExisting ? "コピーのプロジェクトで実行してください。\n現在の図をPlantUMLの内容で置き換えます。図自体のIDは維持します。\n配下の要素と手作業の配置は作り直します。自動保存はしません。" : updateProbe ? "コピーのプロジェクトで実行してください。\n一時図を作り、同じIDでメッセージ名を再取り込みします。\n最後に一時図を含む操作を取り消します。既存図を更新する検証ではありません。\n自動保存はしません。" : "実プロジェクトのコピーを開いていますか？\n新しい検証用シーケンス図を同じ親に追加する実験です。\n既存図の内容は入力にコピーしません。自動保存しません。\n失敗時はトランザクションの取消を試みますが、実機での復元動作は未確認です。", Title)) return;
             var folder = app.Window.UI.ShowSelectFolderDialog("会社PC内の実験結果の保存先");
             if (string.IsNullOrEmpty(folder)) return;
             directory = Path.Combine(folder, "sequence_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + Guid.NewGuid().ToString("N").Substring(0,8));
@@ -106,11 +109,12 @@ public static class SequenceExperiment
                 var match = Regex.Match(new string(header, 0, n), "\"SchemaVersion\"\\s*:\\s*\"([0-9]+\\.[0-9]+)\"");
                 if (match.Success) { schema = match.Groups[1].Value; fromFile = true; }
             }
+            if(replaceExisting)replacement=SequenceReplacement.Capture(sample,diagram);
             var payload = SequencePayload.Build(sources.Select(m => m.Metaclass.Id).ToArray(), diagram.EditorDefinition.Id, schema);
             if (plan != null)
             {
                 stage = "PlantUML生成データの構築";
-                payload = PumlBuild.Build(plan, PumlRuntime.Profile(diagram, sources, plan), diagram.EditorDefinition.Id, schema);
+                payload = PumlBuild.Build(plan, PumlRuntime.Profile(diagram, sources, plan), diagram.EditorDefinition.Id, schema, replacement==null?null:replacement.Identity);
                 Write(Path.Combine(directory, "source.puml"), pumlText);
             }
             rootId = payload.Ids[0];
@@ -119,8 +123,8 @@ public static class SequenceExperiment
             detail.AppendLine("parent=" + ownerId + "; field=" + ownerField.Name + "; source=" + sampleId);
             stage = "生成データの記録";
             Write(Path.Combine(directory, "input.json"), payload.Json);
-            Write(Path.Combine(directory, "before.txt"), detail.ToString());
-            if (!app.Window.UI.ShowConfirmDialog(updateProbe ? "同じIDへの再取り込みを一時図で検証します。\nprobe()をupdatedProbe()へ変更したデータを再取り込みし、取消後に一時モデルが消えたことを確認します。\n続けますか？" : "新しい図「" + payload.Name + "」を追加します。\n" + (plan == null ? "A → B : probe()\nライフライン2本・同期メッセージ1本" : plan.Summary()) + "\n入力データの記録: 済み\n続けますか？", Title))
+            Write(Path.Combine(directory, "before.txt"), detail.ToString()+(replacement==null?"":"\n更新前の構造:\n"+replacement.Before));
+            if (!app.Window.UI.ShowConfirmDialog(replaceExisting ? "現在の図「"+sample.Name+"」を「"+payload.Name+"」へ更新します。\n"+plan.Summary()+"\n旧子要素: "+(replacement.AllIds.Length-2)+"件を置換します。\n図IDは維持し、子要素IDは変わります。続けますか？" : updateProbe ? "同じIDへの再取り込みを一時図で検証します。\nprobe()をupdatedProbe()へ変更したデータを再取り込みし、取消後に一時モデルが消えたことを確認します。\n続けますか？" : "新しい図「" + payload.Name + "」を追加します。\n" + (plan == null ? "A → B : probe()\nライフライン2本・同期メッセージ1本" : plan.Summary()) + "\n入力データの記録: 済み\n続けますか？", Title))
             { Summary = "キャンセル / インポートAPI呼出: なし"; Show(app); return; }
             var current = app.Workspace.CurrentProject;
             if (current == null || current.Id != projectId || !string.Equals(current.Path, projectPath, StringComparison.OrdinalIgnoreCase))
@@ -130,15 +134,21 @@ public static class SequenceExperiment
             if (owner == null || owner.IsDeleted || owner.IsProxy || !owner.IsEditable || fresh == null || fresh.IsDeleted
                 || fresh.Owner == null || fresh.Owner.Id != ownerId || fresh.GetOwnerField().Name != ownerField.Name)
                 throw new InvalidOperationException("E110: 作成先が変わりました。");
+            if(replaceExisting)replacement.CheckUnchanged(fresh as IInteraction,app.Workspace.CurrentEditor as ISequenceDiagram);
             foreach (string id in payload.Ids)
-                if (current.GetModelById(id) != null) throw new InvalidOperationException("E111: 生成IDが既存モデルと衝突しました。");
+                if (!(replaceExisting && (id==replacement.Identity.Root || id==replacement.Identity.Frame)) && current.GetModelById(id) != null) throw new InvalidOperationException("E111: 生成IDが既存モデルと衝突しました。");
             var originalChildren=new HashSet<string>(owner.GetChildren().Select(m=>m.Id));
             stage = "トランザクション開始";
             transaction = current.BeginUndoTransaction(false);
             if (transaction == null) throw new InvalidOperationException("E117: トランザクションを開始できませんでした。");
+            if(replaceExisting)
+            {
+                stage="既存図の子要素削除"; mutationStarted=true;
+                replacement.DeleteChildren(current);
+            }
             stage = "JSONインポート";
             called = true;
-            var result = current.ImportUnitFromJson(payload.Json, owner, ownerField.Name);
+            var result = current.ImportUnitFromJson(payload.Json, replaceExisting?null:owner, replaceExisting?null:ownerField.Name);
             if (result == null) throw new InvalidOperationException("E112: API結果がnullです。");
             apiState = result.State;
             apiIssues = result.Errors.Count();
@@ -156,6 +166,7 @@ public static class SequenceExperiment
                     detail.AppendLine(e.Kind+" id="+e.Id+" metaclass="+(actualModel==null?"missing":actualModel.Metaclass.Id));
                 }
                 PumlRuntime.Verify(current, result, payload, ownerId);
+                if(replaceExisting)replacement.Verify(current,result,payload);
             }
             else
             {
@@ -207,8 +218,8 @@ public static class SequenceExperiment
             Write(Path.Combine(directory, "checked.txt"), detail + "\nモデル・送受信・シェイプ照合: 一致\ncommit: 未実行");
             stage = "確定";
             completion.Commit(delegate { transaction.Commit(); }); committed = true;
-            Summary = "ケース: " + (updateProbe ? "UPDATE001" : fromPlantUml ? "IMPORT001" : "CREATE001") + " / モデル・シェイプ照合: 一致\n新しい図: " + payload.Name
-                + "\n" + (plan == null ? "ライフライン: 2 / メッセージ: 1" : plan.Summary()) + "\n確定: 済み / プロジェクト保存: していません\n親モデルの配下で新しい図を開き、図とこの画面を撮影してください。\n図表示・Undo/Redo・再読込: 未確認";
+            Summary = "ケース: " + (replaceExisting ? "UPDATE002" : updateProbe ? "UPDATE001" : fromPlantUml ? "IMPORT001" : "CREATE001") + " / モデル・シェイプ照合: 一致\n"+(replaceExisting?"更新した図: ":"新しい図: ") + payload.Name
+                + "\n" + (plan == null ? "ライフライン: 2 / メッセージ: 1" : plan.Summary()) + "\n確定: 済み / プロジェクト保存: していません\n図を開き直し、図とこの画面を撮影してください。\n図表示・Undo/Redo・再読込: 未確認";
             }
         }
         catch (Exception ex)
@@ -219,13 +230,18 @@ public static class SequenceExperiment
                 try { completion.Cancel(delegate { transaction.Rollback(); }); rolledBack = true; }
                 catch (Exception rollbackError) { detail.AppendLine("ROLLBACK: " + rollbackError); }
             }
-            Summary = "ケース: " + (updateProbe ? "UPDATE001" : fromPlantUml ? "IMPORT001" : "CREATE001") + " / 停止段階: " + stage
+            if(rolledBack && replacement!=null)
+            {
+                try { replacement.CheckUnchanged(app.Workspace.CurrentProject.GetModelById(replacement.Identity.Root) as IInteraction,app.Workspace.CurrentEditor as ISequenceDiagram); detail.AppendLine("Rollback structure and shape IDs: verified"); }
+                catch(Exception restoreError) { detail.AppendLine("Rollback verification: "+restoreError); }
+            }
+            Summary = "ケース: " + (replaceExisting ? "UPDATE002" : updateProbe ? "UPDATE001" : fromPlantUml ? "IMPORT001" : "CREATE001") + " / 停止段階: " + stage
                 + "\nインポートAPI呼出: " + (called ? "あり" : "なし")
                 + "\nAPI結果: " + apiState + " / 診断件数: " + apiIssues
                 + "\n取消API: " + (rolledBack ? "正常終了（復元は未確認）" : transaction == null ? "未呼出" : "未確認・失敗")
                 + "\n理由: " + (ex.Message.StartsWith("E1", StringComparison.Ordinal) ? ex.Message : ex.GetType().Name)
                 + "\nこの画面を撮影してください。詳細は「診断表示」で確認できます。"
-                + (called ? "\n再実行前にコピーを開き直してください。" : "\nこのコマンドによるモデル変更はありません。");
+                + (called || mutationStarted ? "\n再実行前にコピーを開き直してください。" : "\nこのコマンドによるモデル変更はありません。");
         }
         finally
         {
@@ -245,6 +261,56 @@ public static class SequenceExperiment
     {
         using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
         using (var writer = new StreamWriter(stream, new UTF8Encoding(true))) writer.Write(text);
+    }
+}
+
+public class SequenceReplacement
+{
+    public SequenceIdentity Identity;
+    public string RootName,FrameName,Before;
+    public string[] Children,AllIds,RootRelations,ShapeIds;
+    static IEnumerable<IModel> Tree(IModel model)
+    { yield return model; foreach(var child in model.GetChildren())foreach(var nested in Tree(child))yield return nested; }
+    static string[] Relations(IModel model)
+    { return model.GetRelationsWhere((r,f)=>true).Select(r=>r.Id+":"+r.Source.Id+":"+r.Target.Id).Distinct().OrderBy(x=>x).ToArray(); }
+    static string Fingerprint(IModel root)
+    { return string.Join("\n",Tree(root).OrderBy(m=>m.Id).Select(m=>m.Id+"|"+m.Metaclass.Id+"|"+m.Name+"|"+string.Join(",",Relations(m)))); }
+    public static SequenceReplacement Capture(IInteraction root,ISequenceDiagram diagram)
+    {
+        var models=Tree(root).ToArray(); var ids=new HashSet<string>(models.Select(m=>m.Id));
+        if(models.Any(m=>m.IsDeleted || m.IsProxy || !m.IsEditable))throw new InvalidOperationException("E140: 更新対象に編集不可・未読込の要素があります。");
+        foreach(var model in models.Where(m=>m.Id!=root.Id && m.Id!=root.Frame.Id))
+        {
+            if(!(model is IInteractionElement))throw new InvalidOperationException("E141: シーケンス以外の子モデルがあり、全体置換できません。");
+            if(model.GetRelationsWhere((r,f)=>true).Any(r=>!ids.Contains(r.Source.Id) || !ids.Contains(r.Target.Id)))
+                throw new InvalidOperationException("E142: 子要素に図の外との関連があります。参照を保護するため更新を停止します。対象: "+model.Name);
+        }
+        return new SequenceReplacement {
+            Identity=new SequenceIdentity{Root=root.Id,Frame=root.Frame.Id,FrameRelation=root.Frame.GetOwnerRelationship().Id,Editor=diagram.Id,FrameShape=diagram.Frame.Id},
+            RootName=root.Name,FrameName=root.Frame.Name,Before=Fingerprint(root),
+            Children=root.GetChildren().Where(m=>m.Id!=root.Frame.Id).Select(m=>m.Id).ToArray(),
+            AllIds=models.Select(m=>m.Id).ToArray(),RootRelations=Relations(root).Where(r=>!models.Where(m=>m.Id!=root.Id && m.Id!=root.Frame.Id).Any(m=>r.Contains(m.Id))).ToArray(),
+            ShapeIds=diagram.Shapes.Select(x=>x.Id).OrderBy(x=>x).ToArray()
+        };
+    }
+    public void CheckUnchanged(IInteraction root,ISequenceDiagram diagram)
+    {
+        if(root==null || root.Id!=Identity.Root || diagram==null || diagram.Id!=Identity.Editor || Fingerprint(root)!=Before || !ShapeIds.SequenceEqual(diagram.Shapes.Select(x=>x.Id).OrderBy(x=>x)))
+            throw new InvalidOperationException("E143: 確認中に更新対象が変わりました。やり直してください。");
+    }
+    public void DeleteChildren(IProject project)
+    { foreach(string id in Children){ var model=project.GetModelById(id); if(model!=null && !model.IsDeleted)model.Delete(); } }
+    public void Verify(IProject project,IUnitImportResult result,SequencePayload payload)
+    {
+        var root=project.GetModelById(Identity.Root) as IInteraction;
+        var diagram=result.ImportedEditors.OfType<ISequenceDiagram>().SingleOrDefault(d=>d.Id==Identity.Editor && d.ModelId==Identity.Root);
+        if(root==null || root.Frame==null || root.Frame.Id!=Identity.Frame || root.Frame.GetOwnerRelationship().Id!=Identity.FrameRelation || diagram==null || diagram.Frame.Id!=Identity.FrameShape)
+            throw new InvalidOperationException("E144: 図・フレーム・エディタのIDを維持できませんでした。");
+        if(!RootRelations.All(r=>Relations(root).Contains(r)))throw new InvalidOperationException("E145: 図本体の関連を維持できませんでした。");
+        if(AllIds.Where(id=>id!=Identity.Root && id!=Identity.Frame).Any(id=>project.GetModelById(id)!=null))
+            throw new InvalidOperationException("E146: 更新前の子要素が残っています。");
+        if(!new HashSet<string>(Tree(root).Select(m=>m.Id)).SetEquals(payload.Ids) || diagram.Shapes.Any(x=>x.Model!=null && !payload.Ids.Contains(x.Model.Id)))
+            throw new InvalidOperationException("E147: 更新後の要素・図形に余剰があります。");
     }
 }
 
@@ -661,16 +727,16 @@ public class PumlBuild
         if(value is bool)return (bool)value?"true":"false";
         return Convert.ToString(value,System.Globalization.CultureInfo.InvariantCulture);
     }
-    private string Entity(string kind,string text,Dictionary<string,object> fields=null)
+    private string Entity(string kind,string text,Dictionary<string,object> fields=null,string fixedId=null)
     {
-        string id=Guid.NewGuid().ToString(); if(fields==null)fields=Obj("Name",text);
+        string id=fixedId??Guid.NewGuid().ToString(); if(fields==null)fields=Obj("Name",text);
         entities.Add(Obj("Id",id,"EntityType",kind,"MetamodelId",profile.Types[kind],"Name",text,"Fields",fields)); return id;
     }
-    private void Link(string kind,string source,string target,bool embed=false,int targetIndex=-1)
+    private void Link(string kind,string source,string target,bool embed=false,int targetIndex=-1,string fixedId=null)
     {
         if(!profile.Relations.ContainsKey(kind))throw new InvalidOperationException("E121: 構造関連を取得できません: "+kind);
         string key=kind+source; int order; indexes.TryGetValue(key,out order); indexes[key]=order+1;
-        relations.Add(Obj("Id",Guid.NewGuid().ToString(),"RelationType",embed?"Embed":"Ref","MetamodelId",profile.Relations[kind],"SourceId",source,"TargetId",target,"SourceIndex",order,"TargetIndex",targetIndex));
+        relations.Add(Obj("Id",fixedId??Guid.NewGuid().ToString(),"RelationType",embed?"Embed":"Ref","MetamodelId",profile.Relations[kind],"SourceId",source,"TargetId",target,"SourceIndex",order,"TargetIndex",targetIndex));
     }
     private Dictionary<string,object> Shape(string list,string model,params object[] values)
     {
@@ -804,11 +870,12 @@ public class PumlBuild
             y+=Math.Max(48,16+20*n.Text.Split('\n').Length)+16;
         }
     }
-    public static SequencePayload Build(PumlPlan plan,PumlProfile profile,string definition,string schema)
+    public static SequencePayload Build(PumlPlan plan,PumlProfile profile,string definition,string schema,SequenceIdentity identity=null)
     {
         var b=new PumlBuild{profile=profile,payload=new SequencePayload()}; var p=b.payload; p.ImportProfile=profile;
-        string root=b.Entity("Interaction",plan.Title); p.Ids=new[]{root}; p.Name=plan.Title;
-        string frame=b.Entity("Frame",plan.Title); b.frameId=frame; b.Owned("Frame",frame);
+        if(identity!=null)identity.Validate();
+        string root=b.Entity("Interaction",plan.Title,null,identity==null?null:identity.Root); p.Ids=new[]{root}; p.Name=plan.Title;
+        string frame=b.Entity("Frame",plan.Title,null,identity==null?null:identity.Frame); b.frameId=frame; b.Link("Frame",root,frame,true,-1,identity==null?null:identity.FrameRelation);
         foreach(var alias in plan.Aliases)
         {
             int index=plan.Aliases.IndexOf(alias); string id=b.Entity("Lifeline",plan.Names[index]); b.lifelines[alias]=id; b.x[alias]=240+240*index;
@@ -818,7 +885,7 @@ public class PumlBuild
         b.Items(plan.Nodes);
         foreach(var pair in b.executions)p.Expected.Add(new PumlExpected{Id=pair.Key,Kind="execution",Y=(int)pair.Value["Y"],EndY=(int)pair.Value["Y"]+(int)pair.Value["Length"]});
         foreach(var s in b.shapes["Lifelines"].Cast<Dictionary<string,object>>())s["LaneLength"]=b.y+40;
-        var editor=Obj("Id",Guid.NewGuid().ToString(),"ViewType","SequenceDiagram","MetamodelId","DensoCreate.Indio.IMF.Extensions.Sequence.ViewInstance.SequenceDiagramViewInstance","DefinitionId",definition,"ModelId",root,"Frame",Obj("Id",Guid.NewGuid().ToString(),"ModelId",frame));
+        var editor=Obj("Id",identity==null?Guid.NewGuid().ToString():identity.Editor,"ViewType","SequenceDiagram","MetamodelId","DensoCreate.Indio.IMF.Extensions.Sequence.ViewInstance.SequenceDiagramViewInstance","DefinitionId",definition,"ModelId",root,"Frame",Obj("Id",identity==null?Guid.NewGuid().ToString():identity.FrameShape,"ModelId",frame));
         foreach(var pair in b.shapes)editor.Add(pair.Key,pair.Value);
         p.Ids=b.entities.Cast<Dictionary<string,object>>().Select(e=>(string)e["Id"]).ToArray();
         p.Json=Json(Obj("Type","Model","SchemaVersion",schema,"TopElementId",root,"Entities",b.entities,"Relations",b.relations,"Editors",new[]{editor})); return p;
@@ -848,5 +915,15 @@ public static class SequenceUpdateProbe
         string before=SequencePayload.Q("probe()");
         if(string.IsNullOrEmpty(seed) || !seed.Contains(before))throw new ArgumentException("Probe seed label missing");
         return seed.Replace(before,SequencePayload.Q("updatedProbe()"));
+    }
+}
+
+public class SequenceIdentity
+{
+    public string Root,Frame,FrameRelation,Editor,FrameShape;
+    public void Validate()
+    {
+        var ids=new[]{Root,Frame,FrameRelation,Editor,FrameShape};
+        if(ids.Any(string.IsNullOrEmpty) || ids.Distinct().Count()!=ids.Length)throw new ArgumentException("Incomplete replacement identity");
     }
 }
