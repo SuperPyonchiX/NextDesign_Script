@@ -16,7 +16,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.3.4";
+    public const string Title = "シーケンス生成実験 / 0.3.5";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -303,6 +303,11 @@ public static class PumlRuntime
                 Require(m.SendPort!=null && m.ReceivePort!=null && ((IModel)m.SendPort).Id==e.SendPort && ((IModel)m.ReceivePort).Id==e.ReceivePort,"実行区間・メッセージ端・フレームへの接続");
                 var shape=d.Messages.SingleOrDefault(v=>v.Model.Id==e.Id);
                 Require(shape!=null && Math.Abs(shape.SourceY-e.Y)<1 && Math.Abs(shape.TargetY-e.EndY)<1,"メッセージ位置・折返し");
+                if(e.Left==null || e.Right==null)
+                {
+                    var endpoint=d.MessageEnds.Single(v=>v.Model.Id==(e.Left==null?e.SendPort:e.ReceivePort));
+                    Require(Math.Abs(shape.SourceY-shape.TargetY)<1 && Math.Abs(endpoint.LocationY-shape.SourceY)<1,"図外メッセージの水平配置");
+                }
             }
             else if(e.Kind=="messageEnd")
             {
@@ -622,8 +627,8 @@ public class PumlBuild
                 {
                     receive=Entity("MessageEnd",""); Owned("MessageEnds",receive);
                     int endX=(int)executions[send]["X"]-60;
-                    Shape("MessageEnds",receive,"X",endX,"Y",targetY-5,"Width",10,"Height",10);
-                    payload.Expected.Add(new PumlExpected{Id=receive,Kind="messageEnd",Y=targetY-5,X=endX});
+                    Shape("MessageEnds",receive,"X",endX,"Y",targetY,"Width",10,"Height",10);
+                    payload.Expected.Add(new PumlExpected{Id=receive,Kind="messageEnd",Y=targetY,X=endX});
                 }
                 else if((n.Kind=="reply" || (!beginsActivation && activities.ContainsKey(n.Right) && activities[n.Right].Count>0)) && active.TryGetValue(n.Right,out receive)) { }
                 else receive=Execution(n.Right,targetY);
@@ -631,8 +636,8 @@ public class PumlBuild
                 {
                     send=Entity("MessageEnd",""); Owned("MessageEnds",send);
                     int endX=(int)executions[receive]["X"]-60;
-                    Shape("MessageEnds",send,"X",endX,"Y",y-5,"Width",10,"Height",10);
-                    payload.Expected.Add(new PumlExpected{Id=send,Kind="messageEnd",Y=y-5,X=endX});
+                    Shape("MessageEnds",send,"X",endX,"Y",y,"Width",10,"Height",10);
+                    payload.Expected.Add(new PumlExpected{Id=send,Kind="messageEnd",Y=y,X=endX});
                 }
                 // Keep explicit activation contexts until deactivate; an immediately following
                 // activate may adopt this receiving execution.

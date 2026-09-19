@@ -83,7 +83,7 @@ public static class PayloadTest {
             assert shape['IsRightAtFrame'] is False and shape['SelfloopBendsX']==0
             assert shape['SourceY'] == shape['TargetY']
             bar = next(v for v in editor['ExecutionSpecifications'] if v['ModelId']==receiver)
-            assert end['X'] == bar['X']-60 and end['Y']+5 == shape['SourceY']
+            assert end['X'] == bar['X']-60 and end['Y'] == shape['SourceY']
             assert bar['Y'] <= shape['TargetY'] < bar['Y']+bar['Length']
         if path.name == '07-outgoing.json':
             assert len(editor['Lifelines'])==2, 'Diagram boundary must not become a participant'
@@ -97,7 +97,7 @@ public static class PayloadTest {
             assert entities[target]['EntityType']=='MessageEnd' and target!=editor['Frame']['ModelId']
             end = next(v for v in editor['MessageEnds'] if v['ModelId']==target)
             source_shape = next(v for v in editor['ExecutionSpecifications'] if v['ModelId']==source_port)
-            assert end['X'] == source_shape['X']-60 and end['Y']+5 == shape['TargetY']
+            assert end['X'] == source_shape['X']-60 and end['Y'] == shape['TargetY']
             assert not any(r['MetamodelId']=='OwnedExecutionSpecification' and r['TargetId']==target for r in relations)
             assert message['Fields']['MessageSort']=='Sync'
             bar = next(v for v in editor['ExecutionSpecifications'] if v['ModelId']==source_port)

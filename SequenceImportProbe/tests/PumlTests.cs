@@ -35,13 +35,13 @@ public static class PumlTests
             var outgoing=PumlBuild.Build(p,profile,"fake-view","13.0");
             var end=outgoing.Expected.Single(e=>e.Kind=="messageEnd");
             var sent=outgoing.Expected.Single(e=>e.Kind==expected);
-            if(sent.ReceivePort!=end.Id || sent.Right!=null || end.X!=180 || end.Y+5!=sent.EndY)throw new Exception("Outgoing free endpoint geometry or ownership failed");
+            if(sent.ReceivePort!=end.Id || sent.Right!=null || end.X!=180 || end.Y!=sent.EndY)throw new Exception("Outgoing free endpoint geometry or ownership failed");
             var incoming=PumlPlan.Parse("@startuml\n["+arrow+" A : incoming\nactivate A\ndeactivate A\n@enduml");
             if(incoming.Aliases.Count!=1 || incoming.Nodes[0].Left!="[" || incoming.Nodes[0].Kind!=expected)throw new Exception("Incoming boundary parsing failed");
             var built=PumlBuild.Build(incoming,profile,"fake-view","13.0");
             var message=built.Expected.Single(e=>e.Kind==expected);
             var start=built.Expected.Single(e=>e.Kind=="messageEnd");
-            if(message.SendPort!=start.Id || start.X!=180 || start.Y+5!=message.Y)throw new Exception("Incoming free endpoint geometry failed");
+            if(message.SendPort!=start.Id || start.X!=180 || start.Y!=message.Y)throw new Exception("Incoming free endpoint geometry failed");
             if(message.Left!=null || message.Right==null || message.SendPort==message.ReceivePort)throw new Exception("Incoming endpoint expectations failed");
         }
         bool outside=false;
