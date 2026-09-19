@@ -9,14 +9,15 @@ public static class PumlTests
         foreach(var file in Directory.GetFiles(samples,"*.puml"))
         {
             var plan=PumlPlan.Parse(File.ReadAllText(file));
+            if(Path.GetFileName(file).StartsWith("06-") && (plan.StyleDirectives!=3 || !plan.Summary().Contains("既定表示")))throw new Exception("Style compatibility warning missing");
             var payload=PumlBuild.Build(plan,profile,"fake-view","13.0");
             File.WriteAllText(Path.Combine(directory,Path.GetFileNameWithoutExtension(file)+".json"),payload.Json);
         }
         var cases=new[]{
-            "A --> B : reply", "A -> A : self", "activate A", "!include remote.puml",
+            "activate A", "deactivate A", "skinparam unknownOption value", "!include remote.puml",
             "alt test\nA -> B : call", "else test", "end", "participant A",
             "note over C : missing", "ref over A,A : duplicate", "note over A\nunclosed",
-            "actor C", "A <- B : reverse", "A -> B : call\n@enduml\nA -> B : extra"
+            "activate A\nalt x\ndeactivate A\nelse y\nend\ndeactivate A", "actor C", "A <- B : reverse", "A -> B : call\n@enduml\nA -> B : extra"
         };
         foreach(string body in cases)
         {

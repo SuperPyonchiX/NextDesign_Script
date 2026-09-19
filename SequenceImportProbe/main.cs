@@ -16,7 +16,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.2.5";
+    public const string Title = "シーケンス生成実験 / 0.3.0";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -179,7 +179,8 @@ public static class SequenceExperiment
                 + "\nAPI結果: " + apiState + " / 診断件数: " + apiIssues
                 + "\n取消API: " + (rolledBack ? "正常終了（復元は未確認）" : transaction == null ? "未呼出" : "未確認・失敗")
                 + "\n理由: " + (ex.Message.StartsWith("E1", StringComparison.Ordinal) ? ex.Message : ex.GetType().Name)
-                + "\nこの画面を撮影してください。詳細は「診断表示」で確認できます。\n再実行前にコピーを開き直してください。";
+                + "\nこの画面を撮影してください。詳細は「診断表示」で確認できます。"
+                + (called ? "\n再実行前にコピーを開き直してください。" : "\nこのコマンドによるモデル変更はありません。");
         }
         finally
         {
@@ -233,6 +234,7 @@ public static class PumlRuntime
         for(int i=0;i<keys.Length;i++)p.Relations[keys[i]]=SequencePayload.Prefix+SequencePayload.RelationTypes[i];
         p.Sync=Literal(source[6].Metaclass,"MessageSort","Sync");
         if(plan.All().Any(n=>n.Kind=="async"))p.Async=Literal(source[6].Metaclass,"MessageSort","Async");
+        if(plan.All().Any(n=>n.Kind=="reply"))p.Reply=Literal(source[6].Metaclass,"MessageSort","Reply");
         var classes=new List<IClass>(source.Select(m=>m.Metaclass));
         if(plan.All().Any(n=>n.Kind=="fragment"))
         {
@@ -278,8 +280,8 @@ public static class PumlRuntime
         var d=result.ImportedEditors.OfType<ISequenceDiagram>().SingleOrDefault(e=>e.ModelId==p.Ids[0]);
         Require(d!=null,"シーケンスエディタ");
         foreach(string id in p.Ids)Require(project.GetModelById(id)!=null,"生成モデルの存在");
-        Require(root.Lifelines.Count()==p.Expected.Count(e=>e.Kind=="lifeline") && root.Messages.Count()==p.Expected.Count(e=>e.Kind=="sync" || e.Kind=="async"),"相互作用の要素数");
-        Require(d.Lifelines.Count()==p.Expected.Count(e=>e.Kind=="lifeline") && d.Messages.Count()==p.Expected.Count(e=>e.Kind=="sync" || e.Kind=="async"),"ライフライン・メッセージ数");
+        Require(root.Lifelines.Count()==p.Expected.Count(e=>e.Kind=="lifeline") && root.Messages.Count()==p.Expected.Count(e=>e.Kind=="sync" || e.Kind=="async" || e.Kind=="reply"),"相互作用の要素数");
+        Require(d.Lifelines.Count()==p.Expected.Count(e=>e.Kind=="lifeline") && d.Messages.Count()==p.Expected.Count(e=>e.Kind=="sync" || e.Kind=="async" || e.Kind=="reply"),"ライフライン・メッセージ数");
         Require(d.Fragments.Count()==p.Expected.Count(e=>e.Kind=="fragment") && d.Notes.Count()==p.Expected.Count(e=>e.Kind=="note") && d.InteractionUses.Count()==p.Expected.Count(e=>e.Kind=="ref"),
             "シェイプ数（期待/取得）\n複合フラグメント: "+p.Expected.Count(e=>e.Kind=="fragment")+"/"+d.Fragments.Count()
             +" / ref: "+p.Expected.Count(e=>e.Kind=="ref")+"/"+d.InteractionUses.Count()
@@ -287,10 +289,18 @@ public static class PumlRuntime
         foreach(var e in p.Expected)
         {
             var model=project.GetModelById(e.Id); Require(model!=null && !model.IsDeleted,e.Kind+"モデル");
-            if(e.Kind=="sync" || e.Kind=="async")
+            if(e.Kind=="sync" || e.Kind=="async" || e.Kind=="reply")
             {
                 var m=model as IMessage;
                 Require(m!=null && m.Kind==e.Kind && m.Name==e.Text && m.Sender!=null && m.Receiver!=null && m.Sender.Id==e.Left && m.Receiver.Id==e.Right,"メッセージ種別・本文・送受信");
+                Require(m.SendPort!=null && m.ReceivePort!=null && ((IModel)m.SendPort).Id==e.SendPort && ((IModel)m.ReceivePort).Id==e.ReceivePort,"実行区間への接続");
+                var shape=d.Messages.SingleOrDefault(v=>v.Model.Id==e.Id);
+                Require(shape!=null && Math.Abs(shape.SourceY-e.Y)<1 && Math.Abs(shape.TargetY-e.EndY)<1,"メッセージ位置・折返し");
+            }
+            else if(e.Kind=="execution")
+            {
+                var shape=d.ExecutionSpecifications.SingleOrDefault(v=>v.Model.Id==e.Id);
+                Require(shape!=null && Math.Abs(shape.Length-(e.EndY-e.Y))<1,"実行区間の長さ");
             }
             else if(e.Kind=="lifeline")Require(model.Name==e.Text,"参加者名");
             else if(e.Kind=="fragment")Require(Convert.ToString(model.GetField("Operator"))==e.Operator,"複合フラグメント種別");
@@ -299,7 +309,7 @@ public static class PumlRuntime
                 var shape=d.Fragments.SelectMany(f=>f.Operands).SingleOrDefault(o=>o.Model.Id==e.Id);
                 Require(shape!=null && Normalize(shape.Guard)==Normalize(e.Text) && shape.OwnerFragment.Model.Id==e.Owner,"条件・所属");
                 var ids=new HashSet<string>(shape.Messages.Select(m=>m.Model.Id));
-                Require(p.Expected.Where(m=>m.Owner==e.Id && (m.Kind=="sync" || m.Kind=="async")).All(m=>ids.Contains(m.Id)),"分岐内メッセージ");
+                Require(p.Expected.Where(m=>m.Owner==e.Id && (m.Kind=="sync" || m.Kind=="async" || m.Kind=="reply")).All(m=>ids.Contains(m.Id)),"分岐内メッセージ");
             }
             else if(e.Kind=="ref")
             {
@@ -387,6 +397,7 @@ public class PumlNode
 public class PumlPlan
 {
     public string Title = "PlantUML";
+    public int StyleDirectives;
     public List<string> Aliases = new List<string>(), Names = new List<string>();
     public List<PumlNode> Nodes = new List<PumlNode>();
     public IEnumerable<PumlNode> All() { return Walk(Nodes); }
@@ -395,8 +406,9 @@ public class PumlPlan
     public string Summary()
     {
         var a = All().ToList();
-        return "ライフライン: " + Aliases.Count + " / 同期: " + a.Count(n => n.Kind == "sync") + " / 非同期: " + a.Count(n => n.Kind == "async")
+        return "ライフライン: " + Aliases.Count + " / 同期: " + a.Count(n => n.Kind == "sync") + " / 非同期: " + a.Count(n => n.Kind == "async") + " / 返信: " + a.Count(n=>n.Kind=="reply")
             + "\n複合フラグメント: " + a.Count(n => n.Kind == "fragment") + " / ref: " + a.Count(n => n.Kind == "ref") + " / Note: " + a.Count(n => n.Kind == "note")
+            + (StyleDirectives>0 ? "\n表示設定: "+StyleDirectives+"件はNext Designの既定表示を使用します。" : "")
             + (a.Any(n => n.Kind == "ref") ? "\nrefは表示枠として作成します。別の図への参照リンクは未設定です。" : "");
     }
     private void Participant(string alias, string name, int line, bool declared)
@@ -424,6 +436,14 @@ public class PumlPlan
             { if (started || p.Nodes.Count != 0) throw Error(line, "開始位置が不正です。"); started = true; continue; }
             if (!started) throw Error(line,"@startumlより前に構文があります。");
             if (s == "@enduml") { if (fragments.Count != 0) throw Error(line, "endが不足しています。"); ended = true; continue; }
+            if(Regex.IsMatch(s,@"^skinparam\s+(sequenceMessageAlign\s+(left|center|right)|maxMessageSize\s+[1-9][0-9]*|sequenceReferenceBackgroundColor\s+#[0-9a-fA-F]{6})$",RegexOptions.IgnoreCase))
+            { p.StyleDirectives++; continue; }
+            var activity=Regex.Match(s,@"^(activate|deactivate)\s+([\p{L}\p{N}_]+)$");
+            if(activity.Success)
+            {
+                p.Participant(activity.Groups[2].Value,activity.Groups[2].Value,line,false);
+                lists.Peek().Add(new PumlNode{Kind=activity.Groups[1].Value,Left=activity.Groups[2].Value,Line=line}); continue;
+            }
             var m = Regex.Match(s, "^participant\\s+(?:\"([^\"]+)\"\\s+as\\s+([\\p{L}\\p{N}_]+)|([\\p{L}\\p{N}_]+))$");
             if (m.Success) { string alias = m.Groups[2].Success ? m.Groups[2].Value : m.Groups[3].Value; p.Participant(alias,m.Groups[1].Success?m.Groups[1].Value:alias,line,true); continue; }
             if (s.StartsWith("title ")) { p.Title = s.Substring(6); continue; }
@@ -458,12 +478,11 @@ public class PumlPlan
                 }
                 n.Text=n.Text.Replace("\\n","\n"); lists.Peek().Add(n); continue;
             }
-            m = Regex.Match(s, @"^([\p{L}\p{N}_]+)\s*(->>|->)\s*([\p{L}\p{N}_]+)\s*:\s*(.*)$");
+            m = Regex.Match(s, @"^([\p{L}\p{N}_]+)\s*(-->>|-->|->>|->)\s*([\p{L}\p{N}_]+)\s*:\s*(.*)$");
             if (m.Success)
             {
                 p.Participant(m.Groups[1].Value,m.Groups[1].Value,line,false); p.Participant(m.Groups[3].Value,m.Groups[3].Value,line,false);
-                if (m.Groups[1].Value==m.Groups[3].Value) throw Error(line,"自己メッセージはこの版では未対応です。");
-                lists.Peek().Add(new PumlNode { Kind=m.Groups[2].Value=="->>"?"async":"sync", Left=m.Groups[1].Value,Right=m.Groups[3].Value,Text=m.Groups[4].Value.Replace("\\n","\n"),Line=line }); continue;
+                lists.Peek().Add(new PumlNode { Kind=m.Groups[2].Value.StartsWith("--")?"reply":m.Groups[2].Value=="->>"?"async":"sync", Left=m.Groups[1].Value,Right=m.Groups[3].Value,Text=m.Groups[4].Value.Replace("\\n","\n"),Line=line }); continue;
             }
             throw Error(line,"未対応の構文です。取り込みは実行しません。" );
         }
@@ -471,19 +490,39 @@ public class PumlPlan
         if (!started || !ended) throw Error(1,"@startumlと@endumlが必要です。");
         if (p.Aliases.Count<2 || p.All().Count()>500) throw Error(1,"参加者は2本以上、要素は500件以下にしてください。");
         foreach (var n in p.All()) foreach (var target in n.Targets) if (!p.Aliases.Contains(target)) throw Error(n.Line,"note/refの参加者が未定義です。");
+        ValidateActivities(p.Nodes,new Dictionary<string,int>());
         return p;
+    }
+    static void ValidateActivities(IEnumerable<PumlNode> nodes,Dictionary<string,int> counts)
+    {
+        var initial=new Dictionary<string,int>(counts);
+        foreach(var n in nodes)
+        {
+            if(n.Kind=="fragment")foreach(var branch in n.Children)ValidateActivities(branch.Children,new Dictionary<string,int>(counts));
+            if(n.Kind!="activate" && n.Kind!="deactivate")continue;
+            int value; counts.TryGetValue(n.Left,out value);
+            int baseline; initial.TryGetValue(n.Left,out baseline);
+            if(n.Kind=="deactivate" && value<=baseline)throw Error(n.Line,"対応するactivateが同じ図または分岐内にありません。");
+            counts[n.Left]=value+(n.Kind=="activate"?1:-1);
+        }
+        foreach(var pair in counts)
+        {
+            int value; initial.TryGetValue(pair.Key,out value);
+            if(value!=pair.Value)throw Error(1,"activate/deactivateは図または各分岐内で対応させてください。");
+        }
     }
 }
 public class PumlExpected
 {
-    public string Id, Kind, Text, Left, Right, Owner, Operator;
+    public string Id, Kind, Text, Left, Right, Owner, Operator, SendPort, ReceivePort;
+    public int Y,EndY;
     }
 public class PumlProfile
 {
     public Dictionary<string,string> Types = new Dictionary<string,string>();
     public Dictionary<string,string> Relations = new Dictionary<string,string>();
     public Dictionary<string,string> Operators = new Dictionary<string,string>();
-    public string NoteField = "Body", NoteStorage = "String", Sync="Sync", Async="Async";
+    public string NoteField = "Body", NoteStorage = "String", Sync="Sync", Async="Async", Reply="Reply";
 }
 public class PumlBuild
 {
@@ -493,6 +532,8 @@ public class PumlBuild
     private Dictionary<string,string> lifelines=new Dictionary<string,string>(), active=new Dictionary<string,string>();
     private Dictionary<string,int> x=new Dictionary<string,int>(), indexes=new Dictionary<string,int>();
     private Dictionary<string,Dictionary<string,object>> executions=new Dictionary<string,Dictionary<string,object>>();
+    private Dictionary<string,Stack<string>> activities=new Dictionary<string,Stack<string>>();
+    private string pendingAlias,pendingExecution;
     private int y=40;
     public static Dictionary<string,object> Obj(params object[] values)
     { var d=new Dictionary<string,object>(); for(int i=0;i<values.Length;i+=2)d.Add((string)values[i],values[i+1]); return d; }
@@ -525,25 +566,56 @@ public class PumlBuild
     private string Execution(string alias,int start)
     {
         string id=Entity("ExecutionSpecification",""); Owned("ExecutionSpecifications",id); Link("OwnedExecutionSpecification",lifelines[alias],id);
-        executions[id]=Shape("ExecutionSpecifications",id,"X",x[alias],"Y",start,"Length",40,"Height",40); return id;
+        executions[id]=Shape("ExecutionSpecifications",id,"X",x[alias]+8*(activities.ContainsKey(alias)?activities[alias].Count:0),"Y",start,"Length",40,"Height",40); return id;
     }
     private void Extend(string id,int at)
     { var s=executions[id]; int size=Math.Max((int)s["Length"],at-(int)s["Y"]+35); s["Length"]=size; s["Height"]=size; }
     private void Items(IEnumerable<PumlNode> nodes,string operand=null,int depth=0)
     {
-        foreach(var n in nodes)
+        var items=nodes.ToList();
+        for(int index=0;index<items.Count;index++)
         {
-            if(n.Kind=="sync" || n.Kind=="async")
+            var n=items[index];
+            if(n.Kind=="activate")
+            {
+                string previous; active.TryGetValue(n.Left,out previous);
+                if(!activities.ContainsKey(n.Left))activities[n.Left]=new Stack<string>();
+                string id=pendingAlias==n.Left?pendingExecution:Execution(n.Left,y-20);
+                // A receive followed by activate opens that receive execution, not a second bar.
+                if(id==previous)previous=activities[n.Left].Count>0?activities[n.Left].Peek():null;
+                activities[n.Left].Push(previous); active[n.Left]=id;
+                pendingAlias=null; continue;
+            }
+            if(n.Kind=="deactivate")
+            {
+                string id=active[n.Left]; var bar=executions[id];
+                int length=Math.Max(40,y-16-(int)bar["Y"]); bar["Length"]=length;bar["Height"]=length;
+                string previous=activities[n.Left].Pop();
+                if(previous==null)active.Remove(n.Left);else active[n.Left]=previous;
+                pendingAlias=null; continue;
+            }
+            pendingAlias=null;
+            if(n.Kind=="sync" || n.Kind=="async" || n.Kind=="reply")
             {
                 y+=18*(n.Text.Split('\n').Length-1);
                 string send; if(!active.TryGetValue(n.Left,out send))active[n.Left]=send=Execution(n.Left,y-20);
-                string receive=Execution(n.Right,y); active[n.Right]=receive; Extend(send,y);
-                string id=Entity("Message",n.Text,Obj("Name",n.Text,"MessageSort",n.Kind=="sync"?profile.Sync:profile.Async)); Owned("Messages",id);
+                bool self=n.Left==n.Right; int targetY=y+(self?24:0);
+                string receive;
+                bool beginsActivation=index+1<items.Count && items[index+1].Kind=="activate" && items[index+1].Left==n.Right;
+                if((n.Kind=="reply" || (!beginsActivation && activities.ContainsKey(n.Right) && activities[n.Right].Count>0)) && active.TryGetValue(n.Right,out receive)) { }
+                else receive=Execution(n.Right,targetY);
+                // Keep explicit activation contexts until deactivate; an immediately following
+                // activate may adopt this receiving execution.
+                if(!activities.ContainsKey(n.Right) || activities[n.Right].Count==0)active[n.Right]=receive;
+                pendingAlias=n.Right; pendingExecution=receive;
+                Extend(send,y); Extend(receive,targetY);
+                foreach(var pair in activities)if(pair.Value.Count>0 && active.ContainsKey(pair.Key))Extend(active[pair.Key],targetY);
+                string id=Entity("Message",n.Text,Obj("Name",n.Text,"MessageSort",n.Kind=="reply"?profile.Reply:n.Kind=="sync"?profile.Sync:profile.Async)); Owned("Messages",id);
                 Link("SendMessage",send,id,false,0); Link("ReceiveMessage",receive,id,false,0);
-                Shape("Messages",id,"SourceY",y,"TargetY",y,"IsRightAtFrame",false,"SelfloopBendsX",0);
+                Shape("Messages",id,"SourceY",y,"TargetY",targetY,"IsRightAtFrame",false,"SelfloopBendsX",self?Math.Max((int)executions[send]["X"],(int)executions[receive]["X"])+80:0);
                 if(operand!=null)Link("OperandTargetMessage",operand,id,false,0);
-                payload.Expected.Add(new PumlExpected{Id=id,Kind=n.Kind,Text=n.Text,Left=lifelines[n.Left],Right=lifelines[n.Right],Owner=operand});
-                y+=50; continue;
+                payload.Expected.Add(new PumlExpected{Id=id,Kind=n.Kind,Text=n.Text,Left=lifelines[n.Left],Right=lifelines[n.Right],Owner=operand,SendPort=send,ReceivePort=receive,Y=y,EndY=targetY});
+                y=targetY+50; continue;
             }
             if(n.Kind=="fragment")
             {
@@ -559,9 +631,10 @@ public class PumlBuild
                     Shape("Operands",oid,"Position",y-top);
                     payload.Expected.Add(new PumlExpected{Id=oid,Kind="operand",Text=branch.Text,Owner=id});
                     // Each branch starts with its own execution context.
-                    var saved=new Dictionary<string,string>(active); active.Clear();
+                    var saved=new Dictionary<string,string>(active);
+                    foreach(var key in active.Keys.ToArray())if(!activities.ContainsKey(key) || activities[key].Count==0)active.Remove(key);
                     // Leave room below the guard before placing messages or nested frames.
-                    y+=40+18*(branch.Text.Split('\n').Length-1); Items(branch.Children,oid,depth+1); active=saved; y+=8;
+                    y+=40+18*(branch.Text.Split('\n').Length-1); Items(branch.Children,oid,depth+1); active=saved; pendingAlias=null; y+=8;
                 }
                 Shape("Fragments",id,"X",20+16*depth,"Y",top,"Width",x.Values.Max()+210-32*depth,"Height",y-top); y+=16; continue;
             }
@@ -599,6 +672,7 @@ public class PumlBuild
             p.Expected.Add(new PumlExpected{Id=id,Kind="lifeline",Text=plan.Names[index]});
         }
         b.Items(plan.Nodes);
+        foreach(var pair in b.executions)p.Expected.Add(new PumlExpected{Id=pair.Key,Kind="execution",Y=(int)pair.Value["Y"],EndY=(int)pair.Value["Y"]+(int)pair.Value["Length"]});
         foreach(var s in b.shapes["Lifelines"].Cast<Dictionary<string,object>>())s["LaneLength"]=b.y+40;
         var editor=Obj("Id",Guid.NewGuid().ToString(),"ViewType","SequenceDiagram","MetamodelId","DensoCreate.Indio.IMF.Extensions.Sequence.ViewInstance.SequenceDiagramViewInstance","DefinitionId",definition,"ModelId",root,"Frame",Obj("Id",Guid.NewGuid().ToString(),"ModelId",frame));
         foreach(var pair in b.shapes)editor.Add(pair.Key,pair.Value);

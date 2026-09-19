@@ -1,4 +1,4 @@
-# シーケンス生成実験 0.2.5
+# シーケンス生成実験 0.3.0
 
 Next Design V3.1.9向けのC#スクリプト拡張。PlantUMLファイルを選び、内容を確認して、新しいシーケンス図を追加する。0.2.0の追加要素は実機未確認で、生成結果と診断を使って調整する。
 
@@ -14,6 +14,8 @@ Next Design V3.1.9向けのC#スクリプト拡張。PlantUMLファイルを選�
 
 0.2.5では縦方向の固定余白を縮小する。メッセージ間隔は75から50、条件下の余白は50から40へ変更し、分岐の末尾・枠の前後・ライフライン末尾も詰める。Noteとrefの高さは本文行数から計算し、複数行メッセージと条件には行数分の余白を加える。既存の図には適用されず、取り込み直して生成する図に反映される。実機の文字重なりは別途確認する。
 
+0.3.0では実行区間、自己メッセージ、返信を追加する。`skinparam sequenceMessageAlign`、`maxMessageSize`、`sequenceReferenceBackgroundColor` の単行指定は受け付けるが、見た目には反映せずNext Designの既定表示を使う。この差は取り込み前に表示する。新規構文の実機表示は未確認。
+
 ## 配置と操作
 
 1. `git pull` 後、`SequenceImportProbe` フォルダを他の拡張と同じ `extensions` フォルダへコピーする。ZIPの展開やビルドは不要。
@@ -24,6 +26,7 @@ Next Design V3.1.9向けのC#スクリプト拡張。PlantUMLファイルを選�
 6. 取り込み件数を確認して実行する。JSONやIDの入力は不要。
 7. 元の図と同じ親の配下に追加された `Async sample` を開く。結果画面と新しい図のスクショを渡す。
 8. 順に `02-fragments.puml`、`03-ref.puml`、`04-note.puml` を試す。個別に動いたら `05-all.puml` で混在を確認する。サンプルの書き換えは不要。
+9. 実行区間・自己呼び出し・返信は `06-activation-self-reply.puml` で検証できる。実際のUTF-8 PlantUMLファイルも同じ操作で選べる。
 
 「最小図を生成」も残している。PlantUMLからの生成で問題が出たときに、最小構成との比較に使える。
 
@@ -38,15 +41,19 @@ Next Design V3.1.9向けのC#スクリプト拡張。PlantUMLファイルを選�
 | 参加者 | `participant A`、`participant "表示名" as A`。メッセージ中の暗黙宣言も扱う |
 | 同期 | `A -> B : request()` |
 | 非同期 | `A ->> B : notify()`。同期と別のMessageSortで保存・照合 |
+| 返信 | `A --> B : result`、`A -->> B : result` をReplyとして取り込む |
+| 自己メッセージ | `A -> A : operation()` など。送受信の高さをずらした折り返しを生成 |
+| 実行区間 | `activate A` / `deactivate A`。受信直後のactivateは受信先の実行区間を使用。入れ子を閉じると外側へ戻る |
+| 表示設定 | `skinparam sequenceMessageAlign left/center/right`、正整数の `maxMessageSize`、6桁16進色の `sequenceReferenceBackgroundColor`。Next Design既定表示で代替する旨を確認画面に表示 |
 | 複合フラグメント | `alt / else / end`、`opt`、`loop`、`par`、`break`、`critical`、`group`。条件・分岐と入れ子を生成。対応する演算子がプロファイルにない場合は実行前に停止 |
 | 相互作用の利用 | `ref over A, B : 本文`、複数行の `end ref`。この版は枠と本文のみで、別の図への参照先は設定しない |
 | Note | `note over A, B`、`note left of A`、`note right of B`。一行または `end note` で囲む本文。位置を生成し、アンカー線は生成しない |
 
-UTF-8、1ファイル1図、300KB以下、参加者2〜50本、要素500件以下、入れ子8段まで。`@startuml` と `@enduml` が必要。破線の返信、左向き矢印、自己メッセージ、明示的なactivate/deactivate、include、装飾指定などは未対応で、行番号を表示して停止する。未対応行を飛ばして図を作ることはしない。
+UTF-8、1ファイル1図、300KB以下、参加者2〜50本、要素500件以下、入れ子8段まで。`@startuml` と `@enduml` が必要。左向き矢印、include、上表以外の表示設定・装飾指定などは未対応で、行番号を表示して停止する。未対応行を飛ばして図を作ることはしない。`activate/deactivate` は図内または各分岐内で対応させる。分岐をまたぐ実行区間の開始・終了や、色付きactivateはこの版では扱わない。
 
 現在の図の型・構造関連・列挙値を取得し、新しいIDのモデル・関連・シェイプを生成する。`BeginUndoTransaction(false)` 内で `IProject.ImportUnitFromJson` を呼び、APIの警告・エラーがなく、読戻し照合が通った場合に確定する。Note本文がRichTextの場合は、同じトランザクション内で `SetRichTextField` を使って設定する。
 
-照合するのは図の所属・名前、ライフラインとメッセージのシェイプ数、送受信先・種別・本文、複合フラグメントの演算子と分岐の条件・所属・メッセージ、refとNoteのシェイプ数・本文。枠の位置や入れ子の表示、非同期矢印の見た目はスクショで確認する。API照合に成功しても、描画・Undo/Redo・保存後の再読込が確認済みになったとは扱わない。
+照合するのは図の所属・名前、ライフラインとメッセージのシェイプ数、送受信先・種別・本文・実行区間への接続・送受信の高さ、実行区間の長さ、複合フラグメントの演算子と分岐の条件・所属・メッセージ、refとNoteのシェイプ数・本文。枠の位置や入れ子の表示、非同期矢印の見た目はスクショで確認する。API照合に成功しても、描画・Undo/Redo・保存後の再読込が確認済みになったとは扱わない。
 
 この版は新規図への取り込み。既存図のIDや参照関係を維持した差分更新は未実装。
 
@@ -76,6 +83,6 @@ python SequenceImportProbe/tests/run_tests.py --sdk-root work/sequence-api-resea
 python <skills>/nextdesign-script-extension/scripts/validate_manifest.py SequenceImportProbe --nd-version 3
 ```
 
-1つ目はPlantUMLの解析、非同期種別、分岐・入れ子、refとNoteの生成、未対応構文の拒否に加え、生成JSONのID独立性、所有構造、送受信、シェイプ、座標、文字列エスケープと不正入力を検査する。2つ目はさらに公式 `NextDesign.Core / Desktop 3.1.3.30714` と `.NET 6` 参照アセンブリで配布スクリプト全体をコンパイルする。SDKは開発PCの作業フォルダにのみ配置する。
+1つ目はPlantUMLの解析、同期・非同期・返信種別、自己折り返し、実行区間の入れ子と復帰、分岐・入れ子、refとNoteの生成、未対応構文の拒否に加え、生成JSONのID独立性、所有構造、送受信、シェイプ、座標、文字列エスケープと不正入力を検査する。2つ目はさらに公式 `NextDesign.Core / Desktop 3.1.3.30714` と `.NET 6` 参照アセンブリで配布スクリプト全体をコンパイルする。SDKは開発PCの作業フォルダにのみ配置する。
 
 これらの検査ではNext Designを起動しない。インポートの成功、失敗時の復元、実機の表示は保証しない。

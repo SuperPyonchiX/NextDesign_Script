@@ -66,6 +66,28 @@ public static class PayloadTest {
         shapes = [editor['Frame']] + [s for k,v in editor.items() if isinstance(v,list) for s in v]
         assert all(s['ModelId'] in entities for s in shapes)
         assert len({s['Id'] for s in shapes}) == len(shapes)
+        if path.name == '06-activation-self-reply.json':
+            messages = {e['Name']:e for e in entities.values() if e['EntityType']=='Message'}
+            assert messages['result']['Fields']['MessageSort'] == 'Reply'
+            ports = lambda label,kind: next(r['SourceId'] for r in relations if r['MetamodelId']==kind and r['TargetId']==messages[label]['Id'])
+            parent = ports('run()','ReceiveMessage')
+            caller = ports('run()','SendMessage')
+            assert ports('prepare()','SendMessage') == ports('validate()','SendMessage') == ports('result','SendMessage') == parent
+            assert ports('result','ReceiveMessage') == caller
+            execution = {s['ModelId']:s for s in editor['ExecutionSpecifications']}
+            assert len(execution)==4, 'activate after receive must reuse the receiving execution'
+            for label in ('prepare()','validate()'):
+                child = execution[ports(label,'ReceiveMessage')]
+                outer = execution[parent]
+                assert child['X'] > outer['X'] and child['Y'] >= outer['Y']
+                assert child['Y']+child['Length'] <= outer['Y']+outer['Length']
+                shape = next(v for v in editor['Messages'] if v['ModelId']==messages[label]['Id'])
+                assert shape['TargetY'] > shape['SourceY'] and shape['SelfloopBendsX'] > child['X']
+            for msg in editor['Messages']:
+                label = entities[msg['ModelId']]['Name']
+                for kind,coordinate in [('SendMessage','SourceY'),('ReceiveMessage','TargetY')]:
+                    bar=execution[ports(label,kind)]
+                    assert bar['Y'] <= msg[coordinate] < bar['Y']+bar['Length']
         if path.name == '05-all.json':
             by_type = lambda t: [e for e in entities.values() if e['EntityType'] == t]
             assert [m['Fields']['MessageSort'] for m in by_type('Message')] == ['Sync','Async','Async']

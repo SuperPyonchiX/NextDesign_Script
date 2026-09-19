@@ -1,0 +1,20 @@
+@startuml
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 160
+skinparam sequenceReferenceBackgroundColor #EEEEEE
+title Execution sample
+participant "Caller" as A
+participant "Service" as B
+activate A
+A -> B : run()
+activate B
+B -> B : prepare()
+activate B
+deactivate B
+B -> B : validate()
+activate B
+deactivate B
+B --> A : result
+deactivate B
+deactivate A
+@enduml
