@@ -16,7 +16,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.2.3";
+    public const string Title = "シーケンス生成実験 / 0.2.4";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -254,6 +254,8 @@ public static class PumlRuntime
         if(plan.All().Any(n=>n.Kind=="note"))
         {
             var c=Child(p,source[0].Metaclass,"Notes","Notes","___Interaction_InteractionNote");
+            if(!diagram.Notes.Any())throw new InvalidOperationException("E121: 型の見本が必要です。Note（ノート）がある既存の図を開いてから取り込んでください。");
+            c=Concrete(diagram.Notes.Select(n=>n.Model),c,"Note");
             p.Types["InteractionNote"]=c.Id; classes.Add(c);
             var f=Field(c,"Body") ?? Field(c,"Text") ?? Field(c,"Name");
             if(f==null)throw new InvalidOperationException("E121: Note本文フィールドを取得できません。");
