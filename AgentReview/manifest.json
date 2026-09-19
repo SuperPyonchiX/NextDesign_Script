@@ -2,11 +2,10 @@
   "name": "AgentReview",
   "displayName": "AI レビュー",
   "description": "Claude Code / Codex のエージェントで設計レビューと修正提案の生成を行います。設計情報をエクスポートし、ターミナルでエージェントと対話します。",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
-
   "extensionPoints": {
     "ribbon": {
       "tabs": [
@@ -36,6 +35,20 @@
                   "imageSmall": "resources/resume16.png",
                   "imageLarge": "resources/resume32.png",
                   "command": "AgentReview.Command.Resume"
+                },
+                {
+                  "id": "AgentReview.UpstreamButton",
+                  "type": "Button",
+                  "label": "上位整合レビュー",
+                  "description": "指定した上位モデルと外部資料を固定コピーし、選択モデルの設計への反映をレビューします。",
+                  "command": "AgentReview.Command.Upstream"
+                },
+                {
+                  "id": "AgentReview.ChangeButton",
+                  "type": "Button",
+                  "label": "変化点レビュー（準備中）",
+                  "description": "過去版出力の実機確認待ちです。現在は未提供の理由を表示します。",
+                  "command": "AgentReview.Command.Change"
                 }
               ]
             },
@@ -126,6 +139,20 @@
                   "imageSmall": "resources/probe16.png",
                   "imageLarge": "resources/probe32.png",
                   "command": "AgentReview.Command.ProbeExport"
+                },
+                {
+                  "id": "AgentReview.InputsButton",
+                  "type": "Button",
+                  "label": "レビュー入力設定",
+                  "description": "上位文書の指定とモデルID一覧を作成し、入力設定を開きます。",
+                  "command": "AgentReview.Command.Inputs"
+                },
+                {
+                  "id": "AgentReview.HistoricalProbeButton",
+                  "type": "Button",
+                  "label": "過去版出力の検証",
+                  "description": "過去版一式のコピーをカレントにせず開き、本文と図の出力を検証します。AIは起動しません。",
+                  "command": "AgentReview.Command.HistoricalProbe"
                 }
               ]
             }
@@ -133,81 +160,138 @@
         }
       ]
     },
-
     "commandGroups": [
-      { "name": "agentreview", "title": "AI レビュー" }
+      {
+        "name": "agentreview",
+        "title": "AI レビュー"
+      }
     ],
-
     "commands": [
       {
         "id": "AgentReview.Command.Start",
         "title": "レビュー開始",
         "group": "agentreview",
         "execFunc": "StartAgentReview",
-        "canExecWhen": { "uiState": "ProjectOpened" }
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
       },
       {
         "id": "AgentReview.Command.Resume",
         "title": "ターミナル再開",
         "group": "agentreview",
         "execFunc": "ResumeAgentSession",
-        "canExecWhen": { "uiState": "ProjectOpened" }
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
       },
       {
         "id": "AgentReview.Command.ExportDesign",
         "title": "設計情報を出力",
         "group": "agentreview",
         "execFunc": "ExportDesignInfo",
-        "canExecWhen": { "uiState": "ProjectOpened" }
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
       },
       {
         "id": "AgentReview.Command.OpenResult",
         "title": "結果を開く",
         "group": "agentreview",
         "execFunc": "OpenReviewResult",
-        "canExecWhen": { "uiState": "ProjectOpened" }
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
       },
       {
         "id": "AgentReview.Command.OpenFolder",
         "title": "フォルダを開く",
         "group": "agentreview",
         "execFunc": "OpenWorkspaceFolder",
-        "canExecWhen": { "uiState": "ProjectOpened" }
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
       },
       {
         "id": "AgentReview.Command.SwitchAgent",
         "title": "エージェント切替",
         "group": "agentreview",
         "execFunc": "SwitchAgent",
-        "canExecWhen": { "uiState": "ProjectOpened" }
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
       },
       {
         "id": "AgentReview.Command.OpenSkill",
         "title": "スキルを開く",
         "group": "agentreview",
         "execFunc": "OpenSkillFolder",
-        "canExecWhen": { "uiState": "ProjectOpened" }
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
       },
       {
         "id": "AgentReview.Command.OpenConfig",
         "title": "設定を開く",
         "group": "agentreview",
         "execFunc": "OpenConfig",
-        "canExecWhen": { "uiState": "ProjectOpened" }
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
       },
       {
         "id": "AgentReview.Command.CheckCli",
         "title": "環境診断",
         "group": "agentreview",
         "execFunc": "CheckCliEnvironment",
-        "canExecWhen": { "uiState": "ProjectOpened" }
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
       },
       {
         "id": "AgentReview.Command.ProbeExport",
         "title": "エクスポート診断",
         "group": "agentreview",
         "execFunc": "ProbeExportTarget",
-        "canExecWhen": { "uiState": "ProjectOpened" }
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
+      },
+      {
+        "id": "AgentReview.Command.Upstream",
+        "title": "上位整合レビュー",
+        "group": "agentreview",
+        "execFunc": "StartUpstreamReview",
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
+      },
+      {
+        "id": "AgentReview.Command.Change",
+        "title": "変化点レビュー（準備中）",
+        "group": "agentreview",
+        "execFunc": "StartChangeReview",
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
+      },
+      {
+        "id": "AgentReview.Command.Inputs",
+        "title": "レビュー入力設定",
+        "group": "agentreview",
+        "execFunc": "OpenReviewInputs",
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
+      },
+      {
+        "id": "AgentReview.Command.HistoricalProbe",
+        "title": "過去版出力の検証",
+        "group": "agentreview",
+        "execFunc": "ProbeHistoricalExport",
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
       }
     ]
   }

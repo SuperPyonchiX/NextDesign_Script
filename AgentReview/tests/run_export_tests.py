@@ -20,6 +20,10 @@ parts = [
     + "\n}",
     source[source.index("public class SessionInfo"):source.index("public static class WorkspaceBuilder")],
     source[source.index("public static class ReviewResultViewer"):source.index("public static class CliProbe")],
+    source[source.index("public static class WorkspaceBuilder"):source.index("//  ファイルシステムのリンク・コピー")],
+    "public class ReviewCommandHarness {\n"
+    + source[source.index("public void StartAgentReview"):source.index("// レビューセッションを作らず")]
+    + "\nprivate IModel ResolveRoot(IApplication app) { return app.Workspace.CurrentModel ?? app.Workspace.CurrentProject; }\n}\n",
     "public class ResultCommandHarness {\n"
     + source[source.index("public void OpenReviewResult"):source.index("public void OpenWorkspaceFolder")]
     + "\n}",
@@ -43,6 +47,7 @@ with tempfile.TemporaryDirectory(prefix="agentreview-tests-") as tmp:
     )
     with program.open("a", encoding="utf-8") as f:
         f.write((root / "tests/ViewerTests.cs").read_text(encoding="utf-8"))
+        f.write((root / "tests/InputTests.cs").read_text(encoding="utf-8"))
     recorder = directory / "Recorder.cs"
     recorder.write_text('''using System;
 using System.IO;
@@ -69,5 +74,7 @@ public static class Recorder {
         assert document["settings"]["workbench.editorAssociations"] == {
             "**/review/review.md": "vscode.markdown.preview.editor",
             "**/review/proposal.md": "vscode.markdown.preview.editor",
+            "**/review/coverage.md": "vscode.markdown.preview.editor",
+            "**/review/changes.md": "vscode.markdown.preview.editor",
         }
     print("PASS: generated VS Code workspace JSON")

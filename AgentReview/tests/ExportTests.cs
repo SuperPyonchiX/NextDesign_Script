@@ -77,14 +77,22 @@ public static class ClassExportRunner
     public static bool IsClassDiagramEditor(Editor e) { var d = e as IDiagram; return d != null && d.Kind == "class"; }
 }
 public static class HtmlToMarkdown { public static string Convert(string html) { return html; } }
-public class IApplication { public TestOutput Output = new TestOutput(); public TestWindow Window = new TestWindow(); }
+public class IApplication { public TestOutput Output = new TestOutput(); public TestWindow Window = new TestWindow(); public TestWorkspace Workspace = new TestWorkspace(); }
 public class TestWindow { public TestUI UI = new TestUI(); }
 public class TestUI
 {
     public List<string> Messages = new List<string>();
     public void ShowInformationDialog(string message, string category) { Messages.Add(message); }
+    public bool Confirm = true;
+    public bool ShowConfirmDialog(string message, string category) { Messages.Add(message); return Confirm; }
+    public string ShowSelectFolderDialog(string message) { return null; }
 }
-public class ICommandContext { public IApplication App = new IApplication(); }
+public class ICommandContext
+{
+    public IApplication App = new IApplication();
+    public TestContextOption ContextOption = new TestContextOption();
+    public TestExtensionInfo ExtensionInfo = new TestExtensionInfo();
+}
 public class ICommandParams { }
 public class TestOutput
 {
@@ -298,5 +306,6 @@ public static class ExportTests
 
         Console.WriteLine("PASS: " + _checks + " export assertions (fake SDK; real runtime still requires verification).");
         ViewerTests.Run(temp);
+        InputTests.Run(temp);
     }
 }
