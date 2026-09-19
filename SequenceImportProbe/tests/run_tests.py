@@ -81,6 +81,16 @@ public static class PayloadTest {
             nested, = [r for r in relations if r['MetamodelId'] == 'NestedInteractionFragment']
             assert entities[nested['SourceId']]['Fields']['Guard'] == 'waiting'
             assert entities[nested['TargetId']]['Fields']['Operator'] == 'LOOP'
+            frames = {s['ModelId']: s for s in editor['Fragments']}
+            child = frames[nested['TargetId']]
+            parent_id = next(r['SourceId'] for r in relations if r['RelationType']=='Embed' and r['TargetId']==nested['SourceId'])
+            parent = frames[parent_id]
+            guard = next(s for s in editor['Operands'] if s['ModelId']==nested['SourceId'])
+            assert child['X'] > parent['X']
+            assert child['X']+child['Width'] < parent['X']+parent['Width']
+            assert child['Y'] >= parent['Y']+guard['Position']+50
+            assert child['Y']+child['Height'] < parent['Y']+parent['Height']
+
             message_y = [s['SourceY'] for s in editor['Messages']]
             assert message_y == sorted(set(message_y))
     print('PASS: PlantUML samples, async sorts, branches/nesting, ref/Note payloads and unsupported syntax rejection')

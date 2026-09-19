@@ -16,7 +16,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.2.1";
+    public const string Title = "シーケンス生成実験 / 0.2.2";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -525,7 +525,7 @@ public class PumlBuild
     }
     private void Extend(string id,int at)
     { var s=executions[id]; int size=Math.Max((int)s["Length"],at-(int)s["Y"]+35); s["Length"]=size; s["Height"]=size; }
-    private void Items(IEnumerable<PumlNode> nodes,string operand=null)
+    private void Items(IEnumerable<PumlNode> nodes,string operand=null,int depth=0)
     {
         foreach(var n in nodes)
         {
@@ -554,9 +554,10 @@ public class PumlBuild
                     payload.Expected.Add(new PumlExpected{Id=oid,Kind="operand",Text=branch.Text,Owner=id});
                     // Each branch starts with its own execution context.
                     var saved=new Dictionary<string,string>(active); active.Clear();
-                    Items(branch.Children,oid); active=saved; y+=20;
+                    // Leave room below the guard before placing messages or nested frames.
+                    y+=50; Items(branch.Children,oid,depth+1); active=saved; y+=20;
                 }
-                Shape("Fragments",id,"X",20,"Y",top,"Width",x.Values.Max()+70,"Height",y-top); y+=30; continue;
+                Shape("Fragments",id,"X",20+16*depth,"Y",top,"Width",x.Values.Max()+210-32*depth,"Height",y-top); y+=30; continue;
             }
             int left=n.Targets.Select(t=>x[t]).Min(),right=n.Targets.Select(t=>x[t]).Max();
             if(n.Kind=="ref")
