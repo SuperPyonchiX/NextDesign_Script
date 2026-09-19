@@ -16,7 +16,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.3.7";
+    public const string Title = "シーケンス生成実験 / 0.3.8";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -45,7 +45,20 @@ public static class SequenceExperiment
                 if (string.IsNullOrEmpty(path)) return;
                 if (new FileInfo(path).Length > 300000) throw new InvalidOperationException("E120: 入力は300KB以下にしてください。");
                 pumlText = File.ReadAllText(path, new UTF8Encoding(false, true));
-                plan = PumlPlan.Parse(pumlText);
+                detail.AppendLine("PlantUML file: " + path);
+                try { plan = PumlPlan.Parse(pumlText); }
+                catch (InvalidOperationException parseError)
+                {
+                    var match=Regex.Match(parseError.Message,@"E120: (\d+)行目:");
+                    int row;
+                    if(match.Success && int.TryParse(match.Groups[1].Value,out row))
+                    {
+                        var inputLines=pumlText.Replace("\r\n","\n").Replace('\r','\n').Split('\n');
+                        for(int i=Math.Max(0,row-3);i<Math.Min(inputLines.Length,row+2);i++)
+                            detail.AppendLine((i+1)+": "+inputLines[i]);
+                    }
+                    throw;
+                }
             }
             var owner = sample.Owner;
             var ownerField = sample.GetOwnerField();
@@ -525,23 +538,24 @@ public class PumlPlan
         if (p.Aliases.Count<1 || p.All().Count()>500) throw Error(1,"参加者は1本以上、要素は500件以下にしてください。");
         foreach (var n in p.All()) foreach (var target in n.Targets) if (!p.Aliases.Contains(target)) throw Error(n.Line,"note/refの参加者が未定義です。");
         ValidateActivities(p.Nodes,new Dictionary<string,int>());
-        ValidateDestroyed(p.Nodes,new HashSet<string>());
+        ValidateDestroyed(p.Nodes,new Dictionary<string,int>());
         return p;
     }
-    static void ValidateDestroyed(IEnumerable<PumlNode> nodes,HashSet<string> destroyed)
+    static void ValidateDestroyed(IEnumerable<PumlNode> nodes,Dictionary<string,int> destroyed)
     {
         foreach(var n in nodes)
         {
             if(n.Kind=="fragment")
             {
-                var after=new HashSet<string>(destroyed);
+                var after=new Dictionary<string,int>(destroyed);
                 foreach(var branch in n.Children)
-                { var state=new HashSet<string>(destroyed); ValidateDestroyed(branch.Children,state); after.UnionWith(state); }
-                destroyed.UnionWith(after); continue;
+                { var state=new Dictionary<string,int>(destroyed); ValidateDestroyed(branch.Children,state); foreach(var pair in state)after[pair.Key]=pair.Value; }
+                foreach(var pair in after)destroyed[pair.Key]=pair.Value; continue;
             }
-            if((n.Left!=null && destroyed.Contains(n.Left)) || (n.Right!=null && destroyed.Contains(n.Right)))
-                throw Error(n.Line,"破棄済みの参加者を再利用しています。再生成は未対応です。");
-            if(n.Kind=="destroy")destroyed.Add(n.Left);
+            string reused=n.Left!=null && destroyed.ContainsKey(n.Left)?n.Left:n.Right!=null && destroyed.ContainsKey(n.Right)?n.Right:null;
+            if(reused!=null)
+                throw Error(n.Line,"破棄済みの参加者を再利用しています。再生成は未対応です。\n対象: "+reused+"\n破棄行: "+destroyed[reused]+" / 使用構文: "+n.Kind);
+            if(n.Kind=="destroy")destroyed[n.Left]=n.Line;
         }
     }
     static void ValidateActivities(IEnumerable<PumlNode> nodes,Dictionary<string,int> counts,bool balanced=true)

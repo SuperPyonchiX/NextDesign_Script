@@ -44,6 +44,8 @@ public static class PumlTests
             if(message.SendPort!=start.Id || start.X!=180 || start.Y!=message.Y)throw new Exception("Incoming free endpoint geometry failed");
             if(message.Left!=null || message.Right==null || message.SendPort==message.ReceivePort)throw new Exception("Incoming endpoint expectations failed");
         }
+        var separate=PumlPlan.Parse("@startuml\nactivate Caller\nCaller -> Service : stop\nactivate Service\nService -> Service_Thread : shutdown\ndestroy Service_Thread\nService --> Caller : result\ndeactivate Service\ndeactivate Caller\n@enduml");
+        PumlBuild.Build(separate,profile,"fake-view","13.0");
         bool outside=false;
         try{PumlPlan.Parse("participant A\n@startuml\nA -> B : x\n@enduml");}catch(InvalidOperationException){outside=true;}
         if(!outside)throw new Exception("Syntax outside diagram accepted");
