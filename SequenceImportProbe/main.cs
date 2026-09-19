@@ -16,7 +16,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.2.2";
+    public const string Title = "シーケンス生成実験 / 0.2.3";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -247,6 +247,8 @@ public static class PumlRuntime
         if(plan.All().Any(n=>n.Kind=="ref"))
         {
             var c=Child(p,source[0].Metaclass,"InteractionUses","InteractionUses","___Interaction_InteractionUse");
+            if(!diagram.InteractionUses.Any())throw new InvalidOperationException("E121: 型の見本が必要です。ref（相互作用の利用）がある既存の図を開いてから取り込んでください。");
+            c=Concrete(diagram.InteractionUses.Select(f=>f.Model),c,"相互作用の利用");
             p.Types["InteractionUse"]=c.Id; classes.Add(c);
         }
         if(plan.All().Any(n=>n.Kind=="note"))
