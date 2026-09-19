@@ -3,7 +3,7 @@
 Next Design がインストールされた PC で実施する。McpPoC（技術検証用の最小拡張）の検証項目を NdMcp に統合したもので、
 前半（Step 1〜5）は本実装の前提となる技術検証、後半（Step 6〜8）は MCP ブリッジを含めた機能確認。
 
-0.1.0 は会社PCで HTTP 応答・モデル取得まで確認済み。図出力は0件となったため、0.1.1 では内部コマンド内で取得設定から出力まで実行する。修正版の再確認は以下の手順で行う。
+0.1.0 は会社PCで HTTP 応答・モデル取得まで確認済み。図出力は0件だったが、0.1.1 で内部コマンド内の取得設定と AgentReview の出力処理に揃えた後、ユーザーから「意図通りにシーケンス図と状態遷移図が出力された」と報告を受けた。図出力の不具合は改善確認済み。2026-09-19 に Codex から MCP 経由の `nd_ping`（`ok: true`、0.1.1）と `nd_project` の成功をユーザー提供画像で確認した。Claude Code は実機未確認だが、今回の完了条件には含めない。停止・再開等は未確認。導入手順は [SETUP.md](SETUP.md) を参照する。
 
 - 検証1: スクリプト実行環境で `System.Net.HttpListener` が使えるか
 - 検証2: コマンドハンドラ終了後も HTTP 受付が生存するか
@@ -11,14 +11,14 @@ Next Design がインストールされた PC で実施する。McpPoC（技術�
 
 ## 準備
 
-1. 配置前に検査する（この PC で ERROR 0 / WARN 0 を確認済み。ファイルを直した場合は再実行する）。
+1. 配置前に検査する（0.1.1 は ERROR 0、内部コマンドがリボン未参照という想定内の WARN 1 を確認済み。ファイルを直した場合は再実行する）。
 
    ```
    python NdMcp/tools/build_main.py --check
    python C:\Users\ksk01\.claude\skills\nextdesign-script-extension\scripts\validate_manifest.py NdMcp --nd-version 3
    ```
 
-2. `NdMcp` フォルダのうち `manifest.json` と `main.cs` を次へコピーする（`src/` `tools/` `bridge/` は不要）。
+2. `NdMcp` フォルダのうち `manifest.json`・`main.cs`・`resources/` を次へコピーする（`src/` `tools/` `bridge/` は不要）。[SETUP.md](SETUP.md) のスクリプトでも配置できる。
 
    ```
    %LOCALAPPDATA%\DENSO CREATE\Next Design\extensions\NdMcp\
@@ -94,11 +94,12 @@ curl "http://127.0.0.1:3560/export?path=<modelPath>"
 - `/export`: 返された `dir` に design.md / _index.md / diagrams\*.puml ができているか。内容が AgentReview の「設計成果物を書き出す」と同等か
 - `EditorAccessMode.GetInactiveValue` は各リクエストの内部コマンド内で設定する。エディタで編集中（未確定）のフィールドが `/model` にどう出るかを1件試して記録する。
 
-### Step 7: MCP ブリッジ経由（Claude Code）
+### Step 7: MCP ブリッジ経由（Codex、Claude Code は任意）
 
-README.md の手順でブリッジを登録した状態で、Claude Code から次を試す。
+[SETUP.md](SETUP.md) の手順でブリッジを登録した状態で、Codex から次を試す。Claude Code の実機確認は任意とする。
 
 - 「nd_ping を呼んで」→ Step 2 と同じ JSON が返る
+- 「nd_project を呼んで」→ 開いているプロジェクトの情報が返る（ここまで Codex で確認済み）
 - 「nd_tree で階層を出して」→ 日本語がそのまま読める形で返る
 - 「サーバー停止」を押してから「nd_ping を呼んで」→ 「サーバー開始を押してください」の案内が返る
 
@@ -118,7 +119,7 @@ README.md の手順でブリッジを登録した状態で、Claude Code から�
 | 4 | Step4: /project /tree の出力 / UI の応答性 | |
 | 5 | Step5: 0.1.1 の未表示図出力 / AgentReview との比較 | |
 | 6 | Step6: fields の kind / export の生成物 / 編集中フィールドの見え方 | |
-| 7 | Step7: Claude Code からの呼び出し | |
+| 7 | Step7: Codex からの呼び出し | 2026-09-19、nd_ping・nd_project 成功。その他の MCP 呼び出しと停止時の応答は未確認 |
 | 8 | Step8: 停止 / プロジェクトを閉じた後 / ND 終了時 | |
 | 9 | Next Design の正確なバージョン（ヘルプ > バージョン情報） | |
 

@@ -6,7 +6,6 @@
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
-
   "extensionPoints": {
     "ribbon": {
       "tabs": [
@@ -23,21 +22,27 @@
                   "type": "Button",
                   "label": "サーバー開始",
                   "description": "MCP ブリッジ用の HTTP サーバーを 127.0.0.1（既定ポート 3560）で開始します",
-                  "command": "NdMcp.Command.Start"
+                  "command": "NdMcp.Command.Start",
+                  "imageSmall": "resources/start16.png",
+                  "imageLarge": "resources/start32.png"
                 },
                 {
                   "id": "NdMcp.StopButton",
                   "type": "Button",
                   "label": "サーバー停止",
                   "description": "HTTP サーバーを停止します",
-                  "command": "NdMcp.Command.Stop"
+                  "command": "NdMcp.Command.Stop",
+                  "imageSmall": "resources/stop16.png",
+                  "imageLarge": "resources/stop32.png"
                 },
                 {
                   "id": "NdMcp.StatusButton",
                   "type": "Button",
                   "label": "状態確認",
                   "description": "稼働状態と受信ログを出力ウィンドウに表示します",
-                  "command": "NdMcp.Command.Status"
+                  "command": "NdMcp.Command.Status",
+                  "imageSmall": "resources/status16.png",
+                  "imageLarge": "resources/status32.png"
                 }
               ]
             },
@@ -50,7 +55,9 @@
                   "type": "Button",
                   "label": "設定を開く",
                   "description": "config.ini（ポート・出力先）をメモ帳で開きます",
-                  "command": "NdMcp.Command.OpenConfig"
+                  "command": "NdMcp.Command.OpenConfig",
+                  "imageSmall": "resources/config16.png",
+                  "imageLarge": "resources/config32.png"
                 }
               ]
             }
@@ -58,13 +65,27 @@
         }
       ]
     },
-
     "commands": [
-      { "id": "NdMcp.Command.ExecuteRequest", "execFunc": "ExecuteNdMcpRequest" },
-      { "id": "NdMcp.Command.Start", "execFunc": "StartNdMcpServer" },
-      { "id": "NdMcp.Command.Stop", "execFunc": "StopNdMcpServer" },
-      { "id": "NdMcp.Command.Status", "execFunc": "ShowNdMcpStatus" },
-      { "id": "NdMcp.Command.OpenConfig", "execFunc": "OpenNdMcpConfig" }
+      {
+        "id": "NdMcp.Command.ExecuteRequest",
+        "execFunc": "ExecuteNdMcpRequest"
+      },
+      {
+        "id": "NdMcp.Command.Start",
+        "execFunc": "StartNdMcpServer"
+      },
+      {
+        "id": "NdMcp.Command.Stop",
+        "execFunc": "StopNdMcpServer"
+      },
+      {
+        "id": "NdMcp.Command.Status",
+        "execFunc": "ShowNdMcpStatus"
+      },
+      {
+        "id": "NdMcp.Command.OpenConfig",
+        "execFunc": "OpenNdMcpConfig"
+      }
     ]
   }
 }
