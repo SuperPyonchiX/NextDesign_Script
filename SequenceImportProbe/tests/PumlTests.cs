@@ -3,8 +3,8 @@ public static class PumlTests
     public static void Run(string directory,string samples)
     {
         var profile=new PumlProfile();
-        foreach(string type in new[]{"Interaction","Frame","Lifeline","ExecutionSpecification","Message","CombinedFragment","InteractionOperand","InteractionUse","InteractionNote","MessageEnd"})profile.Types[type]="fake-"+type;
-        foreach(string key in new[]{"Frame","Lifelines","ExecutionSpecifications","Messages","OwnedExecutionSpecification","SendMessage","ReceiveMessage","Fragments","Operands","CrossingFragmentCoveredLifeline","OperandTargetMessage","NestedInteractionFragment","InteractionUses","Notes","MessageEnds"})profile.Relations[key]=key;
+        foreach(string type in new[]{"Interaction","Frame","Lifeline","ExecutionSpecification","Message","CombinedFragment","InteractionOperand","InteractionUse","InteractionNote","MessageEnd","Destruction"})profile.Types[type]="fake-"+type;
+        foreach(string key in new[]{"Frame","Lifelines","ExecutionSpecifications","Messages","OwnedExecutionSpecification","SendMessage","ReceiveMessage","Fragments","Operands","CrossingFragmentCoveredLifeline","OperandTargetMessage","NestedInteractionFragment","InteractionUses","Notes","MessageEnds","Destructions","OwnedDestruction"})profile.Relations[key]=key;
         foreach(string op in new[]{"alt","opt","loop","par","break","critical","group"})profile.Operators[op]=op.ToUpperInvariant();
         foreach(var file in Directory.GetFiles(samples,"*.puml"))
         {
@@ -14,7 +14,7 @@ public static class PumlTests
             File.WriteAllText(Path.Combine(directory,Path.GetFileNameWithoutExtension(file)+".json"),payload.Json);
         }
         var cases=new[]{
-            "activate A", "deactivate A", "skinparam unknownOption value", "!include remote.puml",
+            "activate A", "deactivate A", "destroy B\nA -> B : reuse", "destroy B\ndestroy B", "destroy A\nactivate A\ndeactivate A", "skinparam unknownOption value", "!include remote.puml",
             "alt test\nA -> B : call", "else test", "end", "participant A",
             "note over C : missing", "ref over A,A : duplicate", "note over A\nunclosed",
             "activate A\nalt x\ndeactivate A\nelse y\nend\ndeactivate A", "A ->x] : unsupported", "[->] : no lifeline", "actor C", "A <- B : reverse", "A -> B : call\n@enduml\nA -> B : extra"

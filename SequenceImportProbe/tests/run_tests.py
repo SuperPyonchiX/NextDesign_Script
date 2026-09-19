@@ -66,6 +66,19 @@ public static class PayloadTest {
         shapes = [editor['Frame']] + [s for k,v in editor.items() if isinstance(v,list) for s in v]
         assert all(s['ModelId'] in entities for s in shapes)
         assert len({s['Id'] for s in shapes}) == len(shapes)
+        if path.name == '09-destroy.json':
+            assert len(editor['Destructions']) == 2
+            lifelines = {e['Name']:e['Id'] for e in entities.values() if e['EntityType']=='Lifeline'}
+            for name in ('Worker','Idle'):
+                destruction = next(r['TargetId'] for r in relations if r['MetamodelId']=='OwnedDestruction' and r['SourceId']==lifelines[name])
+                point = next(v for v in editor['Destructions'] if v['ModelId']==destruction)
+                owned = {r['TargetId'] for r in relations if r['MetamodelId']=='OwnedExecutionSpecification' and r['SourceId']==lifelines[name]}
+                bars = [v for v in editor['ExecutionSpecifications'] if v['ModelId'] in owned]
+                assert all(v['Length']>0 and v['Y']+v['Length']<=point['Y'] for v in bars)
+                assert entities[destruction]['EntityType']=='Destruction'
+            messages = {e['Name']:e['Id'] for e in entities.values() if e['EntityType']=='Message'}
+            port = lambda label: next(r['SourceId'] for r in relations if r['MetamodelId']=='ReceiveMessage' and r['TargetId']==messages[label])
+            assert port('shutdown()') != port('final stop()'), 'loop must retain the closed activation state'
         if path.name == '08-incoming.json':
             assert len(editor['Lifelines']) == 2, 'External source must not become a participant'
             messages = {e['Name']: e for e in entities.values() if e['EntityType']=='Message'}

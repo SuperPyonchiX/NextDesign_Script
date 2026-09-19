@@ -16,7 +16,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.3.5";
+    public const string Title = "シーケンス生成実験 / 0.3.6";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -236,6 +236,13 @@ public static class PumlRuntime
         if(plan.All().Any(n=>n.Kind=="async"))p.Async=Literal(source[6].Metaclass,"MessageSort","Async");
         if(plan.All().Any(n=>n.Kind=="reply"))p.Reply=Literal(source[6].Metaclass,"MessageSort","Reply");
         var classes=new List<IClass>(source.Select(m=>m.Metaclass));
+        if(plan.All().Any(n=>n.Kind=="destroy"))
+        {
+            var c=Child(p,source[0].Metaclass,"Destructions","Destructions","___Interaction_Destruction");
+            c=Concrete(diagram.Destructions.Select(e=>e.Model),c,"破棄");
+            p.Types["Destruction"]=c.Id;
+            Child(p,source[2].Metaclass,"OwnedDestruction","Destruction","OwnedDestruction");
+        }
         if(plan.All().Any(n=>n.Left=="[" || n.Right=="]"))
         {
             var c=Child(p,source[0].Metaclass,"MessageEnds","MessageEnds","___Interaction_MessageEnd");
@@ -293,6 +300,7 @@ public static class PumlRuntime
             +" / ref: "+p.Expected.Count(e=>e.Kind=="ref")+"/"+d.InteractionUses.Count()
             +" / Note: "+p.Expected.Count(e=>e.Kind=="note")+"/"+d.Notes.Count());
         Require(root.MessageEnds.Count()==p.Expected.Count(e=>e.Kind=="messageEnd") && d.MessageEnds.Count()==p.Expected.Count(e=>e.Kind=="messageEnd"),"独立メッセージ端の数");
+        Require(d.Destructions.Count()==p.Expected.Count(e=>e.Kind=="destruction"),"破棄点の数");
         foreach(var e in p.Expected)
         {
             var model=project.GetModelById(e.Id); Require(model!=null && !model.IsDeleted,e.Kind+"モデル");
@@ -308,6 +316,12 @@ public static class PumlRuntime
                     var endpoint=d.MessageEnds.Single(v=>v.Model.Id==(e.Left==null?e.SendPort:e.ReceivePort));
                     Require(Math.Abs(shape.SourceY-shape.TargetY)<1 && Math.Abs(endpoint.LocationY-shape.SourceY)<1,"図外メッセージの水平配置");
                 }
+            }
+            else if(e.Kind=="destruction")
+            {
+                var destruction=model as IDestruction;
+                var shape=d.Destructions.SingleOrDefault(v=>v.Model.Id==e.Id);
+                Require(destruction!=null && destruction.Lifeline!=null && destruction.Lifeline.Id==e.Left && shape!=null && Math.Abs(shape.LocationY-e.Y)<1,"破棄位置・ライフライン");
             }
             else if(e.Kind=="messageEnd")
             {
@@ -424,7 +438,7 @@ public class PumlPlan
     public string Summary()
     {
         var a = All().ToList();
-        return "ライフライン: " + Aliases.Count + " / 同期: " + a.Count(n => n.Kind == "sync") + " / 非同期: " + a.Count(n => n.Kind == "async") + " / 返信: " + a.Count(n=>n.Kind=="reply") + " / 図外宛て: " + a.Count(n=>n.Right=="]") + " / 図外から: " + a.Count(n=>n.Left=="[")
+        return "ライフライン: " + Aliases.Count + " / 同期: " + a.Count(n => n.Kind == "sync") + " / 非同期: " + a.Count(n => n.Kind == "async") + " / 返信: " + a.Count(n=>n.Kind=="reply") + " / 破棄: " + a.Count(n=>n.Kind=="destroy") + " / 図外宛て: " + a.Count(n=>n.Right=="]") + " / 図外から: " + a.Count(n=>n.Left=="[")
             + "\n複合フラグメント: " + a.Count(n => n.Kind == "fragment") + " / ref: " + a.Count(n => n.Kind == "ref") + " / Note: " + a.Count(n => n.Kind == "note")
             + (StyleDirectives>0 ? "\n表示設定: "+StyleDirectives+"件はNext Designの既定表示を使用します。" : "")
             + (a.Any(n => n.Kind == "ref") ? "\nrefは表示枠として作成します。別の図への参照リンクは未設定です。" : "");
@@ -456,7 +470,7 @@ public class PumlPlan
             if (s == "@enduml") { if (fragments.Count != 0) throw Error(line, "endが不足しています。"); ended = true; continue; }
             if(Regex.IsMatch(s,@"^skinparam\s+(sequenceMessageAlign\s+(left|center|right)|maxMessageSize\s+[1-9][0-9]*|sequenceReferenceBackgroundColor\s+#[0-9a-fA-F]{6})$",RegexOptions.IgnoreCase))
             { p.StyleDirectives++; continue; }
-            var activity=Regex.Match(s,@"^(activate|deactivate)\s+([\p{L}\p{N}_]+)$");
+            var activity=Regex.Match(s,@"^(activate|deactivate|destroy)\s+([\p{L}\p{N}_]+)$");
             if(activity.Success)
             {
                 p.Participant(activity.Groups[2].Value,activity.Groups[2].Value,line,false);
@@ -511,20 +525,45 @@ public class PumlPlan
         if (p.Aliases.Count<1 || p.All().Count()>500) throw Error(1,"参加者は1本以上、要素は500件以下にしてください。");
         foreach (var n in p.All()) foreach (var target in n.Targets) if (!p.Aliases.Contains(target)) throw Error(n.Line,"note/refの参加者が未定義です。");
         ValidateActivities(p.Nodes,new Dictionary<string,int>());
+        ValidateDestroyed(p.Nodes,new HashSet<string>());
         return p;
     }
-    static void ValidateActivities(IEnumerable<PumlNode> nodes,Dictionary<string,int> counts)
+    static void ValidateDestroyed(IEnumerable<PumlNode> nodes,HashSet<string> destroyed)
     {
-        var initial=new Dictionary<string,int>(counts);
         foreach(var n in nodes)
         {
-            if(n.Kind=="fragment")foreach(var branch in n.Children)ValidateActivities(branch.Children,new Dictionary<string,int>(counts));
+            if(n.Kind=="fragment")
+            {
+                var after=new HashSet<string>(destroyed);
+                foreach(var branch in n.Children)
+                { var state=new HashSet<string>(destroyed); ValidateDestroyed(branch.Children,state); after.UnionWith(state); }
+                destroyed.UnionWith(after); continue;
+            }
+            if((n.Left!=null && destroyed.Contains(n.Left)) || (n.Right!=null && destroyed.Contains(n.Right)))
+                throw Error(n.Line,"破棄済みの参加者を再利用しています。再生成は未対応です。");
+            if(n.Kind=="destroy")destroyed.Add(n.Left);
+        }
+    }
+    static void ValidateActivities(IEnumerable<PumlNode> nodes,Dictionary<string,int> counts,bool balanced=true)
+    {
+        var initial=balanced?new Dictionary<string,int>(counts):new Dictionary<string,int>();
+        foreach(var n in nodes)
+        {
+            if(n.Kind=="fragment")foreach(var branch in n.Children)
+            { if(n.Operator=="loop")ValidateActivities(branch.Children,counts,false); else ValidateActivities(branch.Children,new Dictionary<string,int>(counts)); }
+            if(n.Kind=="destroy")
+            {
+                int inherited; initial.TryGetValue(n.Left,out inherited);
+                if(inherited>0)throw Error(n.Line,"分岐の外で開始した実行区間の破棄は未対応です。");
+                counts[n.Left]=0; continue;
+            }
             if(n.Kind!="activate" && n.Kind!="deactivate")continue;
             int value; counts.TryGetValue(n.Left,out value);
             int baseline; initial.TryGetValue(n.Left,out baseline);
             if(n.Kind=="deactivate" && value<=baseline)throw Error(n.Line,"対応するactivateが同じ図または分岐内にありません。");
             counts[n.Left]=value+(n.Kind=="activate"?1:-1);
         }
+        if(!balanced)return;
         foreach(var pair in counts)
         {
             int value; initial.TryGetValue(pair.Key,out value);
@@ -554,6 +593,7 @@ public class PumlBuild
     private Dictionary<string,Dictionary<string,object>> executions=new Dictionary<string,Dictionary<string,object>>();
     private Dictionary<string,Stack<string>> activities=new Dictionary<string,Stack<string>>();
     private string pendingAlias,pendingExecution,frameId;
+    private Dictionary<string,string> executionAliases=new Dictionary<string,string>();
     private int y=40;
     public static Dictionary<string,object> Obj(params object[] values)
     { var d=new Dictionary<string,object>(); for(int i=0;i<values.Length;i+=2)d.Add((string)values[i],values[i+1]); return d; }
@@ -586,7 +626,7 @@ public class PumlBuild
     private string Execution(string alias,int start)
     {
         string id=Entity("ExecutionSpecification",""); Owned("ExecutionSpecifications",id); Link("OwnedExecutionSpecification",lifelines[alias],id);
-        executions[id]=Shape("ExecutionSpecifications",id,"X",x[alias]+8*(activities.ContainsKey(alias)?activities[alias].Count:0),"Y",start,"Length",40,"Height",40); return id;
+        executions[id]=Shape("ExecutionSpecifications",id,"X",x[alias]+8*(activities.ContainsKey(alias)?activities[alias].Count:0),"Y",start,"Length",40,"Height",40); executionAliases[id]=alias; return id;
     }
     private void Extend(string id,int at)
     { var s=executions[id]; int size=Math.Max((int)s["Length"],at-(int)s["Y"]+35); s["Length"]=size; s["Height"]=size; }
@@ -596,6 +636,20 @@ public class PumlBuild
         for(int index=0;index<items.Count;index++)
         {
             var n=items[index];
+            if(n.Kind=="destroy")
+            {
+                int at=y-15;
+                var live=new HashSet<string>();
+                if(active.ContainsKey(n.Left))live.Add(active[n.Left]);
+                if(activities.ContainsKey(n.Left))foreach(var parent in activities[n.Left])if(parent!=null)live.Add(parent);
+                foreach(var execution in executions.Where(v=>executionAliases[v.Key]==n.Left))
+                { var bar=execution.Value; int length=live.Contains(execution.Key)?at-(int)bar["Y"]:Math.Min((int)bar["Length"],at-(int)bar["Y"]); bar["Length"]=length; bar["Height"]=length; }
+                active.Remove(n.Left); activities.Remove(n.Left); pendingAlias=null;
+                string id=Entity("Destruction",""); Owned("Destructions",id); Link("OwnedDestruction",lifelines[n.Left],id);
+                Shape("Destructions",id,"X",x[n.Left],"Y",at,"Width",20,"Height",20);
+                payload.Expected.Add(new PumlExpected{Id=id,Kind="destruction",Left=lifelines[n.Left],Y=at});
+                y+=20; continue;
+            }
             if(n.Kind=="activate")
             {
                 string previous; active.TryGetValue(n.Left,out previous);
@@ -669,7 +723,7 @@ public class PumlBuild
                     var saved=new Dictionary<string,string>(active);
                     foreach(var key in active.Keys.ToArray())if(!activities.ContainsKey(key) || activities[key].Count==0)active.Remove(key);
                     // Leave room below the guard before placing messages or nested frames.
-                    y+=40+18*(branch.Text.Split('\n').Length-1); Items(branch.Children,oid,depth+1); active=saved; pendingAlias=null; y+=8;
+                    y+=40+18*(branch.Text.Split('\n').Length-1); Items(branch.Children,oid,depth+1); if(n.Operator!="loop")active=saved; pendingAlias=null; y+=8;
                 }
                 Shape("Fragments",id,"X",20+16*depth,"Y",top,"Width",x.Values.Max()+210-32*depth,"Height",y-top); y+=16; continue;
             }

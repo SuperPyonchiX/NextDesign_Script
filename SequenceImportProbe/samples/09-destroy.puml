@@ -1,0 +1,23 @@
+@startuml
+title Destruction sample
+participant Controller
+participant Worker
+participant Idle
+activate Controller
+Controller -> Worker : shutdown()
+activate Worker
+loop resources
+Worker -> Worker : release()
+activate Worker
+deactivate Worker
+deactivate Worker
+end
+Controller -> Worker : final stop()
+activate Worker
+Worker -> Worker : finish()
+activate Worker
+destroy Worker
+Controller -> Idle : stop()
+destroy Idle
+deactivate Controller
+@enduml
