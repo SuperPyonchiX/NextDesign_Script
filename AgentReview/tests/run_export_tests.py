@@ -23,8 +23,7 @@ parts = [
     source[source.index("public static class WorkspaceBuilder"):source.index("//  ファイルシステムのリンク・コピー")],
     "public class ReviewCommandHarness {\n"
     + source[source.index("public void StartAgentReview"):source.index("// レビューセッションを作らず")]
-    .replace("ReviewInputPicker.Show(context.ExtensionInfo.ExtensionPath, project, root, false)", "FakePicker.Show(context, project)")
-    .replace("ReviewInputPicker.Show(context.ExtensionInfo.ExtensionPath, project, root, true)", "FakePicker.Show(context, project)")
+    .replace("ReviewInputPicker.Show(project, root)", "FakePicker.Show(context, project)")
     + "\nprivate IModel ResolveRoot(IApplication app) { return app.Workspace.CurrentModel ?? app.Workspace.CurrentProject; }\n}\n",
     "public class ResultCommandHarness {\n"
     + source[source.index("public void OpenReviewResult"):source.index("public void OpenWorkspaceFolder")]

@@ -16,7 +16,7 @@ public static class NativePickerTests
     private static void Exercise()
     {
         var request = new System.Xml.XmlDocument();
-        request.LoadXml("<request settingsOnly='false'><target>設計/日本語 &amp; target</target><choices>"
+        request.LoadXml("<request><target>設計/日本語 &amp; target</target><choices>"
             + "<model id='root' parent='' name='プロジェクト' path='プロジェクト' available='true'/>"
             + "<model id='a' parent='root' name='同名' path='プロジェクト/A/同名' available='true'/>"
             + "<model id='b' parent='root' name='同名' path='プロジェクト/B/同名' available='true'/>"

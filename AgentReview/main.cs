@@ -311,7 +311,7 @@ public class ReviewInputs
     public static ReviewInputs Load(string settingsPath, string projectPath)
     {
         if (!File.Exists(settingsPath))
-            throw new FileNotFoundException("「レビュー入力設定」で上位文書を指定してください。", settingsPath);
+            throw new FileNotFoundException("レビュー入力の設定ファイルがありません。", settingsPath);
         var result = new ReviewInputs();
         var keys = new HashSet<string>(StringComparer.Ordinal);
         foreach (var line in File.ReadAllLines(settingsPath))
@@ -535,11 +535,10 @@ public static class ReviewInputPicker
         var node = parent.OwnerDocument.CreateElement(name);
         node.InnerText = value ?? ""; parent.AppendChild(node); return node;
     }
-    public static System.Xml.XmlDocument Request(IProject project, IModel target, bool settingsOnly)
+    public static System.Xml.XmlDocument Request(IProject project, IModel target)
     {
         var doc = new System.Xml.XmlDocument();
         var root = doc.CreateElement("request"); doc.AppendChild(root);
-        root.SetAttribute("settingsOnly", settingsOnly ? "true" : "false");
         Add(root, "target", target.ModelPath);
         var choices = Add(root, "choices", "");
         foreach (var model in new[] { (IModel)project }.Concat(project.GetAllChildren())) {
@@ -630,10 +629,10 @@ public static class ReviewInputPicker
             if (File.Exists(path)) File.Replace(temporary, path, null, true); else File.Move(temporary, path);
         } finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
-    public static ReviewInputs Show(string extensionPath, IProject project, IModel target, bool settingsOnly)
+    public static ReviewInputs Show(IProject project, IModel target)
     {
         try {
-            var snapshot = Request(project, target, settingsOnly);
+            var snapshot = Request(project, target);
             var document = ReviewNativeDialog.Show(snapshot);
             if (document == null) return null;
             var result = Result(document, project);
@@ -720,9 +719,8 @@ public sealed class ReviewNativeDialog : IDisposable
         Call(Get(Selection, "Columns"), "Add", "モデル・資料", 900);
         var add = Control("Button", "資料ファイルを追加", 536, 602, 210, 34, "Bottom, Left");
         var remove = Control("Button", "選択を解除", 758, 602, 130, 34, "Bottom, Left");
-        AcceptButton = Control("Button", request.DocumentElement.GetAttribute("settingsOnly") == "true" ? "選択を保存" : "レビュー開始", 574, 652, 145, 36, "Bottom, Right");
+        AcceptButton = Control("Button", "レビュー開始", 574, 652, 145, 36, "Bottom, Right");
         NoneButton = Control("Button", "今回は上位文書なし", 730, 652, 184, 36, "Bottom, Right");
-        Set(NoneButton, "Visible", request.DocumentElement.GetAttribute("settingsOnly") != "true");
         var cancel = Control("Button", "キャンセル", 926, 652, 118, 36, "Bottom, Right");
         Set(cancel, "DialogResult", "Cancel"); Set(Form, "CancelButton", cancel);
         On(Combo, "SelectedIndexChanged", delegate {
@@ -2422,7 +2420,7 @@ public void StartAgentReview(ICommandContext context, ICommandParams commandPara
         }
 
         var project = app.Workspace.CurrentProject;
-        var inputs = ReviewInputPicker.Show(context.ExtensionInfo.ExtensionPath, project, root, false);
+        var inputs = ReviewInputPicker.Show(project, root);
         if (inputs == null) return;
         var upperModels = ReviewInputPicker.ResolveModels(project, inputs);
         // 基点フォルダが未設定なら選ばせて設定に記憶する
@@ -2551,22 +2549,6 @@ private void AppendExportWarnings(StringBuilder inventory, string name, Markdown
     foreach (var warning in exporter.Warnings)
         inventory.Append("- 出力警告（").Append(ReviewSnapshot.Cell(name)).Append("）: ")
             .Append(ReviewSnapshot.Cell(warning)).Append("。該当範囲は判断不能。\n");
-}
-
-public void OpenReviewInputs(ICommandContext context, ICommandParams commandParams)
-{
-    try
-    {
-        var project = context.App.Workspace.CurrentProject;
-        if (project == null) throw new InvalidOperationException("プロジェクトを開いてください。");
-        var root = ResolveRoot(context.App) ?? (IModel)project;
-        ReviewInputPicker.Show(context.ExtensionInfo.ExtensionPath, project, root, true);
-    }
-    catch (Exception ex)
-    {
-        context.App.Output.WriteLine("AgentReview", "[error] " + ex);
-        context.App.Window.UI.ShowInformationDialog("入力設定を開けませんでした。\n" + ex.Message, "AgentReview");
-    }
 }
 
 public void StartChangeReview(ICommandContext context, ICommandParams commandParams)

@@ -200,14 +200,14 @@ public static class InputTests
         project.Path = projectFile;
         File.WriteAllText(setting, "upstream.model.1=upper\nprobe.project=keep.nproj");
         saved = File.ReadAllText(setting);
-        var request = ReviewInputPicker.Request(project, root, false);
+        var request = ReviewInputPicker.Request(project, root);
         Check(request.SelectNodes("/request/settings/phase/model").Count == 3, "Legacy choices offered for each phase");
         var response = new System.Xml.XmlDocument();
         response.LoadXml("<result action='accept' phase='detailed'><selection><model>upper</model><model>target</model></selection><settings lastPhase='detailed'><phase key='detailed'><model>upper</model></phase><phase key='architecture'><model>project</model></phase></settings></result>");
         var selected = ReviewInputPicker.Result(response, project);
         Check(selected.Phase == "detailed" && selected.ModelIds.Count == 2, "XML result");
         ReviewInputPicker.SaveSelection(project.Path, response);
-        request = ReviewInputPicker.Request(project, root, false);
+        request = ReviewInputPicker.Request(project, root);
         Check(request.SelectSingleNode("/request/settings/phase[@key='architecture']/model").InnerText == "project", "Independent phase memory");
         Check(File.ReadAllText(setting) == saved, "Legacy probe config retained");
         selected.ModelIds.Add("project");
