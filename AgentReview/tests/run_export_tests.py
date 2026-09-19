@@ -24,6 +24,8 @@ parts = [
     "public class ReviewCommandHarness {\n"
     + source[source.index("public void StartAgentReview"):source.index("// レビューセッションを作らず")]
     .replace("ReviewInputPicker.Show(project, root)", "FakePicker.Show(context, project)")
+    .replace("ReviewInputPicker.Show(current, target)", "FakePicker.Show(context, current)")
+    .replace("ChangeDialog.", "FakeChangeDialog.")
     + "\nprivate IModel ResolveRoot(IApplication app) { return app.Workspace.CurrentModel ?? app.Workspace.CurrentProject; }\n}\n",
     "public class ResultCommandHarness {\n"
     + source[source.index("public void OpenReviewResult"):source.index("public void OpenWorkspaceFolder")]
@@ -51,6 +53,7 @@ with tempfile.TemporaryDirectory(prefix="agentreview-tests-") as tmp:
         f.write((root / "tests/InputTests.cs").read_text(encoding="utf-8"))
         f.write((root / "tests/NativePickerTests.cs").read_text(encoding="utf-8"))
         f.write((root / "tests/SnapshotLinkTests.cs").read_text(encoding="utf-8"))
+        f.write((root / "tests/ChangeTests.cs").read_text(encoding="utf-8-sig"))
     recorder = directory / "Recorder.cs"
     recorder.write_text('''using System;
 using System.IO;

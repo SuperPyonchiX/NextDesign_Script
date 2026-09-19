@@ -2,7 +2,7 @@
   "name": "AgentReview",
   "displayName": "AI レビュー",
   "description": "Claude Code / Codex のエージェントで設計レビューと修正提案の生成を行います。設計情報をエクスポートし、ターミナルでエージェントと対話します。",
-  "version": "0.12.5",
+  "version": "0.13.0",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -39,8 +39,8 @@
                 {
                   "id": "AgentReview.ChangeButton",
                   "type": "Button",
-                  "label": "変化点レビュー（準備中）",
-                  "description": "過去版出力の実機確認待ちです。現在は未提供の理由を表示します。",
+                  "label": "変化点レビュー",
+                  "description": "Git履歴から過去版を選び、選択した工程成果物の現在版と比較してレビューします。",
                   "command": "AgentReview.Command.Change",
                   "imageSmall": "resources/change16.png",
                   "imageLarge": "resources/change32.png"
@@ -249,7 +249,7 @@
       },
       {
         "id": "AgentReview.Command.Change",
-        "title": "変化点レビュー（準備中）",
+        "title": "変化点レビュー",
         "group": "agentreview",
         "execFunc": "StartChangeReview",
         "canExecWhen": {

@@ -1,4 +1,4 @@
-// Tests production viewer/configuration code with an argv-recording Code.exe.
+﻿// Tests production viewer/configuration code with an argv-recording Code.exe.
 // Does not install or launch a real VS Code instance.
 public static class ViewerTests
 {
@@ -59,8 +59,8 @@ public static class ViewerTests
         Check(ReviewResultViewer.FindExecutable("", ReviewResultViewer.ExecutableCandidates(null, null, null, bin)) == portable, "PATH code.cmd resolves to GUI executable");
         Check(ReviewResultViewer.FindExecutable("", ReviewResultViewer.ExecutableCandidates(null, null, null, Path.GetDirectoryName(portable))) == portable, "PATH direct executable");
         Check(ReviewResultViewer.FindExecutable(portable, candidates) == portable, "Explicit executable overrides detection");
-        Throws(() => ReviewResultViewer.FindExecutable(Path.Combine(temp, "absent/Code.exe"), candidates), "vscode.executable");
-        Throws(() => ReviewResultViewer.FindExecutable("Code.exe", candidates), "絶対パス");
+        Throws(() => ReviewResultViewer.FindExecutable(Path.Combine(temp, "absent/Code.exe"), candidates), "参照ボタン");
+        Throws(() => ReviewResultViewer.FindExecutable("Code.exe", candidates), "参照ボタン");
         Throws(() => ReviewResultViewer.FindExecutable("", new string[0]), "VS Code が見つかりません");
 
         var folder = Path.Combine(temp, "閲覧 Session (A) & %PATH% ! ^ #");
@@ -113,7 +113,7 @@ public static class ViewerTests
         File.WriteAllText(Path.Combine(sessionFolder, "review/review.md"), "# Result\n");
         config.VsCodeExecutable = Path.Combine(temp, "absent/Code.exe"); config.Save();
         command.OpenReviewResult(context, new ICommandParams());
-        Check(context.App.Window.UI.Messages.Last().Contains("vscode.executable") && context.App.Window.UI.Messages.Last().Contains(sessionFolder), "Failure explains setting and session location");
+        Check(context.App.Window.UI.Messages.Last().Contains("参照ボタン") && context.App.Window.UI.Messages.Last().Contains(sessionFolder), "Failure explains setting and session location");
         Check(!File.Exists(Path.Combine(sessionFolder, ReviewResultViewer.WorkspaceFileName)), "Failed discovery creates no workspace");
         config.VsCodeExecutable = executable; config.Save();
         var messages = context.App.Window.UI.Messages.Count;

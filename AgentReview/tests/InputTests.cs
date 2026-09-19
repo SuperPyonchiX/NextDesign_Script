@@ -1,4 +1,4 @@
-// Command boundaries use a fake SDK; the filesystem and generated inputs are real.
+﻿// Command boundaries use a fake SDK; the filesystem and generated inputs are real.
 public class IProject : IModel { public string Path; }
 public enum EditorAccessMode { GetInactiveValue }
 public class TestContextOption { public EditorAccessMode EditorAccessMode; }
@@ -7,7 +7,7 @@ public class TestWorkspace
 {
     public IProject CurrentProject, Historical;
     public IModel CurrentModel;
-    public bool Opened, Closed, ThrowOpen, ReturnCurrent, RewrapCurrent, SwitchCurrent;
+    public bool Opened, Closed, ThrowOpen, ThrowClose, ReturnCurrent, RewrapCurrent, SwitchCurrent;
     public IProject OpenProject(string path, bool current, bool exclude)
     {
         if (current || exclude) throw new Exception("Unsafe OpenProject options");
@@ -23,6 +23,7 @@ public class TestWorkspace
     public void CloseProject(IProject project)
     {
         if (object.ReferenceEquals(project, CurrentProject)) throw new Exception("Closed current project");
+        if (ThrowClose) throw new IOException("fake close failure");
         Closed = true;
     }
 }
@@ -190,8 +191,7 @@ public static class InputTests
         var probeLaunch = ReviewResultViewer.PrepareLaunch(Path.GetDirectoryName(probeFile), "Code.exe");
         Check(probeLaunch.Arguments.Contains(ReviewResultViewer.QuoteArgument(probeFile)) && probeLaunch.Arguments.Contains(".code-workspace"), "Viewer opens probe in workspace");
         Check(TerminalLauncher.Launches == launches + 1, "Probe launches no AI");
-        command.StartChangeReview(context, new ICommandParams());
-        Check(TerminalLauncher.Launches == launches + 1 && context.App.Window.UI.Messages.Last().Contains("未提供"), "Change review remains gated");
+
         context.App.Workspace.ThrowOpen = true;
         command.ProbeHistoricalExport(context, new ICommandParams());
         Check(Directory.GetFiles(workspace, "failure.txt", SearchOption.AllDirectories).Length == 1, "Load failure recorded");
@@ -291,6 +291,7 @@ public static class InputTests
         Check(ReviewInputPicker.Result(response, project) == null, "XML cancel");
         response.DocumentElement.SetAttribute("action", "none");
         Check(ReviewInputPicker.Result(response, project).IntentionalNone, "XML none does not export stale choices");
+        ChangeTests.Run(temp);
         NativePickerTests.Run();
         SnapshotLinkTests.Run(temp);
         Console.WriteLine("PASS: " + checks + " input/command assertions (real Next Design still requires verification).");

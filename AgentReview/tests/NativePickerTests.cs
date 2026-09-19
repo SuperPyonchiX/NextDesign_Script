@@ -13,8 +13,46 @@
         if (failure != null) throw new Exception("Native UI regression", failure);
         Console.WriteLine("PASS: " + checks + " native Forms assertions (no PowerShell or external UI process).");
     }
+    private static void RenderChange(ChangeDialog dialog, string name)
+    {
+        var directory = Environment.GetEnvironmentVariable("AGENTREVIEW_CHANGE_RENDER");
+        if (string.IsNullOrEmpty(directory)) return;
+        Directory.CreateDirectory(directory);
+        ReviewNativeDialog.Set(dialog.Form, "Opacity", 0d); ReviewNativeDialog.Set(dialog.Form, "ShowInTaskbar", false);
+        ReviewNativeDialog.Call(dialog.Form, "Show");
+        var drawing = System.Reflection.Assembly.Load("System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a");
+        var width = (int)ReviewNativeDialog.Get(dialog.Form, "Width"); var height = (int)ReviewNativeDialog.Get(dialog.Form, "Height");
+        var bitmap = Activator.CreateInstance(drawing.GetType("System.Drawing.Bitmap"), new object[] { width, height });
+        try {
+            var rect = Activator.CreateInstance(drawing.GetType("System.Drawing.Rectangle"), new object[] { 0, 0, width, height });
+            ReviewNativeDialog.Call(dialog.Form, "DrawToBitmap", bitmap, rect);
+            ReviewNativeDialog.Call(bitmap, "Save", Path.Combine(directory, name));
+        } finally { ((IDisposable)bitmap).Dispose(); }
+    }
     private static void Exercise()
     {
+        using (var dialog = new ChangeDialog("対象選択", new List<string> { "新規成果物", "親", "親/詳細設計", "別工程" }, new List<int> { -1, -1, 1, -1 })) {
+            Check(Count(dialog.List, "Nodes") == 3, "Historical picker displays hierarchy");
+            RenderChange(dialog, "model-tree.png");
+            ReviewNativeDialog.Set(dialog.Search, "Text", "詳細設計");
+            Check(Count(dialog.List, "Nodes") == 1, "Tree search retains ancestor");
+            var roots = ReviewNativeDialog.Get(dialog.List, "Nodes");
+            var parent = roots.GetType().GetProperty("Item", new[] { typeof(int) }).GetValue(roots, new object[] { 0 });
+            Check(Count(parent, "Nodes") == 1, "Matching child retained");
+            var children = ReviewNativeDialog.Get(parent, "Nodes");
+            var child = children.GetType().GetProperty("Item", new[] { typeof(int) }).GetValue(children, new object[] { 0 });
+            ReviewNativeDialog.Set(dialog.List, "SelectedNode", child);
+            dialog.Accept.GetType().GetMethod("OnClick", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).Invoke(dialog.Accept, new object[] { EventArgs.Empty });
+            Check(dialog.Selected == 2, "Tree selection returns original model index");
+        }
+        using (var dialog = new ChangeDialog("履歴", new List<string> { "2026-09-01 abc123 初版", "2026-09-02 def456 改訂" })) {
+            RenderChange(dialog, "commits.png");
+            ReviewNativeDialog.Set(dialog.Search, "Text", "def456");
+            Check(Count(dialog.List, "Items") == 1, "Commit search filters displayed items");
+            ReviewNativeDialog.Set(dialog.List, "SelectedIndex", 0);
+            dialog.Accept.GetType().GetMethod("OnClick", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).Invoke(dialog.Accept, new object[] { EventArgs.Empty });
+            Check(dialog.Selected == 1, "Filtered commit index preserved");
+        }
         var configPath = AgentConfig.ConfigPath();
         var original = File.ReadAllText(configPath);
         var existing = AgentConfig.Load();

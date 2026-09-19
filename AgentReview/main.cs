@@ -446,26 +446,36 @@ public static class ReviewSnapshot
         if (!File.Exists(resolved)) throw new FileNotFoundException("資料が見つかりません。", path);
         using (File.Open(resolved, FileMode.Open, FileAccess.Read, FileShare.Read)) { }
     }
-    public static string CopyFile(string source, string destination)
+    public static string CopyFile(string source, string destination, System.Threading.CancellationToken? cancellation = null)
     {
+        var cancel = cancellation ?? System.Threading.CancellationToken.None; cancel.ThrowIfCancellationRequested();
         var resolved = ResolvePath(source);
         var outputPath = ResolveDestination(destination);
         if (string.Equals(resolved, outputPath, StringComparison.OrdinalIgnoreCase)) throw new IOException("コピー元とコピー先が同じ資料です。");
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
         // Copy bytes, never recreate a link. Deny writers while reading the source.
         using (var input = File.Open(resolved, FileMode.Open, FileAccess.Read, FileShare.Read))
-        using (var output = File.Open(outputPath, FileMode.CreateNew, FileAccess.Write, FileShare.None)) input.CopyTo(output);
-        using (var hash = System.Security.Cryptography.SHA256.Create())
-        using (var input = File.OpenRead(outputPath)) return BitConverter.ToString(hash.ComputeHash(input)).Replace("-", "").ToLowerInvariant();
+        using (var output = File.Open(outputPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        using (var hash = System.Security.Cryptography.SHA256.Create()) {
+            var buffer = new byte[81920]; int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) != 0) {
+                cancel.ThrowIfCancellationRequested(); output.Write(buffer, 0, read); hash.TransformBlock(buffer, 0, read, buffer, 0);
+            }
+            cancel.ThrowIfCancellationRequested(); hash.TransformFinalBlock(new byte[0], 0, 0);
+            return BitConverter.ToString(hash.Hash).Replace("-", "").ToLowerInvariant();
+        }
     }
-    public static void CopyTree(string source, string destination, StringBuilder inventory, string relative)
+
+    public static void CopyTree(string source, string destination, StringBuilder inventory, string relative, System.Threading.CancellationToken? cancellation = null)
     {
+        var cancel = cancellation ?? System.Threading.CancellationToken.None; cancel.ThrowIfCancellationRequested();
         var dst = ResolveDestination(destination);
-        CopyTreeCore(source, dst, inventory, relative, dst, new HashSet<string>(StringComparer.OrdinalIgnoreCase), 0);
+        CopyTreeCore(source, dst, inventory, relative, dst, new HashSet<string>(StringComparer.OrdinalIgnoreCase), 0, cancel);
     }
     private static void CopyTreeCore(string source, string destination, StringBuilder inventory, string relative,
-        string outputRoot, HashSet<string> ancestors, int depth)
+        string outputRoot, HashSet<string> ancestors, int depth, System.Threading.CancellationToken cancel)
     {
+        cancel.ThrowIfCancellationRequested();
         var src = ResolvePath(source); var dst = ResolveDestination(destination);
         if (Within(dst, src) || Within(src, outputRoot)) throw new IOException("コピー元とコピー先が重なっています（リンク解決後）: " + source);
         if (depth > 256 || !ancestors.Add(src)) throw new IOException("資料フォルダのリンクが循環、または階層が深すぎます: " + source);
@@ -474,13 +484,13 @@ public static class ReviewSnapshot
             foreach (var file in Directory.GetFiles(src).OrderBy(p => p, StringComparer.Ordinal)) {
                 var name = Path.GetFileName(file); var actual = ResolvePath(file);
                 if (Within(actual, outputRoot)) throw new IOException("コピー先を参照する資料リンクがあります: " + file);
-                var sha = CopyFile(actual, Path.Combine(dst, name));
+                var sha = CopyFile(actual, Path.Combine(dst, name), cancel);
                 inventory.Append("| ").Append(Cell(Path.Combine(source, name))).Append(" → ").Append(Cell(actual))
                     .Append(" | ").Append(Cell(relative + "/" + name)).Append(" | ").Append(sha).Append(" |\n");
             }
             foreach (var dir in Directory.GetDirectories(src).OrderBy(p => p, StringComparer.Ordinal)) {
                 var name = Path.GetFileName(dir); if (string.Equals(name, ".git", StringComparison.OrdinalIgnoreCase)) continue;
-                CopyTreeCore(dir, Path.Combine(dst, name), inventory, relative + "/" + name, outputRoot, ancestors, depth + 1);
+                CopyTreeCore(dir, Path.Combine(dst, name), inventory, relative + "/" + name, outputRoot, ancestors, depth + 1, cancel);
             }
         } finally { ancestors.Remove(src); }
     }
@@ -957,8 +967,233 @@ public sealed class AgentSettingsDialog : IDisposable
     public void Dispose() { ((IDisposable)Form).Dispose(); }
 }
 
+public sealed class ChangeRecord
+{
+    public string Key = "", Parent = "", Name = "", Kind = "", Path = "", File = "", Content = "";
+}
+public static class ChangeDiff
+{
+    public static string Normal(string value) { return (value ?? "").Replace("\r\n", "\n").Replace("\r", "\n"); }
+    public static void SaveIndex(string dir, List<ChangeRecord> records)
+    {
+        var doc = new System.Xml.XmlDocument(); var root = doc.CreateElement("comparison"); doc.AppendChild(root);
+        foreach (var r in records) {
+            var node = doc.CreateElement("item"); root.AppendChild(node);
+            foreach (var pair in new[] { new[] { "key", r.Key }, new[] { "parent", r.Parent }, new[] { "name", r.Name }, new[] { "kind", r.Kind }, new[] { "path", r.Path }, new[] { "file", r.File } })
+                node.SetAttribute(pair[0], pair[1] ?? "");
+            node.InnerText = Normal(r.Content);
+        }
+        Directory.CreateDirectory(dir); doc.Save(System.IO.Path.Combine(dir, "comparison.xml"));
+    }
+    public static void Attachments(string dir, List<ChangeRecord> records)
+    {
+        if (!Directory.Exists(dir)) return;
+        foreach (var file in Directory.GetFiles(dir, "*", SearchOption.AllDirectories).OrderBy(f => f, StringComparer.Ordinal)) {
+            string hash;
+            using (var stream = File.OpenRead(file)) using (var sha = System.Security.Cryptography.SHA256.Create())
+                hash = BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "");
+            var relative = file.Substring(dir.TrimEnd('\\').Length + 1).Replace('\\', '/');
+            records.Add(new ChangeRecord { Key = "attachment:" + relative, Name = relative, Kind = "attachment", Path = relative,
+                File = "Attachment/" + relative, Content = "SHA-256: " + hash + "\n資料の内容は別途確認。ハッシュ一致は意味的な妥当性を保証しない。" });
+        }
+    }
+    public static int Build(string folder, List<ChangeRecord> before, List<ChangeRecord> after, System.Threading.CancellationToken? cancellation = null)
+    {
+        var cancel = cancellation ?? System.Threading.CancellationToken.None; cancel.ThrowIfCancellationRequested();
+        var old = before.ToDictionary(r => r.Key, StringComparer.Ordinal);
+        var now = after.ToDictionary(r => r.Key, StringComparer.Ordinal);
+        var dir = System.IO.Path.Combine(folder, "diff"); Directory.CreateDirectory(dir);
+        var report = new StringBuilder("# 変化点一覧\n\n片側にだけ存在する要素は比較範囲への追加／範囲からの除外です。モデル自体の新規作成・削除とは限りません。\n添付資料はハッシュ比較です。内容を解釈できない形式はレビューで未確認として残してください。\n\n| No | 種類 | 対象 | 前後の内容 |\n|---|---|---|---|\n");
+        int count = 0;
+        foreach (var key in old.Keys.Union(now.Keys).OrderBy(k => k, StringComparer.Ordinal)) {
+            cancel.ThrowIfCancellationRequested();
+            ChangeRecord a, b; old.TryGetValue(key, out a); now.TryGetValue(key, out b);
+            var kinds = new List<string>();
+            if (a == null) kinds.Add("範囲への追加"); else if (b == null) kinds.Add("範囲からの除外");
+            else {
+                if (a.Name != b.Name) kinds.Add("名称変更");
+                if (a.Parent != b.Parent) kinds.Add("移動");
+                if (a.Kind != b.Kind || Normal(a.Content) != Normal(b.Content)) kinds.Add("内容変更");
+            }
+            if (kinds.Count == 0) continue;
+            count++; var stem = count.ToString("D4");
+            File.WriteAllText(System.IO.Path.Combine(dir, stem + "-before.txt"), Describe(a), new UTF8Encoding(false));
+            File.WriteAllText(System.IO.Path.Combine(dir, stem + "-after.txt"), Describe(b), new UTF8Encoding(false));
+            report.Append("| ").Append(count).Append(" | ").Append(string.Join(" / ", kinds)).Append(" | ")
+                .Append(ReviewSnapshot.Cell((b ?? a).Path)).Append(" | [前](").Append(stem).Append("-before.txt) / [後](").Append(stem).Append("-after.txt) |\n");
+        }
+        report.Append("\n変更項目数: ").Append(count).Append('\n');
+        File.WriteAllText(System.IO.Path.Combine(dir, "changes.md"), report.ToString(), new UTF8Encoding(false));
+        return count;
+    }
+    private static string Describe(ChangeRecord r) { return r == null ? "比較範囲に存在しません。\n" : "ID: " + r.Key + "\n対象: " + r.Path + "\nファイル: " + r.File + "\n型: " + r.Kind + "\n親: " + r.Parent + "\n\n" + Normal(r.Content); }
+}
+public sealed class GitChange
+{
+    public readonly string Root;
+    public GitChange(string directory, System.Threading.CancellationToken? cancel = null) {
+        try { Root = Encoding.UTF8.GetString(Run(directory, new[] { "rev-parse", "--show-toplevel" }, cancel)).Trim(); }
+        catch (System.ComponentModel.Win32Exception ex) { throw new IOException("Gitを起動できません。Git for Windowsの導入とPATHを確認してください。", ex); }
+    }
+    public static byte[] Run(string directory, string[] args, System.Threading.CancellationToken? cancellation)
+    {
+        var token = cancellation ?? System.Threading.CancellationToken.None;
+        token.ThrowIfCancellationRequested();
+        var info = new ProcessStartInfo { FileName = "git.exe", WorkingDirectory = directory, UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true,
+            Arguments = "--no-replace-objects --no-optional-locks -c core.quotepath=false -c i18n.logOutputEncoding=UTF-8 " + string.Join(" ", args.Select(ReviewResultViewer.QuoteArgument).ToArray()) };
+        foreach (var key in info.EnvironmentVariables.Keys.Cast<string>().Where(k => k.StartsWith("GIT_", StringComparison.OrdinalIgnoreCase)).ToList()) info.EnvironmentVariables.Remove(key);
+        info.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
+        info.EnvironmentVariables["GIT_NO_LAZY_FETCH"] = "1";
+        using (var p = Process.Start(info)) using (var output = new MemoryStream()) {
+            if (p == null) throw new IOException("Gitを起動できません。");
+            var stdout = System.Threading.Tasks.Task.Factory.StartNew(() => p.StandardOutput.BaseStream.CopyTo(output));
+            var stderr = System.Threading.Tasks.Task.Factory.StartNew(() => p.StandardError.ReadToEnd());
+            var started = DateTime.UtcNow;
+            while (!p.WaitForExit(100)) {
+                if (token.IsCancellationRequested || (DateTime.UtcNow - started).TotalSeconds > 120) {
+                    p.Kill(); p.WaitForExit(); System.Threading.Tasks.Task.WaitAll(stdout, stderr);
+                    token.ThrowIfCancellationRequested(); throw new IOException("Git処理がタイムアウトしました。");
+                }
+            }
+            System.Threading.Tasks.Task.WaitAll(stdout, stderr); token.ThrowIfCancellationRequested();
+            if (p.ExitCode != 0) throw new IOException("Git処理に失敗しました: " + stderr.Result);
+            return output.ToArray();
+        }
+    }
+    public string Text(params string[] args) { return Encoding.UTF8.GetString(Run(Root, args, null)); }
+    public string Resolve(string reference, System.Threading.CancellationToken? cancel = null) {
+        var id = Encoding.UTF8.GetString(Run(Root, new[] { "rev-parse", "--verify", "--end-of-options", reference + "^{commit}" }, cancel)).Trim();
+        if (!Regex.IsMatch(id, "^[0-9a-f]{40}([0-9a-f]{24})?$")) throw new IOException("コミットIDを解決できません。");
+        return id;
+    }
+    public void Extract(string commit, string destination, System.Threading.CancellationToken cancel)
+    {
+        if (Directory.Exists(destination)) throw new IOException("過去版の展開先が既にあります。");
+        var rows = Encoding.UTF8.GetString(Run(Root, new[] { "ls-tree", "-rz", "--full-tree", commit }, cancel)).Split('\0').Where(x => x.Length > 0).ToArray();
+        var entries = new List<string[]>();
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var prefix = System.IO.Path.GetFullPath(destination).TrimEnd('\\') + "\\";
+        foreach (var row in rows) {
+            cancel.ThrowIfCancellationRequested();
+            var tab = row.IndexOf('\t'); if (tab < 0) throw new IOException("Gitツリーの形式が不正です。");
+            var meta = row.Substring(0, tab).Split(' '); var name = row.Substring(tab + 1);
+            if (meta[1] != "blob" || (meta[0] != "100644" && meta[0] != "100755"))
+                throw new IOException("初版で未対応のリンク／サブモジュールがあります: " + name);
+            var parts = name.Split('/');
+            if (parts.Any(x => x == "." || x == ".." || x.Equals(".git", StringComparison.OrdinalIgnoreCase) || x.EndsWith(".") || x.EndsWith(" ")
+                || x.IndexOfAny(System.IO.Path.GetInvalidFileNameChars()) >= 0 || Regex.IsMatch(x, @"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)", RegexOptions.IgnoreCase)))
+                throw new IOException("Windowsで展開できないパスです: " + name);
+            var path = System.IO.Path.GetFullPath(System.IO.Path.Combine(destination, name.Replace('/', '\\')));
+            if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !paths.Add(path)) throw new IOException("展開先が重複または範囲外です: " + name);
+            entries.Add(new[] { meta[2], path });
+        }
+        Directory.CreateDirectory(destination);
+        foreach (var entry in entries) {
+            cancel.ThrowIfCancellationRequested();
+            var data = Run(Root, new[] { "cat-file", "blob", entry[0] }, cancel);
+            if (Encoding.UTF8.GetString(data, 0, Math.Min(data.Length, 128)).StartsWith("version https://git-lfs.github.com/spec/v1"))
+                throw new IOException("Git LFSの実体取得は初版では未対応です: " + entry[1]);
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(entry[1]));
+            using (var stream = new FileStream(entry[1], FileMode.CreateNew)) stream.Write(data, 0, data.Length);
+        }
+    }
+}
+// A small native selection/progress surface. Only strings and filesystem/Git work cross STA boundaries.
+public sealed class ChangeDialog : IDisposable
+{
+    private readonly System.Reflection.Assembly forms = System.Reflection.Assembly.Load("System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089");
+    public readonly object Form, List, Accept, Cancel, Search;
+    public int Selected = -1;
+    private readonly List<string> labels;
+    private readonly List<int> parents;
+    private List<int> visible;
+    private static object Get(object o, string p) { return ReviewNativeDialog.Get(o, p); }
+    private static void Set(object o, string p, object v) { ReviewNativeDialog.Set(o, p, v); }
+    private static object Call(object o, string m, params object[] args) { return ReviewNativeDialog.Call(o, m, args); }
+    private object Add(string kind, string text, int x, int y, int w, int h) {
+        var c = Activator.CreateInstance(forms.GetType("System.Windows.Forms." + kind, true));
+        Set(c, "Text", text); Set(c, "Left", x); Set(c, "Top", y); Set(c, "Width", w); Set(c, "Height", h);
+        Call(Get(Form, "Controls"), "Add", c); return c;
+    }
+    public ChangeDialog(string title, List<string> choices, List<int> hierarchy = null) {
+        parents = hierarchy; labels = choices; Form = Activator.CreateInstance(forms.GetType("System.Windows.Forms.Form", true));
+        Set(Form, "Text", title); Set(Form, "Width", 950); Set(Form, "Height", 640); Set(Form, "StartPosition", "CenterScreen");
+        Set(Form, "FormBorderStyle", "FixedDialog"); Set(Form, "MaximizeBox", false); Set(Form, "TopMost", true); Set(Form, "AutoScaleMode", "Dpi");
+        Add("Label", "一覧から選択してください（検索は表示済みの項目が対象）", 16, 14, 900, 25);
+        Search = Add("TextBox", "", 16, 44, 900, 28);
+        List = Add(parents == null ? "ListBox" : "TreeView", "", 16, 82, 900, 455);
+        if (parents == null) Set(List, "HorizontalScrollbar", true);
+        Accept = Add("Button", "選択", 674, 554, 112, 34); Cancel = Add("Button", "キャンセル", 800, 554, 116, 34);
+        Set(Cancel, "DialogResult", "Cancel"); Set(Form, "CancelButton", Cancel);
+        Search.GetType().GetEvent("TextChanged").AddEventHandler(Search, new EventHandler(delegate { Refresh(); }));
+        Accept.GetType().GetEvent("Click").AddEventHandler(Accept, new EventHandler(delegate {
+            if (parents == null) { var index = (int)Get(List, "SelectedIndex"); if (index < 0) return; Selected = visible[index]; }
+            else { var node = Get(List, "SelectedNode"); if (node == null) return; Selected = (int)Get(node, "Tag"); }
+            Call(Form, "Close");
+        }));
+        Refresh();
+    }
+    private void Refresh() {
+        var text = (string)Get(Search, "Text"); visible = Enumerable.Range(0, labels.Count).Where(i => labels[i].IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+        if (parents == null) { Call(Get(List, "Items"), "Clear"); foreach (int i in visible) Call(Get(List, "Items"), "Add", labels[i]); return; }
+        var included = new HashSet<int>(visible);
+        foreach (var index in visible) { var visited = new HashSet<int>(); for (int p = parents[index]; p >= 0 && visited.Add(p); p = parents[p]) included.Add(p); }
+        Call(Get(List, "Nodes"), "Clear"); var nodes = new Dictionary<int, object>();
+        foreach (var index in included.OrderBy(i => i)) { var node = Activator.CreateInstance(forms.GetType("System.Windows.Forms.TreeNode", true)); Set(node, "Text", labels[index]); Set(node, "Tag", index); nodes.Add(index, node); }
+        foreach (var pair in nodes) { object parent; if (parents[pair.Key] >= 0 && nodes.TryGetValue(parents[pair.Key], out parent)) Call(Get(parent, "Nodes"), "Add", pair.Value); else Call(Get(List, "Nodes"), "Add", pair.Value); }
+        if (text.Length > 0) Call(List, "ExpandAll");
+    }
+    public void Dispose() { ((IDisposable)Form).Dispose(); }
+    private static void Sta(Action action) {
+        Exception failure = null; var thread = new System.Threading.Thread(delegate() { try { action(); } catch (Exception ex) { failure = ex; } });
+        thread.SetApartmentState(System.Threading.ApartmentState.STA); thread.Start(); thread.Join();
+        if (failure != null) throw new InvalidOperationException(failure.Message, failure);
+    }
+    public static int Choose(string title, List<string> labels) {
+        int result = -1; Sta(delegate { using (var dialog = new ChangeDialog(title, labels)) { Call(dialog.Form, "ShowDialog"); result = dialog.Selected; } }); return result;
+    }
+    public static int ChooseModel(string title, List<string> labels, List<int> parents) {
+        int result = -1; Sta(delegate { using (var dialog = new ChangeDialog(title, labels, parents)) { Call(dialog.Form, "ShowDialog"); result = dialog.Selected; } }); return result;
+    }
+    public static void Work(string title, Action<System.Threading.CancellationToken> work) {
+        Exception failure = null;
+        Sta(delegate {
+            using (var dialog = new ChangeDialog(title, new List<string> { "処理中です。キャンセルできます。" }))
+            using (var cancel = new System.Threading.CancellationTokenSource()) {
+                Set(dialog.Accept, "Visible", false); Set(dialog.Search, "Enabled", false);
+                var started = DateTime.UtcNow;
+                var task = System.Threading.Tasks.Task.Factory.StartNew(delegate { try { work(cancel.Token); } catch (Exception ex) { failure = ex; } });
+                var timer = Activator.CreateInstance(dialog.forms.GetType("System.Windows.Forms.Timer", true)); Set(timer, "Interval", 100);
+                timer.GetType().GetEvent("Tick").AddEventHandler(timer, new EventHandler(delegate { Set(dialog.Form, "Text", title + "（" + (int)(DateTime.UtcNow - started).TotalSeconds + "秒）"); if (task.IsCompleted) Call(dialog.Form, "Close"); }));
+                try { Call(timer, "Start"); Call(dialog.Form, "ShowDialog"); if (!task.IsCompleted) cancel.Cancel(); task.Wait(); }
+                finally { ((IDisposable)timer).Dispose(); }
+            }
+        });
+        if (failure != null) throw failure;
+    }
+    public static string Commit(GitChange git) {
+        var refs = new List<string> { "HEAD" };
+        Work("Git履歴を取得", token => refs.AddRange(Encoding.UTF8.GetString(GitChange.Run(git.Root, new[] { "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes", "refs/tags" }, token)).Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)));
+        int choice = Choose("比較元のブランチ・タグ", refs); if (choice < 0) return null;
+        string tip = null; Work("コミットを確定", token => tip = git.Resolve(refs[choice], token));
+        var ids = new List<string>(); var labels = new List<string>(); int skip = 0;
+        while (true) {
+            string log = null;
+            Work("コミット一覧を取得", token => log = Encoding.UTF8.GetString(GitChange.Run(git.Root,
+                new[] { "log", "-100", "--skip=" + skip, "--format=%H%x09%cI%x09%s", tip, "--" }, token)));
+            var rows = log.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var row in rows) { var parts = row.Split(new[] { '\t' }, 3); ids.Add(parts[0]); labels.Add(parts[1] + "  " + parts[0].Substring(0, 10) + "  " + parts[2]); }
+            bool more = rows.Length == 100; var display = labels.ToList(); if (more) display.Add("さらに100件表示…");
+            choice = Choose("比較元コミットを選択", display); if (choice < 0) return null;
+            if (choice < ids.Count) return ids[choice]; skip += 100;
+        }
+    }
+}
+
 public class SessionInfo
 {
+    public string BaselineCommit = "", CurrentTargetId = "", BaselineTargetId = "", TargetMapping = "", Stage = "";
     public string Phase = "";
     public string Folder;        // セッションフォルダのフルパス
     public string Agent;         // 作成時に使ったエージェント
@@ -980,6 +1215,11 @@ public class SessionInfo
         sb.Append("rootModel=").Append(RootModel).Append(nl);
         sb.Append("created=").Append(Created).Append(nl);
         sb.Append("mode=").Append(Mode).Append(nl);
+        sb.Append("baselineCommit=").Append(BaselineCommit).Append(nl);
+        sb.Append("currentTargetId=").Append(CurrentTargetId).Append(nl);
+        sb.Append("baselineTargetId=").Append(BaselineTargetId).Append(nl);
+        sb.Append("targetMapping=").Append(TargetMapping).Append(nl);
+        sb.Append("stage=").Append(Stage).Append(nl);
         sb.Append("phase=").Append(Phase).Append(nl);
         sb.Append("state=").Append(State).Append(nl);
         File.WriteAllText(SessionIniPath(), sb.ToString(), new UTF8Encoding(false));
@@ -998,6 +1238,11 @@ public class SessionInfo
                 case "rootModel": info.RootModel = pair.Value; break;
                 case "created": info.Created = pair.Value; break;
                 case "mode": info.Mode = pair.Value; break;
+                case "baselineCommit": info.BaselineCommit = pair.Value; break;
+                case "currentTargetId": info.CurrentTargetId = pair.Value; break;
+                case "baselineTargetId": info.BaselineTargetId = pair.Value; break;
+                case "targetMapping": info.TargetMapping = pair.Value; break;
+                case "stage": info.Stage = pair.Value; break;
                 case "phase": info.Phase = pair.Value; break;
                 case "state": info.State = pair.Value; break;
             }
@@ -1443,6 +1688,7 @@ public static class DiagramPaths
 public class PendingDiagram
 {
     public string Token, Name, Uml;
+    public ChangeRecord Comparison;
     public DiagramPathNode Node;
 }
 
@@ -1467,6 +1713,7 @@ public class MarkdownExporter
     public int DiagramCount;
     public int SkippedModelCount;   // 図の構成要素としてテキスト出力から除外したモデル数
     public List<string> Warnings = new List<string>();
+    public List<ChangeRecord> Comparison = new List<ChangeRecord>();
     public List<string> IndexRows = new List<string>();   // _index.md 用「| 図名 | 種別 | ファイル | モデルパス |」
 
     public MarkdownExporter(MarkdownExportOptions options, string diagramDir, DiagramGroupRules groupRules = null)
@@ -1508,6 +1755,7 @@ public class MarkdownExporter
         _seenDiagramWarnings.Clear();
         _pending.Clear();
         IndexRows.Clear();
+        Comparison.Clear();
         DiagramCount = 0;
         SkippedModelCount = 0;
         _pathRoot = new DiagramPathNode { Id = "diagrams", Assigned = "diagrams" };
@@ -1569,7 +1817,11 @@ public class MarkdownExporter
             _sb.Append("<!-- modelpath: ").Append(PathOf(m)).Append(" -->").Append(nl);
             _sb.Append(nl);
 
+            var fieldStart = _sb.Length;
             WriteFields(m);
+            Comparison.Add(new ChangeRecord { Key = "model:" + m.Id, Parent = m.Owner == null ? "" : m.Owner.Id,
+                Name = m.Name, Kind = m.Metaclass == null ? "" : m.Metaclass.FullName, Path = PathOf(m),
+                Content = _sb.ToString(fieldStart, _sb.Length - fieldStart) });
 
             // 図は .puml に出力して参照行を書く。シーケンス図・状態遷移図を持つ
             // モデルの配下は図の構成要素（メッセージ・実行仕様・状態など）なので、
@@ -1692,8 +1944,11 @@ public class MarkdownExporter
         var node = new DiagramPathNode { Id = editorId, Name = DiagramPaths.Segment(name),
             Suffix = suffix + ".puml", IsFile = true, Parent = parent };
         parent.Children.Add(node);
+        var comparison = new ChangeRecord { Key = "diagram:" + owner.Id + ":" + editorId, Parent = owner.Id,
+            Name = name, Kind = kind, Path = PathOf(owner), Content = uml };
+        Comparison.Add(comparison);
         var token = "ND_DIAGRAM_" + Guid.NewGuid().ToString("N");
-        _pending.Add(new PendingDiagram { Token = token, Name = name, Uml = uml, Node = node });
+        _pending.Add(new PendingDiagram { Token = token, Name = name, Uml = uml, Node = node, Comparison = comparison });
         return token;
     }
 
@@ -1705,6 +1960,7 @@ public class MarkdownExporter
             try
             {
                 var relative = diagram.Node.RelativePath();
+                diagram.Comparison.File = relative;
                 var path = Path.Combine(_diagramDir, relative.Replace('/', Path.DirectorySeparatorChar));
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
                 File.WriteAllText(path, diagram.Uml, new UTF8Encoding(false));
@@ -2392,7 +2648,7 @@ public static class ReviewResultViewer
             if (!Path.IsPathRooted(path) || Path.GetPathRoot(path).Length < 3
                 || !string.Equals(Path.GetFileName(path), "Code.exe", StringComparison.OrdinalIgnoreCase)
                 || !File.Exists(path))
-                throw new FileNotFoundException("vscode.executable に、存在する Code.exe の絶対パスを引用符なしで指定してください。");
+                throw new FileNotFoundException("「設定」のVS Code欄で、存在する Code.exe を参照ボタンから選んでください。");
             return Path.GetFullPath(path);
         }
         foreach (var candidate in candidates)
@@ -2622,6 +2878,8 @@ private void WriteReviewInputs(IApplication app, AgentConfig config, IProject pr
     for (var i = 0; i < upperModels.Count; i++)
     {
         var model = upperModels[i];
+        if (session.Mode == "change" && new[] { model }.Concat(model.GetAllChildren()).Any(m => m.IsProxy || m.IsDeleted))
+            throw new IOException("上位文書に未ロード・削除済みモデルが含まれます。");
         var relative = "upstream/models/" + (i + 1).ToString("D3");
         var directory = Path.Combine(session.Folder, relative);
         Directory.CreateDirectory(directory);
@@ -2631,6 +2889,7 @@ private void WriteReviewInputs(IApplication app, AgentConfig config, IProject pr
         inventory.Append("- [").Append(ReviewSnapshot.Cell(model.ModelPath)).Append("](")
             .Append(relative).Append("/design.md) / ID: ").Append(ReviewSnapshot.Cell(model.Id)).Append('\n');
         AppendExportWarnings(inventory, model.ModelPath, upperExporter);
+        if (session.Mode == "change" && upperExporter.Warnings.Count > 0) throw new IOException("上位文書の出力に警告があります。出力ログを確認してください。");
     }
     inventory.Append("\n## 固定コピーした資料\n\n| 出典 | コピー先 | SHA-256 |\n|---|---|---|\n");
     if (inputs != null)
@@ -2639,7 +2898,9 @@ private void WriteReviewInputs(IApplication app, AgentConfig config, IProject pr
         {
             var file = inputs.Files[i];
             var relative = "upstream/files/" + (i + 1).ToString("D3") + "/" + Path.GetFileName(file);
-            var sha = ReviewSnapshot.CopyFile(file, Path.Combine(session.Folder, relative));
+            string sha = null;
+            if (session.Mode == "change") ChangeDialog.Work("上位資料を固定しています", token => sha = ReviewSnapshot.CopyFile(file, Path.Combine(session.Folder, relative), token));
+            else sha = ReviewSnapshot.CopyFile(file, Path.Combine(session.Folder, relative));
             inventory.Append("| ").Append(ReviewSnapshot.Cell(file)).Append(" → ").Append(ReviewSnapshot.Cell(ReviewSnapshot.ResolvePath(file))).Append(" | ")
                 .Append(ReviewSnapshot.Cell(relative)).Append(" | ").Append(sha).Append(" |\n");
         }
@@ -2647,8 +2908,10 @@ private void WriteReviewInputs(IApplication app, AgentConfig config, IProject pr
     if (!string.IsNullOrEmpty(project.Path))
     {
         var attachment = Path.Combine(Path.GetDirectoryName(project.Path), "Attachment");
-        if (Directory.Exists(attachment))
-            ReviewSnapshot.CopyTree(attachment, Path.Combine(session.DesignDir(), "Attachment"), inventory, "design/Attachment");
+        if (Directory.Exists(attachment)) {
+            if (session.Mode == "change") ChangeDialog.Work("現在版の添付資料を固定しています", token => ReviewSnapshot.CopyTree(attachment, Path.Combine(session.DesignDir(), "Attachment"), inventory, "design/Attachment", token));
+            else ReviewSnapshot.CopyTree(attachment, Path.Combine(session.DesignDir(), "Attachment"), inventory, "design/Attachment");
+        }
         else inventory.Append("\nAttachment: フォルダなし。\n");
     }
     else inventory.Append("\nAttachment: プロジェクトの保存先が未確定のため取得なし。\n");
@@ -2664,9 +2927,162 @@ private void AppendExportWarnings(StringBuilder inventory, string name, Markdown
 
 public void StartChangeReview(ICommandContext context, ICommandParams commandParams)
 {
-    context.App.Window.UI.ShowInformationDialog(
-        "変化点レビューは未提供です。先に「過去版出力の検証」で、V3上で本文・図を取得できることを確認してください。\n"
-        + "検証結果の確認後にGit取得・前後比較を実装します。現在のプロジェクトは変更しません。", "AgentReview");
+    var app = context.App; SessionInfo session = null; IProject historical = null;
+    bool owns = false; string copiedProject = null; string originalPath = null; string originalId = null;
+    int changes = 0; bool prepared = false;
+    try {
+        context.ContextOption.EditorAccessMode = EditorAccessMode.GetInactiveValue;
+        var current = app.Workspace.CurrentProject; var target = ResolveRoot(app);
+        if (current == null || string.IsNullOrWhiteSpace(current.Path)) throw new InvalidOperationException("保存済みのGit管理プロジェクトを開いてください。");
+        if (target == null || target.Id == current.Id || target.IsDeleted || target.IsProxy) throw new InvalidOperationException("比較する工程成果物のモデルを選択してください。");
+        originalPath = ProbeProjectPath(current); originalId = current.Id;
+        GitChange git = null;
+        ChangeDialog.Work("Gitリポジトリを確認", token => git = new GitChange(Path.GetDirectoryName(originalPath), token));
+        var prefix = Path.GetFullPath(git.Root).TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
+        if (!originalPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) throw new IOException("プロジェクトがGitリポジトリ内にありません。");
+        var relativeProject = originalPath.Substring(prefix.Length).Replace('\\', '/');
+        // A saved but untracked current project is not a reliable comparison entry point.
+        git.Text("ls-files", "--error-unmatch", "--", relativeProject);
+        var inputs = ReviewInputPicker.Show(current, target); if (inputs == null) return;
+        var upperModels = ReviewInputPicker.ResolveModels(current, inputs);
+        var commit = ChangeDialog.Commit(git); if (commit == null) return;
+        var config = AgentConfig.Load();
+        if (string.IsNullOrWhiteSpace(config.WorkspaceRoot) || !Directory.Exists(config.WorkspaceRoot)) {
+            var selected = app.Window.UI.ShowSelectFolderDialog("レビュー保存先を選択"); if (string.IsNullOrWhiteSpace(selected)) return;
+            config.WorkspaceRoot = selected; config.Save();
+        }
+        OutputPane.Show(app, "AgentReview");
+        session = WorkspaceBuilder.Build(config.WorkspaceRoot, target, config);
+        session.Mode = "change"; session.State = "preparing"; session.Phase = inputs.Phase;
+        session.BaselineCommit = commit; session.CurrentTargetId = target.Id; session.TargetMapping = "id"; session.Stage = "現在版の固定"; session.Save();
+        SkillProvisioner.ValidateSource(SkillProvisioner.SourceDir(context.ExtensionInfo.ExtensionPath));
+        SkillProvisioner.LinkToSession(session.Folder, SkillProvisioner.SourceDir(context.ExtensionInfo.ExtensionPath));
+        app.Output.WriteLine("AgentReview", "[1/4] 現在版を固定しています: " + session.Folder);
+        var after = ExportChangeTarget(app, config, target, session.DesignDir());
+        WriteReviewInputs(app, config, current, target, session, inputs, upperModels, after);
+        ChangeDiff.Attachments(Path.Combine(session.DesignDir(), "Attachment"), after.Comparison);
+        ChangeDiff.SaveIndex(session.DesignDir(), after.Comparison);
+        var baseline = Path.Combine(session.Folder, "baseline"); var bundle = Path.Combine(baseline, "project");
+        session.Stage = "過去版の取得"; session.Save();
+        app.Output.WriteLine("AgentReview", "[2/4] 過去コミットを取得しています: " + commit);
+        ChangeDialog.Work("過去版を取得しています", token => git.Extract(commit, bundle, token));
+        copiedProject = Path.Combine(bundle, relativeProject.Replace('/', Path.DirectorySeparatorChar));
+        if (!File.Exists(copiedProject)) {
+            var candidates = Directory.GetFiles(bundle, "*", SearchOption.AllDirectories)
+                .Where(f => new[] { ".nproj", ".iproj" }.Contains(Path.GetExtension(f).ToLowerInvariant())).OrderBy(f => f).ToList();
+            if (candidates.Count == 0) throw new IOException("過去版にプロジェクトファイルがありません。");
+            int selected = ChangeDialog.Choose("過去版のプロジェクトを選択", candidates.Select(f => f.Substring(bundle.Length + 1)).ToList());
+            if (selected < 0) throw new OperationCanceledException(); copiedProject = candidates[selected];
+        }
+        copiedProject = ReviewSnapshot.ResolvePath(copiedProject);
+        session.Stage = "過去版の読込・対象選択"; session.Save();
+        historical = app.Workspace.OpenProject(copiedProject, false, false);
+        owns = historical != null && string.Equals(ProbeProjectPath(historical), copiedProject, StringComparison.OrdinalIgnoreCase);
+        if (!owns) throw new IOException("過去版を独立したプロジェクトとして取得できませんでした。");
+        if (!ProbeMatchesProject(app.Workspace.CurrentProject, originalPath, originalId)) throw new IOException("カレントプロジェクトが変化したため停止しました。");
+        var all = historical.GetAllChildren().ToList(); var matches = all.Where(m => m.Id == target.Id).ToList(); IModel oldTarget = null;
+        if (matches.Count == 1 && !matches[0].IsDeleted && !matches[0].IsProxy) oldTarget = matches[0];
+        else if (matches.Count > 0) throw new IOException("対応モデルが重複、削除済み、または未ロードです。");
+        else {
+            var available = all.Where(m => !m.IsDeleted && !m.IsProxy).OrderBy(m => m.ModelPath, StringComparer.Ordinal).ToList();
+            var labels = new List<string> { "過去版にはない新規成果物" }; labels.AddRange(available.Select(m => m.ModelPath + "  [" + m.Id + "]"));
+            var byId = new Dictionary<string, int>();
+            for (int i = 0; i < available.Count; i++) { if (byId.ContainsKey(available[i].Id)) throw new IOException("過去版のモデルIDが重複しています。"); byId.Add(available[i].Id, i + 1); }
+            var parents = new List<int> { -1 };
+            foreach (var model in available) { int parent; parents.Add(model.Owner != null && byId.TryGetValue(model.Owner.Id, out parent) ? parent : -1); }
+            int selected = ChangeDialog.ChooseModel("過去版の対応成果物を選択（現在: " + target.ModelPath + "）", labels, parents);
+            if (selected < 0) throw new OperationCanceledException();
+            if (selected == 0) session.TargetMapping = "new";
+            else { oldTarget = available[selected - 1]; session.TargetMapping = "manual"; }
+        }
+        var oldDesign = Path.Combine(baseline, "design"); Directory.CreateDirectory(oldDesign);
+        var before = new List<ChangeRecord>();
+        session.Stage = "過去版の出力"; session.Save();
+        app.Output.WriteLine("AgentReview", "[3/4] 過去版の選択成果物を出力しています。");
+        if (oldTarget != null) {
+            session.BaselineTargetId = oldTarget.Id;
+            before = ExportChangeTarget(app, config, oldTarget, oldDesign).Comparison;
+            var attachment = Path.Combine(Path.GetDirectoryName(copiedProject), "Attachment");
+            if (Directory.Exists(attachment)) ChangeDialog.Work("過去版の添付資料を固定しています", token => ReviewSnapshot.CopyTree(attachment, Path.Combine(oldDesign, "Attachment"), new StringBuilder(), "baseline/design/Attachment", token));
+            ChangeDiff.Attachments(Path.Combine(oldDesign, "Attachment"), before);
+        } else File.WriteAllText(Path.Combine(oldDesign, "design.md"), "# 過去版\nユーザーが、過去版にはない新規成果物として指定しました。\n", new UTF8Encoding(false));
+        ChangeDiff.SaveIndex(oldDesign, before);
+        session.Save();
+        File.AppendAllText(Path.Combine(session.Folder, "inputs.md"), "\n## 変化点比較\n\n- 比較元コミット: " + commit
+            + "\n- リポジトリ: " + ReviewSnapshot.Cell(git.Root) + "\n- 取得したプロジェクト: " + ReviewSnapshot.Cell(copiedProject.Substring(bundle.Length + 1))
+            + "\n- 現在版対象ID: " + ReviewSnapshot.Cell(target.Id)
+            + "\n- 過去版対象ID: " + ReviewSnapshot.Cell(session.BaselineTargetId) + "\n- 対応方法: " + session.TargetMapping
+            + "\n- 過去版対象: " + (oldTarget == null ? "新規成果物" : ReviewSnapshot.Cell(oldTarget.ModelPath))
+            + "\n- 手動対応時、配下の異なるIDは追加／除外として扱います。全体を読み合わせて変更意図を確認してください。\n"
+            + "- 同一リポジトリ外の依存関係・解釈できない添付資料の整合は未確認です。\n", new UTF8Encoding(false));
+        if (!ProbeMatchesProject(app.Workspace.CurrentProject, originalPath, originalId)) throw new IOException("出力中にカレントが変化しました。");
+        session.Stage = "差分生成"; session.Save();
+        app.Output.WriteLine("AgentReview", "[4/4] 差分を作成しています。");
+        ChangeDialog.Work("差分を作成しています", token => { token.ThrowIfCancellationRequested(); changes = ChangeDiff.Build(session.Folder, before, after.Comparison, token); token.ThrowIfCancellationRequested(); });
+        prepared = true;
+    }
+    catch (Exception ex) { ChangeFailure(app, session, ex); }
+    finally {
+        if (owns) {
+            try {
+                if (prepared) { session.Stage = "過去版の解放"; session.Save(); }
+                if (app.Workspace.CurrentProject != null && string.Equals(ProbeProjectPath(app.Workspace.CurrentProject), copiedProject, StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("過去版がカレントになったため自動では閉じません。");
+                app.Workspace.CloseProject(historical);
+                if (!ProbeMatchesProject(app.Workspace.CurrentProject, originalPath, originalId)) throw new IOException("過去版解放後のカレントが一致しません。");
+            } catch (Exception ex) { prepared = false; ChangeFailure(app, session, ex); }
+        }
+    }
+    if (!prepared) return;
+    try {
+        ReviewSnapshot.AppendInstructions(session.Folder, "change");
+        var instructions = "\n## 変化点レビュー\n\n`session.ini` の mode=change です。最初に `diff/changes.md` と `inputs.md` を読み、"
+            + "`baseline/design/` と `design/` の前後を比較してください。`baseline/` と `diff/` は固定入力で変更禁止です。"
+            + "変更項目と変更されていない関連設計を確認し、現在版の上位文書との整合・波及影響をレビューしてください。"
+            + "工程は確定済みで再質問しません。既存問題と変更起因の問題を区別し、前後の根拠を示してください。"
+            + "`review/changes.md` に変更概要・影響範囲・未確認範囲を、通常の指摘・対応表・提案と併せて出力してください。\n";
+        foreach (var file in new[] { "AGENTS.md", "CLAUDE.md" }) File.AppendAllText(Path.Combine(session.Folder, file), instructions, new UTF8Encoding(false));
+        session.State = "ready"; session.Stage = "レビュー入力完成"; session.Save();
+        var config = AgentConfig.Load();
+        if (changes == 0) {
+            File.WriteAllText(Path.Combine(session.ReviewDir(), "changes.md"), "# 差分なし\n\n比較元: " + session.BaselineCommit
+                + "\n比較先: 現在開いている選択成果物（未保存編集を含む固定出力）\n\n取得できた範囲に差分はありません。AIは起動していません。上位整合・入力範囲外の依存関係は未確認です。\n", new UTF8Encoding(false));
+            app.Window.UI.ShowInformationDialog("差分はありません。AIは起動していません。\n保存先: " + session.Folder + "\n「結果を開く」で確認できます。", "AgentReview");
+        } else {
+            TerminalLauncher.Launch(session.Folder, config.ActiveProfile().BuildLaunchCommand("変化点レビューを開始してください。session.ini の工程は確定済みです。diff/changes.md と inputs.md から確認してください。"), config.Terminal);
+            app.Window.UI.ShowInformationDialog("変化点レビューを開始しました。変更項目: " + changes + "\n保存先: " + session.Folder
+                + "\nターミナルで進行し、「結果を開く」でレビュー結果を確認できます。", "AgentReview");
+        }
+    } catch (Exception ex) { ChangeFailure(app, session, ex); }
+}
+private MarkdownExporter ExportChangeTarget(IApplication app, AgentConfig config, IModel target, string directory)
+{
+    if (new[] { target }.Concat(target.GetAllChildren()).Any(m => m.IsDeleted || m.IsProxy)) throw new IOException("対象に削除済み・未ロードモデルが含まれます。");
+    Directory.CreateDirectory(directory);
+    var exporter = new MarkdownExporter(new MarkdownExportOptions(), directory, DiagramGroupRules.Load(config.DiagramGroupsRulesFile));
+    WriteDesignArtifacts(app, "AgentReview", exporter, target, directory);
+    if (exporter.Warnings.Count > 0) throw new IOException("出力警告があるため、不完全な差分レビューを停止しました。\n" + string.Join("\n", exporter.Warnings));
+    return exporter;
+}
+private void ChangeFailure(IApplication app, SessionInfo session, Exception ex)
+{
+    var cancelled = ex is OperationCanceledException;
+    string path = "";
+    if (session != null) {
+        session.State = cancelled ? "cancelled" : "failed";
+        try { session.Save(); path = Path.Combine(session.Folder, "failure.txt"); File.WriteAllText(path, ex.ToString(), new UTF8Encoding(false)); }
+        catch (Exception writeError) { app.Output.WriteLine("AgentReview", "[error] 診断記録失敗: " + writeError.Message); }
+    }
+    if (session == null && !cancelled) {
+        try {
+            var directory = Path.Combine(AgentConfig.ConfigDir(), "diagnostics"); Directory.CreateDirectory(directory);
+            path = Path.Combine(directory, "change-" + Guid.NewGuid().ToString("N") + ".txt");
+            File.WriteAllText(path, ex.ToString(), new UTF8Encoding(false));
+        } catch (Exception writeError) { path = ""; app.Output.WriteLine("AgentReview", "[error] 診断記録失敗: " + writeError.Message); }
+    }
+    app.Output.WriteLine("AgentReview", "[error] " + ex);
+    app.Window.UI.ShowInformationDialog((cancelled ? "変化点レビューをキャンセルしました。" : "変化点レビューを開始できませんでした。\n" + (session == null ? "入力選択" : session.Stage) + "\n" + ex.Message)
+        + (path.Length == 0 ? "" : "\n診断ログ: " + path), "AgentReview");
 }
 
 // OpenProject(path, false, false): カレントにせず、モデルを含めて読み込む。
