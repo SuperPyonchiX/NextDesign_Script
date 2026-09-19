@@ -1,4 +1,4 @@
-// ModelUpdateProbe 0.1.0 — v3.x. Real-machine results are not yet available.
+// ModelUpdateProbe 0.1.1 — v3.x. Update success on the real runtime is unverified.
 using NextDesign.Core;
 using NextDesign.Desktop;
 using NextDesign.Extension;
@@ -19,10 +19,11 @@ public void CompareUndo(ICommandContext context, ICommandParams parameters) { Pr
 public void CompareRedo(ICommandContext context, ICommandParams parameters) { ProbeHost.Compare(context.App, "Redo後"); }
 public void ShowProbeResult(ICommandContext context, ICommandParams parameters) { ProbeHost.Show(context.App); }
 public void ShowProbeDetails(ICommandContext context, ICommandParams parameters) { ProbeHost.Details(context.App); }
+public void ShowProbeFields(ICommandContext context, ICommandParams parameters) { ProbeHost.Fields(context.App); }
 
 public static class ProbeHost
 {
-    public const string Version = "0.1.0";
+    public const string Version = "0.1.1";
     public const string Title = "設計更新検証 / " + Version;
     public static ProbeSession Session;
     public static string LastSummary = "検証準備を実行してください。";
@@ -43,10 +44,20 @@ public static class ProbeHost
             Directory.CreateDirectory(session.DirectoryPath);
             var fields = model.Metaclass.GetFields().Cast<IField>().ToList();
             var eligible = fields.Where(Eligible).ToList();
+            session.CandidateCount = eligible.Count;
+            session.FieldSummary = "準備時のフィールド診断（現在の再取得ではありません）\n"
+                + "全フィールド数: " + fields.Count
+                + "\n型名がString: " + fields.Count(f => f != null && f.Type == "String")
+                + "\nうち上限多重度1: " + fields.Count(f => f != null && f.Type == "String" && f.UpperBound == 1)
+                + "\n型名がRichText: " + fields.Count(f => f != null && f.Type == "RichText")
+                + "\n更新候補: " + eligible.Count
+                + "\nモデル名・フィールド名・値は表示していません。\n詳細は保存先のfields.txtにあります。";
             var report = new StringBuilder("ModelUpdateProbe " + Version + "\r\nモデルID: " + model.Id + "\r\nモデル名: " + model.Name + "\r\n");
             report.AppendLine("候補は単値のString属性のみ。APIでの書き込み可否は実行時に確認します。");
             foreach (var field in fields)
-                report.AppendLine(field.Name + " | type=" + field.Type + " | upper=" + field.UpperBound + " | candidate=" + Eligible(field));
+                report.AppendLine(field == null ? "<null field>" : field.Name + " | type=" + field.Type + " | upper=" + field.UpperBound
+                    + " | embedded=" + field.IsEmbedded + " | reference=" + field.IsReference
+                    + " | classType=" + (field.TypeClass != null) + " | enumType=" + (field.TypeEnum != null) + " | candidate=" + Eligible(field));
             ProbeCore.WriteNew(Path.Combine(session.DirectoryPath, "fields.txt"), report.ToString());
             var config = new Dictionary<string, string> {
                 {"schemaVersion", "1"}, {"caseId", "S001"}, {"targetModelId", model.Id.ToString()},
@@ -57,6 +68,8 @@ public static class ProbeHost
             Session = session;
             LastDetail = report + "\r\n検証ファイル: " + Path.Combine(session.DirectoryPath, "case.json");
             LastSummary = Title + "\n準備完了 / 対象1モデル\n文字列フィールド候補: " + eligible.Count + "\nモデル変更: なし\n実機版・プロファイル: case.json に手入力\ncase.json の fieldName と newValue を編集してください。\n詳細ボタンで保存先を確認できます。";
+            if (eligible.Count == 0)
+                LastSummary = Title + "\n診断完了 / 更新対象なし（F001）\n文字列フィールド候補: 0\nモデル変更: なし\n検証実行には進まず「フィールド診断」を押してください。\nこのモデルに属性がない、という判定ではありません。";
             Show(app);
         }
         catch (Exception ex) { Failure(app, "準備", ex); }
@@ -70,9 +83,13 @@ public static class ProbeHost
 
     public static void CheckContext(IApplication app, ProbeSession session)
     {
-        if (session == null || !object.ReferenceEquals(app.Workspace.CurrentProject, session.Project)
-            || session.Model.IsDeleted || session.Model.IsProxy)
-            throw new InvalidOperationException("検証対象が無効です。検証準備をやり直してください。");
+        if (session == null) throw new ProbeCheckException("C001", "準備状態がありません。未準備または状態が失われています。");
+        var project = app.Workspace.CurrentProject;
+        if (project == null) throw new ProbeCheckException("C002", "現在開いているプロジェクトがありません。");
+        if (!object.ReferenceEquals(project, session.Project))
+            throw new ProbeCheckException("C003", "プロジェクトのオブジェクト参照が準備時と一致しません。\n別プロジェクトか、SDKが別のオブジェクトを返したかは未確定です。");
+        if (session.Model.IsDeleted) throw new ProbeCheckException("C004", "準備時の対象モデルが削除済みです。");
+        if (session.Model.IsProxy) throw new ProbeCheckException("C005", "準備時の対象モデルがプロキシです。");
     }
 
     public static string Read(ProbeSession session, ProbeCase config)
@@ -95,6 +112,8 @@ public static class ProbeHost
         {
             var session = Session;
             CheckContext(app, session);
+            if (session.CandidateCount == 0)
+                throw new ProbeCheckException("F001", "準備時に更新候補がありません。「フィールド診断」を確認してください。");
             if (session.Run != null && session.Run.Invoked)
                 throw new InvalidOperationException("このセッションは実行済みです。Undo/Redoの照合を終え、検証準備をやり直してください。");
             run = new ProbeRun();
@@ -173,6 +192,13 @@ public static class ProbeHost
     }
 
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(LastSummary, Title); }
+    public static void Fields(IApplication app)
+    {
+        // This reads the saved diagnostic, even when the current SDK context differs.
+        // Never use this command to bypass CheckContext for model access or mutation.
+        if (Session == null) { Failure(app, "フィールド診断", new ProbeCheckException("C001", "準備状態がありません。")); return; }
+        app.Window.UI.ShowInformationDialog(Title + "\n" + Session.FieldSummary, Title);
+    }
     public static void OpenConfig(IApplication app)
     {
         try
@@ -196,6 +222,10 @@ public static class ProbeHost
     public static void Failure(IApplication app, string phase, Exception ex)
     {
         LastSummary = Title + "\n段階: " + phase + "\n処理停止\n例外型: " + ex.GetType().FullName + "\n詳細ボタンで理由を確認してください。";
+        var check = ex as ProbeCheckException;
+        if (check != null)
+            LastSummary = Title + "\n段階: " + phase + "\n処理停止 / 診断コード: " + check.Code + "\n" + check.Message
+                + "\nこのコマンドによる更新API呼出: なし\nこの画面を撮影してください。";
         LastDetail = ex.ToString();
         Show(app);
     }
@@ -207,10 +237,19 @@ public class ProbeSession
     public readonly IModel Model;
     public readonly string DirectoryPath;
     public ProbeRun Run;
+    public int CandidateCount;
+    public string FieldSummary;
     public ProbeSession(IProject project, IModel model, string directory) { Project = project; Model = model; DirectoryPath = directory; }
 }
 
 // No ND types below this line: these components are tested without the real SDK.
+public class ProbeCheckException : InvalidOperationException
+{
+    public readonly string Code;
+    // Only fixed, non-sensitive messages are passed to this exception.
+    public ProbeCheckException(string code, string message) : base(message) { Code = code; }
+}
+
 public static class ProbeCore
 {
     public static string NewId() { return DateTime.Now.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture) + "_" + Guid.NewGuid().ToString("N").Substring(0, 8); }

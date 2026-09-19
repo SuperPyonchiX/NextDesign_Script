@@ -2,7 +2,7 @@
   "name": "ModelUpdateProbe",
   "displayName": "設計更新検証",
   "description": "単値文字列の更新と手動Undo/Redo後の状態を記録する実機検証用拡張。",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -23,7 +23,8 @@
           ]},
           {"id": "ModelUpdateProbe.Results", "label": "結果", "controls": [
             {"id": "ModelUpdateProbe.ResultButton", "type": "Button", "label": "結果表示", "command": "ModelUpdateProbe.Result"},
-            {"id": "ModelUpdateProbe.DetailsButton", "type": "Button", "label": "詳細（会社PC内）", "command": "ModelUpdateProbe.Details"}
+            {"id": "ModelUpdateProbe.DetailsButton", "type": "Button", "label": "詳細（会社PC内）", "command": "ModelUpdateProbe.Details"},
+            {"id": "ModelUpdateProbe.FieldsButton", "type": "Button", "label": "フィールド診断", "command": "ModelUpdateProbe.Fields"}
           ]}
         ]
       }]
@@ -36,7 +37,8 @@
       {"id": "ModelUpdateProbe.Undo", "execFunc": "CompareUndo"},
       {"id": "ModelUpdateProbe.Redo", "execFunc": "CompareRedo"},
       {"id": "ModelUpdateProbe.Result", "execFunc": "ShowProbeResult"},
-      {"id": "ModelUpdateProbe.Details", "execFunc": "ShowProbeDetails"}
+      {"id": "ModelUpdateProbe.Details", "execFunc": "ShowProbeDetails"},
+      {"id": "ModelUpdateProbe.Fields", "execFunc": "ShowProbeFields"}
     ]
   }
 }

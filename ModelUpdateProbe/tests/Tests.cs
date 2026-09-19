@@ -123,6 +123,32 @@ public static class Tests
         run.Config.NewValue = longA; run.Current = longB;
         Check(run.Match("変更後") == "不一致", "truncated values compared");
 
+        // The mock exercises independent stopped branches, not assumptions about SDK identity.
+        foreach (var code in new[] {"C001", "C002", "C003", "C004", "C005"})
+        {
+            app = Setup(); model = (Model)app.Workspace.CurrentModel;
+            if (code == "C001") ProbeHost.Session = null;
+            if (code == "C002") app.Workspace.CurrentProject = null;
+            if (code == "C003") app.Workspace.CurrentProject = new Project();
+            if (code == "C004") model.IsDeleted = true;
+            if (code == "C005") model.IsProxy = true;
+            ProbeHost.Execute(app);
+            Check(app.Window.UI.Last.Contains(code), "context reason not distinguished: " + code);
+            Check(model.Writes == 0, "context check bypassed");
+            Check(!app.Window.UI.Last.Contains(model.Name) && !app.Window.UI.Last.Contains(model.Id), "context summary leaked identity");
+        }
+        app = Setup(); model = (Model)app.Workspace.CurrentModel;
+        model.Metaclass.Fields[0].Type = "RichText";
+        ProbeHost.Prepare(app);
+        Check(app.Window.UI.Last.Contains("更新対象なし") && !app.Window.UI.Last.Contains("準備完了"), "zero candidates reported ready");
+        ProbeHost.Execute(app);
+        Check(app.Window.UI.Last.Contains("F001") && model.Writes == 0, "zero-candidate execution permitted");
+        app.Workspace.CurrentProject = new Project();
+        ProbeHost.Fields(app);
+        Check(app.Window.UI.Last.Contains("型名がRichText: 1") && app.Window.UI.Last.Contains("更新候補: 0"), "saved field summary unavailable");
+        Check(!app.Window.UI.Last.Contains(model.Name) && !app.Window.UI.Last.Contains(model.Id), "field summary leaked identity");
+        Check(model.Writes == 0, "field diagnosis mutated model");
+
         var collision = Path.Combine(root,"existing.txt"); File.WriteAllText(collision,"original");
         bool threw = false; try { ProbeCore.WriteNew(collision,"replacement"); } catch (IOException) { threw=true; }
         Check(threw && File.ReadAllText(collision)=="original", "existing evidence overwritten");
