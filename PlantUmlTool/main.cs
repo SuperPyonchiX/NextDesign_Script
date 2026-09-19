@@ -5430,13 +5430,11 @@ public void ExportAllDiagrams(ICommandContext context, ICommandParams commandPar
 //  （manifest.json の execFunc と名前を一致させる）
 //
 //  注: PlantUML からの取り込み（ImportFromFile / ImportFromFolder）は
-//      撤去した。Next Design V3.x ではシーケンス図要素が拡張 API から
-//      読み取り専用で、既存図の編集も新規図への要素追加も UML
-//      プロファイルにブロックされることを実機検証で確認した
-//      （2026-08-13。実験コードは git 履歴のコミット 295d570 を参照）。
-//      取り込みは開発元純正の PlantUMLImporter 拡張（DLL・内部 API 使用）
-//      を利用する。Part 1〜5 の取り込みエンジンは将来スクリプトから
-//      編集可能になった場合に備えて残している（リボンからは到達しない）。
+//      撤去済み。Part 1〜5 の旧ライターはリボンから到達しない。
+//      汎用モデル更新だけでシーケンスの構造と表示を構築できるとは限らない。
+//      V3全般の作成不可、純正PlantUMLImporterの提供は根拠未確認。
+//      公開SDKのインポートAPI候補と未確認事項は
+//      docs/sequence-import-api-research.md を参照する。
 // ============================================================
 
 public void ProbeClassDiagram(ICommandContext context, ICommandParams commandParams)

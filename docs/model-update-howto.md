@@ -2,7 +2,7 @@
 
 Next Design v3系の設計更新を、APIの仕様と実機の観測を分けて検証する。対象読者は、Next Designのモデルとフィールドを理解し、拡張を開発・検証する担当者。
 
-現在の実装は単値文字列属性1件の `SetField` と読戻し、手動Undo/Redo後の照合。実機の成功結果はまだ受領していない。配置と操作は [ModelUpdateProbeの手順書](../ModelUpdateProbe/README.md) を参照する。
+現在の実装は単値文字列属性1件の `SetField` と読戻し、手動Undo/Redo後の照合。実機の受領結果と適用範囲はローカル索引で管理する。配置と操作は [ModelUpdateProbeの手順書](../ModelUpdateProbe/README.md) を参照する。シーケンス図の構造生成は[別のAPI調査](sequence-import-api-research.md)で扱う。
 
 # インプット資料
 
