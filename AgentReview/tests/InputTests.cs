@@ -176,6 +176,11 @@ public static class InputTests
         Check(context.App.Workspace.Opened && context.App.Workspace.Closed, "Historical model opened and released");
         Check(context.App.Workspace.CurrentProject == project && File.ReadAllText(projectFile) == "synthetic", "Current project retained");
         Check(Directory.GetFiles(workspace, "probe.md", SearchOption.AllDirectories).Length == 1, "Probe report written");
+        Check(context.App.Window.UI.Messages.Last().Contains("保存先:") && context.App.Window.UI.Messages.Last().Contains("design/_index.md"), "Completion explains location and contents");
+        var probeFile = Directory.GetFiles(workspace, "probe.md", SearchOption.AllDirectories).Single();
+        Check(File.ReadAllText(probeFile).Contains("[図の一覧](design/_index.md)"), "Report links exported artifacts");
+        var probeLaunch = ReviewResultViewer.PrepareLaunch(Path.GetDirectoryName(probeFile), "Code.exe");
+        Check(probeLaunch.Arguments.Contains(ReviewResultViewer.QuoteArgument(probeFile)) && probeLaunch.Arguments.Contains(".code-workspace"), "Viewer opens probe in workspace");
         Check(TerminalLauncher.Launches == launches + 1, "Probe launches no AI");
         command.StartChangeReview(context, new ICommandParams());
         Check(TerminalLauncher.Launches == launches + 1 && context.App.Window.UI.Messages.Last().Contains("未提供"), "Change review remains gated");

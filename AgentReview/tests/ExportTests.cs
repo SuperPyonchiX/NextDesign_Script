@@ -88,6 +88,7 @@ public class TestUI
     public bool ShowConfirmDialog(string message, string category)
     {
         Messages.Add(message);
+        if (message.Contains("VS Codeでフォルダと検証レポート")) return false;
         return ConfirmAnswers.Count > 0 ? ConfirmAnswers.Dequeue() : Confirm;
     }
     public string SelectedFolder, SelectedFile;

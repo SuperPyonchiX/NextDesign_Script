@@ -75,6 +75,7 @@ public static class Recorder {
         document = json.loads(workspace.read_text(encoding="utf-8"))
         assert document["folders"] == [{"path": "."}]
         assert document["settings"]["workbench.editorAssociations"] == {
+                "**/probe.md": "vscode.markdown.preview.editor",
             "**/review/review.md": "vscode.markdown.preview.editor",
             "**/review/proposal.md": "vscode.markdown.preview.editor",
             "**/review/coverage.md": "vscode.markdown.preview.editor",

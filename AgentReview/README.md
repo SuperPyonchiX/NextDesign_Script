@@ -1,6 +1,6 @@
 ﻿# AgentReview — Claude Code / Codex による設計レビュー支援
 
-## 0.12.3 の実装状況
+## 0.12.4 の実装状況
 
 「レビュー開始」で、設計自体の工程別観点と上位要求との整合をまとめて確認する。設定された上位モデル・外部資料とAttachmentを固定コピーし、要求の反映を `review/coverage.md` に記録する。上位文書が未指定なら、その整合は未確認として結果に残す。操作と実機確認は [VERIFY.md](VERIFY.md) を参照。
 
@@ -202,3 +202,15 @@ state=Example.Design.StateGroup
 0.12.0 は PowerShell の実行に依存しない。旧版で「スクリプトの実行が無効」「UnauthorizedAccess」が出た場合は、拡張フォルダ一式を更新して Next Design を再起動する。旧 `resources/Select-ReviewInputs.ps1` は不要で、残っていても読み込まない。実行ポリシーの変更は不要。
 
 C# の画面表示・入力検証・設定保存で失敗した場合は、例外本文をダイアログへ表示し、詳細を `%USERPROFILE%\.nd-agent-review\diagnostics\picker-*.txt` に保存する。ログのフルパスも表示する。Next Design 実機での表示は未確認。
+
+## 過去版検証の出力先（0.12.4）
+
+「設定」のレビュー保存先の下に `historical-probe-<識別子>/` を作成する。保存先が未設定の場合は検証時に選ぶ。
+
+- `probe.md`: 検証レポート。本文・図一覧へのリンク、コピー記録、出力件数、警告、過去版の解放結果。
+- `design/design.md`: 設計本文。
+- `design/_index.md`: 図の一覧。
+- `design/diagrams/`: 図のPlantUML。
+- `project/`: 読み込み用に複製した過去版一式。
+
+完了画面に保存先と出力内容を表示する。「はい」でVS Codeにフォルダ全体と検証レポートを開く。「いいえ」でも出力は残る。VS Codeが起動できない場合は、出力済みであることと保存先を案内する。図の内容・未保存編集の保持は実機で確認する。

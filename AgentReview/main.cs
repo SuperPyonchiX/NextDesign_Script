@@ -2353,8 +2353,11 @@ public static class ReviewResultViewer
     public static List<string> ResultFiles(string sessionFolder)
     {
         // review.md を最後に渡し、指摘を先に確認しやすくする。
-        return new[] { "coverage.md", "changes.md", "proposal.md", "review.md" }
+        var files = new[] { "coverage.md", "changes.md", "proposal.md", "review.md" }
             .Select(name => Path.Combine(sessionFolder, "review", name)).Where(File.Exists).ToList();
+        if (files.Count == 0 && File.Exists(Path.Combine(sessionFolder, "probe.md")))
+            files.Add(Path.Combine(sessionFolder, "probe.md"));
+        return files;
     }
 
     public static IEnumerable<string> ExecutableCandidates(string localAppData, string programFiles,
@@ -2426,6 +2429,7 @@ public static class ReviewResultViewer
             + "  \"settings\": {\n"
             + "    \"workbench.editor.enablePreview\": false,\n"
             + "    \"workbench.editorAssociations\": {\n"
+            + "      \"**/probe.md\": \"vscode.markdown.preview.editor\",\n"
             + "      \"**/review/review.md\": \"vscode.markdown.preview.editor\",\n"
             + "      \"**/review/proposal.md\": \"vscode.markdown.preview.editor\",\n"
             + "      \"**/review/coverage.md\": \"vscode.markdown.preview.editor\",\n"
@@ -2677,6 +2681,7 @@ public void ProbeHistoricalExport(ICommandContext context, ICommandParams comman
     string currentPath = null;
     string currentId = null;
     bool ownsHistorical = false;
+    bool exportCompleted = false;
     try
     {
         if (current == null) throw new InvalidOperationException("プロジェクトを開いてください。");
@@ -2705,6 +2710,7 @@ public void ProbeHistoricalExport(ICommandContext context, ICommandParams comman
         outDir = Path.Combine(baseDir, "historical-probe-" + Guid.NewGuid().ToString("N"));
         var copyDir = Path.Combine(outDir, "project");
         var report = new StringBuilder("# 過去版出力の実機検証\n\n自動判定は参考。図の内容と現在の編集状態は実機で確認してください。\n\n");
+        report.Append("## 確認するファイル\n\n- [設計本文](design/design.md)\n- [図の一覧](design/_index.md)\n- 図のPlantUML: `design/diagrams/`\n- 読み込み用の過去版コピー: `project/`\n\n図の一覧から各図を開き、過去版の内容・件数と照合してください。現在版の未保存編集・選択・表示も確認してください。\n\n## コピー記録\n\n");
         report.Append("| コピー元 | コピー先 | SHA-256 |\n|---|---|---|\n");
         ReviewSnapshot.CopyTree(source, copyDir, report, "project");
         context.ContextOption.EditorAccessMode = EditorAccessMode.GetInactiveValue;
@@ -2727,6 +2733,7 @@ public void ProbeHistoricalExport(ICommandContext context, ICommandParams comman
         AppendExportWarnings(report, "過去版", exporter);
         File.WriteAllText(Path.Combine(outDir, "probe.md"), report.ToString(), new UTF8Encoding(false));
         app.Output.WriteLine("AgentReview", "[info] 過去版出力: " + outDir + "（図の内容・件数・編集状態は未判定）");
+        exportCompleted = true;
     }
     catch (Exception ex)
     {
@@ -2755,6 +2762,7 @@ public void ProbeHistoricalExport(ICommandContext context, ICommandParams comman
             catch (Exception ex)
             {
                 app.Output.WriteLine("AgentReview", "[error] 過去版の解放失敗: " + ex);
+                exportCompleted = false;
                 if (outDir != null && Directory.Exists(outDir))
                 {
                     try { File.WriteAllText(Path.Combine(outDir, "failure.txt"), "過去版の解放失敗\n" + ex, new UTF8Encoding(false)); }
@@ -2762,6 +2770,17 @@ public void ProbeHistoricalExport(ICommandContext context, ICommandParams comman
                 }
                 app.Window.UI.ShowInformationDialog("過去版の解放に失敗しました。出力ログを確認してください。", "AgentReview");
             }
+        }
+    }
+    if (exportCompleted)
+    {
+        if (!app.Window.UI.ShowConfirmDialog("過去版の出力が完了しました。図の内容は確認が必要です。\n\n保存先:\n" + outDir
+            + "\n\n検証レポート: probe.md\n設計本文: design/design.md\n図の一覧: design/_index.md\n図のPlantUML: design/diagrams/"
+            + "\n\nVS Codeでフォルダと検証レポートを開きますか？", "AgentReview")) return;
+        try { ReviewResultViewer.Open(outDir, AgentConfig.Load().VsCodeExecutable); }
+        catch (Exception ex) {
+            app.Window.UI.ShowInformationDialog("出力は完了していますが、VS Codeを開けませんでした。\n" + ex.Message
+                + "\n\n保存先:\n" + outDir + "\n検証レポート: probe.md", "AgentReview");
         }
     }
 }
