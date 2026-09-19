@@ -1,4 +1,4 @@
-# AgentReview 0.11.1 実機確認
+# AgentReview 0.12.0 実機確認
 
 ## 現在の状態
 
@@ -8,7 +8,7 @@
 
 ## 配置・選択画面・通常レビュー
 
-1. `AgentReview` フォルダ一式（`resources/Select-ReviewInputs.ps1` を含む）を既存の拡張配置先へ更新し、Next Design を再起動する。
+1. `AgentReview` フォルダ一式を既存の拡張配置先へ更新し、Next Design を再起動する。
 2. 任意の設計を選び「レビュー開始」を押す。工程と上位文書の選択画面が開き、コンソールが表示されないことを確認する。
 3. 詳細設計を選び、アーキ設計の上位モデルを複数チェックする。同名モデルのフルパス、検索の絞り込みと解除、選択解除、長いパス、日本語、拡大表示時の操作性を確認する。
 4. アーキ設計へ切り替えて要件分析書を選ぶ。詳細設計へ戻すと編集中の選択が復元されることを確認する。保存後、次回も工程ごとに選択が復元されることを確認する。
@@ -19,7 +19,7 @@
 9. 上位モデルのみ・資料のみ・両方を指定して、`upstream/` と要求対応表を確認する。矛盾を持たせた検証用設計では、不足／不一致が根拠付きで記録されることを確認する。
 10. 未保存プロジェクトでは今回の選択で開始できること、旧設定の上位文書が初回候補となり `probe.folder`・`probe.project` が保持されることを確認する。
 
-ローカル検証: `python AgentReview/tests/run_export_tests.py` と `python AgentReview/tests/test_picker_ui.py`。後者は実際の Windows Forms コントロールとイベントを使うが、画面の目視検証・Next Design からの呼び出しは代替しない。
+ローカル検証: `python AgentReview/tests/run_export_tests.py`。実際の Windows Forms コントロールとイベントも同じテスト内で検証するが、画面の目視検証・Next Design からの呼び出しは代替しない。
 
 ## 過去版の本文・図を出力する検証
 
@@ -48,6 +48,6 @@ APIの引数は [V3 OpenProject](https://docs.nextdesign.app/extension/v3.x/api/
 
 ## 選択画面が起動しない場合
 
-0.11.1 では PowerShell の標準エラー本文をダイアログに表示し、標準出力とともに `%USERPROFILE%\.nd-agent-review\diagnostics\picker-*.txt` に保存する。画面内にもログのフルパスを表示する。終了コード1だけでは実行制限と断定しない。
+0.12.0 は PowerShell の実行に依存しない。旧版で「スクリプトの実行が無効」「UnauthorizedAccess」が出た場合は、拡張フォルダ一式を更新して Next Design を再起動する。旧 `resources/Select-ReviewInputs.ps1` は不要で、残っていても読み込まない。実行ポリシーの変更は不要。
 
-エラーが出た場合は、表示された本文または診断ログで原因を確認する。スクリプト実行禁止・署名要求のエラーなら管理者へ実行可否を確認し、実行ポリシーを変更・回避しない。画面生成やXML読み込みのエラーなら、ログに記載された箇所を調べる。
+C# の画面表示・入力検証・設定保存で失敗した場合は、例外本文をダイアログへ表示し、詳細を `%USERPROFILE%\.nd-agent-review\diagnostics\picker-*.txt` に保存する。ログのフルパスも表示する。Next Design 実機での表示は未確認。

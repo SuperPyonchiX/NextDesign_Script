@@ -1,6 +1,6 @@
 # AgentReview — Claude Code / Codex による設計レビュー支援
 
-## 0.11.1 の実装状況
+## 0.12.0 の実装状況
 
 「レビュー開始」で、設計自体の工程別観点と上位要求との整合をまとめて確認する。設定された上位モデル・外部資料とAttachmentを固定コピーし、要求の反映を `review/coverage.md` に記録する。上位文書が未指定なら、その整合は未確認として結果に残す。操作と実機確認は [VERIFY.md](VERIFY.md) を参照。
 
@@ -24,7 +24,7 @@
 
 「レビュー入力設定」は同じ画面で選択を保存するだけで、レビューは開始しない。設定は `%USERPROFILE%\.nd-agent-review\projects\<プロジェクトパスのハッシュ>\review-selection.xml` に保持する。旧 `review-inputs.ini` の指定は初回候補として読み込み、過去版検証設定はそのファイルに保持する。プロジェクトを移動すると別設定になる。未保存のプロジェクトでは今回だけ選択してレビューできるが、選択は保存しない。
 
-画面は同梱の `resources/Select-ReviewInputs.ps1` を Windows PowerShell と Windows Forms で実行する。拡張フォルダ一式を配置すること。実行ポリシーは変更しない。組織の制限で起動できない場合はレビューを開始せずエラーを表示する。
+選択画面は拡張内の C# から Windows Forms で表示する。PowerShell・外部UIプロセス・スクリプトファイルは使わない。モデル情報を取得してから画面専用の STA スレッドへ渡し、画面から Next Design のモデルを直接操作しない。
 
 セッション内の `inputs.md` に入力の出典、取得日時、対象モデルID、資料のSHA-256、出力警告が残る。上位モデルは `upstream/models/`、外部資料は `upstream/files/` に格納する。モデルは未保存の編集を含む現在の値、外部資料はディスク上の値を取得する。外部資料の未保存の編集は先に保存しておく。
 
@@ -193,6 +193,6 @@ state=Example.Design.StateGroup
 
 ## 選択画面が起動しない場合
 
-0.11.1 では PowerShell の標準エラー本文をダイアログに表示し、標準出力とともに `%USERPROFILE%\.nd-agent-review\diagnostics\picker-*.txt` に保存する。画面内にもログのフルパスを表示する。終了コード1だけでは実行制限と断定しない。
+0.12.0 は PowerShell の実行に依存しない。旧版で「スクリプトの実行が無効」「UnauthorizedAccess」が出た場合は、拡張フォルダ一式を更新して Next Design を再起動する。旧 `resources/Select-ReviewInputs.ps1` は不要で、残っていても読み込まない。実行ポリシーの変更は不要。
 
-エラーが出た場合は、表示された本文または診断ログで原因を確認する。スクリプト実行禁止・署名要求のエラーなら管理者へ実行可否を確認し、実行ポリシーを変更・回避しない。画面生成やXML読み込みのエラーなら、ログに記載された箇所を調べる。
+C# の画面表示・入力検証・設定保存で失敗した場合は、例外本文をダイアログへ表示し、詳細を `%USERPROFILE%\.nd-agent-review\diagnostics\picker-*.txt` に保存する。ログのフルパスも表示する。Next Design 実機での表示は未確認。

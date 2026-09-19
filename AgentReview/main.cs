@@ -591,76 +591,225 @@ public static class ReviewInputPicker
             if (File.Exists(path)) File.Replace(temporary, path, null, true); else File.Move(temporary, path);
         } finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
-    private static void AppendDiagnostic(StringBuilder buffer, string line)
-    {
-        if (line == null) return;
-        lock (buffer) {
-            const int limit = 65536;
-            if (buffer.Length >= limit) return;
-            var remaining = limit - buffer.Length;
-            buffer.AppendLine(line.Length > remaining ? line.Substring(0, remaining) : line);
-        }
-    }
     public static ReviewInputs Show(string extensionPath, IProject project, IModel target, bool settingsOnly)
     {
-        var script = Path.Combine(extensionPath, "resources", "Select-ReviewInputs.ps1");
-        if (!File.Exists(script)) throw new FileNotFoundException("選択画面のスクリプトがありません。", script);
-        var directory = Path.Combine(Path.GetTempPath(), "AgentReview-picker-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(directory);
         try {
-            var request = Path.Combine(directory, "request.xml");
-            var response = Path.Combine(directory, "response.xml");
-            Request(project, target, settingsOnly).Save(request);
-            var exe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
-            var info = new ProcessStartInfo { FileName = exe, UseShellExecute = false, CreateNoWindow = true,
-                Arguments = "-NoProfile -STA -File " + ReviewResultViewer.QuoteArgument(script)
-                    + " -RequestPath " + ReviewResultViewer.QuoteArgument(request)
-                    + " -ResponsePath " + ReviewResultViewer.QuoteArgument(response) };
-            info.RedirectStandardOutput = true;
-            info.RedirectStandardError = true;
-            var standardOutput = new StringBuilder();
-            var standardError = new StringBuilder();
-            using (var process = new Process { StartInfo = info }) {
-                // 両ストリームを同時に読み、エラーが多い場合のパイプ詰まりを防ぐ。
-                process.OutputDataReceived += (sender, args) => AppendDiagnostic(standardOutput, args.Data);
-                process.ErrorDataReceived += (sender, args) => AppendDiagnostic(standardError, args.Data);
-                if (!process.Start()) throw new IOException("選択画面を起動できません。");
-                process.BeginOutputReadLine();
-                process.BeginErrorReadLine();
-                process.WaitForExit();
-                if (process.ExitCode != 0 || !File.Exists(response)) {
-                    var detail = "選択画面を実行できませんでした。終了コード: " + process.ExitCode
-                        + "\r\nPowerShell: " + exe + "\r\nスクリプト: " + script
-                        + "\r\n\r\n標準エラー:\r\n" + standardError
-                        + "\r\n標準出力:\r\n" + standardOutput;
-                    var log = "";
-                    try {
-                        var logDir = Path.Combine(AgentConfig.ConfigDir(), "diagnostics");
-                        Directory.CreateDirectory(logDir);
-                        log = Path.Combine(logDir, "picker-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N") + ".txt");
-                        File.WriteAllText(log, detail, new UTF8Encoding(true));
-                    } catch (Exception logError) { detail += "\r\n診断ログの保存失敗: " + logError.Message; }
-                    var visibleError = standardError.ToString().Trim();
-                    if (visibleError.Length == 0) visibleError = standardOutput.ToString().Trim();
-                    if (visibleError.Length == 0) visibleError = "エラー本文が出力されていません。選択結果の生成にも失敗しています。";
-                    if (visibleError.Length > 1800) visibleError = visibleError.Substring(0, 1800) + "\r\n（続きは診断ログ）";
-                    throw new IOException("選択画面の実行に失敗しました。終了コード: " + process.ExitCode
-                        + "\r\n\r\n" + visibleError + "\r\n\r\n診断ログ: " + (log.Length == 0 ? "保存できませんでした" : log));
-                }
-            }
-            if (!File.Exists(response)) throw new IOException("選択画面の結果がありません。");
-            var document = ReadXml(response);
+            var snapshot = Request(project, target, settingsOnly);
+            var document = ReviewNativeDialog.Show(snapshot);
+            if (document == null) return null;
             var result = Result(document, project);
             if (result != null) SaveSelection(project.Path, document);
             return result;
-        } finally {
-            // この呼び出しで作成した一時ファイルだけを削除する。
-            foreach (var file in new[] { "request.xml", "response.xml" }) {
-                var path = Path.Combine(directory, file); if (File.Exists(path)) File.Delete(path);
-            }
-            Directory.Delete(directory, false);
+        } catch (Exception ex) {
+            var log = "保存できませんでした";
+            try {
+                var folder = Path.Combine(AgentConfig.ConfigDir(), "diagnostics");
+                Directory.CreateDirectory(folder);
+                var path = Path.Combine(folder, "picker-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N") + ".txt");
+                File.WriteAllText(path, "AgentReview native picker\r\n" + ex, new UTF8Encoding(true));
+                log = path;
+            } catch { /* 元の例外を優先して通知する。 */ }
+            throw new InvalidOperationException("選択画面を表示または保存できませんでした。\r\n"
+                + ex.GetBaseException().Message + "\r\n\r\n診断ログ: " + log, ex);
         }
     }
+}
+
+// Framework controls are late-bound so the ND script does not require Forms compiler references.
+// Only the XML snapshot crosses to the STA UI thread; no Next Design objects are accessed there.
+public sealed class ReviewNativeDialog : IDisposable
+{
+    private readonly System.Reflection.Assembly forms = System.Reflection.Assembly.Load("System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089");
+    private readonly System.Reflection.Assembly drawing = System.Reflection.Assembly.Load("System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a");
+    private readonly System.Xml.XmlDocument request;
+    private readonly Dictionary<string, System.Xml.XmlElement> catalog = new Dictionary<string, System.Xml.XmlElement>();
+    private readonly Dictionary<string, HashSet<string>> models = new Dictionary<string, HashSet<string>>();
+    private readonly Dictionary<string, HashSet<string>> files = new Dictionary<string, HashSet<string>>();
+    private readonly object font;
+    private string phase = "";
+    private bool busy;
+    public readonly object Form, Combo, SearchBox, Tree, Selection, AcceptButton, NoneButton, Hint;
+    public System.Xml.XmlDocument Result;
+    public static object Get(object target, string property) { return target.GetType().GetProperty(property).GetValue(target, null); }
+    public static void Set(object target, string property, object value) {
+        var info = target.GetType().GetProperty(property);
+        if (info.PropertyType.IsEnum && value is string) value = Enum.Parse(info.PropertyType, (string)value);
+        info.SetValue(target, value, null);
+    }
+    public static object Call(object target, string method, params object[] args) {
+        return target.GetType().InvokeMember(method, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance
+            | System.Reflection.BindingFlags.InvokeMethod, null, target, args);
+    }
+    private object New(string type) { return Activator.CreateInstance(forms.GetType("System.Windows.Forms." + type, true)); }
+    private object Shape(string type, params object[] args) { return Activator.CreateInstance(drawing.GetType("System.Drawing." + type, true), args); }
+    private object Control(string type, string text, int x, int y, int width, int height, string anchor) {
+        var control = New(type);
+        Set(control, "Text", text); Set(control, "Left", x); Set(control, "Top", y);
+        Set(control, "Width", width); Set(control, "Height", height); Set(control, "Anchor", anchor);
+        Call(Get(Form, "Controls"), "Add", control); return control;
+    }
+    private static void On(object control, string name, EventHandler handler) { control.GetType().GetEvent(name).AddEventHandler(control, handler); }
+    public ReviewNativeDialog(System.Xml.XmlDocument snapshot) {
+        request = snapshot;
+        foreach (System.Xml.XmlElement node in request.SelectNodes("/request/choices/model")) catalog.Add(node.GetAttribute("id"), node);
+        foreach (var key in ReviewInputPicker.Phases) {
+            models[key] = new HashSet<string>(); files[key] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (System.Xml.XmlElement stored in request.SelectNodes("/request/settings/phase")) {
+                if (stored.GetAttribute("key") != key) continue;
+                foreach (System.Xml.XmlNode node in stored.SelectNodes("model")) models[key].Add(node.InnerText);
+                foreach (System.Xml.XmlNode node in stored.SelectNodes("file")) files[key].Add(node.InnerText);
+            }
+        }
+        Form = New("Form"); font = Shape("Font", "Yu Gothic UI", 10f);
+        Set(Form, "Font", font); Set(Form, "Text", "レビュー工程・上位文書の選択");
+        Set(Form, "ClientSize", Shape("Size", 1060, 700)); Set(Form, "MinimumSize", Shape("Size", 1080, 740));
+        Set(Form, "StartPosition", "CenterScreen"); Set(Form, "AutoScaleMode", "Dpi");
+        Set(Form, "MinimizeBox", false); Set(Form, "TopMost", true);
+        var target = Control("TextBox", "レビュー対象: " + request.SelectSingleNode("/request/target").InnerText, 16, 12, 1028, 46, "Top, Left, Right");
+        Set(target, "Multiline", true); Set(target, "ReadOnly", true); Set(target, "ScrollBars", "Vertical");
+        Control("Label", "対象工程", 16, 70, 94, 28, "Top, Left");
+        Combo = Control("ComboBox", "", 116, 66, 240, 32, "Top, Left"); Set(Combo, "DropDownStyle", "DropDownList");
+        foreach (var key in ReviewInputPicker.Phases) Call(Get(Combo, "Items"), "Add", ReviewInputPicker.PhaseLabel(key));
+        Hint = Control("Label", "対象工程を選択してください。", 16, 105, 1028, 58, "Top, Left, Right");
+        Control("Label", "モデル名・パスで検索 / 選択したモデルは配下も出力", 16, 167, 510, 28, "Top, Left");
+        SearchBox = Control("TextBox", "", 16, 198, 504, 30, "Top, Left");
+        Tree = Control("TreeView", "", 16, 234, 504, 402, "Top, Bottom, Left");
+        Set(Tree, "CheckBoxes", true); Set(Tree, "ShowNodeToolTips", true); Set(Tree, "HideSelection", false);
+        Control("Label", "選択済みの上位文書（フルパス）", 536, 167, 508, 28, "Top, Left, Right");
+        Selection = Control("ListView", "", 536, 198, 508, 396, "Top, Bottom, Left, Right");
+        Set(Selection, "View", "Details"); Set(Selection, "FullRowSelect", true); Set(Selection, "MultiSelect", true);
+        Call(Get(Selection, "Columns"), "Add", "モデル・資料", 900);
+        var add = Control("Button", "資料ファイルを追加", 536, 602, 210, 34, "Bottom, Left");
+        var remove = Control("Button", "選択を解除", 758, 602, 130, 34, "Bottom, Left");
+        AcceptButton = Control("Button", request.DocumentElement.GetAttribute("settingsOnly") == "true" ? "選択を保存" : "レビュー開始", 574, 652, 145, 36, "Bottom, Right");
+        NoneButton = Control("Button", "今回は上位文書なし", 730, 652, 184, 36, "Bottom, Right");
+        Set(NoneButton, "Visible", request.DocumentElement.GetAttribute("settingsOnly") != "true");
+        var cancel = Control("Button", "キャンセル", 926, 652, 118, 36, "Bottom, Right");
+        Set(cancel, "DialogResult", "Cancel"); Set(Form, "CancelButton", cancel);
+        On(Combo, "SelectedIndexChanged", delegate {
+            int index = (int)Get(Combo, "SelectedIndex");
+            phase = index < 0 ? "" : ReviewInputPicker.Phases[index];
+            var labels = new[] { "上位要求・関連資料", "要件分析書", "アーキ設計" };
+            Set(Hint, "Text", index < 0 ? "対象工程を選択してください。" : labels[index] + "のモデル・資料を選択してください。\r\n工程はレビューに引き継ぎます。上位文書なしでは上位整合は未確認になります。");
+            Set(add, "Enabled", index >= 0); RefreshTree(); RefreshSelection();
+        });
+        On(SearchBox, "TextChanged", delegate { RefreshTree(); });
+        var checkEvent = Tree.GetType().GetEvent("AfterCheck");
+        checkEvent.AddEventHandler(Tree, Delegate.CreateDelegate(checkEvent.EventHandlerType, this, GetType().GetMethod("TreeChecked")));
+        On(remove, "Click", delegate {
+            if (phase.Length == 0) return;
+            var values = new List<string>();
+            foreach (var item in (System.Collections.IEnumerable)Get(Selection, "SelectedItems")) values.Add((string)Get(item, "Tag"));
+            foreach (var value in values) { if (value.StartsWith("m:")) models[phase].Remove(value.Substring(2)); else files[phase].Remove(value.Substring(2)); }
+            RefreshTree(); RefreshSelection();
+        });
+        On(add, "Click", delegate {
+            if (phase.Length == 0) return;
+            var dialog = New("OpenFileDialog");
+            try {
+                Set(dialog, "Multiselect", true); Set(dialog, "Title", "上位資料を選択");
+                if (Call(dialog, "ShowDialog", Form).ToString() == "OK") {
+                    foreach (var path in (string[])Get(dialog, "FileNames")) files[phase].Add(path);
+                    RefreshSelection();
+                }
+            } finally { ((IDisposable)dialog).Dispose(); }
+        });
+        On(AcceptButton, "Click", delegate { Accept(false); }); On(NoneButton, "Click", delegate { Accept(true); });
+        Set(add, "Enabled", false);
+        var settings = (System.Xml.XmlElement)request.SelectSingleNode("/request/settings");
+        var previous = settings == null ? "" : settings.GetAttribute("lastPhase");
+        Set(Combo, "SelectedIndex", Array.IndexOf(ReviewInputPicker.Phases, previous));
+        RefreshTree(); RefreshSelection();
+    }
+    public void TreeChecked(object sender, EventArgs args) {
+        if (busy || phase.Length == 0) return;
+        var node = Get(args, "Node"); var id = (string)Get(node, "Tag");
+        if ((bool)Get(node, "Checked") && catalog[id].GetAttribute("available") != "true") {
+            busy = true; try { Set(node, "Checked", false); } finally { busy = false; }
+        }
+        if ((bool)Get(node, "Checked")) models[phase].Add(id); else models[phase].Remove(id);
+        RefreshSelection();
+    }
+    public void RefreshSelection() {
+        Call(Get(Selection, "Items"), "Clear"); bool valid = true; int count = 0;
+        if (phase.Length > 0) {
+            foreach (var id in models[phase].OrderBy(x => x)) {
+                System.Xml.XmlElement model; bool exists = catalog.TryGetValue(id, out model);
+                bool available = exists && model.GetAttribute("available") == "true";
+                var label = (available ? "" : "[削除済み・未ロード] ") + (exists ? model.GetAttribute("path") : id);
+                AddItem(label, "m:" + id); valid &= available; count++;
+            }
+            foreach (var path in files[phase].OrderBy(x => x)) {
+                bool exists = File.Exists(path); AddItem((exists ? "" : "[資料なし] ") + path, "f:" + path); valid &= exists; count++;
+            }
+        }
+        Set(AcceptButton, "Enabled", phase.Length > 0 && valid && count > 0);
+        Set(NoneButton, "Enabled", phase.Length > 0); Set(Tree, "Enabled", phase.Length > 0);
+    }
+    private void AddItem(string label, string tag) {
+        var item = New("ListViewItem"); Set(item, "Text", label); Set(item, "Tag", tag); Call(Get(Selection, "Items"), "Add", item);
+    }
+    public void RefreshTree() {
+        busy = true; Call(Tree, "BeginUpdate");
+        try {
+            Call(Get(Tree, "Nodes"), "Clear"); var visible = new HashSet<string>(); var nodes = new Dictionary<string, object>();
+            var search = (string)Get(SearchBox, "Text");
+            foreach (var pair in catalog) {
+                if (search.Length > 0 && pair.Value.GetAttribute("path").IndexOf(search, StringComparison.OrdinalIgnoreCase) < 0
+                    && pair.Value.GetAttribute("name").IndexOf(search, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                var id = pair.Key; var seen = new HashSet<string>();
+                while (id.Length > 0 && catalog.ContainsKey(id)) {
+                    if (!seen.Add(id)) throw new InvalidDataException("モデルの所有関係が循環しています。");
+                    visible.Add(id); id = catalog[id].GetAttribute("parent");
+                }
+            }
+            foreach (var id in visible) {
+                var node = New("TreeNode"); var model = catalog[id];
+                Set(node, "Text", (model.GetAttribute("available") == "true" ? "" : "[未ロード] ") + model.GetAttribute("name"));
+                Set(node, "Tag", id); Set(node, "ToolTipText", model.GetAttribute("path"));
+                Set(node, "Checked", phase.Length > 0 && models[phase].Contains(id)); nodes[id] = node;
+            }
+            foreach (var id in visible.OrderBy(x => catalog[x].GetAttribute("path"))) {
+                var parent = catalog[id].GetAttribute("parent");
+                Call(Get(nodes.ContainsKey(parent) ? nodes[parent] : Tree, "Nodes"), "Add", nodes[id]);
+            }
+            if (search.Length > 0) Call(Tree, "ExpandAll");
+            else foreach (var node in (System.Collections.IEnumerable)Get(Tree, "Nodes")) Call(node, "Expand");
+        } finally { Call(Tree, "EndUpdate"); busy = false; }
+    }
+    private void WriteChoices(System.Xml.XmlElement target, string key) {
+        foreach (var id in models[key].OrderBy(x => x)) AddXml(target, "model", id);
+        foreach (var path in files[key].OrderBy(x => x)) AddXml(target, "file", path);
+    }
+    private static System.Xml.XmlElement AddXml(System.Xml.XmlNode parent, string name, string value) {
+        var node = parent.OwnerDocument.CreateElement(name); node.InnerText = value; parent.AppendChild(node); return node;
+    }
+    public void Accept(bool none) {
+        RefreshSelection();
+        if (phase.Length == 0 || (!none && !(bool)Get(AcceptButton, "Enabled"))) return;
+        var doc = new System.Xml.XmlDocument(); var root = doc.CreateElement("result"); doc.AppendChild(root);
+        root.SetAttribute("action", none ? "none" : "accept"); root.SetAttribute("phase", phase);
+        var selection = AddXml(root, "selection", ""); if (!none) WriteChoices(selection, phase);
+        var settings = AddXml(root, "settings", ""); settings.SetAttribute("lastPhase", phase);
+        foreach (var key in ReviewInputPicker.Phases) {
+            if (none) {
+                foreach (System.Xml.XmlElement original in request.SelectNodes("/request/settings/phase"))
+                    if (original.GetAttribute("key") == key) settings.AppendChild(doc.ImportNode(original, true));
+            } else { var saved = AddXml(settings, "phase", ""); saved.SetAttribute("key", key); WriteChoices(saved, key); }
+        }
+        Result = doc; Set(Form, "DialogResult", "OK"); Call(Form, "Close");
+    }
+    public static System.Xml.XmlDocument Show(System.Xml.XmlDocument snapshot) {
+        System.Xml.XmlDocument result = null; Exception error = null;
+        var thread = new System.Threading.Thread(delegate() {
+            try { using (var dialog = new ReviewNativeDialog(snapshot)) { Call(dialog.Form, "ShowDialog"); result = dialog.Result; } }
+            catch (Exception ex) { error = ex; }
+        });
+        thread.SetApartmentState(System.Threading.ApartmentState.STA); thread.Start(); thread.Join();
+        if (error != null) throw new InvalidOperationException("拡張内の選択画面を表示できませんでした。", error);
+        return result;
+    }
+    public void Dispose() { ((IDisposable)Form).Dispose(); ((IDisposable)font).Dispose(); }
 }
 
 
