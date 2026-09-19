@@ -16,7 +16,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.2.4";
+    public const string Title = "シーケンス生成実験 / 0.2.5";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -493,7 +493,7 @@ public class PumlBuild
     private Dictionary<string,string> lifelines=new Dictionary<string,string>(), active=new Dictionary<string,string>();
     private Dictionary<string,int> x=new Dictionary<string,int>(), indexes=new Dictionary<string,int>();
     private Dictionary<string,Dictionary<string,object>> executions=new Dictionary<string,Dictionary<string,object>>();
-    private int y=60;
+    private int y=40;
     public static Dictionary<string,object> Obj(params object[] values)
     { var d=new Dictionary<string,object>(); for(int i=0;i<values.Length;i+=2)d.Add((string)values[i],values[i+1]); return d; }
     public static string Json(object value)
@@ -535,6 +535,7 @@ public class PumlBuild
         {
             if(n.Kind=="sync" || n.Kind=="async")
             {
+                y+=18*(n.Text.Split('\n').Length-1);
                 string send; if(!active.TryGetValue(n.Left,out send))active[n.Left]=send=Execution(n.Left,y-20);
                 string receive=Execution(n.Right,y); active[n.Right]=receive; Extend(send,y);
                 string id=Entity("Message",n.Text,Obj("Name",n.Text,"MessageSort",n.Kind=="sync"?profile.Sync:profile.Async)); Owned("Messages",id);
@@ -542,7 +543,7 @@ public class PumlBuild
                 Shape("Messages",id,"SourceY",y,"TargetY",y,"IsRightAtFrame",false,"SelfloopBendsX",0);
                 if(operand!=null)Link("OperandTargetMessage",operand,id,false,0);
                 payload.Expected.Add(new PumlExpected{Id=id,Kind=n.Kind,Text=n.Text,Left=lifelines[n.Left],Right=lifelines[n.Right],Owner=operand});
-                y+=75; continue;
+                y+=50; continue;
             }
             if(n.Kind=="fragment")
             {
@@ -551,17 +552,18 @@ public class PumlBuild
                 foreach(string line in lifelines.Values)Link("CrossingFragmentCoveredLifeline",id,line);
                 if(operand!=null)Link("NestedInteractionFragment",operand,id);
                 var expected=new PumlExpected{Id=id,Kind="fragment",Text=n.Text,Operator=op,Owner=operand}; payload.Expected.Add(expected);
+                bool firstBranch=true;
                 foreach(var branch in n.Children)
                 {
-                    y+=35; string oid=Entity("InteractionOperand","",Obj("Name","","Guard",branch.Text)); Link("Operands",id,oid,true);
+                    y+=firstBranch?30:12; firstBranch=false; string oid=Entity("InteractionOperand","",Obj("Name","","Guard",branch.Text)); Link("Operands",id,oid,true);
                     Shape("Operands",oid,"Position",y-top);
                     payload.Expected.Add(new PumlExpected{Id=oid,Kind="operand",Text=branch.Text,Owner=id});
                     // Each branch starts with its own execution context.
                     var saved=new Dictionary<string,string>(active); active.Clear();
                     // Leave room below the guard before placing messages or nested frames.
-                    y+=50; Items(branch.Children,oid,depth+1); active=saved; y+=20;
+                    y+=40+18*(branch.Text.Split('\n').Length-1); Items(branch.Children,oid,depth+1); active=saved; y+=8;
                 }
-                Shape("Fragments",id,"X",20+16*depth,"Y",top,"Width",x.Values.Max()+210-32*depth,"Height",y-top); y+=30; continue;
+                Shape("Fragments",id,"X",20+16*depth,"Y",top,"Width",x.Values.Max()+210-32*depth,"Height",y-top); y+=16; continue;
             }
             int left=n.Targets.Select(t=>x[t]).Min(),right=n.Targets.Select(t=>x[t]).Max();
             if(n.Kind=="ref")
@@ -569,7 +571,7 @@ public class PumlBuild
                 string id=Entity("InteractionUse",n.Text); Owned("InteractionUses",id);
                 foreach(string t in n.Targets)Link("CrossingFragmentCoveredLifeline",id,lifelines[t]);
                 if(operand!=null)Link("NestedInteractionFragment",operand,id);
-                Shape("InteractionUses",id,"X",left-55,"Y",y,"Width",Math.Max(150,right-left+110),"Height",Math.Max(65,25+20*n.Text.Split('\n').Length));
+                Shape("InteractionUses",id,"X",left-55,"Y",y,"Width",Math.Max(150,right-left+110),"Height",Math.Max(48,16+20*n.Text.Split('\n').Length));
                 payload.Expected.Add(new PumlExpected{Id=id,Kind="ref",Text=n.Text});
             }
             else if(n.Kind=="note")
@@ -579,10 +581,10 @@ public class PumlBuild
                 string id=Entity("InteractionNote",n.Text,fields); Owned("Notes",id);
                 int width=Math.Max(160,right-left+100),sx=left-50;
                 if(n.Operator=="left of")sx=left-width-30; if(n.Operator=="right of")sx=right+30;
-                Shape("Notes",id,"X",sx,"Y",y,"Width",width,"Height",Math.Max(65,25+20*n.Text.Split('\n').Length));
+                Shape("Notes",id,"X",sx,"Y",y,"Width",width,"Height",Math.Max(48,16+20*n.Text.Split('\n').Length));
                 payload.Expected.Add(new PumlExpected{Id=id,Kind="note",Text=n.Text});
             }
-            y+=Math.Max(100,50+20*n.Text.Split('\n').Length);
+            y+=Math.Max(48,16+20*n.Text.Split('\n').Length)+16;
         }
     }
     public static SequencePayload Build(PumlPlan plan,PumlProfile profile,string definition,string schema)
@@ -597,7 +599,7 @@ public class PumlBuild
             p.Expected.Add(new PumlExpected{Id=id,Kind="lifeline",Text=plan.Names[index]});
         }
         b.Items(plan.Nodes);
-        foreach(var s in b.shapes["Lifelines"].Cast<Dictionary<string,object>>())s["LaneLength"]=b.y+80;
+        foreach(var s in b.shapes["Lifelines"].Cast<Dictionary<string,object>>())s["LaneLength"]=b.y+40;
         var editor=Obj("Id",Guid.NewGuid().ToString(),"ViewType","SequenceDiagram","MetamodelId","DensoCreate.Indio.IMF.Extensions.Sequence.ViewInstance.SequenceDiagramViewInstance","DefinitionId",definition,"ModelId",root,"Frame",Obj("Id",Guid.NewGuid().ToString(),"ModelId",frame));
         foreach(var pair in b.shapes)editor.Add(pair.Key,pair.Value);
         p.Ids=b.entities.Cast<Dictionary<string,object>>().Select(e=>(string)e["Id"]).ToArray();

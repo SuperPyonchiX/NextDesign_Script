@@ -88,9 +88,16 @@ public static class PayloadTest {
             guard = next(s for s in editor['Operands'] if s['ModelId']==nested['SourceId'])
             assert child['X'] > parent['X']
             assert child['X']+child['Width'] < parent['X']+parent['Width']
-            assert child['Y'] >= parent['Y']+guard['Position']+50
+            assert child['Y'] >= parent['Y']+guard['Position']+40
             assert child['Y']+child['Height'] < parent['Y']+parent['Height']
 
+            assert max(s['LaneLength'] for s in editor['Lifelines']) <= 650
+            for msg in editor['Messages']:
+                ports = [r['SourceId'] for r in relations if r['TargetId']==msg['ModelId'] and r['MetamodelId'] in ('SendMessage','ReceiveMessage')]
+                for port in ports:
+                    execution = next(s for s in editor['ExecutionSpecifications'] if s['ModelId']==port)
+                    assert execution['Y'] <= msg['SourceY'] < execution['Y']+execution['Length']
+            print('Mixed sample lane length:', editor['Lifelines'][0]['LaneLength'])
             message_y = [s['SourceY'] for s in editor['Messages']]
             assert message_y == sorted(set(message_y))
     print('PASS: PlantUML samples, async sorts, branches/nesting, ref/Note payloads and unsupported syntax rejection')
