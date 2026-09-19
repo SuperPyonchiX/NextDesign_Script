@@ -12,19 +12,20 @@ using NextDesign.Desktop;
 public void CreateMinimalSequence(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App); }
 public void ImportPlantUml(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, true); }
 public void ReplaceSequence(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, true, false, true); }
+public void ProbeSequenceDelta(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, false, true, false, true); }
 public void ProbeSequenceUpdate(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, false, true); }
 public void ShowSequenceResult(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Show(context.App); }
 public void ShowSequenceDetails(ICommandContext context, ICommandParams parameters) { context.App.Window.UI.ShowInformationDialog(SequenceExperiment.Details, SequenceExperiment.Title); }
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.5.2";
+    public const string Title = "シーケンス生成実験 / 0.5.3";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
 
     public static void Run(IApplication app) { Run(app, false); }
-    public static void Run(IApplication app, bool fromPlantUml, bool updateProbe=false, bool replaceExisting=false)
+    public static void Run(IApplication app, bool fromPlantUml, bool updateProbe=false, bool replaceExisting=false, bool deltaProbe=false)
     {
         string stage = "事前検査", directory = null, rootId = null;
         bool called = false, committed = false, rolledBack = false;
@@ -68,7 +69,7 @@ public static class SequenceExperiment
             var ownerField = sample.GetOwnerField();
             if (owner == null || ownerField == null || !owner.IsEditable || owner.IsDeleted || owner.IsProxy)
                 throw new InvalidOperationException("E102: 新しい図を置く親モデルを取得できないか、編集できません。");
-            if (!app.Window.UI.ShowConfirmDialog(replaceExisting ? "コピーのプロジェクトで実行してください。\n現在の図をPlantUMLの内容で置き換えます。図自体のIDは維持します。\n配下の要素と手作業の配置は作り直します。子要素と外部モデルとの関連は引き継ぎません。自動保存はしません。" : updateProbe ? "コピーのプロジェクトで実行してください。\n一時図を作り、同じIDでメッセージ名を再取り込みします。\n最後に一時図を含む操作を取り消します。既存図を更新する検証ではありません。\n自動保存はしません。" : "実プロジェクトのコピーを開いていますか？\n新しい検証用シーケンス図を同じ親に追加する実験です。\n既存図の内容は入力にコピーしません。自動保存しません。\n失敗時はトランザクションの取消を試みますが、実機での復元動作は未確認です。", Title)) return;
+            if (!app.Window.UI.ShowConfirmDialog(replaceExisting ? "コピーのプロジェクトで実行してください。\n現在の図をPlantUMLの内容で置き換えます。図自体のIDは維持します。\n配下の要素と手作業の配置は作り直します。子要素と外部モデルとの関連は引き継ぎません。自動保存はしません。" : deltaProbe ? "コピーのプロジェクトで実行してください。\n一時図で名前変更・メッセージ1件の差分追加と削除を検証し、最後に取り消します。\n削除中だけSDKの編集可否検査を一時停止する実験です。既存図は更新せず、自動保存もしません。" : updateProbe ? "コピーのプロジェクトで実行してください。\n一時図を作り、同じIDでメッセージ名を再取り込みします。\n最後に一時図を含む操作を取り消します。既存図を更新する検証ではありません。\n自動保存はしません。" : "実プロジェクトのコピーを開いていますか？\n新しい検証用シーケンス図を同じ親に追加する実験です。\n既存図の内容は入力にコピーしません。自動保存しません。\n失敗時はトランザクションの取消を試みますが、実機での復元動作は未確認です。", Title)) return;
             var folder = app.Window.UI.ShowSelectFolderDialog("会社PC内の実験結果の保存先");
             if (string.IsNullOrEmpty(folder)) return;
             directory = Path.Combine(folder, "sequence_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + Guid.NewGuid().ToString("N").Substring(0,8));
@@ -205,12 +206,19 @@ public static class SequenceExperiment
                 if(updatedDiagram==null || updatedDiagram.Messages.Count()!=1 || updatedDiagram.Messages.Single().Model.Id!=changed.Id || updatedDiagram.Messages.Single().Model.Name!="updatedProbe()")
                     throw new InvalidOperationException("E133: 再取り込み後の図形を確認できませんでした。");
                 if(updated.ImportedModels.Any(m=>!payload.Ids.Contains(m.Id)))throw new InvalidOperationException("E134: 別IDのモデルが生成されました。");
+                string addedId=null;
+                if(deltaProbe)
+                {
+                    stage="差分追加・削除の検証";
+                    addedId=SequenceDeltaProbe.Run(current,payload,updatedDiagram,schema,directory,detail);
+                }
                 stage="検証操作の取消";
                 completion.Cancel(delegate { transaction.Rollback(); }); rolledBack=true;
-                if(payload.Ids.Any(id=>current.GetModelById(id)!=null) || !originalChildren.SetEquals(owner.GetChildren().Select(m=>m.Id)))
+                if((addedId!=null && current.GetModelById(addedId)!=null) || payload.Ids.Any(id=>current.GetModelById(id)!=null) || !originalChildren.SetEquals(owner.GetChildren().Select(m=>m.Id)))
                     throw new InvalidOperationException("E135: 一時モデルの削除または親配下の復元を確認できませんでした。");
                 detail.AppendLine("same-ID rename and temporary model removal: verified");
                 Summary="ケース: UPDATE001 / 同じIDへの名称更新: 一致\n一時図・一時モデル: 取消後の除去を確認\n既存図への更新: 未実施 / プロジェクト保存: していません\n要素追加・削除・図形置換・参照保持は未検証です。\nこの結果画面を撮影してください。";
+                if(deltaProbe)Summary="ケース: UPDATE003 / 一時図での差分追加・削除: 一致\n既存モデル・関連・図形IDの保持: 一致\n一時図・モデル: 取消後の除去を確認\n既存図の差分更新: 未実装 / 保存・Git差分: 未確認\nこの結果と診断表示を撮影してください。";
             }
             else
             {
@@ -218,7 +226,7 @@ public static class SequenceExperiment
             Write(Path.Combine(directory, "checked.txt"), detail + "\nモデル・送受信・シェイプ照合: 一致\ncommit: 未実行");
             stage = "確定";
             completion.Commit(delegate { transaction.Commit(); }); committed = true;
-            Summary = "ケース: " + (replaceExisting ? "UPDATE002" : updateProbe ? "UPDATE001" : fromPlantUml ? "IMPORT001" : "CREATE001") + " / モデル・シェイプ照合: 一致\n"+(replaceExisting?"更新した図: ":"新しい図: ") + payload.Name
+            Summary = "ケース: " + (replaceExisting ? "UPDATE002" : updateProbe ? (deltaProbe ? "UPDATE003" : "UPDATE001") : fromPlantUml ? "IMPORT001" : "CREATE001") + " / モデル・シェイプ照合: 一致\n"+(replaceExisting?"更新した図: ":"新しい図: ") + payload.Name
                 + "\n" + (plan == null ? "ライフライン: 2 / メッセージ: 1" : plan.Summary()) + "\n確定: 済み / プロジェクト保存: していません\n図を開き直し、図とこの画面を撮影してください。\n図表示・Undo/Redo・再読込: 未確認";
             }
         }
@@ -235,7 +243,7 @@ public static class SequenceExperiment
                 try { replacement.CheckUnchanged(app.Workspace.CurrentProject.GetModelById(replacement.Identity.Root) as IInteraction,app.Workspace.CurrentEditor as ISequenceDiagram); detail.AppendLine("Rollback structure and shape IDs: verified"); }
                 catch(Exception restoreError) { detail.AppendLine("Rollback verification: "+restoreError); }
             }
-            Summary = "ケース: " + (replaceExisting ? "UPDATE002" : updateProbe ? "UPDATE001" : fromPlantUml ? "IMPORT001" : "CREATE001") + " / 停止段階: " + stage
+            Summary = "ケース: " + (replaceExisting ? "UPDATE002" : updateProbe ? (deltaProbe ? "UPDATE003" : "UPDATE001") : fromPlantUml ? "IMPORT001" : "CREATE001") + " / 停止段階: " + stage
                 + "\nインポートAPI呼出: " + (called ? "あり" : "なし")
                 + "\nAPI結果: " + apiState + " / 診断件数: " + apiIssues
                 + "\n取消API: " + (rolledBack ? "正常終了（復元は未確認）" : transaction == null ? "未呼出" : "未確認・失敗")
@@ -261,6 +269,46 @@ public static class SequenceExperiment
     {
         using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
         using (var writer = new StreamWriter(stream, new UTF8Encoding(true))) writer.Write(text);
+    }
+}
+
+public static class SequenceDeltaProbe
+{
+    static string[] Relations(IModel model)
+    { return model.GetRelationsWhere((r,f)=>true).Select(r=>r.Id+":"+r.Source.Id+":"+r.Target.Id).Distinct().OrderBy(x=>x).ToArray(); }
+    public static string Run(IProject project,SequencePayload seed,ISequenceDiagram diagram,string schema,string directory,StringBuilder log)
+    {
+        var prior=seed.Ids.Select(project.GetModelById).ToArray();
+        var priorNames=prior.Select(m=>m.Name).ToArray();
+        var priorRelations=prior.Select(Relations).ToArray();
+        var priorShapes=diagram.Shapes.Select(s=>s.Id+":"+s.ModelId).OrderBy(x=>x).ToArray();
+        var message=prior[6] as IMessage;
+        var input=SequenceDeltaInput.Build(seed.Ids,message.Metaclass.Id,diagram.Id,diagram.EditorDefinition.Id,schema);
+        SequenceExperiment.Write(Path.Combine(directory,"delta-input.json"),input.Json);
+        log.AppendLine("delta addition id="+input.Ids[0]);
+        var result=project.ImportUnitFromJson(input.Json,null,null);
+        if(result==null)throw new InvalidOperationException("E150: 差分追加の結果がnullです。");
+        log.AppendLine("delta import state="+result.State);
+        foreach(var error in result.Errors)log.AppendLine(error.Kind+": "+error.Message);
+        if(result.State!="success" || result.Errors.Any(e=>e.Kind!=UnitImportErrorKind.Info))throw new InvalidOperationException("E151: 差分追加が失敗しました。");
+        var added=project.GetModelById(input.Ids[0]) as IMessage;
+        var view=result.ImportedEditors.OfType<ISequenceDiagram>().SingleOrDefault(d=>d.Id==diagram.Id);
+        if(added==null || added.Name!="deltaProbe()" || added.Sender==null || added.Receiver==null || added.Sender.Id!=seed.Ids[2] || added.Receiver.Id!=seed.Ids[3]
+           || view==null || view.Messages.Count()!=2 || !priorShapes.All(x=>view.Shapes.Any(sh=>sh.Id+":"+sh.ModelId==x)))
+            throw new InvalidOperationException("E152: 追加または既存図形の保持を確認できませんでした。");
+        for(int i=0;i<prior.Length;i++)
+            if(project.GetModelById(seed.Ids[i])==null || prior[i].Name!=priorNames[i] || !priorRelations[i].All(r=>Relations(prior[i]).Contains(r)))
+                throw new InvalidOperationException("E153: 差分追加で既存モデル・関連が変化しました。");
+        log.AppendLine("sparse import and existing identities: verified");
+        // Limit the documented verification suspension to deleting our own temporary message.
+        using(project.SuspendModelVerification()) { added.Delete(); }
+        if(project.GetModelById(input.Ids[0])!=null || view.Messages.Count()!=1 || !priorShapes.SequenceEqual(view.Shapes.Select(sh=>sh.Id+":"+sh.ModelId).OrderBy(x=>x)))
+            throw new InvalidOperationException("E154: 削除後のモデル・図形を確認できませんでした。");
+        for(int i=0;i<prior.Length;i++)
+            if(project.GetModelById(seed.Ids[i])==null || prior[i].Name!=priorNames[i] || !priorRelations[i].SequenceEqual(Relations(prior[i])))
+                throw new InvalidOperationException("E155: 削除後の既存モデル・関連が一致しません。");
+        log.AppendLine("single-message deletion with verification scope and preservation: verified");
+        return input.Ids[0];
     }
 }
 
@@ -926,5 +974,23 @@ public class SequenceIdentity
     {
         var ids=new[]{Root,Frame,FrameRelation,Editor,FrameShape};
         if(ids.Any(string.IsNullOrEmpty) || ids.Distinct().Count()!=ids.Length)throw new ArgumentException("Incomplete replacement identity");
+    }
+}
+
+public static class SequenceDeltaInput
+{
+    public static SequencePayload Build(string[] ids,string messageType,string editor,string definition,string schema)
+    {
+        if(ids==null || ids.Length!=7 || ids.Any(string.IsNullOrEmpty) || ids.Distinct().Count()!=7 || string.IsNullOrEmpty(messageType) || string.IsNullOrEmpty(editor) || string.IsNullOrEmpty(definition))throw new ArgumentException("Missing delta metadata");
+        string id=Guid.NewGuid().ToString();
+        var p=new SequencePayload{Ids=new[]{id},Name="deltaProbe()"};
+        var relations=new List<object>();
+        int[] sources={0,4,5}; int[] types={3,5,6};
+        for(int i=0;i<3;i++)relations.Add(PumlBuild.Obj("Id",Guid.NewGuid().ToString(),"RelationType",i==0?"Embed":"Ref","MetamodelId",SequencePayload.Prefix+SequencePayload.RelationTypes[types[i]],"SourceId",ids[sources[i]],"TargetId",id,"SourceIndex",1,"TargetIndex",i==0?-1:0));
+        p.Json=PumlBuild.Json(PumlBuild.Obj("Type","Model","SchemaVersion",schema,"TopElementId",ids[0],
+            "Entities",new[]{PumlBuild.Obj("Id",id,"EntityType","Message","MetamodelId",messageType,"Name",p.Name,"Fields",PumlBuild.Obj("Name",p.Name,"MessageSort","Sync"))},
+            "Relations",relations,"Editors",new[]{PumlBuild.Obj("Id",editor,"ViewType","SequenceDiagram","MetamodelId","DensoCreate.Indio.IMF.Extensions.Sequence.ViewInstance.SequenceDiagramViewInstance","DefinitionId",definition,"ModelId",ids[0],
+            "Messages",new[]{PumlBuild.Obj("Id",Guid.NewGuid().ToString(),"ModelId",id,"SourceY",120,"TargetY",120,"IsRightAtFrame",false,"SelfloopBendsX",0)})}));
+        return p;
     }
 }

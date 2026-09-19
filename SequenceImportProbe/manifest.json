@@ -2,7 +2,7 @@
   "name": "SequenceImportProbe",
   "displayName": "シーケンス生成実験",
   "description": "PlantUMLから新しいシーケンス図を生成する実験用拡張。",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -34,6 +34,12 @@
                   "type": "Button",
                   "label": "最小図を生成",
                   "command": "SequenceImportProbe.Create"
+                },
+                {
+                  "id": "SequenceImportProbe.DeltaProbeButton",
+                  "type": "Button",
+                  "label": "差分更新APIを検証",
+                  "command": "SequenceImportProbe.DeltaProbe"
                 },
                 {
                   "id": "SequenceImportProbe.UpdateProbeButton",
@@ -83,6 +89,10 @@
       {
         "id": "SequenceImportProbe.Replace",
         "execFunc": "ReplaceSequence"
+      },
+      {
+        "id": "SequenceImportProbe.DeltaProbe",
+        "execFunc": "ProbeSequenceDelta"
       }
     ]
   }

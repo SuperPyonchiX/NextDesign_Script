@@ -40,6 +40,7 @@ public static class PayloadTest {
    string[] types = { "fake-root", "fake-frame", "fake-A", "fake-B", "fake-exec-A", "fake-exec-B", "fake-message" };
    for (int i=0;i<2;i++) File.WriteAllText(Path.Combine(args[0], "payload"+i+".json"), SequencePayload.Build(types, "fake-view", "13.0").Json);
    File.WriteAllText(Path.Combine(args[0], "escape.json"), SequencePayload.Q("日本語\\n\\t\\\"\\\\"));
+   File.WriteAllText(Path.Combine(args[0], "delta.json"),SequenceDeltaInput.Build(new[]{"root","frame","A","B","execA","execB","oldMessage"},"messageType","editor","view","11.1").Json);
    int rejected=0;
    try { SequencePayload.Build(null, "fake", "13.0"); } catch(ArgumentException) { rejected++; }
    try { SequencePayload.Build(types, "", "13.0"); } catch(ArgumentException) { rejected++; }
@@ -54,6 +55,21 @@ public static class PayloadTest {
     exe = work / 'Tests.exe'
     subprocess.run([str(compiler), '/nologo', '/warnaserror+', '/out:' + str(exe), str(pure_file)], check=True)
     subprocess.run([str(exe), str(work), str(root/'samples')], check=True)
+    delta = json.loads((work/'delta.json').read_text(encoding='utf-8-sig'))
+    added, = delta['Entities']
+    assert added['Name']=='deltaProbe()' and added['Fields']['MessageSort']=='Sync'
+    assert added['Id'] not in {'root','frame','A','B','execA','execB','oldMessage'}
+    assert delta['TopElementId']=='root'
+    assert {r['SourceId'] for r in delta['Relations']}=={'root','execA','execB'}
+    assert all(r['TargetId']==added['Id'] for r in delta['Relations'])
+    assert len({r['Id'] for r in delta['Relations']})==3
+    assert sum(r['RelationType']=='Embed' for r in delta['Relations'])==1
+    editor,=delta['Editors']
+    assert editor['Id']=='editor' and editor['ModelId']=='root'
+    shape,=editor['Messages']
+    assert shape['ModelId']==added['Id'] and shape['SourceY']==shape['TargetY']==120
+    assert not {'Lifelines','Frame','ExecutionSpecifications'} & editor.keys()
+    assert 'oldMessage' not in json.dumps(delta)
     replacement = json.loads((work/'replacement.json').read_text(encoding='utf-8-sig'))
     assert replacement['TopElementId']=='existing-root'
     replacement_entities={e['Id']:e for e in replacement['Entities']}
