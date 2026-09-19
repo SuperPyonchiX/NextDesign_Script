@@ -14,7 +14,7 @@ public static class PumlTests
             File.WriteAllText(Path.Combine(directory,Path.GetFileNameWithoutExtension(file)+".json"),payload.Json);
         }
         var cases=new[]{
-            "activate A", "deactivate A", "destroy B\nA -> B : reuse", "destroy B\ndestroy B", "destroy A\nactivate A\ndeactivate A", "skinparam unknownOption value", "!include remote.puml",
+            "activate A", "deactivate A", "destroy B\nA -> B : reuse", "destroy B\ndestroy B", "skinparam unknownOption value", "!include remote.puml",
             "alt test\nA -> B : call", "else test", "end", "participant A",
             "note over C : missing", "ref over A,A : duplicate", "note over A\nunclosed",
             "activate A\nalt x\ndeactivate A\nelse y\nend\ndeactivate A", "A ->x] : unsupported", "[->] : no lifeline", "actor C", "A <- B : reverse", "A -> B : call\n@enduml\nA -> B : extra"
@@ -46,6 +46,9 @@ public static class PumlTests
         }
         var separate=PumlPlan.Parse("@startuml\nactivate Caller\nCaller -> Service : stop\nactivate Service\nService -> Service_Thread : shutdown\ndestroy Service_Thread\nService --> Caller : result\ndeactivate Service\ndeactivate Caller\n@enduml");
         PumlBuild.Build(separate,profile,"fake-view","13.0");
+        var legacy=PumlPlan.Parse("@startuml\nA -> B : shutdown\ndestroy B\nactivate B\nA -> A : finish\ndeactivate B\n@enduml");
+        if(!legacy.Summary().Contains("2件") || legacy.All().Any(n=>n.Kind=="activate" || n.Kind=="deactivate"))throw new Exception("Legacy destruction activities must be removed with warning");
+        PumlBuild.Build(legacy,profile,"fake-view","13.0");
         bool outside=false;
         try{PumlPlan.Parse("participant A\n@startuml\nA -> B : x\n@enduml");}catch(InvalidOperationException){outside=true;}
         if(!outside)throw new Exception("Syntax outside diagram accepted");

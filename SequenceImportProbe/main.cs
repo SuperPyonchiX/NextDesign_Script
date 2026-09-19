@@ -16,7 +16,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.3.8";
+    public const string Title = "シーケンス生成実験 / 0.3.9";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -443,6 +443,7 @@ public class PumlPlan
 {
     public string Title = "PlantUML";
     public int StyleDirectives;
+    public List<int> IgnoredDestroyedActivities=new List<int>();
     public List<string> Aliases = new List<string>(), Names = new List<string>();
     public List<PumlNode> Nodes = new List<PumlNode>();
     public IEnumerable<PumlNode> All() { return Walk(Nodes); }
@@ -453,6 +454,7 @@ public class PumlPlan
         var a = All().ToList();
         return "ライフライン: " + Aliases.Count + " / 同期: " + a.Count(n => n.Kind == "sync") + " / 非同期: " + a.Count(n => n.Kind == "async") + " / 返信: " + a.Count(n=>n.Kind=="reply") + " / 破棄: " + a.Count(n=>n.Kind=="destroy") + " / 図外宛て: " + a.Count(n=>n.Right=="]") + " / 図外から: " + a.Count(n=>n.Left=="[")
             + "\n複合フラグメント: " + a.Count(n => n.Kind == "fragment") + " / ref: " + a.Count(n => n.Kind == "ref") + " / Note: " + a.Count(n => n.Kind == "note")
+            + (IgnoredDestroyedActivities.Count>0 ? "\n破棄後の実行区間指定: "+IgnoredDestroyedActivities.Count+"件を除外（行: "+string.Join(",",IgnoredDestroyedActivities)+"）。参加者は再生成しません。" : "")
             + (StyleDirectives>0 ? "\n表示設定: "+StyleDirectives+"件はNext Designの既定表示を使用します。" : "")
             + (a.Any(n => n.Kind == "ref") ? "\nrefは表示枠として作成します。別の図への参照リンクは未設定です。" : "");
     }
@@ -537,13 +539,13 @@ public class PumlPlan
         if (!started || !ended) throw Error(1,"@startumlと@endumlが必要です。");
         if (p.Aliases.Count<1 || p.All().Count()>500) throw Error(1,"参加者は1本以上、要素は500件以下にしてください。");
         foreach (var n in p.All()) foreach (var target in n.Targets) if (!p.Aliases.Contains(target)) throw Error(n.Line,"note/refの参加者が未定義です。");
+        p.ValidateDestroyed(p.Nodes,new Dictionary<string,int>());
         ValidateActivities(p.Nodes,new Dictionary<string,int>());
-        ValidateDestroyed(p.Nodes,new Dictionary<string,int>());
         return p;
     }
-    static void ValidateDestroyed(IEnumerable<PumlNode> nodes,Dictionary<string,int> destroyed)
+    void ValidateDestroyed(List<PumlNode> nodes,Dictionary<string,int> destroyed)
     {
-        foreach(var n in nodes)
+        foreach(var n in nodes.ToArray())
         {
             if(n.Kind=="fragment")
             {
@@ -553,6 +555,8 @@ public class PumlPlan
                 foreach(var pair in after)destroyed[pair.Key]=pair.Value; continue;
             }
             string reused=n.Left!=null && destroyed.ContainsKey(n.Left)?n.Left:n.Right!=null && destroyed.ContainsKey(n.Right)?n.Right:null;
+            if(reused!=null && (n.Kind=="activate" || n.Kind=="deactivate"))
+            { IgnoredDestroyedActivities.Add(n.Line); nodes.Remove(n); continue; }
             if(reused!=null)
                 throw Error(n.Line,"破棄済みの参加者を再利用しています。再生成は未対応です。\n対象: "+reused+"\n破棄行: "+destroyed[reused]+" / 使用構文: "+n.Kind);
             if(n.Kind=="destroy")destroyed[n.Left]=n.Line;
