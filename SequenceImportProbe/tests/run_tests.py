@@ -66,6 +66,19 @@ public static class PayloadTest {
         shapes = [editor['Frame']] + [s for k,v in editor.items() if isinstance(v,list) for s in v]
         assert all(s['ModelId'] in entities for s in shapes)
         assert len({s['Id'] for s in shapes}) == len(shapes)
+        if path.name == '07-outgoing.json':
+            assert len(editor['Lifelines'])==2, 'Diagram boundary must not become a participant'
+            message = next(e for e in entities.values() if e['Name']=='leave diagram')
+            shape = next(v for v in editor['Messages'] if v['ModelId']==message['Id'])
+            assert shape['IsRightAtFrame'] is True and shape['SelfloopBendsX']==0
+            assert shape['SourceY']==shape['TargetY']
+            source_port = next(r['SourceId'] for r in relations if r['MetamodelId']=='SendMessage' and r['TargetId']==message['Id'])
+            target = next(r['SourceId'] for r in relations if r['MetamodelId']=='ReceiveMessage' and r['TargetId']==message['Id'])
+            assert entities[source_port]['EntityType']=='ExecutionSpecification'
+            assert entities[target]['EntityType']=='Frame' and target==editor['Frame']['ModelId']
+            assert message['Fields']['MessageSort']=='Sync'
+            bar = next(v for v in editor['ExecutionSpecifications'] if v['ModelId']==source_port)
+            assert bar['Y'] <= shape['SourceY'] < bar['Y']+bar['Length']
         if path.name == '06-activation-self-reply.json':
             messages = {e['Name']:e for e in entities.values() if e['EntityType']=='Message'}
             assert messages['result']['Fields']['MessageSort'] == 'Reply'

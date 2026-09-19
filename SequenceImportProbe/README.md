@@ -1,4 +1,4 @@
-# シーケンス生成実験 0.3.0
+# シーケンス生成実験 0.3.1
 
 Next Design V3.1.9向けのC#スクリプト拡張。PlantUMLファイルを選び、内容を確認して、新しいシーケンス図を追加する。0.2.0の追加要素は実機未確認で、生成結果と診断を使って調整する。
 
@@ -15,6 +15,8 @@ Next Design V3.1.9向けのC#スクリプト拡張。PlantUMLファイルを選�
 0.2.5では縦方向の固定余白を縮小する。メッセージ間隔は75から50、条件下の余白は50から40へ変更し、分岐の末尾・枠の前後・ライフライン末尾も詰める。Noteとrefの高さは本文行数から計算し、複数行メッセージと条件には行数分の余白を加える。既存の図には適用されず、取り込み直して生成する図に反映される。実機の文字重なりは別途確認する。
 
 0.3.0では実行区間、自己メッセージ、返信を追加する。`skinparam sequenceMessageAlign`、`maxMessageSize`、`sequenceReferenceBackgroundColor` の単行指定は受け付けるが、見た目には反映せずNext Designの既定表示を使う。この差は取り込み前に表示する。新規構文の実機表示は未確認。
+
+0.3.1では `A ->] : 本文` の右側への図外メッセージを追加する。受信先を新しい参加者ではなく図のフレームへ接続する。非同期・返信の矢印も扱う。`samples/07-outgoing.puml` で単独検証できる。受信先のフレームと接続IDを照合するが、実機表示は未確認。
 
 ## 配置と操作
 
@@ -42,6 +44,7 @@ Next Design V3.1.9向けのC#スクリプト拡張。PlantUMLファイルを選�
 | 同期 | `A -> B : request()` |
 | 非同期 | `A ->> B : notify()`。同期と別のMessageSortで保存・照合 |
 | 返信 | `A --> B : result`、`A -->> B : result` をReplyとして取り込む |
+| 図外宛て | `A ->] : 本文`、`A ->>]`、`A -->]`、`A -->>]`。右側フレームへの接続。左側・図外からの受信・消失記号は未対応 |
 | 自己メッセージ | `A -> A : operation()` など。送受信の高さをずらした折り返しを生成 |
 | 実行区間 | `activate A` / `deactivate A`。受信直後のactivateは受信先の実行区間を使用。入れ子を閉じると外側へ戻る |
 | 表示設定 | `skinparam sequenceMessageAlign left/center/right`、正整数の `maxMessageSize`、6桁16進色の `sequenceReferenceBackgroundColor`。Next Design既定表示で代替する旨を確認画面に表示 |
@@ -86,3 +89,5 @@ python <skills>/nextdesign-script-extension/scripts/validate_manifest.py Sequenc
 1つ目はPlantUMLの解析、同期・非同期・返信種別、自己折り返し、実行区間の入れ子と復帰、分岐・入れ子、refとNoteの生成、未対応構文の拒否に加え、生成JSONのID独立性、所有構造、送受信、シェイプ、座標、文字列エスケープと不正入力を検査する。2つ目はさらに公式 `NextDesign.Core / Desktop 3.1.3.30714` と `.NET 6` 参照アセンブリで配布スクリプト全体をコンパイルする。SDKは開発PCの作業フォルダにのみ配置する。
 
 これらの検査ではNext Designを起動しない。インポートの成功、失敗時の復元、実機の表示は保証しない。
+
+図外矢印の構文は[PlantUML公式のIncoming and outgoing messages](https://plantuml.com/sequence-diagram)に基づく。Next DesignのSDKでは受信ポートにFrameを指定できる。JSONのフレーム接続と右側表示の組み合わせは実機検証の対象とする。

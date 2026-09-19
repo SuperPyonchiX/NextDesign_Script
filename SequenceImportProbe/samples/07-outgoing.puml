@@ -1,0 +1,18 @@
+@startuml
+title Outgoing sample
+participant A
+participant B
+activate A
+alt ready
+  A -> B : work()
+  activate B
+  B --> A : result
+  deactivate B
+else waiting
+  A -> A : wait()
+  activate A
+  deactivate A
+end
+A ->] : leave diagram
+deactivate A
+@enduml

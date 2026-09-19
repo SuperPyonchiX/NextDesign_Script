@@ -17,7 +17,7 @@ public static class PumlTests
             "activate A", "deactivate A", "skinparam unknownOption value", "!include remote.puml",
             "alt test\nA -> B : call", "else test", "end", "participant A",
             "note over C : missing", "ref over A,A : duplicate", "note over A\nunclosed",
-            "activate A\nalt x\ndeactivate A\nelse y\nend\ndeactivate A", "actor C", "A <- B : reverse", "A -> B : call\n@enduml\nA -> B : extra"
+            "activate A\nalt x\ndeactivate A\nelse y\nend\ndeactivate A", "A ->x] : unsupported", "[-> A : incoming", "actor C", "A <- B : reverse", "A -> B : call\n@enduml\nA -> B : extra"
         };
         foreach(string body in cases)
         {
@@ -25,6 +25,13 @@ public static class PumlTests
             try{PumlPlan.Parse("@startuml\nparticipant A\nparticipant B\n"+body+"\n@enduml");}
             catch(InvalidOperationException e){rejected=e.Message.StartsWith("E120:");}
             if(!rejected)throw new Exception("Unsupported syntax accepted: "+body);
+        }
+        foreach(var arrow in new[]{"->", "->>", "-->", "-->>"})
+        {
+            var p=PumlPlan.Parse("@startuml\nparticipant A\nparticipant B\nA "+arrow+"] : outside\n@enduml");
+            if(p.Aliases.Count!=2 || p.Nodes[0].Right!="]")throw new Exception("Boundary became a participant");
+            string expected=arrow.StartsWith("--")?"reply":arrow=="->>"?"async":"sync";
+            if(p.Nodes[0].Kind!=expected)throw new Exception("Boundary message kind changed");
         }
         bool outside=false;
         try{PumlPlan.Parse("participant A\n@startuml\nA -> B : x\n@enduml");}catch(InvalidOperationException){outside=true;}
