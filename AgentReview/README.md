@@ -15,6 +15,7 @@ Claude Code / Codex エージェントと対話しながら設計レビューと
 - Next Design V3.x
 - Claude Code（`claude`）または Codex（`codex`）CLI がインストール済みで PATH が通っていること
   （リボンの「環境診断」で確認できる。インストール直後は Next Design の再起動が必要）
+- 「結果を開く」には VS Code が必要（標準の Markdown プレビューを使用。追加拡張は不要）
 
 ## 配置
 
@@ -30,9 +31,10 @@ Claude Code / Codex エージェントと対話しながら設計レビューと
 1. ナビゲータでレビュー対象のモデル（またはプロジェクト）を選択する
 2. リボン「AI レビュー」タブの **レビュー開始** を押す
    - 初回は基点フォルダを選択する（設定に記憶される）
+   - 新規設定のエージェントは Codex。既存の有効な `agent=claude` 設定は維持される
    - セッションフォルダが作成され、設計情報が `design\design.md` にエクスポートされ、ターミナルでエージェントが起動する
 3. 起動と同時に「レビューを開始してください」が自動投入される（`initialPrompt` で変更・無効化可）。**design-review スキル**に従い、エージェントが最初に開発工程（要求分析 / アーキ設計 / 詳細設計）を質問し、工程別の観点表でレビューする
-4. 指摘は `review\review.md`、修正提案は `review\proposal.md` に出力される。リボンの **結果を開く** で参照できる
+4. 指摘は `review\review.md`、修正提案は `review\proposal.md` に出力される。リボンの **結果を開く** でセッション全体を VS Code の新しいウィンドウに開き、存在する結果ファイルを Markdown プレビューで表示する
 5. 対話を中断した後は **ターミナル再開** で続きから再開できる
 
 プロジェクトファイル（.ndproj）と同じディレクトリに `Attachment` フォルダがあれば、その中身（Excel 等の別紙）が `design\Attachment` から参照できる状態でエージェントに渡される（ジャンクション接続。原本なので変更禁止を指示書で宣言済み）。
@@ -40,6 +42,18 @@ Claude Code / Codex エージェントと対話しながら設計レビューと
 図（シーケンス図・クラス図・状態遷移図）は自動で `design\diagrams\<種別>\<グループ以下の階層>\*.puml`（種別フォルダ: クラス図／シーケンス図／状態遷移図。該当する図がある種別のみ作成）に出力され、design.md の該当箇所から参照される（一覧は `design\_index.md`）。シーケンス図・状態遷移図の構成要素（メッセージ・状態など）はテキストには出力せず .puml に委ねる。出力エンジンは PlantUmlTool からの転記（修正は PlantUmlTool 側で検証してから反映すること）。
 
 レビューなしで設計情報だけ出力する場合は、リボン「出力」グループの **設計情報を出力** を押す。出力先フォルダを毎回選択し、そこへ `design.md` + `diagrams\<種別>\<グループ以下の階層>\*.puml` + `_index.md` を直接出力する（セッションフォルダは作らず、エージェントも起動しない。Attachment のリンクも行わない）。
+
+## レビュー結果を VS Code で確認する（0.9.0）
+
+「結果を開く」は最新セッションを対象にする。エクスプローラーのツリーから `design/`・`review/` をたどり、レビュー結果と設計情報を同じウィンドウで確認できる。`review.md`・`proposal.md` が両方あれば両方を開き、片方だけなら存在する方を開く。結果がまだなければ案内を表示し、空のファイルは作らない。
+
+セッション直下の `agentreview-results.code-workspace` は「結果を開く」のたびに生成する専用ファイル。このワークスペース内で結果の2ファイルだけを標準 Markdown プレビューに関連付ける。ユーザーの VS Code 設定や既存の `.vscode/settings.json` は変更しない。編集表示へ切り替える場合は VS Code の「エディターを再度開く…」からテキストエディターを選ぶ。
+
+VS Code は通常のユーザー用・システム用インストール先と PATH から自動検出する。独自の場所にインストールしている場合は、設定に `vscode.executable=<Code.exe の絶対パス>` を追加する。パスを引用符で囲まない。見つからない場合や起動に失敗した場合は案内を表示し、メモ帳には切り替えない。
+
+0.9.0 を適用するには拡張機能一式を更新し、Next Design を再起動する。VS Code が未起動の場合と起動済みの場合の両方で「結果を開く」を実行し、セッションのツリー、結果のプレビュー、表・見出し・相対リンクを確認する。プロセス起動に成功しても表示の完了までは拡張から検知しない。
+
+「フォルダを開く」「設定」「エクスポート診断」「スキルを開く」の動作は変更しない。既存の Claude 設定で Codex に切り替えたい場合は「エージェント切替」を使う。
 
 ## 図の出力階層
 
@@ -73,7 +87,7 @@ state=Example.Design.StateGroup
 4. グループ名からの階層、別グループにある同名図、`design.md` と `_index.md` のリンク、出力ウィンドウの警告を確認する。
 5. 同じモデルで「レビュー開始」を実行し、セッション内でも同じ階層になり、エージェントが参照先の図を読めることを確認する。
 
-自動検証は `python AgentReview/tests/run_export_tests.py`。Windows の .NET Framework C# コンパイラを使って実際の出力コードをテスト用モデルと組み合わせ、設定・階層・衝突・リンク・書込み失敗を検証する。Next Design SDK と PlantUML 生成エンジンはテスト用の代替実装なので、実機での操作確認は別に必要。
+自動検証は `python AgentReview/tests/run_export_tests.py`。Windows の .NET Framework C# コンパイラを使って実際のコードをテスト用モデルと組み合わせ、設定・階層・衝突・リンク・書込み失敗を検証する。結果表示は生成ワークスペースの JSON と、引数記録用の代替 `Code.exe` による起動引数・作業フォルダ・ボタン処理も確認する。Next Design SDK と PlantUML 生成エンジンは代替実装なので、Next Design と VS Code 実機での操作確認は別に必要。
 
 ## セッションフォルダの構成
 
@@ -92,6 +106,7 @@ state=Example.Design.StateGroup
 │   └── Attachment\         → プロジェクトファイルと同じ場所の Attachment へのジャンクション
 │                             （Excel 等の別紙。存在する場合のみ。失敗時はコピー）
 ├── review\                 エージェントの出力（review.md / proposal.md / proposed\）
+├── agentreview-results.code-workspace  「結果を開く」で生成する VS Code ワークスペース
 └── session.ini             セッション情報（拡張が管理）
 ```
 
@@ -129,13 +144,14 @@ state=Example.Design.StateGroup
 
 | キー | 意味 |
 |---|---|
-| `agent` | 使用するエージェント（`claude` / `codex`）。「エージェント切替」ボタンでも変更可 |
+| `agent` | 使用するエージェント（`codex` が既定 / `claude`）。未指定・空・不正値も Codex。「エージェント切替」ボタンでも変更可 |
 | `workspaceRoot` | セッションの基点フォルダ |
 | `terminal` | `auto`（Windows Terminal があれば使う）/ `wt` / `cmd` |
 | `claude.command` / `codex.command` | CLI コマンド名 |
 | `claude.args` / `codex.args` | 対話起動時の追加引数（例: `--permission-mode acceptEdits`） |
 | `initialPrompt` | レビュー開始時に自動投入する最初のプロンプト（既定: レビューを開始してください。空なら手入力） |
 | `diagramGroups.rulesFile` | 任意の図グループ対応表の絶対パス。未設定なら所有フィールドから自動判別 |
+| `vscode.executable` | 結果表示用 `Code.exe` の絶対パス。未設定なら通常のインストール先と PATH から自動検出 |
 | `perspectives` | レビュー観点（カンマ区切り。指示書に埋め込まれる） |
 
 ## 制約・注意

@@ -77,7 +77,15 @@ public static class ClassExportRunner
     public static bool IsClassDiagramEditor(Editor e) { var d = e as IDiagram; return d != null && d.Kind == "class"; }
 }
 public static class HtmlToMarkdown { public static string Convert(string html) { return html; } }
-public class IApplication { public TestOutput Output = new TestOutput(); }
+public class IApplication { public TestOutput Output = new TestOutput(); public TestWindow Window = new TestWindow(); }
+public class TestWindow { public TestUI UI = new TestUI(); }
+public class TestUI
+{
+    public List<string> Messages = new List<string>();
+    public void ShowInformationDialog(string message, string category) { Messages.Add(message); }
+}
+public class ICommandContext { public IApplication App = new IApplication(); }
+public class ICommandParams { }
 public class TestOutput
 {
     public List<string> Lines = new List<string>();
@@ -289,5 +297,6 @@ public static class ExportTests
         Check(File.Exists(Path.Combine(artifactsDir, "diagrams/シーケンス図/Communication/[日本語](x)#%_seq.puml")), "Existing files are not deleted");
 
         Console.WriteLine("PASS: " + _checks + " export assertions (fake SDK; real runtime still requires verification).");
+        ViewerTests.Run(temp);
     }
 }

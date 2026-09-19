@@ -111,7 +111,7 @@ public static class OutputPane
 
 public class AgentConfig
 {
-    public string Agent = "claude";          // "claude" | "codex"
+    public string Agent = "codex";          // "claude" | "codex"
     public string WorkspaceRoot = "";        // レビューセッションの基点フォルダ
     public string Terminal = "auto";         // "auto" | "wt" | "cmd"
     public string ClaudeCommand = "claude";
@@ -121,6 +121,7 @@ public class AgentConfig
     public string InitialPrompt = "レビューを開始してください";   // 起動時に自動投入。空なら手入力
     public string Perspectives = "";   // 追加観点のみ。工程別観点は design-review スキル側で定義
     public string DiagramGroupsRulesFile = "";
+    public string VsCodeExecutable = "";     // 空なら通常のインストール先と PATH から自動検出
 
     public static string ConfigDir()
     {
@@ -154,9 +155,10 @@ public class AgentConfig
                 case "initialPrompt": config.InitialPrompt = pair.Value; break;
                 case "perspectives": config.Perspectives = pair.Value; break;
                 case "diagramGroups.rulesFile": config.DiagramGroupsRulesFile = pair.Value; break;
+                case "vscode.executable": config.VsCodeExecutable = pair.Value; break;
             }
         }
-        if (config.Agent != "claude" && config.Agent != "codex") config.Agent = "claude";
+        if (config.Agent != "claude" && config.Agent != "codex") config.Agent = "codex";
         return config;
     }
 
@@ -167,7 +169,7 @@ public class AgentConfig
         sb.Append("# AgentReview 設定ファイル").Append(nl);
         sb.Append("# 保存すると次のボタン操作から反映されます（Next Design の再起動は不要）").Append(nl);
         sb.Append(nl);
-        sb.Append("# 使用するエージェント: claude | codex").Append(nl);
+        sb.Append("# 使用するエージェント: codex（既定） | claude").Append(nl);
         sb.Append("agent=").Append(Agent).Append(nl);
         sb.Append(nl);
         sb.Append("# レビューセッションを作成する基点フォルダ").Append(nl);
@@ -193,6 +195,9 @@ public class AgentConfig
         sb.Append(nl);
         sb.Append("# 任意の図グループ対応表（UTF-8 INI）の絶対パス。空なら所有フィールドから自動判別").Append(nl);
         sb.Append("diagramGroups.rulesFile=").Append(DiagramGroupsRulesFile).Append(nl);
+        sb.Append(nl);
+        sb.Append("# 結果表示用 Code.exe の絶対パス。空なら VS Code を自動検出（引用符不要）").Append(nl);
+        sb.Append("vscode.executable=").Append(VsCodeExecutable).Append(nl);
 
         Directory.CreateDirectory(ConfigDir());
         File.WriteAllText(ConfigPath(), sb.ToString(), new UTF8Encoding(false));
@@ -1651,6 +1656,123 @@ public static class TerminalLauncher
     }
 }
 
+// 「結果を開く」専用。VS Code 全体の設定や他のボタンの起動先は変更しない。
+public static class ReviewResultViewer
+{
+    public const string WorkspaceFileName = "agentreview-results.code-workspace";
+
+    public static List<string> ResultFiles(string sessionFolder)
+    {
+        // review.md を最後に渡し、指摘を先に確認しやすくする。
+        return new[] { "proposal.md", "review.md" }
+            .Select(name => Path.Combine(sessionFolder, "review", name)).Where(File.Exists).ToList();
+    }
+
+    public static IEnumerable<string> ExecutableCandidates(string localAppData, string programFiles,
+        string programFilesX86, string pathVariable)
+    {
+        if (!string.IsNullOrEmpty(localAppData))
+            yield return Path.Combine(localAppData, "Programs", "Microsoft VS Code", "Code.exe");
+        foreach (var root in new[] { programFiles, programFilesX86 })
+            if (!string.IsNullOrEmpty(root)) yield return Path.Combine(root, "Microsoft VS Code", "Code.exe");
+        foreach (var entry in (pathVariable ?? "").Split(';'))
+        {
+            string dir;
+            try
+            {
+                dir = entry.Trim().Trim('"');
+                if (dir.Length == 0 || !Path.IsPathRooted(dir)) continue;
+                dir = Path.GetFullPath(dir);
+            }
+            catch (Exception) { continue; }
+            yield return Path.Combine(dir, "Code.exe");
+            // Windows の code コマンドは bin/code.cmd。cmd.exe を介さず本体を使う。
+            if (File.Exists(Path.Combine(dir, "code.cmd")))
+                yield return Path.GetFullPath(Path.Combine(dir, "..", "Code.exe"));
+        }
+    }
+
+    public static string FindExecutable(string configured, IEnumerable<string> candidates)
+    {
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            var path = configured.Trim();
+            if (!Path.IsPathRooted(path) || Path.GetPathRoot(path).Length < 3
+                || !string.Equals(Path.GetFileName(path), "Code.exe", StringComparison.OrdinalIgnoreCase)
+                || !File.Exists(path))
+                throw new FileNotFoundException("vscode.executable に、存在する Code.exe の絶対パスを引用符なしで指定してください。");
+            return Path.GetFullPath(path);
+        }
+        foreach (var candidate in candidates)
+            if (File.Exists(candidate)) return Path.GetFullPath(candidate);
+        throw new FileNotFoundException("VS Code が見つかりません。VS Code をインストールするか、設定の vscode.executable に Code.exe の絶対パスを指定してください。");
+    }
+
+    // Windows の argv 規則で引用する。シェルの変数展開やメタ文字解釈を通さない。
+    public static string QuoteArgument(string value)
+    {
+        var result = new StringBuilder("\"");
+        var slashes = 0;
+        foreach (var ch in value)
+        {
+            if (ch == '\\') { slashes++; continue; }
+            if (ch == '"') result.Append('\\', slashes * 2 + 1);
+            else result.Append('\\', slashes);
+            result.Append(ch);
+            slashes = 0;
+        }
+        return result.Append('\\', slashes * 2).Append('"').ToString();
+    }
+
+    public static ProcessStartInfo PrepareLaunch(string sessionFolder, string executable)
+    {
+        var folder = Path.GetFullPath(sessionFolder);
+        if (!Directory.Exists(folder)) throw new DirectoryNotFoundException("レビューセッションのフォルダがありません。");
+        var files = ResultFiles(folder);
+        if (files.Count == 0) throw new FileNotFoundException("レビュー結果がまだ生成されていません。");
+        var workspace = Path.Combine(folder, WorkspaceFileName);
+        // 専用生成物。相対パスなのでセッションを別の PC へ移しても参照が保たれる。
+        var json = "{\n"
+            + "  \"folders\": [{ \"path\": \".\" }],\n"
+            + "  \"settings\": {\n"
+            + "    \"workbench.editor.enablePreview\": false,\n"
+            + "    \"workbench.editorAssociations\": {\n"
+            + "      \"**/review/review.md\": \"vscode.markdown.preview.editor\",\n"
+            + "      \"**/review/proposal.md\": \"vscode.markdown.preview.editor\"\n"
+            + "    }\n"
+            + "  }\n"
+            + "}\n";
+        File.WriteAllText(workspace, json, new UTF8Encoding(false));
+        var info = new ProcessStartInfo
+        {
+            FileName = executable,
+            Arguments = "--new-window " + QuoteArgument(workspace) + " "
+                + string.Join(" ", files.Select(QuoteArgument).ToArray()),
+            WorkingDirectory = folder,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        // Electron ベースの親プロセスから起動された場合でも VS Code の GUI として起動する。
+        info.EnvironmentVariables.Remove("ELECTRON_RUN_AS_NODE");
+        return info;
+    }
+
+    public static void Open(string sessionFolder, string configuredExecutable)
+    {
+        var executable = FindExecutable(configuredExecutable, ExecutableCandidates(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            Environment.GetEnvironmentVariable("PATH")));
+        var info = PrepareLaunch(sessionFolder, executable);
+        using (var process = Process.Start(info))
+        {
+            if (process == null) throw new IOException("VS Code を起動できませんでした。");
+            // VS Code の終了やウィンドウ表示は待たない。
+        }
+    }
+}
+
 // CLI の存在とバージョンの診断。ここだけは短いタイムアウト付きで完了を待つ
 public static class CliProbe
 {
@@ -1881,6 +2003,7 @@ public void OpenReviewResult(ICommandContext context, ICommandParams commandPara
 {
     var category = "AgentReview";
     var app = context.App;
+    string sessionFolder = null;
     try
     {
         var config = AgentConfig.Load();
@@ -1892,24 +2015,23 @@ public void OpenReviewResult(ICommandContext context, ICommandParams commandPara
             return;
         }
 
-        var reviewPath = Path.Combine(session.ReviewDir(), "review.md");
-        var proposalPath = Path.Combine(session.ReviewDir(), "proposal.md");
-        var opened = 0;
-        if (File.Exists(reviewPath)) { TerminalLauncher.OpenWithNotepad(reviewPath); opened++; }
-        if (File.Exists(proposalPath)) { TerminalLauncher.OpenWithNotepad(proposalPath); opened++; }
-
-        if (opened == 0)
+        sessionFolder = session.Folder;
+        if (ReviewResultViewer.ResultFiles(sessionFolder).Count == 0)
         {
             app.Window.UI.ShowInformationDialog(
                 "レビュー結果がまだ生成されていません。\n\n"
                 + "エージェントがターミナルで review\\review.md を書き出すと開けるようになります。\n"
                 + "セッション: " + session.Folder, category);
+            return;
         }
+        ReviewResultViewer.Open(sessionFolder, config.VsCodeExecutable);
+        app.Output.WriteLine(category, "VS Code に結果表示を要求しました: " + sessionFolder);
     }
     catch (Exception ex)
     {
         app.Output.WriteLine(category, "[error] " + ex.ToString());
-        app.Window.UI.ShowInformationDialog("結果を開けませんでした。\n\n" + ex.Message, category);
+        app.Window.UI.ShowInformationDialog("VS Code で結果を開けませんでした。\n\n" + ex.Message
+            + (sessionFolder == null ? "" : "\n\nセッション: " + sessionFolder), category);
     }
 }
 

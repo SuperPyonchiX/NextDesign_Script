@@ -2,7 +2,7 @@
   "name": "AgentReview",
   "displayName": "AI レビュー",
   "description": "Claude Code / Codex のエージェントで設計レビューと修正提案の生成を行います。設計情報をエクスポートし、ターミナルでエージェントと対話します。",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -62,7 +62,7 @@
                   "id": "AgentReview.OpenResultButton",
                   "type": "Button",
                   "label": "結果を開く",
-                  "description": "最新セッションのレビュー指摘（review.md）と修正提案（proposal.md）を開きます。",
+                  "description": "最新セッションを VS Code で開き、レビュー指摘と修正提案を Markdown プレビューで表示します。",
                   "imageSmall": "resources/result16.png",
                   "imageLarge": "resources/result32.png",
                   "command": "AgentReview.Command.OpenResult"
