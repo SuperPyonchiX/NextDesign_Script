@@ -3,8 +3,8 @@ public static class PumlTests
     public static void Run(string directory,string samples)
     {
         var profile=new PumlProfile();
-        foreach(string type in new[]{"Interaction","Frame","Lifeline","ExecutionSpecification","Message","CombinedFragment","InteractionOperand","InteractionUse","InteractionNote"})profile.Types[type]="fake-"+type;
-        foreach(string key in new[]{"Frame","Lifelines","ExecutionSpecifications","Messages","OwnedExecutionSpecification","SendMessage","ReceiveMessage","Fragments","Operands","CrossingFragmentCoveredLifeline","OperandTargetMessage","NestedInteractionFragment","InteractionUses","Notes"})profile.Relations[key]=key;
+        foreach(string type in new[]{"Interaction","Frame","Lifeline","ExecutionSpecification","Message","CombinedFragment","InteractionOperand","InteractionUse","InteractionNote","MessageEnd"})profile.Types[type]="fake-"+type;
+        foreach(string key in new[]{"Frame","Lifelines","ExecutionSpecifications","Messages","OwnedExecutionSpecification","SendMessage","ReceiveMessage","Fragments","Operands","CrossingFragmentCoveredLifeline","OperandTargetMessage","NestedInteractionFragment","InteractionUses","Notes","MessageEnds"})profile.Relations[key]=key;
         foreach(string op in new[]{"alt","opt","loop","par","break","critical","group"})profile.Operators[op]=op.ToUpperInvariant();
         foreach(var file in Directory.GetFiles(samples,"*.puml"))
         {
@@ -32,6 +32,10 @@ public static class PumlTests
             if(p.Aliases.Count!=2 || p.Nodes[0].Right!="]")throw new Exception("Boundary became a participant");
             string expected=arrow.StartsWith("--")?"reply":arrow=="->>"?"async":"sync";
             if(p.Nodes[0].Kind!=expected)throw new Exception("Boundary message kind changed");
+            var outgoing=PumlBuild.Build(p,profile,"fake-view","13.0");
+            var end=outgoing.Expected.Single(e=>e.Kind=="messageEnd");
+            var sent=outgoing.Expected.Single(e=>e.Kind==expected);
+            if(sent.ReceivePort!=end.Id || sent.Right!=null || end.X!=180 || end.Y+5!=sent.EndY)throw new Exception("Outgoing free endpoint geometry or ownership failed");
             var incoming=PumlPlan.Parse("@startuml\n["+arrow+" A : incoming\nactivate A\ndeactivate A\n@enduml");
             if(incoming.Aliases.Count!=1 || incoming.Nodes[0].Left!="[" || incoming.Nodes[0].Kind!=expected)throw new Exception("Incoming boundary parsing failed");
             var built=PumlBuild.Build(incoming,profile,"fake-view","13.0");

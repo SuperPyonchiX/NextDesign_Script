@@ -1,4 +1,4 @@
-# シーケンス生成実験 0.3.2
+# シーケンス生成実験 0.3.3
 
 Next Design V3.1.9向けのC#スクリプト拡張。PlantUMLファイルを選び、内容を確認して、新しいシーケンス図を追加する。0.2.0の追加要素は実機未確認で、生成結果と診断を使って調整する。
 
@@ -47,7 +47,7 @@ Next Design V3.1.9向けのC#スクリプト拡張。PlantUMLファイルを選�
 | 非同期 | `A ->> B : notify()`。同期と別のMessageSortで保存・照合 |
 | 図外からの受信 | `[-> A : 本文`、`[->> A : 本文`、`[--> A : 本文`、`[-->> A : 本文`。左側フレームから接続。実線の `->>` は非同期、破線は返信として扱う |
 | 返信 | `A --> B : result`、`A -->> B : result` をReplyとして取り込む |
-| 図外宛て | `A ->] : 本文`、`A ->>]`、`A -->]`、`A -->>]`。右側フレームへの接続。左側への送信・消失記号は未対応 |
+| 図外宛て | `A ->] : 本文`、`A ->>]`、`A -->]`、`A -->>]`。0.3.3では送信元から約60px左の独立メッセージ端へ接続する。フレーム・別ライフラインへは接続しない。消失記号の構文は未対応 |
 | 自己メッセージ | `A -> A : operation()` など。送受信の高さをずらした折り返しを生成 |
 | 実行区間 | `activate A` / `deactivate A`。受信直後のactivateは受信先の実行区間を使用。入れ子を閉じると外側へ戻る |
 | 表示設定 | `skinparam sequenceMessageAlign left/center/right`、正整数の `maxMessageSize`、6桁16進色の `sequenceReferenceBackgroundColor`。Next Design既定表示で代替する旨を確認画面に表示 |
@@ -93,4 +93,14 @@ python <skills>/nextdesign-script-extension/scripts/validate_manifest.py Sequenc
 
 これらの検査ではNext Designを起動しない。インポートの成功、失敗時の復元、実機の表示は保証しない。
 
-図外矢印の構文は[PlantUML公式のIncoming and outgoing messages](https://plantuml.com/sequence-diagram)に基づく。Next DesignのSDKでは受信ポートにFrameを指定できる。JSONのフレーム接続と右側表示の組み合わせは実機検証の対象とする。
+図外矢印の構文は[PlantUML公式のIncoming and outgoing messages](https://plantuml.com/sequence-diagram)に基づく。Next DesignのSDKでは受信ポートにFrameを指定できる。0.3.3では希望する終了表示に合わせ、受信先にMessageEndを指定する。PlantUMLの右端表現をそのまま再現する配置ではない。
+
+## 0.3.3: 終了メッセージを短い左向きに配置
+
+既存入力の `A ->] : 本文` を変更せず、送信元の実行区間から約60px左に独立したメッセージ端を配置する。別ライフラインや図のフレームには接続しない。同期・非同期・返信の種類と本文は維持する。図外からの受信は従来どおり左側フレームから接続する。
+
+端点の型はプロファイルの所有フィールドと、見本図にメッセージ端がある場合はその具体型から取得する。取り込み後にモデル・シェイプ数、受信先がMessageEndであること、ライフラインへ接続していないこと、端点の座標を照合する。不一致なら既存の取消処理で停止する。
+
+ローカルではJSONの位置・接続検査と公式V3.1.3 SDKに対するコンパイルを確認。実機での丸い端点、矢印、文字位置は未確認。更新・再起動後に同じ入力を取り込み、最後のメッセージが短く左へ伸びることを確認する。既に生成した図は書き換えない。
+
+根拠: [V3 IMessage の受信ポートと消失メッセージ](https://docs.nextdesign.app/extension/v3.x/api/NextDesign.Core/IMessage/)。

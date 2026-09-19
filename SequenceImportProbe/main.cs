@@ -16,7 +16,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.3.2";
+    public const string Title = "シーケンス生成実験 / 0.3.3";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -236,6 +236,12 @@ public static class PumlRuntime
         if(plan.All().Any(n=>n.Kind=="async"))p.Async=Literal(source[6].Metaclass,"MessageSort","Async");
         if(plan.All().Any(n=>n.Kind=="reply"))p.Reply=Literal(source[6].Metaclass,"MessageSort","Reply");
         var classes=new List<IClass>(source.Select(m=>m.Metaclass));
+        if(plan.All().Any(n=>n.Right=="]"))
+        {
+            var c=Child(p,source[0].Metaclass,"MessageEnds","MessageEnds","___Interaction_MessageEnd");
+            c=Concrete(diagram.MessageEnds.Select(e=>e.Model),c,"メッセージ端");
+            p.Types["MessageEnd"]=c.Id; classes.Add(c);
+        }
         if(plan.All().Any(n=>n.Kind=="fragment"))
         {
             var c=Child(p,source[0].Metaclass,"Fragments","CombinedFragments","___Interaction_CombinedFragment");
@@ -286,16 +292,23 @@ public static class PumlRuntime
             "シェイプ数（期待/取得）\n複合フラグメント: "+p.Expected.Count(e=>e.Kind=="fragment")+"/"+d.Fragments.Count()
             +" / ref: "+p.Expected.Count(e=>e.Kind=="ref")+"/"+d.InteractionUses.Count()
             +" / Note: "+p.Expected.Count(e=>e.Kind=="note")+"/"+d.Notes.Count());
+        Require(root.MessageEnds.Count()==p.Expected.Count(e=>e.Kind=="messageEnd") && d.MessageEnds.Count()==p.Expected.Count(e=>e.Kind=="messageEnd"),"独立メッセージ端の数");
         foreach(var e in p.Expected)
         {
             var model=project.GetModelById(e.Id); Require(model!=null && !model.IsDeleted,e.Kind+"モデル");
             if(e.Kind=="sync" || e.Kind=="async" || e.Kind=="reply")
             {
                 var m=model as IMessage;
-                Require(m!=null && m.Kind==e.Kind && m.Name==e.Text && (e.Left==null ? m.Sender==null && m.SendPortType=="Frame" : m.Sender!=null && m.Sender.Id==e.Left) && (e.Right==null ? m.Receiver==null && m.ReceivePortType=="Frame" : m.Receiver!=null && m.Receiver.Id==e.Right),"メッセージ種別・本文・送受信");
-                Require(m.SendPort!=null && m.ReceivePort!=null && ((IModel)m.SendPort).Id==e.SendPort && ((IModel)m.ReceivePort).Id==e.ReceivePort,"実行区間・フレームへの接続");
+                Require(m!=null && m.Kind==e.Kind && m.Name==e.Text && (e.Left==null ? m.Sender==null && m.SendPortType=="Frame" : m.Sender!=null && m.Sender.Id==e.Left) && (e.Right==null ? m.Receiver==null && m.ReceivePortType=="MessageEnd" && m.IsLost : m.Receiver!=null && m.Receiver.Id==e.Right),"メッセージ種別・本文・送受信");
+                Require(m.SendPort!=null && m.ReceivePort!=null && ((IModel)m.SendPort).Id==e.SendPort && ((IModel)m.ReceivePort).Id==e.ReceivePort,"実行区間・メッセージ端・フレームへの接続");
                 var shape=d.Messages.SingleOrDefault(v=>v.Model.Id==e.Id);
                 Require(shape!=null && Math.Abs(shape.SourceY-e.Y)<1 && Math.Abs(shape.TargetY-e.EndY)<1,"メッセージ位置・折返し");
+            }
+            else if(e.Kind=="messageEnd")
+            {
+                var end=model as IMessageEnd;
+                var shape=d.MessageEnds.SingleOrDefault(v=>v.Model.Id==e.Id);
+                Require(end!=null && end.Message!=null && shape!=null && Math.Abs(shape.LocationX-e.X)<1 && Math.Abs(shape.LocationY-e.Y)<1,"独立メッセージ端の位置・接続");
             }
             else if(e.Kind=="execution")
             {
@@ -517,7 +530,7 @@ public class PumlPlan
 public class PumlExpected
 {
     public string Id, Kind, Text, Left, Right, Owner, Operator, SendPort, ReceivePort;
-    public int Y,EndY;
+    public int X,Y,EndY;
     }
 public class PumlProfile
 {
@@ -605,7 +618,13 @@ public class PumlBuild
                 bool outgoing=n.Right=="]"; bool self=n.Left==n.Right; int targetY=y+(self?24:0);
                 string receive;
                 bool beginsActivation=index+1<items.Count && items[index+1].Kind=="activate" && items[index+1].Left==n.Right;
-                if(outgoing)receive=frameId;
+                if(outgoing)
+                {
+                    receive=Entity("MessageEnd",""); Owned("MessageEnds",receive);
+                    int endX=(int)executions[send]["X"]-60;
+                    Shape("MessageEnds",receive,"X",endX,"Y",targetY-5,"Width",10,"Height",10);
+                    payload.Expected.Add(new PumlExpected{Id=receive,Kind="messageEnd",Y=targetY-5,X=endX});
+                }
                 else if((n.Kind=="reply" || (!beginsActivation && activities.ContainsKey(n.Right) && activities[n.Right].Count>0)) && active.TryGetValue(n.Right,out receive)) { }
                 else receive=Execution(n.Right,targetY);
                 // Keep explicit activation contexts until deactivate; an immediately following
@@ -616,7 +635,7 @@ public class PumlBuild
                 foreach(var pair in activities)if(pair.Value.Count>0 && active.ContainsKey(pair.Key))Extend(active[pair.Key],targetY);
                 string id=Entity("Message",n.Text,Obj("Name",n.Text,"MessageSort",n.Kind=="reply"?profile.Reply:n.Kind=="sync"?profile.Sync:profile.Async)); Owned("Messages",id);
                 Link("SendMessage",send,id,false,0); Link("ReceiveMessage",receive,id,false,0);
-                Shape("Messages",id,"SourceY",y,"TargetY",targetY,"IsRightAtFrame",outgoing,"SelfloopBendsX",self?Math.Max((int)executions[send]["X"],(int)executions[receive]["X"])+80:0);
+                Shape("Messages",id,"SourceY",y,"TargetY",targetY,"IsRightAtFrame",false,"SelfloopBendsX",self?Math.Max((int)executions[send]["X"],(int)executions[receive]["X"])+80:0);
                 if(operand!=null)Link("OperandTargetMessage",operand,id,false,0);
                 payload.Expected.Add(new PumlExpected{Id=id,Kind=n.Kind,Text=n.Text,Left=incoming?null:lifelines[n.Left],Right=outgoing?null:lifelines[n.Right],Owner=operand,SendPort=send,ReceivePort=receive,Y=y,EndY=targetY});
                 y=targetY+50; continue;

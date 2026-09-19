@@ -85,12 +85,16 @@ public static class PayloadTest {
             assert len(editor['Lifelines'])==2, 'Diagram boundary must not become a participant'
             message = next(e for e in entities.values() if e['Name']=='leave diagram')
             shape = next(v for v in editor['Messages'] if v['ModelId']==message['Id'])
-            assert shape['IsRightAtFrame'] is True and shape['SelfloopBendsX']==0
+            assert shape['IsRightAtFrame'] is False and shape['SelfloopBendsX']==0
             assert shape['SourceY']==shape['TargetY']
             source_port = next(r['SourceId'] for r in relations if r['MetamodelId']=='SendMessage' and r['TargetId']==message['Id'])
             target = next(r['SourceId'] for r in relations if r['MetamodelId']=='ReceiveMessage' and r['TargetId']==message['Id'])
             assert entities[source_port]['EntityType']=='ExecutionSpecification'
-            assert entities[target]['EntityType']=='Frame' and target==editor['Frame']['ModelId']
+            assert entities[target]['EntityType']=='MessageEnd' and target!=editor['Frame']['ModelId']
+            end = next(v for v in editor['MessageEnds'] if v['ModelId']==target)
+            source_shape = next(v for v in editor['ExecutionSpecifications'] if v['ModelId']==source_port)
+            assert end['X'] == source_shape['X']-60 and end['Y']+5 == shape['TargetY']
+            assert not any(r['MetamodelId']=='OwnedExecutionSpecification' and r['TargetId']==target for r in relations)
             assert message['Fields']['MessageSort']=='Sync'
             bar = next(v for v in editor['ExecutionSpecifications'] if v['ModelId']==source_port)
             assert bar['Y'] <= shape['SourceY'] < bar['Y']+bar['Length']
