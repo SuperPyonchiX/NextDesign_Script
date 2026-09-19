@@ -1,4 +1,4 @@
-// ModelUpdateProbe 0.2.1 — v3.x. Update success on the real runtime is unverified.
+// ModelUpdateProbe 0.3.0 — v3.x. Update success on the real runtime is unverified.
 using NextDesign.Core;
 using NextDesign.Desktop;
 using NextDesign.Extension;
@@ -11,6 +11,7 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 
+public void EditMessage(ICommandContext context, ICommandParams parameters) { ProbeHost.EditMessage(context.App); }
 public void PrepareProbe(ICommandContext context, ICommandParams parameters) { ProbeHost.Prepare(context.App); }
 public void PrepareSequenceProbe(ICommandContext context, ICommandParams parameters) { ProbeHost.PrepareSequence(context.App); }
 public void OpenProbeTargets(ICommandContext context, ICommandParams parameters) { ProbeHost.OpenTargets(context.App); }
@@ -25,7 +26,7 @@ public void ShowProbeFields(ICommandContext context, ICommandParams parameters) 
 
 public static class ProbeHost
 {
-    public const string Version = "0.2.1";
+    public const string Version = "0.3.0";
     public const string Title = "設計更新検証 / " + Version;
     public static ProbeSession Session;
     public static string LastSummary = "検証準備を実行してください。";
@@ -83,7 +84,8 @@ public static class ProbeHost
             && !field.IsReference && field.TypeClass == null && field.TypeEnum == null;
     }
 
-    public static void PrepareSequence(IApplication app)
+    public static void PrepareSequence(IApplication app) { PrepareSequence(app, true); }
+    public static void PrepareSequence(IApplication app, bool showSummary)
     {
         try
         {
@@ -148,9 +150,60 @@ public static class ProbeHost
             LastDetail = report + "\r\n保存先: " + session.DirectoryPath;
             LastSummary = Title + "\n" + session.FieldSummary;
             if (session.CandidateCount == 0) LastSummary += "\n更新対象なし（F001）。検証実行には進まず、この画面を撮影してください。";
-            Show(app);
+            if (showSummary) Show(app);
         }
         catch (Exception ex) { Failure(app, "シーケンス準備", ex); }
+    }
+
+    public static void EditMessage(IApplication app)
+    {
+        try
+        {
+            PrepareSequence(app, false);
+            var session = Session;
+            if (session == null) return;
+            CheckContext(app, session);
+            var options = ((IInteraction)session.Model).Messages.Cast<IModel>()
+                .Where(m => session.TargetIds.Contains(m.Id.ToString()) && m.Metaclass.GetFields().Cast<IField>()
+                    .Count(f => f != null && f.Name == "Name" && Eligible(f)) == 1).ToList();
+            if (options.Count == 0) throw new ProbeCheckException("U001", "名前を変更できるメッセージがありません。");
+            var data = new Dictionary<string, string> {{"count", options.Count.ToString(CultureInfo.InvariantCulture)}};
+            var ids = new List<string>();
+            var before = new List<string>();
+            foreach (var model in options)
+            {
+                var value = model.GetField("Name");
+                if (value != null && !(value is string)) throw new InvalidOperationException("名前を文字列として取得できません。");
+                data.Add("name" + ids.Count, (string)value ?? "");
+                ids.Add(model.Id.ToString()); before.Add((string)value);
+            }
+            var input = Path.Combine(session.DirectoryPath, "dialog-input.json");
+            var output = Path.Combine(session.DirectoryPath, "dialog-result.json");
+            var script = Path.Combine(session.DirectoryPath, "message-dialog.ps1");
+            ProbeCore.WriteNew(input, ProbeJson.Write(data));
+            ProbeCore.WriteNew(script, ProbeDialog.Script);
+            var executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
+            var start = new ProcessStartInfo(executable, "-NoProfile -STA -File " + ProbeDialog.Argument(script)
+                + " -InputPath " + ProbeDialog.Argument(input) + " -OutputPath " + ProbeDialog.Argument(output))
+                {UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden};
+            using (var process = Process.Start(start))
+            {
+                process.WaitForExit();
+                if (process.ExitCode != 0) throw new ProbeCheckException("U002", "入力画面を起動できませんでした。会社PCのPowerShell実行制限などを確認してください。設定変更は不要です。この画面を渡してください。");
+            }
+            if (!File.Exists(output)) { LastSummary = Title + "\nキャンセルしました。モデル変更: なし"; Show(app); return; }
+            if (new FileInfo(output).Length > 1048576) throw new FormatException("入力結果が大きすぎます。");
+            var config = ProbeDialog.Selection(File.ReadAllText(output, Encoding.UTF8), ids);
+            CheckContext(app, session);
+            int index = ids.IndexOf(config["targetModelId"]);
+            if (!string.Equals(Read(session, ProbeCase.Parse(ProbeJson.Write(config))), before[index], StringComparison.Ordinal))
+                throw new ProbeCheckException("U003", "入力画面を開いている間に対象の名前が変わりました。もう一度選び直してください。");
+            var configPath = Path.Combine(session.DirectoryPath, "dialog-case.json");
+            ProbeCore.WriteNew(configPath, ProbeJson.Write(config));
+            session.GuiCasePath = configPath;
+            Execute(app);
+        }
+        catch (Exception ex) { Failure(app, "メッセージの変更", ex); }
     }
 
     public static IModel Target(ProbeSession session, ProbeCase config)
@@ -220,7 +273,7 @@ public static class ProbeHost
                 throw new InvalidOperationException("このセッションは実行済みです。Undo/Redoの照合を終え、検証準備をやり直してください。");
             run = new ProbeRun();
             session.Run = run;
-            var casePath = Path.Combine(session.DirectoryPath, "case.json");
+            var casePath = session.GuiCasePath ?? Path.Combine(session.DirectoryPath, "case.json");
             if (new FileInfo(casePath).Length > 1048576) throw new FormatException("検証ファイルは1MB以内です。");
             run.Config = ProbeCase.Parse(File.ReadAllText(casePath, Encoding.UTF8));
             run.Before = Read(session, run.Config);
@@ -358,6 +411,7 @@ public class ProbeSession
     public int CandidateCount;
     public string FieldSummary;
     public bool Sequence;
+    public string GuiCasePath;
     public readonly HashSet<string> TargetIds = new HashSet<string>(StringComparer.Ordinal);
     public ProbeSession(IProject project, IModel model, string directory)
     {
@@ -536,4 +590,103 @@ public class ProbeJsonReader
         }
         throw new FormatException("JSON文字列が閉じていません。");
     }
+}
+
+public static class ProbeDialog
+{
+    public static string Argument(string path)
+    {
+        if (path.IndexOf('"') >= 0 || path.IndexOf('\r') >= 0 || path.IndexOf('\n') >= 0) throw new FormatException("Invalid path");
+        return "\"" + path + "\"";
+    }
+    public static Dictionary<string, string> Selection(string text, IList<string> ids)
+    {
+        var result = ProbeJson.Parse(text);
+        int index;
+        if (result.Count != 2 || !result.ContainsKey("index") || !result.ContainsKey("value")
+            || !int.TryParse(result["index"], NumberStyles.None, CultureInfo.InvariantCulture, out index)
+            || index < 0 || index >= ids.Count || result["value"].Length > 4000)
+            throw new FormatException("入力結果が不正です。");
+        return new Dictionary<string, string> {
+            {"schemaVersion", "1"}, {"caseId", "SEQ001"}, {"targetModelId", ids[index]},
+            {"fieldName", "Name"}, {"newValue", result["value"]}, {"ndVersion", "未確認"},
+            {"profile", "未確認"}, {"profileVersion", "未確認"}
+        };
+    }
+    // Generated from tools/message-dialog.ps1; never interpolate model values into this script.
+    public const string Script = @"param([Parameter(Mandatory=$true)][string]$InputPath, [Parameter(Mandatory=$true)][string]$OutputPath, [switch]$SelfTest)
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
+$data = Get-Content -LiteralPath $InputPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$form = New-Object System.Windows.Forms.Form
+$form.Text = 'メッセージの名前を変更'
+$form.ClientSize = New-Object System.Drawing.Size(760, 550)
+$form.MinimumSize = New-Object System.Drawing.Size(640, 500)
+$form.StartPosition = 'CenterScreen'
+$form.Font = New-Object System.Drawing.Font('Yu Gothic UI', 11)
+$form.AutoScaleMode = 'Dpi'
+$layout = New-Object System.Windows.Forms.TableLayoutPanel
+$layout.Dock = 'Fill'; $layout.Padding = 16; $layout.ColumnCount = 1; $layout.RowCount = 6
+foreach ($height in @(32, 0, 30, 76, 54, 46)) {
+ $style = New-Object System.Windows.Forms.RowStyle
+ if ($height -eq 0) { $style.SizeType = 'Percent'; $style.Height = 100 } else { $style.SizeType = 'Absolute'; $style.Height = $height }
+ [void]$layout.RowStyles.Add($style)
+}
+$form.Controls.Add($layout)
+$label = New-Object System.Windows.Forms.Label
+$label.Text = '1. 変更するメッセージを選ぶ'; $label.Dock = 'Fill'
+$layout.Controls.Add($label,0,0)
+$list = New-Object System.Windows.Forms.ListBox
+$list.Dock = 'Fill'; $list.IntegralHeight = $false; $list.HorizontalScrollbar = $true
+for ($i=0; $i -lt [int]$data.count; $i++) { [void]$list.Items.Add(('{0}. {1}' -f ($i+1), [string]$data.""name$i"")) }
+$layout.Controls.Add($list,0,1)
+$label2 = New-Object System.Windows.Forms.Label
+$label2.Text = '2. 変更後の名前を入力する'; $label2.Dock = 'Fill'
+$layout.Controls.Add($label2,0,2)
+$value = New-Object System.Windows.Forms.TextBox
+$value.Dock = 'Fill'; $value.Multiline = $true; $value.ScrollBars = 'Vertical'; $value.MaxLength = 4000
+$layout.Controls.Add($value,0,3)
+$hint = New-Object System.Windows.Forms.Label
+$hint.Text = '名前を変更した後、図上の表示も確認してください。次の確認画面でOKを押すまでは変更されません。'
+$hint.Dock = 'Fill'; $layout.Controls.Add($hint,0,4)
+$buttons = New-Object System.Windows.Forms.FlowLayoutPanel
+$buttons.Dock = 'Fill'; $buttons.FlowDirection = 'RightToLeft'
+$cancel = New-Object System.Windows.Forms.Button
+$cancel.Text = 'キャンセル'; $cancel.AutoSize = $true; $cancel.DialogResult = 'Cancel'
+$ok = New-Object System.Windows.Forms.Button
+$ok.Text = '変更内容を確認'; $ok.AutoSize = $true; $ok.Enabled = $false
+$buttons.Controls.Add($cancel); $buttons.Controls.Add($ok); $layout.Controls.Add($buttons,0,5)
+$form.CancelButton = $cancel
+$list.Add_SelectedIndexChanged({
+ if ($list.SelectedIndex -ge 0) { $value.Text = [string]$data.('name'+$list.SelectedIndex); $ok.Enabled = $false }
+})
+$value.Add_TextChanged({
+ $ok.Enabled = $list.SelectedIndex -ge 0 -and $value.Text -cne [string]$data.('name'+$list.SelectedIndex)
+})
+$accept = {
+ if (-not $ok.Enabled) { return }
+ $result = @{ index=[string]$list.SelectedIndex; value=$value.Text } | ConvertTo-Json
+ $bytes = [System.Text.UTF8Encoding]::new($true).GetBytes($result)
+ $stream = [System.IO.File]::Open($OutputPath, 'CreateNew', 'Write', 'None')
+ try { $stream.Write($bytes,0,$bytes.Length) } finally { $stream.Dispose() }
+ $form.DialogResult = 'OK'; $form.Close()
+}
+$ok.Add_Click($accept)
+try {
+ if ($SelfTest) {
+  if ($ok.Enabled -or $list.SelectedIndex -ne -1) { throw 'Initial selection must be empty' }
+  $list.SelectedIndex = 1
+  if ($ok.Enabled) { throw 'Unchanged name accepted' }
+  $value.Text = 'Changed ""message""'
+  if (-not $ok.Enabled) { throw 'Changed name rejected' }
+  $form.StartPosition = ""Manual""; $form.Location = New-Object System.Drawing.Point(-30000,-30000)
+  $form.Show(); [System.Windows.Forms.Application]::DoEvents()
+  $bitmap = New-Object System.Drawing.Bitmap($form.Width, $form.Height)
+  try { $form.DrawToBitmap($bitmap, (New-Object System.Drawing.Rectangle(0,0,$form.Width,$form.Height))); $bitmap.Save($OutputPath+'.png') } finally { $bitmap.Dispose() }
+  & $accept
+ } else { [void]$form.ShowDialog() }
+} finally { $form.Dispose() }
+";
 }

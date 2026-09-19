@@ -11,9 +11,11 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 source = (root / "main.cs").read_text(encoding="utf-8-sig")
-start = source.index("public void PrepareProbe")
+start = source.index("public void EditMessage")
 end = source.index("public static class ProbeHost")
 code = source[:start] + "public class Handlers {\n" + source[start:end] + "}\n" + source[end:]
+script = (root / "tools/message-dialog.ps1").read_text(encoding="utf-8-sig")
+assert ('public const string Script = @"' + script.replace('"', '""') + '";') in source
 compiler = Path(os.environ["WINDIR"]) / "Microsoft.NET/Framework64/v4.0.30319/csc.exe"
 with tempfile.TemporaryDirectory(prefix="model-update-probe-tests-") as tmp:
     folder = Path(tmp)
@@ -28,3 +30,13 @@ with tempfile.TemporaryDirectory(prefix="model-update-probe-tests-") as tmp:
         json.loads(path.read_text(encoding="utf-8-sig"))
     assert records, "no evidence was produced"
     print(f"PASS: {len(records)} emitted JSON files parsed by Python")
+
+with tempfile.TemporaryDirectory(prefix="model-update-dialog-") as tmp:
+    folder = Path(tmp)
+    input_path, output_path = folder / "input.json", folder / "output.json"
+    input_path.write_text(json.dumps({"count":"2", "name0":"First", "name1":"Second"}), encoding="utf-8-sig")
+    subprocess.run(["powershell", "-NoProfile", "-STA", "-File", str(root / "tools/message-dialog.ps1"),
+                    "-InputPath", str(input_path), "-OutputPath", str(output_path), "-SelfTest"], check=True)
+    result = json.loads(output_path.read_text(encoding="utf-8-sig"))
+    assert result == {"index":"1", "value":'Changed "message"'}
+    print("PASS: dialog selection, no-op prevention, text input and JSON output (standalone Windows Forms)")

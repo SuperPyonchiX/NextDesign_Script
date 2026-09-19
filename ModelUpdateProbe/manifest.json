@@ -2,47 +2,110 @@
   "name": "ModelUpdateProbe",
   "displayName": "設計更新検証",
   "description": "単値文字列の更新と手動Undo/Redo後の状態を記録する実機検証用拡張。",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
   "extensionPoints": {
     "ribbon": {
-      "tabs": [{
-        "id": "ModelUpdateProbe.Tab", "label": "設計更新検証",
-        "groups": [
-          {"id": "ModelUpdateProbe.Run", "label": "検証", "controls": [
-            {"id": "ModelUpdateProbe.PrepareButton", "type": "Button", "label": "検証準備", "command": "ModelUpdateProbe.Prepare"},
-            {"id": "ModelUpdateProbe.SequenceButton", "type": "Button", "label": "シーケンス検証準備", "command": "ModelUpdateProbe.Sequence"},
-            {"id": "ModelUpdateProbe.TargetsButton", "type": "Button", "label": "対象一覧を開く", "command": "ModelUpdateProbe.Targets"},
-            {"id": "ModelUpdateProbe.ConfigButton", "type": "Button", "label": "検証ファイルを開く", "command": "ModelUpdateProbe.Config"},
-            {"id": "ModelUpdateProbe.ExecuteButton", "type": "Button", "label": "検証実行", "command": "ModelUpdateProbe.Execute"}
-          ]},
-          {"id": "ModelUpdateProbe.Compare", "label": "状態照合（本体で操作した後に押す）", "controls": [
-            {"id": "ModelUpdateProbe.AfterButton", "type": "Button", "label": "変更後", "command": "ModelUpdateProbe.After"},
-            {"id": "ModelUpdateProbe.UndoButton", "type": "Button", "label": "Undo後", "command": "ModelUpdateProbe.Undo"},
-            {"id": "ModelUpdateProbe.RedoButton", "type": "Button", "label": "Redo後", "command": "ModelUpdateProbe.Redo"}
-          ]},
-          {"id": "ModelUpdateProbe.Results", "label": "結果", "controls": [
-            {"id": "ModelUpdateProbe.ResultButton", "type": "Button", "label": "結果表示", "command": "ModelUpdateProbe.Result"},
-            {"id": "ModelUpdateProbe.DetailsButton", "type": "Button", "label": "詳細（会社PC内）", "command": "ModelUpdateProbe.Details"},
-            {"id": "ModelUpdateProbe.FieldsButton", "type": "Button", "label": "フィールド診断", "command": "ModelUpdateProbe.Fields"}
-          ]}
-        ]
-      }]
+      "tabs": [
+        {
+          "id": "ModelUpdateProbe.Tab",
+          "label": "設計更新検証",
+          "groups": [
+            {
+              "id": "ModelUpdateProbe.Run",
+              "label": "検証",
+              "controls": [
+                {
+                  "id": "ModelUpdateProbe.EditButton",
+                  "type": "Button",
+                  "label": "メッセージを変更",
+                  "command": "ModelUpdateProbe.Edit"
+                }
+              ]
+            },
+            {
+              "id": "ModelUpdateProbe.Compare",
+              "label": "状態照合（本体で操作した後に押す）",
+              "controls": [
+                {
+                  "id": "ModelUpdateProbe.AfterButton",
+                  "type": "Button",
+                  "label": "変更後",
+                  "command": "ModelUpdateProbe.After"
+                },
+                {
+                  "id": "ModelUpdateProbe.UndoButton",
+                  "type": "Button",
+                  "label": "Undo後",
+                  "command": "ModelUpdateProbe.Undo"
+                },
+                {
+                  "id": "ModelUpdateProbe.RedoButton",
+                  "type": "Button",
+                  "label": "Redo後",
+                  "command": "ModelUpdateProbe.Redo"
+                }
+              ]
+            },
+            {
+              "id": "ModelUpdateProbe.Results",
+              "label": "結果",
+              "controls": [
+                {
+                  "id": "ModelUpdateProbe.ResultButton",
+                  "type": "Button",
+                  "label": "結果表示",
+                  "command": "ModelUpdateProbe.Result"
+                },
+                {
+                  "id": "ModelUpdateProbe.DetailsButton",
+                  "type": "Button",
+                  "label": "詳細（会社PC内）",
+                  "command": "ModelUpdateProbe.Details"
+                },
+                {
+                  "id": "ModelUpdateProbe.FieldsButton",
+                  "type": "Button",
+                  "label": "フィールド診断",
+                  "command": "ModelUpdateProbe.Fields"
+                }
+              ]
+            }
+          ]
+        }
+      ]
     },
     "commands": [
-      {"id": "ModelUpdateProbe.Prepare", "execFunc": "PrepareProbe"},
-      {"id": "ModelUpdateProbe.Sequence", "execFunc": "PrepareSequenceProbe"},
-      {"id": "ModelUpdateProbe.Targets", "execFunc": "OpenProbeTargets"},
-      {"id": "ModelUpdateProbe.Config", "execFunc": "OpenProbeConfig"},
-      {"id": "ModelUpdateProbe.Execute", "execFunc": "ExecuteProbe"},
-      {"id": "ModelUpdateProbe.After", "execFunc": "CompareAfter"},
-      {"id": "ModelUpdateProbe.Undo", "execFunc": "CompareUndo"},
-      {"id": "ModelUpdateProbe.Redo", "execFunc": "CompareRedo"},
-      {"id": "ModelUpdateProbe.Result", "execFunc": "ShowProbeResult"},
-      {"id": "ModelUpdateProbe.Details", "execFunc": "ShowProbeDetails"},
-      {"id": "ModelUpdateProbe.Fields", "execFunc": "ShowProbeFields"}
+      {
+        "id": "ModelUpdateProbe.After",
+        "execFunc": "CompareAfter"
+      },
+      {
+        "id": "ModelUpdateProbe.Undo",
+        "execFunc": "CompareUndo"
+      },
+      {
+        "id": "ModelUpdateProbe.Redo",
+        "execFunc": "CompareRedo"
+      },
+      {
+        "id": "ModelUpdateProbe.Result",
+        "execFunc": "ShowProbeResult"
+      },
+      {
+        "id": "ModelUpdateProbe.Details",
+        "execFunc": "ShowProbeDetails"
+      },
+      {
+        "id": "ModelUpdateProbe.Fields",
+        "execFunc": "ShowProbeFields"
+      },
+      {
+        "id": "ModelUpdateProbe.Edit",
+        "execFunc": "EditMessage"
+      }
     ]
   }
 }

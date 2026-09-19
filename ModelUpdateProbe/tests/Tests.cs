@@ -238,6 +238,14 @@ public static class Tests
         newMessage.Value = "SECRET_BEFORE_VALUE"; ProbeHost.Compare(app, "Undo後");
         Check(ProbeHost.Session.Run.Match("Undo後") == "一致", "fresh sequence undo readback");
 
+        var selection = ProbeDialog.Selection("{\"index\":\"1\",\"value\":\"new name\"}", new[] {"first", "second"});
+        Check(selection["targetModelId"] == "second" && selection["fieldName"] == "Name", "GUI selection mapping");
+        Check(ProbeCase.Parse(ProbeJson.Write(selection)).NewValue == "new name", "GUI config contract");
+        Reject(() => ProbeDialog.Selection("{\"index\":\"-1\",\"value\":\"x\"}", new[] {"first"}));
+        Reject(() => ProbeDialog.Selection("{\"index\":\"1\",\"value\":\"x\"}", new[] {"first"}));
+        Reject(() => ProbeDialog.Selection("{\"index\":\"0\",\"value\":\"x\",\"targetModelId\":\"other\"}", new[] {"first"}));
+        Check(ProbeDialog.Argument(@"C:\a b\data.json") == "\"C:\\a b\\data.json\"", "argument quoting");
+
         var collision = Path.Combine(root,"existing.txt"); File.WriteAllText(collision,"original");
         bool threw = false; try { ProbeCore.WriteNew(collision,"replacement"); } catch (IOException) { threw=true; }
         Check(threw && File.ReadAllText(collision)=="original", "existing evidence overwritten");

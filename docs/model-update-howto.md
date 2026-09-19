@@ -90,3 +90,7 @@ object after = model.GetField("Description");
 現在のプロジェクトの `GetModelById` で対象を再取得する。このAPIは削除済みモデルも返すため、欠落に加えて `IsDeleted` と `IsProxy` を検査する。仕様は[v3 IProject](https://docs.nextdesign.app/extension/v3.x/api/NextDesign.Core/IProject/)を参照。シーケンスでは再取得した相互作用内から対象メッセージを探す。オブジェクト参照の同一性には依存しない。
 
 同じID・保存先でのプロジェクト再読み込みは検出しない。再読み込みや開き直しの後は再準備する。
+
+## 入力画面からの検証
+
+0.3.0の通常操作では、一覧からメッセージを選び変更後の名前を入力する。拡張は選択番号を準備済みのIDへ対応付け、Nameだけを対象とした設定を自動作成する。入力画面からモデルIDや属性名を受け取らず、入力中の名前変更・プロジェクト切替も更新前に確認する。Windows PowerShellの入力画面はSDKに触れず、モデル更新はNext Design側の既存処理が実行する。
