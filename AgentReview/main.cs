@@ -1714,6 +1714,7 @@ public class MarkdownExporter
     public int SkippedModelCount;   // 図の構成要素としてテキスト出力から除外したモデル数
     public List<string> Warnings = new List<string>();
     public List<ChangeRecord> Comparison = new List<ChangeRecord>();
+    public readonly List<string> SkippedDiagrams = new List<string>();
     public List<string> IndexRows = new List<string>();   // _index.md 用「| 図名 | 種別 | ファイル | モデルパス |」
 
     public MarkdownExporter(MarkdownExportOptions options, string diagramDir, DiagramGroupRules groupRules = null)
@@ -1756,6 +1757,7 @@ public class MarkdownExporter
         _pending.Clear();
         IndexRows.Clear();
         Comparison.Clear();
+        SkippedDiagrams.Clear();
         DiagramCount = 0;
         SkippedModelCount = 0;
         _pathRoot = new DiagramPathNode { Id = "diagrams", Assigned = "diagrams" };
@@ -1864,7 +1866,7 @@ public class MarkdownExporter
                     if (seq != null)
                     {
                         skipChildren = true;   // 空図でも配下は図要素なのでテキストに出さない
-                        if (!seq.Lifelines.Cast<ILifelineShape>().Any()) continue;
+                        if (!seq.Lifelines.Cast<ILifelineShape>().Any()) { RecordSkippedDiagram(seq.Model ?? m, editor.Id, (seq.Model ?? m).Name, "ライフラインが取得できないため図の内容は未確認"); continue; }
                         var seqName = seq.Model != null && !string.IsNullOrEmpty(seq.Model.Name)
                             ? seq.Model.Name
                             : (string.IsNullOrEmpty(seq.ViewDefinitionName) ? "Sequence" : seq.ViewDefinitionName);
@@ -1893,7 +1895,7 @@ public class MarkdownExporter
                         AddDiagramWarnings(diagramName, exporter.Warnings);
                         if (exporter.NodeCount == 0)
                         {
-                            Warnings.Add("図「" + diagramName + "」: 対応するノードが無いため出力をスキップ");
+                            RecordSkippedDiagram(diagramOwner, editor.Id, diagramName, "対応可能なノードが取得できないため図の内容は未確認");
                             continue;
                         }
                         var file = SaveDiagram(diagramName, "_state", "状態遷移図", "state", uml, diagramOwner, editor.Id);
@@ -1908,7 +1910,7 @@ public class MarkdownExporter
                         AddDiagramWarnings(diagramName, exporter.Warnings);
                         if (exporter.NodeCount == 0)
                         {
-                            Warnings.Add("図「" + diagramName + "」: 対応するノードが無いため出力をスキップ");
+                            RecordSkippedDiagram(diagramOwner, editor.Id, diagramName, "対応可能なノードが取得できないため図の内容は未確認");
                             continue;
                         }
                         var file = SaveDiagram(diagramName, "_class", "クラス図", "class", uml, diagramOwner, editor.Id);
@@ -1933,6 +1935,13 @@ public class MarkdownExporter
             _sb.Append(nl);
         }
         return skipChildren;
+    }
+
+    private void RecordSkippedDiagram(IModel owner, string editorId, string name, string reason)
+    {
+        SkippedDiagrams.Add("図「" + name + "」 / " + PathOf(owner) + " : " + reason);
+        Comparison.Add(new ChangeRecord { Key = "diagram:" + owner.Id + ":" + editorId, Parent = owner.Id,
+            Name = name, Kind = "unverified-diagram", Path = PathOf(owner), Content = reason });
     }
 
     // 出力予定を集めてからパスを確定する。本文と索引の仮参照は書込み成功後に置換する。
@@ -2920,6 +2929,8 @@ private void WriteReviewInputs(IApplication app, AgentConfig config, IProject pr
 
 private void AppendExportWarnings(StringBuilder inventory, string name, MarkdownExporter exporter)
 {
+    foreach (var skipped in exporter.SkippedDiagrams)
+        inventory.Append("- 図の未確認（").Append(ReviewSnapshot.Cell(name)).Append("）: ").Append(ReviewSnapshot.Cell(skipped)).Append("。図の内容の変更有無は判断できません。\n");
     foreach (var warning in exporter.Warnings)
         inventory.Append("- 出力警告（").Append(ReviewSnapshot.Cell(name)).Append("）: ")
             .Append(ReviewSnapshot.Cell(warning)).Append("。該当範囲は判断不能。\n");
@@ -3038,7 +3049,7 @@ public void StartChangeReview(ICommandContext context, ICommandParams commandPar
         ReviewSnapshot.AppendInstructions(session.Folder, "change");
         var instructions = "\n## 変化点レビュー\n\n`session.ini` の mode=change です。最初に `diff/changes.md` と `inputs.md` を読み、"
             + "`baseline/design/` と `design/` の前後を比較してください。`baseline/` と `diff/` は固定入力で変更禁止です。"
-            + "変更項目と変更されていない関連設計を確認し、現在版の上位文書との整合・波及影響をレビューしてください。"
+            + "両版および上位文書の unverified-diagrams.md を確認し、取得できない図を空図・変更なし・問題なしと扱わず、未確認として結果へ記載してください。変更項目と変更されていない関連設計を確認し、現在版の上位文書との整合・波及影響をレビューしてください。"
             + "工程は確定済みで再質問しません。既存問題と変更起因の問題を区別し、前後の根拠を示してください。"
             + "`review/changes.md` に変更概要・影響範囲・未確認範囲を、通常の指摘・対応表・提案と併せて出力してください。\n";
         foreach (var file in new[] { "AGENTS.md", "CLAUDE.md" }) File.AppendAllText(Path.Combine(session.Folder, file), instructions, new UTF8Encoding(false));
@@ -3046,8 +3057,8 @@ public void StartChangeReview(ICommandContext context, ICommandParams commandPar
         var config = AgentConfig.Load();
         if (changes == 0) {
             File.WriteAllText(Path.Combine(session.ReviewDir(), "changes.md"), "# 差分なし\n\n比較元: " + session.BaselineCommit
-                + "\n比較先: 現在開いている選択成果物（未保存編集を含む固定出力）\n\n取得できた範囲に差分はありません。AIは起動していません。上位整合・入力範囲外の依存関係は未確認です。\n", new UTF8Encoding(false));
-            app.Window.UI.ShowInformationDialog("差分はありません。AIは起動していません。\n保存先: " + session.Folder + "\n「結果を開く」で確認できます。", "AgentReview");
+                + "\n比較先: 現在開いている選択成果物（未保存編集を含む固定出力）\n\n取得できた範囲に差分はありません。AIは起動していません。上位整合・入力範囲外の依存関係は未確認です。両版および上位文書の unverified-diagrams.md にある図の内容の変更有無は判断できません。\n", new UTF8Encoding(false));
+            app.Window.UI.ShowInformationDialog("取得できた範囲に差分はありません。AIは起動していません。図の未確認一覧も確認してください。\n保存先: " + session.Folder + "\n「結果を開く」で確認できます。", "AgentReview");
         } else {
             TerminalLauncher.Launch(session.Folder, config.ActiveProfile().BuildLaunchCommand("変化点レビューを開始してください。session.ini の工程は確定済みです。diff/changes.md と inputs.md から確認してください。"), config.Terminal);
             app.Window.UI.ShowInformationDialog("変化点レビューを開始しました。変更項目: " + changes + "\n保存先: " + session.Folder
@@ -3244,6 +3255,14 @@ private void WriteDesignArtifacts(IApplication app, string category, MarkdownExp
         File.WriteAllText(Path.Combine(outDir, "_index.md"), index.ToString(), utf8);
     }
 
+    var omissions = new StringBuilder("# 図の未確認一覧\n\n取得できなかった図は空図・変更なし・問題なしとは判定していません。\n\n");
+    foreach (var skipped in exporter.SkippedDiagrams) {
+        omissions.Append("- ").Append(ReviewSnapshot.Cell(skipped)).Append('\n');
+        app.Output.WriteLine(category, "[info] 図の未確認: " + skipped);
+    }
+    if (exporter.SkippedDiagrams.Count == 0) omissions.Append("スキップした図はありません。\n");
+    File.WriteAllText(Path.Combine(outDir, "unverified-diagrams.md"), omissions.ToString(), utf8);
+    File.AppendAllText(Path.Combine(outDir, "_index.md"), "\n[図の未確認一覧](unverified-diagrams.md)\n", utf8);
     foreach (var warning in exporter.Warnings)
         app.Output.WriteLine(category, "[warn]  " + warning);
     app.Output.WriteLine(category, "[info]  モデル " + exporter.ModelCount + " 件を design.md に出力");

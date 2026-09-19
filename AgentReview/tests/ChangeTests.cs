@@ -96,7 +96,18 @@ public static class ChangeTests
         context.App.Workspace.ThrowOpen = false;
         target.Editors.Add(new IDiagram { Id = "empty-class", Kind = "class", Model = target, Nodes = 0 });
         command.StartChangeReview(context, new ICommandParams());
-        Check(TerminalLauncher.Launches == launches && context.App.Window.UI.Messages.Last().Contains("出力警告"), "Export warning blocks incomplete comparison");
+        Check(TerminalLauncher.Launches == launches + 1, "Zero compatible nodes do not block review");
+        var limited = SessionLocator.FindLatest(outputs);
+        Check(File.ReadAllText(Path.Combine(limited.DesignDir(), "unverified-diagrams.md")).Contains("未確認")
+            && File.ReadAllText(Path.Combine(limited.Folder, "inputs.md")).Contains("図の未確認"), "Skipped diagrams retained in inputs and report");
+        Check(File.ReadAllText(Path.Combine(limited.DesignDir(), "comparison.xml")).Contains("unverified-diagram"), "Skipped diagram identity retained");
+        Check(ChangeDiff.Build(Path.Combine(temp, "diagram-became-unverified"),
+            new List<ChangeRecord> { new ChangeRecord { Key = "diagram:a", Kind = "class", Content = "class A" } },
+            new List<ChangeRecord> { new ChangeRecord { Key = "diagram:a", Kind = "unverified-diagram", Content = "unavailable" } }) == 1, "Exported to unverified is a change");
+        launches = TerminalLauncher.Launches;
+        target.Editors.Add(new IDiagram { Id = "broken", Kind = "class", Model = target, ThrowExport = true });
+        command.StartChangeReview(context, new ICommandParams());
+        Check(TerminalLauncher.Launches == launches && context.App.Window.UI.Messages.Last().Contains("出力警告"), "Actual export failure still blocks review");
         target.Editors.Clear();
         var binary = Path.Combine(temp, "attachment-fixture"); Directory.CreateDirectory(binary);
         File.WriteAllBytes(Path.Combine(binary, "table.bin"), new byte[] { 0, 255, 1 });

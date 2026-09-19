@@ -1,4 +1,4 @@
-// Fake SDK surface and engines. All model names and types are synthetic.
+﻿// Fake SDK surface and engines. All model names and types are synthetic.
 public class IField
 {
     public string Name, Type;
@@ -35,6 +35,7 @@ public class IDiagram : Editor, IRepresentation
     public IModel Model { get; set; }
     public string Kind;
     public int Nodes = 1;
+    public bool ThrowExport;
 }
 public class ILifelineShape { }
 public class ISequenceDiagram : IDiagram
@@ -58,7 +59,7 @@ public class ClassPlantUmlExporter
 {
     public int NodeCount;
     public List<string> Warnings = new List<string>();
-    public ClassPlantUmlExporter(IDiagram d, ClassPlantUmlOptions o) { NodeCount = d.Nodes; }
+    public ClassPlantUmlExporter(IDiagram d, ClassPlantUmlOptions o) { if (d.ThrowExport) throw new IOException("synthetic diagram failure"); NodeCount = d.Nodes; }
     public string Export() { return "@startuml\nclass A\n@enduml\n"; }
 }
 public class StatePlantUmlExporter
