@@ -18,7 +18,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.5.1";
+    public const string Title = "シーケンス生成実験 / 0.5.2";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -68,7 +68,7 @@ public static class SequenceExperiment
             var ownerField = sample.GetOwnerField();
             if (owner == null || ownerField == null || !owner.IsEditable || owner.IsDeleted || owner.IsProxy)
                 throw new InvalidOperationException("E102: 新しい図を置く親モデルを取得できないか、編集できません。");
-            if (!app.Window.UI.ShowConfirmDialog(replaceExisting ? "コピーのプロジェクトで実行してください。\n現在の図をPlantUMLの内容で置き換えます。図自体のIDは維持します。\n配下の要素と手作業の配置は作り直します。自動保存はしません。" : updateProbe ? "コピーのプロジェクトで実行してください。\n一時図を作り、同じIDでメッセージ名を再取り込みします。\n最後に一時図を含む操作を取り消します。既存図を更新する検証ではありません。\n自動保存はしません。" : "実プロジェクトのコピーを開いていますか？\n新しい検証用シーケンス図を同じ親に追加する実験です。\n既存図の内容は入力にコピーしません。自動保存しません。\n失敗時はトランザクションの取消を試みますが、実機での復元動作は未確認です。", Title)) return;
+            if (!app.Window.UI.ShowConfirmDialog(replaceExisting ? "コピーのプロジェクトで実行してください。\n現在の図をPlantUMLの内容で置き換えます。図自体のIDは維持します。\n配下の要素と手作業の配置は作り直します。子要素と外部モデルとの関連は引き継ぎません。自動保存はしません。" : updateProbe ? "コピーのプロジェクトで実行してください。\n一時図を作り、同じIDでメッセージ名を再取り込みします。\n最後に一時図を含む操作を取り消します。既存図を更新する検証ではありません。\n自動保存はしません。" : "実プロジェクトのコピーを開いていますか？\n新しい検証用シーケンス図を同じ親に追加する実験です。\n既存図の内容は入力にコピーしません。自動保存しません。\n失敗時はトランザクションの取消を試みますが、実機での復元動作は未確認です。", Title)) return;
             var folder = app.Window.UI.ShowSelectFolderDialog("会社PC内の実験結果の保存先");
             if (string.IsNullOrEmpty(folder)) return;
             directory = Path.Combine(folder, "sequence_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + Guid.NewGuid().ToString("N").Substring(0,8));
@@ -268,7 +268,7 @@ public class SequenceReplacement
 {
     public SequenceIdentity Identity;
     public string RootName,FrameName,Before;
-    public string[] Children,AllIds,RootRelations,ShapeIds;
+    public string[] Children,AllIds,RootRelations,ShapeIds,ExternalIds;
     static IEnumerable<IModel> Tree(IModel model)
     { yield return model; foreach(var child in model.GetChildren())foreach(var nested in Tree(child))yield return nested; }
     static string[] Relations(IModel model)
@@ -279,15 +279,14 @@ public class SequenceReplacement
     {
         var models=Tree(root).ToArray(); var ids=new HashSet<string>(models.Select(m=>m.Id));
         if(models.Any(m=>m.IsDeleted || m.IsProxy || !m.IsEditable))throw new InvalidOperationException("E140: 更新対象に編集不可・未読込の要素があります。");
-        foreach(var model in models.Where(m=>m.Id!=root.Id && m.Id!=root.Frame.Id))
-        {
-            // Replacement scope follows ownership, regardless of the SDK wrapper interface.
-            if(model.GetRelationsWhere((r,f)=>true).Any(r=>!ids.Contains(r.Source.Id) || !ids.Contains(r.Target.Id)))
-                throw new InvalidOperationException("E142: 子要素に図の外との関連があります。参照を保護するため更新を停止します。対象: "+model.Name);
-        }
+        // Owned children are replaced even when they reference external models.
+        // Keep the external endpoints themselves and verify they survive deletion.
+        var externalIds=models.Where(m=>m.Id!=root.Id && m.Id!=root.Frame.Id)
+            .SelectMany(m=>m.GetRelationsWhere((r,f)=>true))
+            .SelectMany(r=>new[]{r.Source.Id,r.Target.Id}).Where(id=>!ids.Contains(id)).Distinct().ToArray();
         return new SequenceReplacement {
             Identity=new SequenceIdentity{Root=root.Id,Frame=root.Frame.Id,FrameRelation=root.Frame.GetOwnerRelationship().Id,Editor=diagram.Id,FrameShape=diagram.Frame.Id},
-            RootName=root.Name,FrameName=root.Frame.Name,Before=Fingerprint(root),
+            RootName=root.Name,FrameName=root.Frame.Name,Before=Fingerprint(root),ExternalIds=externalIds,
             Children=root.GetChildren().Where(m=>m.Id!=root.Frame.Id).Select(m=>m.Id).ToArray(),
             AllIds=models.Select(m=>m.Id).ToArray(),RootRelations=Relations(root).Where(r=>!models.Where(m=>m.Id!=root.Id && m.Id!=root.Frame.Id).Any(m=>r.Contains(m.Id))).ToArray(),
             ShapeIds=diagram.Shapes.Select(x=>x.Id).OrderBy(x=>x).ToArray()
@@ -302,6 +301,8 @@ public class SequenceReplacement
     { foreach(string id in Children){ var model=project.GetModelById(id); if(model!=null && !model.IsDeleted)model.Delete(); } }
     public void Verify(IProject project,IUnitImportResult result,SequencePayload payload)
     {
+        if(ExternalIds.Any(id=>project.GetModelById(id)==null || project.GetModelById(id).IsDeleted))
+            throw new InvalidOperationException("E148: 関連先の外部モデルが失われました。");
         var root=project.GetModelById(Identity.Root) as IInteraction;
         var diagram=result.ImportedEditors.OfType<ISequenceDiagram>().SingleOrDefault(d=>d.Id==Identity.Editor && d.ModelId==Identity.Root);
         if(root==null || root.Frame==null || root.Frame.Id!=Identity.Frame || root.Frame.GetOwnerRelationship().Id!=Identity.FrameRelation || diagram==null || diagram.Frame.Id!=Identity.FrameShape)
