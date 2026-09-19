@@ -76,7 +76,7 @@ public static class Tests
             if (kind == "missing") map["fieldName"] = "missing";
             if (kind == "multi") field.UpperBound = -1;
             if (kind == "rich") field.Type = "RichText";
-            if (kind == "owner") field.IsEmbedded = true;
+            if (kind == "owner") { field.IsEmbedded = true; field.TypeClass = new object(); }
             if (kind == "reference") field.IsReference = true;
             if (kind == "readonly") model.IsEditable = false;
             if (kind == "proxy") model.IsProxy = true;
@@ -148,6 +148,55 @@ public static class Tests
         Check(app.Window.UI.Last.Contains("型名がRichText: 1") && app.Window.UI.Last.Contains("更新候補: 0"), "saved field summary unavailable");
         Check(!app.Window.UI.Last.Contains(model.Name) && !app.Window.UI.Last.Contains(model.Id), "field summary leaked identity");
         Check(model.Writes == 0, "field diagnosis mutated model");
+
+        // An owned scalar remains eligible; owned model fields do not.
+        app = Setup(); model = (Model)app.Workspace.CurrentModel;
+        model.Metaclass.Fields[0].IsEmbedded = true;
+        ProbeHost.Prepare(app); WriteConfig(Config());
+        Check(ProbeHost.Session.CandidateCount == 1, "embedded scalar excluded");
+        ProbeHost.Execute(app); Check(model.Writes == 1, "embedded scalar update blocked");
+
+        foreach (var scenario in new[] {"success", "root", "lifeline", "removed", "deleted", "proxy", "readonly", "added", "changed", "unselected"})
+        {
+            app = Setup();
+            var interaction = new Interaction(); interaction.Metaclass.Fields.Clear();
+            var first = new Model {ModelId = "msg-a"};
+            var second = new Model {ModelId = "msg-b"};
+            var lifeline = new Model {ModelId = "line-a"};
+            first.Metaclass.Fields[0].IsEmbedded = true;
+            second.Metaclass.Fields[0].IsEmbedded = true;
+            interaction.MessageList.Add(first); interaction.MessageList.Add(second);
+            interaction.LifelineList.Add(lifeline);
+            app.Workspace.CurrentModel = interaction;
+            ProbeHost.PrepareSequence(app);
+            Check(ProbeHost.Session != null && ProbeHost.Session.Sequence && ProbeHost.Session.CandidateCount == 2, "sequence prepare failed");
+            Check(first.Writes + second.Writes + lifeline.Writes + interaction.Writes == 0, "sequence preparation mutated");
+            Check(!app.Window.UI.Last.Contains(first.Name) && !app.Window.UI.Last.Contains(first.Id), "sequence summary leaked");
+            Check(File.ReadAllText(Path.Combine(ProbeHost.Session.DirectoryPath,"targets.txt")).Contains("msg-b"), "target list missing message");
+            map = Config(); map["targetModelId"] = second.Id;
+            if (scenario == "root") map["targetModelId"] = interaction.Id;
+            if (scenario == "lifeline") map["targetModelId"] = lifeline.Id;
+            if (scenario == "removed") interaction.MessageList.Remove(second);
+            if (scenario == "deleted") second.IsDeleted = true;
+            if (scenario == "proxy") second.IsProxy = true;
+            if (scenario == "readonly") second.IsEditable = false;
+            if (scenario == "added") { var added = new Model {ModelId="msg-new"}; interaction.MessageList.Add(added); map["targetModelId"] = added.Id; }
+            if (scenario == "changed") app.Window.UI.OnConfirm = () => interaction.MessageList.Remove(second);
+            if (scenario != "unselected") WriteConfig(map);
+            ProbeHost.Execute(app);
+            Check(first.Writes + lifeline.Writes + interaction.Writes == 0, "non-target mutated");
+            Check(second.Writes == (scenario == "success" ? 1 : 0), "sequence scenario " + scenario);
+            if (scenario == "success")
+            {
+                Check(ProbeHost.Session.Run.Match("変更後") == "一致", "message readback mismatch");
+                second.Value = "SECRET_BEFORE_VALUE"; ProbeHost.Compare(app, "Undo後");
+                Check(ProbeHost.Session.Run.Match("Undo後") == "一致", "message undo compare");
+                second.Value = "SECRET_AFTER_VALUE"; ProbeHost.Compare(app, "Redo後");
+                Check(ProbeHost.Session.Run.Match("Redo後") == "一致" && second.Writes == 1, "message redo compare");
+            }
+        }
+        app = Setup(); ProbeHost.PrepareSequence(app);
+        Check(ProbeHost.Session == null && app.Window.UI.Last.Contains("S001"), "non-interaction accepted");
 
         var collision = Path.Combine(root,"existing.txt"); File.WriteAllText(collision,"original");
         bool threw = false; try { ProbeCore.WriteNew(collision,"replacement"); } catch (IOException) { threw=true; }

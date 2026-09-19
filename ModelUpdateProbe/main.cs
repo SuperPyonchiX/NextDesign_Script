@@ -1,4 +1,4 @@
-// ModelUpdateProbe 0.1.1 — v3.x. Update success on the real runtime is unverified.
+// ModelUpdateProbe 0.2.0 — v3.x. Update success on the real runtime is unverified.
 using NextDesign.Core;
 using NextDesign.Desktop;
 using NextDesign.Extension;
@@ -12,6 +12,8 @@ using System.Text;
 using System.Text.RegularExpressions;
 
 public void PrepareProbe(ICommandContext context, ICommandParams parameters) { ProbeHost.Prepare(context.App); }
+public void PrepareSequenceProbe(ICommandContext context, ICommandParams parameters) { ProbeHost.PrepareSequence(context.App); }
+public void OpenProbeTargets(ICommandContext context, ICommandParams parameters) { ProbeHost.OpenTargets(context.App); }
 public void ExecuteProbe(ICommandContext context, ICommandParams parameters) { ProbeHost.Execute(context.App); }
 public void OpenProbeConfig(ICommandContext context, ICommandParams parameters) { ProbeHost.OpenConfig(context.App); }
 public void CompareAfter(ICommandContext context, ICommandParams parameters) { ProbeHost.Compare(context.App, "変更後"); }
@@ -23,7 +25,7 @@ public void ShowProbeFields(ICommandContext context, ICommandParams parameters) 
 
 public static class ProbeHost
 {
-    public const string Version = "0.1.1";
+    public const string Version = "0.2.0";
     public const string Title = "設計更新検証 / " + Version;
     public static ProbeSession Session;
     public static string LastSummary = "検証準備を実行してください。";
@@ -78,7 +80,96 @@ public static class ProbeHost
     public static bool Eligible(IField field)
     {
         return field != null && field.Type == "String" && field.UpperBound == 1
-            && !field.IsEmbedded && !field.IsReference && field.TypeClass == null && field.TypeEnum == null;
+            && !field.IsReference && field.TypeClass == null && field.TypeEnum == null;
+    }
+
+    public static void PrepareSequence(IApplication app)
+    {
+        try
+        {
+            Session = null;
+            var project = app.Workspace.CurrentProject;
+            var interaction = app.Workspace.CurrentModel as IInteraction;
+            if (project == null || interaction == null)
+                throw new ProbeCheckException("S001", "シーケンス図のモデルをナビゲータで選択して再準備してください。\n選択モデルをIInteractionとして取得できませんでした。");
+            if (interaction.IsDeleted || interaction.IsProxy)
+                throw new ProbeCheckException("S002", "選択した相互作用モデルは削除済み、またはプロキシです。");
+            if (!app.Window.UI.ShowConfirmDialog("実プロジェクトのコピーを開いていますか？\n図内のメッセージとライフラインの一覧を保存します。\nこの操作ではモデルを変更しません。", Title)) return;
+            var folder = app.Window.UI.ShowSelectFolderDialog("会社PC内の検証結果の保存先");
+            if (string.IsNullOrEmpty(folder)) return;
+            var session = new ProbeSession(project, interaction, Path.Combine(folder, "probe_" + ProbeCore.NewId()));
+            session.Sequence = true;
+            var messages = interaction.Messages.Cast<IModel>().ToList();
+            var lifelines = interaction.Lifelines.Cast<IModel>().ToList();
+            var report = new StringBuilder("ModelUpdateProbe " + Version + "\r\nシーケンス内の更新候補\r\n");
+            report.AppendLine("相互作用ID: " + interaction.Id);
+            report.AppendLine("メッセージの並びは作成順。図の上からの順序ではありません。IDと名称・値で照合してください。");
+            report.AppendLine("1件の候補からtargetModelIdとfieldNameをcase.jsonへ転記し、newValueを指定します。");
+            report.AppendLine("文字列属性の変更が図のラベルに反映されるかは実機で別途確認します。");
+            foreach (var message in messages)
+            {
+                report.AppendLine("\r\nメッセージ: " + ProbeJson.Quote(message.Name));
+                report.AppendLine("targetModelId: " + ProbeJson.Quote(message.Id.ToString()));
+                if (message.IsDeleted || message.IsProxy || !message.IsEditable)
+                { report.AppendLine("候補外: 削除済み・プロキシ・編集不可のいずれか"); continue; }
+                int count = 0;
+                foreach (var field in message.Metaclass.GetFields().Cast<IField>())
+                {
+                    if (field == null) { report.AppendLine("<null field>"); continue; }
+                    report.AppendLine("field: " + ProbeJson.Quote(field.Name) + " | type=" + field.Type
+                        + " | upper=" + field.UpperBound + " | embedded=" + field.IsEmbedded
+                        + " | reference=" + field.IsReference + " | candidate=" + Eligible(field));
+                    if (!Eligible(field)) continue;
+                    try
+                    {
+                        var value = message.GetField(field.Name);
+                        if (value != null && !(value is string)) { report.AppendLine("読取値がStringでないため候補外"); continue; }
+                        report.AppendLine("  fieldName: " + ProbeJson.Quote(field.Name) + " | 現在値: " + ProbeJson.Quote((string)value));
+                        count++;
+                    }
+                    catch (Exception ex) { report.AppendLine("読取失敗: " + ex.GetType().FullName); }
+                }
+                if (count > 0) session.TargetIds.Add(message.Id.ToString());
+                session.CandidateCount += count;
+            }
+            report.AppendLine("\r\nライフライン（今回の更新対象外・図の左からの順序）");
+            foreach (var lifeline in lifelines)
+                report.AppendLine(ProbeJson.Quote(lifeline.Id.ToString()) + " | " + ProbeJson.Quote(lifeline.Name));
+            session.FieldSummary = "シーケンス準備時の診断\nメッセージ数: " + messages.Count
+                + "\nライフライン数: " + lifelines.Count + "\n候補を持つメッセージ数: " + session.TargetIds.Count
+                + "\n更新候補（属性数）: " + session.CandidateCount + "\nモデル変更: なし\n「対象一覧を開く」で1件を選んでください。";
+            Directory.CreateDirectory(session.DirectoryPath);
+            ProbeCore.WriteNew(Path.Combine(session.DirectoryPath, "targets.txt"), report.ToString());
+            ProbeCore.WriteNew(Path.Combine(session.DirectoryPath, "case.json"), ProbeJson.Write(new Dictionary<string, string> {
+                {"schemaVersion", "1"}, {"caseId", "SEQ001"}, {"targetModelId", ""}, {"fieldName", ""},
+                {"newValue", "PROBE_TEST_001"}, {"ndVersion", "未確認"}, {"profile", "未確認"}, {"profileVersion", "未確認"}
+            }));
+            Session = session;
+            LastDetail = report + "\r\n保存先: " + session.DirectoryPath;
+            LastSummary = Title + "\n" + session.FieldSummary;
+            if (session.CandidateCount == 0) LastSummary += "\n更新対象なし（F001）。検証実行には進まず、この画面を撮影してください。";
+            Show(app);
+        }
+        catch (Exception ex) { Failure(app, "シーケンス準備", ex); }
+    }
+
+    public static IModel Target(ProbeSession session, ProbeCase config)
+    {
+        IModel model = session.Model;
+        if (session.Sequence)
+        {
+            if (!session.TargetIds.Contains(config.TargetModelId))
+                throw new ProbeCheckException("S003", "準備時のメッセージ候補にないIDです。");
+            var matches = ((IInteraction)session.Model).Messages.Cast<IModel>()
+                .Where(m => m.Id.ToString() == config.TargetModelId).ToList();
+            if (matches.Count != 1) throw new ProbeCheckException("S004", "対象メッセージが元の相互作用内に一意に存在しません。再準備してください。");
+            model = matches[0];
+        }
+        else if (model.Id.ToString() != config.TargetModelId)
+            throw new InvalidOperationException("対象IDが準備時のモデルと一致しません。");
+        if (model.IsDeleted || model.IsProxy || !model.IsEditable)
+            throw new InvalidOperationException("対象は削除済み・プロキシ・編集不可のいずれかです。");
+        return model;
     }
 
     public static void CheckContext(IApplication app, ProbeSession session)
@@ -94,13 +185,11 @@ public static class ProbeHost
 
     public static string Read(ProbeSession session, ProbeCase config)
     {
-        if (session.Model.Id.ToString() != config.TargetModelId)
-            throw new InvalidOperationException("対象IDが準備時のモデルと一致しません。");
-        if (!session.Model.IsEditable) throw new InvalidOperationException("対象は編集不可です。");
-        var fields = session.Model.Metaclass.GetFields().Cast<IField>().Where(f => f.Name == config.FieldName).ToList();
+        var model = Target(session, config);
+        var fields = model.Metaclass.GetFields().Cast<IField>().Where(f => f != null && f.Name == config.FieldName).ToList();
         if (fields.Count != 1 || !Eligible(fields[0]))
             throw new InvalidOperationException("単値String属性を一意に特定できません。");
-        var value = session.Model.GetField(config.FieldName);
+        var value = model.GetField(config.FieldName);
         if (value != null && !(value is string)) throw new InvalidOperationException("読戻し値が文字列ではありません。");
         return (string)value;
     }
@@ -126,7 +215,7 @@ public static class ProbeHost
             if (string.Equals(run.Before, run.Config.NewValue, StringComparison.Ordinal))
                 throw new InvalidOperationException("変更前と変更後が同じです。別の値を指定してください。");
             run.Precheck = "合格";
-            var confirmation = "IModel.SetField を1回実行します。\n対象: " + session.Model.Name
+            var confirmation = "IModel.SetField を1回実行します。\n対象: " + Target(session, run.Config).Name
                 + "\nフィールド: " + run.Config.FieldName + "\n変更前: " + ProbeCore.Preview(run.Before)
                 + "\n変更後: " + ProbeCore.Preview(run.Config.NewValue) + "\n\n続行しますか？";
             if (!app.Window.UI.ShowConfirmDialog(confirmation, Title))
@@ -139,7 +228,7 @@ public static class ProbeHost
             ProbeCore.Perform(run,
                 delegate { CheckContext(app, session); return Read(session, run.Config); },
                 delegate { Save(session, run, "呼出前"); },
-                delegate(string value) { session.Model.SetField(run.Config.FieldName, value); });
+                delegate(string value) { Target(session, run.Config).SetField(run.Config.FieldName, value); });
             SaveAndShow(app, session, run, "変更後");
         }
         catch (Exception ex)
@@ -148,6 +237,8 @@ public static class ProbeHost
             {
                 run.Error = ex.GetType().FullName;
                 run.ErrorMessage = ex.Message;
+                var check = ex as ProbeCheckException;
+                if (check != null) run.CheckCode = check.Code;
                 if (!run.Invoked) run.Call = "未呼出";
                 SaveAndShow(app, Session, run, "停止");
             }
@@ -178,6 +269,8 @@ public static class ProbeHost
         var record = run.Record(phase);
         record.Add("extensionVersion", Version);
         record.Add("sessionId", Path.GetFileName(session.DirectoryPath));
+        record.Add("scope", session.Sequence ? "interaction message" : "selected model");
+        record.Add("rootModelId", session.Model.Id.ToString());
         ProbeCore.WriteNew(Path.Combine(session.DirectoryPath, run.Id + "_" + ProbeCore.NewId() + ".json"), ProbeJson.Write(record));
     }
 
@@ -207,6 +300,16 @@ public static class ProbeHost
             Process.Start(new ProcessStartInfo("notepad.exe", "\"" + Path.Combine(Session.DirectoryPath, "case.json") + "\"") { UseShellExecute = false });
         }
         catch (Exception ex) { Failure(app, "検証ファイル", ex); }
+    }
+    public static void OpenTargets(IApplication app)
+    {
+        try
+        {
+            if (Session == null) throw new ProbeCheckException("C001", "準備状態がありません。");
+            var name = Session.Sequence ? "targets.txt" : "fields.txt";
+            Process.Start(new ProcessStartInfo("notepad.exe", "\"" + Path.Combine(Session.DirectoryPath, name) + "\"") { UseShellExecute = false });
+        }
+        catch (Exception ex) { Failure(app, "対象一覧", ex); }
     }
     public static void Details(IApplication app)
     {
@@ -239,6 +342,8 @@ public class ProbeSession
     public ProbeRun Run;
     public int CandidateCount;
     public string FieldSummary;
+    public bool Sequence;
+    public readonly HashSet<string> TargetIds = new HashSet<string>(StringComparer.Ordinal);
     public ProbeSession(IProject project, IModel model, string directory) { Project = project; Model = model; DirectoryPath = directory; }
 }
 
@@ -300,6 +405,7 @@ public class ProbeRun
     public string Before, Current;
     public bool BeforeKnown, CurrentKnown, Invoked;
     public string Precheck = "未完了", Call = "未呼出", Error = "", ErrorMessage = "", ObservationError = "", ObservationMessage = "", LogError = "";
+    public string CheckCode = "";
     public string Match(string phase)
     {
         if (!CurrentKnown || !BeforeKnown || Config == null) return "未確認";
@@ -313,6 +419,7 @@ public class ProbeRun
             + " / 期待値との照合: " + Match(phase)
             + "\n変更前との差: " + (!CurrentKnown || !BeforeKnown ? "未確認" : string.Equals(Before, Current, StringComparison.Ordinal) ? "なし" : "あり")
             + "\n例外型: " + (Error.Length == 0 ? "なし" : Error)
+            + (CheckCode.Length == 0 ? "" : " / 診断: " + CheckCode)
             + "\n読戻し例外: " + (ObservationError.Length == 0 ? "なし" : ObservationError)
             + "\n記録: " + (LogError.Length == 0 ? "保存済み" : "保存失敗 " + LogError)
             + "\n対象フィールドのみ照合。Undo/Redo実行はユーザー申告。\nモデル名・パス・値・環境情報は詳細に保存。";
@@ -321,7 +428,7 @@ public class ProbeRun
     {
         var map = new Dictionary<string, string> {
             {"runId", Id}, {"timestamp", DateTimeOffset.Now.ToString("o")}, {"phase", phase},
-            {"api", "IModel.SetField"}, {"precheck", Precheck}, {"invoked", Invoked.ToString()}, {"call", Call},
+            {"api", "IModel.SetField"}, {"precheck", Precheck}, {"invoked", Invoked.ToString()}, {"call", Call}, {"checkCode", CheckCode},
             {"beforeKnown", BeforeKnown.ToString()}, {"before", Before}, {"currentKnown", CurrentKnown.ToString()}, {"current", Current},
             {"match", Match(phase)}, {"exceptionType", Error}, {"exceptionMessage", ErrorMessage},
             {"readExceptionType", ObservationError}, {"readExceptionMessage", ObservationMessage}, {"logError", LogError},

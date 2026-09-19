@@ -29,9 +29,22 @@ namespace NextDesign.Core
         object GetField(string field);
         void SetField(string field, object value);
     }
+    public interface IInteraction : IModel
+    {
+        IEnumerable<IModel> Messages { get; }
+        IEnumerable<IModel> Lifelines { get; }
+    }
+    public class Interaction : Model, IInteraction
+    {
+        public List<IModel> MessageList = new List<IModel>();
+        public List<IModel> LifelineList = new List<IModel>();
+        public IEnumerable<IModel> Messages { get { return MessageList; } }
+        public IEnumerable<IModel> Lifelines { get { return LifelineList; } }
+    }
     public class Model : IModel
     {
-        public string Id { get { return "fictional-id"; } }
+        public string ModelId = "fictional-id";
+        public string Id { get { return ModelId; } }
         public string Name { get { return "SECRET_MODEL_NAME"; } }
         public bool IsDeleted { get; set; }
         public bool IsProxy { get; set; }
