@@ -1,6 +1,6 @@
 # AgentReview — Claude Code / Codex による設計レビュー支援
 
-## 0.11.0 の実装状況
+## 0.11.1 の実装状況
 
 「レビュー開始」で、設計自体の工程別観点と上位要求との整合をまとめて確認する。設定された上位モデル・外部資料とAttachmentを固定コピーし、要求の反映を `review/coverage.md` に記録する。上位文書が未指定なら、その整合は未確認として結果に残す。操作と実機確認は [VERIFY.md](VERIFY.md) を参照。
 
@@ -190,3 +190,9 @@ state=Example.Design.StateGroup
 - スクリプトの変更は Next Design を再起動するまで反映されない
 - エージェントの実行完了を拡張は検知しない。「結果を開く」でファイルの有無を確認する
 - 配置前検証: `python <skills>/nextdesign-script-extension/scripts/validate_manifest.py AgentReview --nd-version 3`
+
+## 選択画面が起動しない場合
+
+0.11.1 では PowerShell の標準エラー本文をダイアログに表示し、標準出力とともに `%USERPROFILE%\.nd-agent-review\diagnostics\picker-*.txt` に保存する。画面内にもログのフルパスを表示する。終了コード1だけでは実行制限と断定しない。
+
+エラーが出た場合は、表示された本文または診断ログで原因を確認する。スクリプト実行禁止・署名要求のエラーなら管理者へ実行可否を確認し、実行ポリシーを変更・回避しない。画面生成やXML読み込みのエラーなら、ログに記載された箇所を調べる。

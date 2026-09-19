@@ -229,6 +229,18 @@ public static class InputTests
         var helper = Path.Combine(extension, "resources", "Select-ReviewInputs.ps1");
         File.WriteAllText(helper, "param([string]$RequestPath,[string]$ResponsePath)\n[xml]$r = Get-Content -LiteralPath $RequestPath -Encoding UTF8 -Raw\nif ($r.request.target -notlike '*Design*') { exit 3 }\n[IO.File]::WriteAllText($ResponsePath, '<result action=\"none\" phase=\"detailed\"><settings lastPhase=\"detailed\" /></result>')", new UTF8Encoding(true));
         Check(ReviewInputPicker.Show(extension, project, root, false).Phase == "detailed", "Real helper process and paths with spaces/Japanese");
+        File.WriteAllText(helper, "[Console]::Error.WriteLine('Synthetic picker failure'); [Console]::Out.WriteLine('Synthetic context'); exit 1", new UTF8Encoding(true));
+        try {
+            ReviewInputPicker.Show(extension, project, root, false);
+            throw new Exception("Failed helper accepted");
+        } catch (IOException error) {
+            Check(error.Message.Contains("Synthetic picker failure") && error.Message.Contains("診断ログ:"), "Original stderr visible");
+        }
+        var diagnostics = Path.Combine(AgentConfig.ConfigDir(), "diagnostics");
+        Check(Directory.GetFiles(diagnostics).Any(f => File.ReadAllText(f).Contains("Synthetic context")), "Stdout retained in diagnostic file");
+        File.WriteAllText(helper, "1..10000 | ForEach-Object { [Console]::Error.WriteLine('error detail'); [Console]::Out.WriteLine('output detail') }; exit 2", new UTF8Encoding(true));
+        Throws(() => ReviewInputPicker.Show(extension, project, root, false), "Large parallel streams drain without deadlock");
+        Check(Directory.GetFiles(diagnostics).All(f => new FileInfo(f).Length < 150000), "Diagnostic memory bounded");
         File.WriteAllText(helper, "exit 3", new UTF8Encoding(true));
         Throws(() => ReviewInputPicker.Show(extension, project, root, false), "Helper failure stops review");
         File.WriteAllText(helper, "exit 0", new UTF8Encoding(true));

@@ -591,6 +591,16 @@ public static class ReviewInputPicker
             if (File.Exists(path)) File.Replace(temporary, path, null, true); else File.Move(temporary, path);
         } finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
+    private static void AppendDiagnostic(StringBuilder buffer, string line)
+    {
+        if (line == null) return;
+        lock (buffer) {
+            const int limit = 65536;
+            if (buffer.Length >= limit) return;
+            var remaining = limit - buffer.Length;
+            buffer.AppendLine(line.Length > remaining ? line.Substring(0, remaining) : line);
+        }
+    }
     public static ReviewInputs Show(string extensionPath, IProject project, IModel target, bool settingsOnly)
     {
         var script = Path.Combine(extensionPath, "resources", "Select-ReviewInputs.ps1");
@@ -606,10 +616,37 @@ public static class ReviewInputPicker
                 Arguments = "-NoProfile -STA -File " + ReviewResultViewer.QuoteArgument(script)
                     + " -RequestPath " + ReviewResultViewer.QuoteArgument(request)
                     + " -ResponsePath " + ReviewResultViewer.QuoteArgument(response) };
-            using (var process = Process.Start(info)) {
-                if (process == null) throw new IOException("選択画面を起動できません。");
+            info.RedirectStandardOutput = true;
+            info.RedirectStandardError = true;
+            var standardOutput = new StringBuilder();
+            var standardError = new StringBuilder();
+            using (var process = new Process { StartInfo = info }) {
+                // 両ストリームを同時に読み、エラーが多い場合のパイプ詰まりを防ぐ。
+                process.OutputDataReceived += (sender, args) => AppendDiagnostic(standardOutput, args.Data);
+                process.ErrorDataReceived += (sender, args) => AppendDiagnostic(standardError, args.Data);
+                if (!process.Start()) throw new IOException("選択画面を起動できません。");
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
                 process.WaitForExit();
-                if (process.ExitCode != 0) throw new IOException("選択画面を実行できません。PowerShell の実行制限と拡張の配置を確認してください。終了コード: " + process.ExitCode);
+                if (process.ExitCode != 0 || !File.Exists(response)) {
+                    var detail = "選択画面を実行できませんでした。終了コード: " + process.ExitCode
+                        + "\r\nPowerShell: " + exe + "\r\nスクリプト: " + script
+                        + "\r\n\r\n標準エラー:\r\n" + standardError
+                        + "\r\n標準出力:\r\n" + standardOutput;
+                    var log = "";
+                    try {
+                        var logDir = Path.Combine(AgentConfig.ConfigDir(), "diagnostics");
+                        Directory.CreateDirectory(logDir);
+                        log = Path.Combine(logDir, "picker-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N") + ".txt");
+                        File.WriteAllText(log, detail, new UTF8Encoding(true));
+                    } catch (Exception logError) { detail += "\r\n診断ログの保存失敗: " + logError.Message; }
+                    var visibleError = standardError.ToString().Trim();
+                    if (visibleError.Length == 0) visibleError = standardOutput.ToString().Trim();
+                    if (visibleError.Length == 0) visibleError = "エラー本文が出力されていません。選択結果の生成にも失敗しています。";
+                    if (visibleError.Length > 1800) visibleError = visibleError.Substring(0, 1800) + "\r\n（続きは診断ログ）";
+                    throw new IOException("選択画面の実行に失敗しました。終了コード: " + process.ExitCode
+                        + "\r\n\r\n" + visibleError + "\r\n\r\n診断ログ: " + (log.Length == 0 ? "保存できませんでした" : log));
+                }
             }
             if (!File.Exists(response)) throw new IOException("選択画面の結果がありません。");
             var document = ReadXml(response);
