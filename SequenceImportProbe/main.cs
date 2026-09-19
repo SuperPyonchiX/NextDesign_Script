@@ -16,7 +16,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.3.9";
+    public const string Title = "シーケンス生成実験 / 0.3.10";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -252,7 +252,12 @@ public static class PumlRuntime
         if(plan.All().Any(n=>n.Kind=="destroy"))
         {
             var c=Child(p,source[0].Metaclass,"Destructions","Destructions","___Interaction_Destruction");
-            c=Concrete(diagram.Destructions.Select(e=>e.Model),c,"破棄");
+            var definitions=diagram.EditorDefinition.Elements
+                .Where(e=>string.Equals(e.Type,"Destruction",StringComparison.OrdinalIgnoreCase) && e.ModelClass!=null)
+                .Select(e=>e.ModelClass).GroupBy(t=>t.Id).Select(g=>g.First()).ToArray();
+            var observed=diagram.Destructions.Select(e=>e.Model.Metaclass).GroupBy(t=>t.Id).Select(g=>g.First()).ToArray();
+            string selected=PumlTypeSelection.Destruction(definitions.Select(t=>t.Id).ToArray(),observed.Select(t=>t.Id).ToArray());
+            c=definitions.Concat(observed).First(t=>t.Id==selected);
             p.Types["Destruction"]=c.Id;
             Child(p,c,"DestructionTargetLifeline","Lifeline","DestructionTargetLifeline");
         }
@@ -313,7 +318,7 @@ public static class PumlRuntime
             +" / ref: "+p.Expected.Count(e=>e.Kind=="ref")+"/"+d.InteractionUses.Count()
             +" / Note: "+p.Expected.Count(e=>e.Kind=="note")+"/"+d.Notes.Count());
         Require(root.MessageEnds.Count()==p.Expected.Count(e=>e.Kind=="messageEnd") && d.MessageEnds.Count()==p.Expected.Count(e=>e.Kind=="messageEnd"),"独立メッセージ端の数");
-        Require(d.Destructions.Count()==p.Expected.Count(e=>e.Kind=="destruction"),"破棄点の数");
+        Require(d.Destructions.Count()==p.Expected.Count(e=>e.Kind=="destruction"),"破棄点の数（期待/取得）: "+p.Expected.Count(e=>e.Kind=="destruction")+"/"+d.Destructions.Count());
         foreach(var e in p.Expected)
         {
             var model=project.GetModelById(e.Id); Require(model!=null && !model.IsDeleted,e.Kind+"モデル");
@@ -785,5 +790,21 @@ public class PumlBuild
         foreach(var pair in b.shapes)editor.Add(pair.Key,pair.Value);
         p.Ids=b.entities.Cast<Dictionary<string,object>>().Select(e=>(string)e["Id"]).ToArray();
         p.Json=Json(Obj("Type","Model","SchemaVersion",schema,"TopElementId",root,"Entities",b.entities,"Relations",b.relations,"Editors",new[]{editor})); return p;
+    }
+}
+
+public static class PumlTypeSelection
+{
+    public static string Destruction(string[] definitions,string[] observed)
+    {
+        var candidates=definitions.Distinct().ToArray();
+        var samples=observed.Distinct().ToArray();
+        if(candidates.Length==1)
+        {
+            if(samples.Any(id=>id!=candidates[0]))throw new InvalidOperationException("E121: 破棄点のビュー定義と見本の型が一致しません。");
+            return candidates[0];
+        }
+        if(samples.Length==1 && (candidates.Length==0 || candidates.Contains(samples[0])))return samples[0];
+        throw new InvalidOperationException("E121: 破棄点の表示用の型を一意に取得できません。破棄点がある既存の図を開いて取り込んでください。");
     }
 }

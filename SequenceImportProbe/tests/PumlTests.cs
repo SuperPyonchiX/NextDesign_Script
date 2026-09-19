@@ -2,6 +2,14 @@ public static class PumlTests
 {
     public static void Run(string directory,string samples)
     {
+        if(PumlTypeSelection.Destruction(new[]{"view-concrete"},new string[0])!="view-concrete")throw new Exception("View type not selected without sample");
+        if(PumlTypeSelection.Destruction(new[]{"view-a","view-b"},new[]{"view-b"})!="view-b")throw new Exception("Sample did not resolve view ambiguity");
+        if(PumlTypeSelection.Destruction(new string[0],new[]{"sample"})!="sample")throw new Exception("Observed type fallback failed");
+        int rejectedTypes=0;
+        foreach(var candidate in new[]{new string[0],new[]{"a","b"}})
+        { try { PumlTypeSelection.Destruction(candidate,new string[0]); } catch(InvalidOperationException) { rejectedTypes++; } }
+        try { PumlTypeSelection.Destruction(new[]{"a"},new[]{"b"}); } catch(InvalidOperationException) { rejectedTypes++; }
+        if(rejectedTypes!=3)throw new Exception("Missing or conflicting view types accepted");
         var profile=new PumlProfile();
         foreach(string type in new[]{"Interaction","Frame","Lifeline","ExecutionSpecification","Message","CombinedFragment","InteractionOperand","InteractionUse","InteractionNote","MessageEnd","Destruction"})profile.Types[type]="fake-"+type;
         foreach(string key in new[]{"Frame","Lifelines","ExecutionSpecifications","Messages","OwnedExecutionSpecification","SendMessage","ReceiveMessage","Fragments","Operands","CrossingFragmentCoveredLifeline","OperandTargetMessage","NestedInteractionFragment","InteractionUses","Notes","MessageEnds","Destructions","DestructionTargetLifeline"})profile.Relations[key]=key;
