@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "1",
+  "caseId": "S001",
+  "targetModelId": "REPLACE_WITH_PREPARED_MODEL_ID",
+  "fieldName": "Description",
+  "newValue": "PROBE_TEST_001",
+  "ndVersion": "未確認",
+  "profile": "未確認",
+  "profileVersion": "未確認"
+}
