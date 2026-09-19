@@ -18,7 +18,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.5.0";
+    public const string Title = "シーケンス生成実験 / 0.5.1";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -281,7 +281,7 @@ public class SequenceReplacement
         if(models.Any(m=>m.IsDeleted || m.IsProxy || !m.IsEditable))throw new InvalidOperationException("E140: 更新対象に編集不可・未読込の要素があります。");
         foreach(var model in models.Where(m=>m.Id!=root.Id && m.Id!=root.Frame.Id))
         {
-            if(!(model is IInteractionElement))throw new InvalidOperationException("E141: シーケンス以外の子モデルがあり、全体置換できません。");
+            // Replacement scope follows ownership, regardless of the SDK wrapper interface.
             if(model.GetRelationsWhere((r,f)=>true).Any(r=>!ids.Contains(r.Source.Id) || !ids.Contains(r.Target.Id)))
                 throw new InvalidOperationException("E142: 子要素に図の外との関連があります。参照を保護するため更新を停止します。対象: "+model.Name);
         }
