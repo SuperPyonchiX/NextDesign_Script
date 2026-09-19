@@ -1,5 +1,7 @@
 # NdMcp — Next Design を MCP クライアントから読む
 
+0.1.2 では、シーケンス図の破棄後に余分な `activate` / `deactivate` を出力する不具合を修正。破棄メッセージと破棄点の両方に適用する。3拡張の共通回帰テストは `python Tools/Test-SequenceExport.py`。Next Designでの再出力・描画は実機確認待ち。 共通出力処理の再生成に必要な依存コードも生成対象へ追加し、図の未確認一覧出力を同期した。
+
 Next Design（V3.x）で開いているプロジェクトのモデルを、Codex・Claude Code などの MCP クライアントから読み出す仕組み。読み取り専用。
 
 ```

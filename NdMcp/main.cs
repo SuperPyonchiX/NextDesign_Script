@@ -47,6 +47,18 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 
+public sealed class ChangeRecord
+{
+    public string Key = "", Parent = "", Name = "", Kind = "", Path = "", File = "", Content = "";
+}
+public static class ReviewSnapshot
+{
+    public static string Cell(string value)
+    {
+        return (value ?? "").Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")
+            .Replace("|", "&#124;").Replace("\r", " ").Replace("\n", " ").Replace("\t", " ");
+    }
+}
 // ============================================================
 //  ここから AgentReview/main.cs の Part 0 / 4 / 7 / 8 の転記（tools/build_main.py が生成）
 // ============================================================
@@ -329,6 +341,7 @@ public static class DiagramPaths
 public class PendingDiagram
 {
     public string Token, Name, Uml;
+    public ChangeRecord Comparison;
     public DiagramPathNode Node;
 }
 
@@ -353,6 +366,8 @@ public class MarkdownExporter
     public int DiagramCount;
     public int SkippedModelCount;   // 図の構成要素としてテキスト出力から除外したモデル数
     public List<string> Warnings = new List<string>();
+    public List<ChangeRecord> Comparison = new List<ChangeRecord>();
+    public readonly List<string> SkippedDiagrams = new List<string>();
     public List<string> IndexRows = new List<string>();   // _index.md 用「| 図名 | 種別 | ファイル | モデルパス |」
 
     public MarkdownExporter(MarkdownExportOptions options, string diagramDir, DiagramGroupRules groupRules = null)
@@ -394,6 +409,8 @@ public class MarkdownExporter
         _seenDiagramWarnings.Clear();
         _pending.Clear();
         IndexRows.Clear();
+        Comparison.Clear();
+        SkippedDiagrams.Clear();
         DiagramCount = 0;
         SkippedModelCount = 0;
         _pathRoot = new DiagramPathNode { Id = "diagrams", Assigned = "diagrams" };
@@ -455,7 +472,11 @@ public class MarkdownExporter
             _sb.Append("<!-- modelpath: ").Append(PathOf(m)).Append(" -->").Append(nl);
             _sb.Append(nl);
 
+            var fieldStart = _sb.Length;
             WriteFields(m);
+            Comparison.Add(new ChangeRecord { Key = "model:" + m.Id, Parent = m.Owner == null ? "" : m.Owner.Id,
+                Name = m.Name, Kind = m.Metaclass == null ? "" : m.Metaclass.FullName, Path = PathOf(m),
+                Content = _sb.ToString(fieldStart, _sb.Length - fieldStart) });
 
             // 図は .puml に出力して参照行を書く。シーケンス図・状態遷移図を持つ
             // モデルの配下は図の構成要素（メッセージ・実行仕様・状態など）なので、
@@ -498,7 +519,7 @@ public class MarkdownExporter
                     if (seq != null)
                     {
                         skipChildren = true;   // 空図でも配下は図要素なのでテキストに出さない
-                        if (!seq.Lifelines.Cast<ILifelineShape>().Any()) continue;
+                        if (!seq.Lifelines.Cast<ILifelineShape>().Any()) { RecordSkippedDiagram(seq.Model ?? m, editor.Id, (seq.Model ?? m).Name, "ライフラインが取得できないため図の内容は未確認"); continue; }
                         var seqName = seq.Model != null && !string.IsNullOrEmpty(seq.Model.Name)
                             ? seq.Model.Name
                             : (string.IsNullOrEmpty(seq.ViewDefinitionName) ? "Sequence" : seq.ViewDefinitionName);
@@ -527,7 +548,7 @@ public class MarkdownExporter
                         AddDiagramWarnings(diagramName, exporter.Warnings);
                         if (exporter.NodeCount == 0)
                         {
-                            Warnings.Add("図「" + diagramName + "」: 対応するノードが無いため出力をスキップ");
+                            RecordSkippedDiagram(diagramOwner, editor.Id, diagramName, "対応可能なノードが取得できないため図の内容は未確認");
                             continue;
                         }
                         var file = SaveDiagram(diagramName, "_state", "状態遷移図", "state", uml, diagramOwner, editor.Id);
@@ -542,7 +563,7 @@ public class MarkdownExporter
                         AddDiagramWarnings(diagramName, exporter.Warnings);
                         if (exporter.NodeCount == 0)
                         {
-                            Warnings.Add("図「" + diagramName + "」: 対応するノードが無いため出力をスキップ");
+                            RecordSkippedDiagram(diagramOwner, editor.Id, diagramName, "対応可能なノードが取得できないため図の内容は未確認");
                             continue;
                         }
                         var file = SaveDiagram(diagramName, "_class", "クラス図", "class", uml, diagramOwner, editor.Id);
@@ -569,6 +590,13 @@ public class MarkdownExporter
         return skipChildren;
     }
 
+    private void RecordSkippedDiagram(IModel owner, string editorId, string name, string reason)
+    {
+        SkippedDiagrams.Add("図「" + name + "」 / " + PathOf(owner) + " : " + reason);
+        Comparison.Add(new ChangeRecord { Key = "diagram:" + owner.Id + ":" + editorId, Parent = owner.Id,
+            Name = name, Kind = "unverified-diagram", Path = PathOf(owner), Content = reason });
+    }
+
     // 出力予定を集めてからパスを確定する。本文と索引の仮参照は書込み成功後に置換する。
     private string SaveDiagram(string name, string suffix, string kindFolder, string kind, string uml, IModel owner, string editorId)
     {
@@ -578,8 +606,11 @@ public class MarkdownExporter
         var node = new DiagramPathNode { Id = editorId, Name = DiagramPaths.Segment(name),
             Suffix = suffix + ".puml", IsFile = true, Parent = parent };
         parent.Children.Add(node);
+        var comparison = new ChangeRecord { Key = "diagram:" + owner.Id + ":" + editorId, Parent = owner.Id,
+            Name = name, Kind = kind, Path = PathOf(owner), Content = uml };
+        Comparison.Add(comparison);
         var token = "ND_DIAGRAM_" + Guid.NewGuid().ToString("N");
-        _pending.Add(new PendingDiagram { Token = token, Name = name, Uml = uml, Node = node });
+        _pending.Add(new PendingDiagram { Token = token, Name = name, Uml = uml, Node = node, Comparison = comparison });
         return token;
     }
 
@@ -591,6 +622,7 @@ public class MarkdownExporter
             try
             {
                 var relative = diagram.Node.RelativePath();
+                diagram.Comparison.File = relative;
                 var path = Path.Combine(_diagramDir, relative.Replace('/', Path.DirectorySeparatorChar));
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
                 File.WriteAllText(path, diagram.Uml, new UTF8Encoding(false));
@@ -1870,8 +1902,7 @@ public class SequencePlantUmlExporter
         else
             Line("' message : " + label);
 
-        if (kind == "destroy" && receiver != null && _destroyed.Add(receiver.Id))
-            Line("destroy " + AliasOf(receiver));
+        if (kind == "destroy" && receiver != null) DestroyLifeline(receiver);
     }
 
     private string KindOf(IMessageShape m)
@@ -1894,7 +1925,7 @@ public class SequencePlantUmlExporter
     private void OnActivate(IExecutionSpecificationShape e)
     {
         var l = e.Lifeline;
-        if (l == null) return;
+        if (l == null || _destroyed.Contains(l.Id)) return;
         EnsureDeclared(l);
 
         var alias = AliasOf(l);
@@ -1908,7 +1939,7 @@ public class SequencePlantUmlExporter
     private bool OnDeactivate(IExecutionSpecificationShape e)
     {
         var l = e.Lifeline;
-        if (l == null) return false;
+        if (l == null || _destroyed.Contains(l.Id)) return false;
 
         var alias = AliasOf(l);
         int count;
@@ -1931,7 +1962,16 @@ public class SequencePlantUmlExporter
     {
         var l = x.Lifeline;
         if (l == null) return;
-        if (_destroyed.Add(l.Id)) Line("destroy " + AliasOf(l));
+        DestroyLifeline(l);
+    }
+
+    private void DestroyLifeline(ILifelineShape l)
+    {
+        if (!_destroyed.Add(l.Id)) return;
+        var alias = AliasOf(l);
+        // destroy が実行バーを終了する。後続イベントや末尾処理で再終了しない。
+        _activeCount.Remove(alias);
+        Line("destroy " + alias);
     }
 
     // ---------- 相互作用の利用・ノート ----------
@@ -4919,6 +4959,14 @@ public static void Write(IApplication app, string category, MarkdownExporter exp
         File.WriteAllText(Path.Combine(outDir, "_index.md"), index.ToString(), utf8);
     }
 
+    var omissions = new StringBuilder("# 図の未確認一覧\n\n取得できなかった図は空図・変更なし・問題なしとは判定していません。\n\n");
+    foreach (var skipped in exporter.SkippedDiagrams) {
+        omissions.Append("- ").Append(ReviewSnapshot.Cell(skipped)).Append('\n');
+        app.Output.WriteLine(category, "[info] 図の未確認: " + skipped);
+    }
+    if (exporter.SkippedDiagrams.Count == 0) omissions.Append("スキップした図はありません。\n");
+    File.WriteAllText(Path.Combine(outDir, "unverified-diagrams.md"), omissions.ToString(), utf8);
+    File.AppendAllText(Path.Combine(outDir, "_index.md"), "\n[図の未確認一覧](unverified-diagrams.md)\n", utf8);
     foreach (var warning in exporter.Warnings)
         app.Output.WriteLine(category, "[warn]  " + warning);
     app.Output.WriteLine(category, "[info]  モデル " + exporter.ModelCount + " 件を design.md に出力");
@@ -5270,7 +5318,7 @@ public class NdMcpHttpError : Exception
 
 public static class NdMcpServer
 {
-    public const string Version = "0.1.1";
+    public const string Version = "0.1.2";
 
     public static int Port = 3560;
     public static string ExportDir;

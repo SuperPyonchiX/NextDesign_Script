@@ -1,5 +1,7 @@
 ﻿# AgentReview — Claude Code / Codex による設計レビュー支援
 
+0.13.2 では、シーケンス図の破棄後に余分な `activate` / `deactivate` を出力する不具合を修正。破棄メッセージと破棄点の両方に適用する。3拡張の共通回帰テストは `python Tools/Test-SequenceExport.py`。Next Designでの再出力・描画は実機確認待ち。
+
 ## 0.13.1 の実装状況
 
 「レビュー開始」で、設計自体の工程別観点と上位要求との整合をまとめて確認する。設定された上位モデル・外部資料とAttachmentを固定コピーし、要求の反映を `review/coverage.md` に記録する。上位文書が未指定なら、その整合は未確認として結果に残す。操作と実機確認は [VERIFY.md](VERIFY.md) を参照。

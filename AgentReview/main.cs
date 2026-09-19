@@ -4301,8 +4301,7 @@ public class SequencePlantUmlExporter
         else
             Line("' message : " + label);
 
-        if (kind == "destroy" && receiver != null && _destroyed.Add(receiver.Id))
-            Line("destroy " + AliasOf(receiver));
+        if (kind == "destroy" && receiver != null) DestroyLifeline(receiver);
     }
 
     private string KindOf(IMessageShape m)
@@ -4325,7 +4324,7 @@ public class SequencePlantUmlExporter
     private void OnActivate(IExecutionSpecificationShape e)
     {
         var l = e.Lifeline;
-        if (l == null) return;
+        if (l == null || _destroyed.Contains(l.Id)) return;
         EnsureDeclared(l);
 
         var alias = AliasOf(l);
@@ -4339,7 +4338,7 @@ public class SequencePlantUmlExporter
     private bool OnDeactivate(IExecutionSpecificationShape e)
     {
         var l = e.Lifeline;
-        if (l == null) return false;
+        if (l == null || _destroyed.Contains(l.Id)) return false;
 
         var alias = AliasOf(l);
         int count;
@@ -4362,7 +4361,16 @@ public class SequencePlantUmlExporter
     {
         var l = x.Lifeline;
         if (l == null) return;
-        if (_destroyed.Add(l.Id)) Line("destroy " + AliasOf(l));
+        DestroyLifeline(l);
+    }
+
+    private void DestroyLifeline(ILifelineShape l)
+    {
+        if (!_destroyed.Add(l.Id)) return;
+        var alias = AliasOf(l);
+        // destroy が実行バーを終了する。後続イベントや末尾処理で再終了しない。
+        _activeCount.Remove(alias);
+        Line("destroy " + alias);
     }
 
     // ---------- 相互作用の利用・ノート ----------

@@ -57,6 +57,14 @@ def build() -> str:
         raise SystemExit(f"AgentReview/main.cs に Part {missing} が見つからない")
 
     chunks = [header.rstrip("\n"), ""]
+    # 共通エクスポータが参照する比較レコードと表示用整形だけを転記する。
+    # レビュー開始やファイル固定処理はMCPサーバーには持ち込まない。
+    start = agent_source.index("public sealed class ChangeRecord")
+    end = agent_source.index("public static class ChangeDiff", start)
+    chunks.append(agent_source[start:end].strip())
+    start = agent_source.index("    public static string Cell(string value)")
+    end = agent_source.index("\n    }", start) + len("\n    }")
+    chunks.append("public static class ReviewSnapshot\n{\n" + agent_source[start:end] + "\n}")
     chunks.append(SEPARATOR)
     chunks.append("//  ここから AgentReview/main.cs の Part 0 / 4 / 7 / 8 の転記（tools/build_main.py が生成）")
     chunks.append(SEPARATOR)

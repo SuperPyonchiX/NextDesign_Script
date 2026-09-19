@@ -1,5 +1,7 @@
 # PlantUmlTool — Next Design × PlantUML 連携
 
+2.1.1 では、シーケンス図の破棄後に余分な `activate` / `deactivate` を出力する不具合を修正。破棄メッセージと破棄点の両方に適用する。3拡張の共通回帰テストは `python Tools/Test-SequenceExport.py`。Next Designでの再出力・描画は実機確認待ち。
+
 Next Design V3.x 向けの C# スクリプト拡張機能。
 
 | 図 | 出力（ND → PlantUML） | 取り込み（PlantUML → ND） |
