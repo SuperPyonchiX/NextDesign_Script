@@ -100,7 +100,7 @@ public static class ExportTests
     }
     private static IModel Diagram(string id, string name, IModel parent, string kind)
     {
-        var model = Model(id, name, parent, "Example.Diagram");
+        var model = Model(id, name, parent, "Example." + kind + ".Diagram");
         IDiagram d = kind == "sequence" ? new ISequenceDiagram() : new IDiagram();
         d.Model = model; d.Id = "editor-" + id; d.Kind = kind;
         model.Editors.Add(d);
@@ -112,6 +112,11 @@ public static class ExportTests
         return Regex.Matches(references, @"(?<!\\)\]\((diagrams/[^)]+)\)").Cast<Match>().Select(m => Uri.UnescapeDataString(m.Groups[1].Value)).ToArray();
     }
     private static void Exists(string dir, string path) { Check(File.Exists(Path.Combine(dir, path)), "Missing " + path); }
+    private static void OwnsDiagram(IModel group, IModel diagram)
+    {
+        group.Metaclass.Fields.Add(new IField { Name = "OwnedViews", IsEmbedded = true,
+            TypeClass = new Meta { FullName = diagram.Metaclass.FullName } });
+    }
     public static void Main(string[] args)
     {
         try { Run(args); }
@@ -132,7 +137,7 @@ public static class ExportTests
         Check(rules.Warnings.Count == 0, "Valid rules");
         Check(rules.Matches("sequence", "Example.SequenceGroup"), "Exact type");
         Check(!rules.Matches("sequence", "Other.SequenceGroup") && !rules.Matches("class", "Example.SequenceGroup"), "Do not infer type");
-        Check(DiagramGroupRules.Load("").Warnings.Count == 1, "Missing configuration");
+        Check(DiagramGroupRules.Load("").Warnings.Count == 0, "No configuration is required");
         Check(DiagramGroupRules.Load("relative.ini").Warnings.Count == 1, "Relative rules path");
         Check(DiagramGroupRules.Load(Path.Combine(temp, "missing.ini")).Warnings.Count == 1, "Missing rules file");
         foreach (var invalid in new[] { "broken", "class=", "unknown=Example.X", "class=Example.X\nstate=Example.X", "class=Example.X\nclass=Example.Y", "class=ShortName", "" })
@@ -143,6 +148,41 @@ public static class ExportTests
         }
         File.WriteAllText(Path.Combine(temp, "multi.ini"), "sequence=Example.SequenceGroup; Example.AlternateGroup");
         Check(DiagramGroupRules.Load(Path.Combine(temp, "multi.ini")).Matches("sequence", "Example.AlternateGroup"), "Multiple types");
+
+        // Regression: a fresh installation must not require a private rules file.
+        var autoRoot = Model("auto-root", "DesignDocument", null, "Example.Document");
+        var implementation = Model("auto-impl", "Implementation", autoRoot, "Example.Implementation");
+        var behavior = Model("auto-behavior", "Behavior", implementation, "Example.Behavior");
+        var autoGroup = Model("auto-group", "Transport", behavior, "Example.UnnamedContainer");
+        var autoSeq = Diagram("auto-seq", "Notify(Channel)", autoGroup, "sequence");
+        OwnsDiagram(autoGroup, autoSeq);
+        // References to a diagram and owning a different diagram type are not groups for this diagram.
+        autoRoot.Metaclass.Fields.Add(new IField { Name = "Reference", IsReference = true, TypeClass = autoSeq.Metaclass });
+        var autoClassGroup = Model("auto-classes", "Structure", implementation, "Example.StructureContainer");
+        var autoClass = Diagram("auto-class", "Types", autoClassGroup, "class"); OwnsDiagram(autoClassGroup, autoClass);
+        var autoStateGroup = Model("auto-states", "StateDesign", behavior, "Example.StateContainer");
+        var autoState = Diagram("auto-state", "Lifecycle", autoStateGroup, "state"); OwnsDiagram(autoStateGroup, autoState);
+        var autoDir = Path.Combine(temp, "automatic");
+        var automatic = new MarkdownExporter(new MarkdownExportOptions(), autoDir);
+        var autoBody = automatic.Export(autoRoot);
+        Check(automatic.Warnings.Count == 0 && automatic.DiagramCount == 3, "Default export recognizes all three group kinds");
+        Exists(autoDir, "diagrams/シーケンス図/Transport/Notify(Channel)_seq.puml");
+        Exists(autoDir, "diagrams/クラス図/Structure/Types_class.puml");
+        Exists(autoDir, "diagrams/状態遷移図/StateDesign/Lifecycle_state.puml");
+        Check(Links(autoBody).All(p => !p.Contains("DesignDocument") && !p.Contains("Implementation") && !p.Contains("Behavior")), "Default output omits all ancestors above groups");
+        var autoPath = Links(automatic.Export(autoSeq)).Single();
+        Check(autoPath == "diagrams/シーケンス図/Transport/Notify(Channel)_seq.puml", "Default diagram-only selection retains group");
+        Check(Links(automatic.Export(autoGroup)).Single() == autoPath, "Selection does not change diagram path");
+        var autoNested = Model("auto-nested", "Nested", autoGroup, "Example.OtherContainer"); OwnsDiagram(autoNested, autoSeq);
+        var autoChild = Model("auto-child", "Child", autoNested, "Example.Child");
+        var autoDeep = Diagram("auto-deep", "Deep", autoChild, "sequence");
+        Check(Links(automatic.Export(autoDeep)).Single() == "diagrams/シーケンス図/Transport/Nested/Child/Deep_seq.puml", "Automatic nested groups retain child hierarchy");
+        var missingRules = DiagramGroupRules.Load(Path.Combine(temp, "not-deployed.ini"));
+        var missingExporter = new MarkdownExporter(new MarkdownExportOptions(), autoDir, missingRules);
+        Check(Links(missingExporter.Export(autoSeq)).Single() == autoPath && missingExporter.Warnings.Count == 1, "Missing optional file still uses automatic groups");
+        var overrideFile = Path.Combine(temp, "override.ini"); File.WriteAllText(overrideFile, "sequence=Example.Behavior");
+        var overrideExporter = new MarkdownExporter(new MarkdownExportOptions(), autoDir, DiagramGroupRules.Load(overrideFile));
+        Check(Links(overrideExporter.Export(autoSeq)).Single() == "diagrams/シーケンス図/Behavior/Transport/Notify(Channel)_seq.puml", "Explicit override remains supported");
 
         var root = Model("root", "Project", null, "Example.Root");
         var upper = Model("upper", "Document", root, "Example.Document");
@@ -212,14 +252,14 @@ public static class ExportTests
         Exists(Path.Combine(temp, "single"), Links(specialBody).Single());
 
         var fallback = new MarkdownExporter(new MarkdownExportOptions(), Path.Combine(temp, "fallback"));
-        Check(Links(fallback.Export(b.Children.First(c => c.Id == "second"))).Single() == "diagrams/シーケンス図/Init_seq.puml" && fallback.Warnings.Count > 0, "No-group single fallback");
+        Check(Links(fallback.Export(b.Children.First(c => c.Id == "second"))).Single() == "diagrams/シーケンス図/Communication/Init_seq.puml" && fallback.Warnings.Count > 0, "No-group single fallback");
         Check(Links(fallback.Export(b)).All(s => s.StartsWith("diagrams/シーケンス図/Communication/")), "No-group selected-root fallback");
         var warnings = new List<string>();
         var cycle = Model("cycle", "Cycle", null, "Example.Other"); cycle.Owner = cycle;
         var broken = Diagram("broken", "Broken", cycle, "sequence");
-        Check(rules.Directories(broken, cycle, "sequence", warnings).Count == 1 && warnings.Count > 0, "Cyclic ancestry fallback");
+        Check(rules.Directories(broken, "sequence", warnings).Count == 1 && warnings.Count > 0, "Cyclic ancestry fallback");
         warnings.Clear(); broken.ThrowOwner = true;
-        Check(rules.Directories(broken, cycle, "sequence", warnings).Count == 0 && warnings.Count > 0, "Owner failure fallback");
+        Check(rules.Directories(broken, "sequence", warnings).Count == 0 && warnings.Count > 0, "Owner failure fallback");
 
         // Disk failure for one group leaves other diagrams and removes only the failed references.
         var failureDir = Path.Combine(temp, "failure");

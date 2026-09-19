@@ -191,7 +191,7 @@ public class AgentConfig
         sb.Append("# 拡張機能に同梱した skills/design-review/ でチーム共通管理する").Append(nl);
         sb.Append("perspectives=").Append(Perspectives).Append(nl);
         sb.Append(nl);
-        sb.Append("# 図グループの対応表（UTF-8 INI）の絶対パス。空なら選択モデルからの相対階層").Append(nl);
+        sb.Append("# 任意の図グループ対応表（UTF-8 INI）の絶対パス。空なら所有フィールドから自動判別").Append(nl);
         sb.Append("diagramGroups.rulesFile=").Append(DiagramGroupsRulesFile).Append(nl);
 
         Directory.CreateDirectory(ConfigDir());
@@ -557,7 +557,7 @@ public class MarkdownExportOptions
     public int MaxHeadingLevel = 6;         // Markdown 見出しの上限（# の最大数）
 }
 
-// 図グループの型はプロファイル固有なので、コードに埋め込まず完全名の対応表を読む。
+// 所有フィールドの型から図グループを判別する。明示的な対応表があれば優先する。
 public class DiagramGroupRules
 {
     private readonly Dictionary<string, HashSet<string>> _types = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
@@ -566,9 +566,9 @@ public class DiagramGroupRules
     public static DiagramGroupRules Load(string file)
     {
         var rules = new DiagramGroupRules();
+        if (string.IsNullOrWhiteSpace(file)) return rules;
         try
         {
-            if (string.IsNullOrWhiteSpace(file)) throw new InvalidDataException("diagramGroups.rulesFile が未設定です。");
             if (!Path.IsPathRooted(file) || !string.Equals(Path.GetFullPath(file), file, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("対応表には正規化した絶対パスを指定してください。");
             var assigned = new HashSet<string>(StringComparer.Ordinal);
@@ -598,7 +598,7 @@ public class DiagramGroupRules
         catch (Exception ex)
         {
             rules._types.Clear();
-            rules.Warnings.Add("図グループ対応表: " + ex.Message + " 選択モデルからの相対階層で出力します。");
+            rules.Warnings.Add("図グループ対応表: " + ex.Message + " 所有フィールドから自動判別します。");
         }
         return rules;
     }
@@ -609,7 +609,7 @@ public class DiagramGroupRules
         return fullName != null && _types.TryGetValue(kind, out types) && types.Contains(fullName);
     }
 
-    public List<IModel> Directories(IModel model, IModel root, string kind, List<string> warnings)
+    public List<IModel> Directories(IModel model, string kind, List<string> warnings)
     {
         var chain = new List<IModel>(); // 図の親から上へ。図モデル自身はファイル名に使う。
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -625,6 +625,29 @@ public class DiagramGroupRules
             var groupIndex = -1;
             for (var i = 0; i < chain.Count; i++)
                 if (chain[i].Metaclass != null && Matches(kind, chain[i].Metaclass.FullName)) groupIndex = i;
+            if (groupIndex < 0 && model.Metaclass != null)
+            {
+                // グループは図のメタクラスを所有フィールドの型として宣言している。
+                // 表示名・型名の接尾辞には依存しない。参照フィールドは対象外。
+                var diagramType = model.Metaclass.FullName;
+                if (!string.IsNullOrEmpty(diagramType))
+                    for (var i = 0; i < chain.Count; i++)
+                    {
+                        var cls = chain[i].Metaclass;
+                        if (cls == null) continue;
+                        try
+                        {
+                            if (cls.GetFields().Cast<IField>().Any(f => f != null && f.IsEmbedded
+                                && !f.IsReference && f.TypeClass != null
+                                && string.Equals(f.TypeClass.FullName, diagramType, StringComparison.Ordinal)))
+                                groupIndex = i;
+                        }
+                        catch (Exception ex)
+                        {
+                            warnings.Add("モデル「" + chain[i].Name + "」: グループ判別用フィールドの取得に失敗: " + ex.Message);
+                        }
+                    }
+            }
             if (groupIndex >= 0)
             {
                 var result = chain.Take(groupIndex + 1).ToList();
@@ -636,17 +659,10 @@ public class DiagramGroupRules
         {
             warnings.Add("図「" + model.Name + "」: 祖先の取得に失敗: " + ex.Message);
         }
-        warnings.Add("図「" + model.Name + "」: グループを特定できないため選択モデルからの相対階層を使用します。");
-        if (model.Id == root.Id) return new List<IModel>();
-        var rootIndex = chain.FindIndex(m => m.Id == root.Id);
-        if (rootIndex < 0)
-        {
-            warnings.Add("図「" + model.Name + "」: 選択モデルまでの所有関係を取得できないため種別フォルダ直下に出力します。");
-            return new List<IModel>();
-        }
-        var fallback = chain.Take(rootIndex + 1).ToList();
-        fallback.Reverse();
-        return fallback;
+        // 判別できなくても選択モデルからの長い階層には戻さない。
+        warnings.Add("図「" + model.Name + "」: グループを特定できません。"
+            + (chain.Count > 0 ? "図の直接の親だけを保存先に使用します。" : "種別フォルダ直下に出力します。"));
+        return chain.Take(1).ToList();
     }
 }
 
@@ -748,7 +764,6 @@ public class MarkdownExporter
     private readonly List<PendingDiagram> _pending = new List<PendingDiagram>();
     private readonly DiagramGroupRules _groupRules;
     private DiagramPathNode _pathRoot;
-    private IModel _rootModel;
     private readonly HashSet<string> _seenDiagramWarnings = new HashSet<string>(StringComparer.Ordinal);
     private readonly PlantUmlOptions _seqOptions = new PlantUmlOptions();
     private readonly ClassPlantUmlOptions _classOptions = new ClassPlantUmlOptions();
@@ -801,7 +816,6 @@ public class MarkdownExporter
         IndexRows.Clear();
         DiagramCount = 0;
         SkippedModelCount = 0;
-        _rootModel = root;
         _pathRoot = new DiagramPathNode { Id = "diagrams", Assigned = "diagrams" };
         ModelCount = 0;
         Warnings.Clear();
@@ -979,7 +993,7 @@ public class MarkdownExporter
     private string SaveDiagram(string name, string suffix, string kindFolder, string kind, string uml, IModel owner, string editorId)
     {
         var parent = DiagramPaths.Directory(_pathRoot, kind, kindFolder);
-        foreach (var model in _groupRules.Directories(owner, _rootModel, kind, Warnings))
+        foreach (var model in _groupRules.Directories(owner, kind, Warnings))
             parent = DiagramPaths.Directory(parent, model.Id, model.Name);
         var node = new DiagramPathNode { Id = editorId, Name = DiagramPaths.Segment(name),
             Suffix = suffix + ".puml", IsFile = true, Parent = parent };
