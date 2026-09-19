@@ -2,7 +2,7 @@
   "name": "SequenceImportProbe",
   "displayName": "シーケンス生成実験",
   "description": "コピーしたプロジェクトに最小シーケンス図を新規生成する実験用拡張。",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",

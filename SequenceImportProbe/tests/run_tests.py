@@ -22,6 +22,20 @@ with tempfile.TemporaryDirectory(prefix='sequence-payload-') as tmp:
     runner = '''
 public static class PayloadTest {
  public static void Main(string[] args) {
+   int commits=0, cancels=0;
+   var success = new SequenceCompletion();
+   success.Commit(delegate { commits++; });
+   success.Cancel(delegate { cancels++; });
+   if (commits!=1 || cancels!=0) throw new Exception("completed transaction cancelled");
+   var failed = new SequenceCompletion();
+   try { failed.Commit(delegate { throw new Exception("fake commit failure"); }); } catch(Exception) { }
+   failed.Cancel(delegate { cancels++; });
+   failed.Cancel(delegate { cancels++; });
+   if (cancels!=1) throw new Exception("rollback not exactly once");
+   var broken = new SequenceCompletion();
+   try { broken.Cancel(delegate { cancels++; throw new Exception("fake rollback failure"); }); } catch(Exception) { }
+   broken.Cancel(delegate { cancels++; });
+   if (cancels!=2) throw new Exception("failed rollback retried");
    string[] types = { "fake-root", "fake-frame", "fake-A", "fake-B", "fake-exec-A", "fake-exec-B", "fake-message" };
    for (int i=0;i<2;i++) File.WriteAllText(Path.Combine(args[0], "payload"+i+".json"), SequencePayload.Build(types, "fake-view", "13.0").Json);
    File.WriteAllText(Path.Combine(args[0], "escape.json"), SequencePayload.Q("日本語\\n\\t\\\"\\\\"));
@@ -72,7 +86,8 @@ public static class PayloadTest {
             assert shape['Y'] <= editor['Messages'][0]['SourceY'] < shape['Y'] + shape['Length']
         assert 'Profiles' not in data and 'Project' not in data
     assert json.loads((work/'escape.json').read_text(encoding='utf-8-sig')) == '日本語\n\t"\\'
-    print('PASS: generated IDs, ownership, ports, labels, shapes, coordinates, JSON escaping and rejection')
+    assert 'transaction.Dispose(' not in source, 'explicit transaction completion followed by implicit termination'
+    print('PASS: transaction completion paths; generated IDs, ownership, ports, labels, shapes, coordinates, JSON escaping and rejection')
     if args.sdk_root:
         sdk = args.sdk_root.resolve()
         refs = list((sdk/'net6-ref/ref/net6.0').glob('*.dll'))

@@ -15,7 +15,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.1.0";
+    public const string Title = "シーケンス生成実験 / 0.1.1";
     public static string Summary = "シーケンス図を開き「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -28,6 +28,7 @@ public static class SequenceExperiment
         int apiIssues = 0;
         var detail = new StringBuilder();
         IUndoTransaction transaction = null;
+        var completion = new SequenceCompletion();
         try
         {
             var project = app.Workspace.CurrentProject;
@@ -130,7 +131,7 @@ public static class SequenceExperiment
             // Require a successful journal write before committing; failures enter rollback.
             Write(Path.Combine(directory, "checked.txt"), detail + "\nモデル・送受信・シェイプ照合: 一致\ncommit: 未実行");
             stage = "確定";
-            transaction.Commit(); committed = true;
+            completion.Commit(delegate { transaction.Commit(); }); committed = true;
             Summary = "ケース: CREATE001 / モデル・シェイプ照合: 一致\n新しい図: " + payload.Name
                 + "\nライフライン: 2 / メッセージ: 1\n確定: 済み / プロジェクト保存: していません\n親モデルの配下で新しい図を開き、図とこの画面を撮影してください。\n図表示・Undo/Redo・再読込: 未確認";
         }
@@ -139,7 +140,7 @@ public static class SequenceExperiment
             detail.AppendLine(ex.ToString());
             if (transaction != null && !committed)
             {
-                try { transaction.Rollback(); rolledBack = true; }
+                try { completion.Cancel(delegate { transaction.Rollback(); }); rolledBack = true; }
                 catch (Exception rollbackError) { detail.AppendLine("ROLLBACK: " + rollbackError); }
             }
             Summary = "ケース: CREATE001 / 停止段階: " + stage
@@ -151,7 +152,8 @@ public static class SequenceExperiment
         }
         finally
         {
-            if (transaction != null) try { transaction.Dispose(); } catch (Exception ex) { detail.AppendLine("DISPOSE: " + ex); Summary += "\n終了処理: 例外あり"; }
+            // Commit/Rollback are explicit terminal operations. Do not call Dispose:
+            // with autoCommit=false it may attempt another rollback after completion.
             Details = "会社PC内の診断情報（モデルID・属性名を含む場合があります）\n" + detail.ToString();
             if (directory != null)
             {
@@ -208,5 +210,22 @@ public class SequencePayload
         p.Json = "{\"Type\":\"Model\",\"SchemaVersion\":"+Q(schema)+",\"TopElementId\":"+Q(p.Ids[0])
             + ",\"Entities\":["+string.Join(",",entities)+"],\"Relations\":["+string.Join(",",relations)+"],\"Editors\":["+editor+"]}";
         return p;
+    }
+}
+
+public class SequenceCompletion
+{
+    private bool committed, cancelAttempted;
+    public void Commit(Action commit)
+    {
+        if (committed || cancelAttempted) throw new InvalidOperationException("Transaction already completed");
+        commit();
+        committed = true;
+    }
+    public void Cancel(Action cancel)
+    {
+        if (committed || cancelAttempted) return;
+        cancelAttempted = true;
+        cancel();
     }
 }
