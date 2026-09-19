@@ -19,7 +19,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.5.4";
+    public const string Title = "シーケンス生成実験 / 0.5.5";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -304,8 +304,36 @@ public static class SequenceDeltaProbe
         log.AppendLine("sparse import and existing identities: verified");
         // Limit the documented verification suspension to deleting our own temporary message.
         using(project.SuspendModelVerification()) { added.Delete(); }
-        if(project.GetModelById(input.Ids[0])!=null || view.Messages.Count()!=1 || !priorShapes.SequenceEqual(view.Shapes.Select(sh=>sh.Id+":"+sh.ModelId).OrderBy(x=>x)))
-            throw new InvalidOperationException("E154: 削除後のモデル・図形を確認できませんでした。");
+        var remaining=project.GetModelById(input.Ids[0]);
+        var root=project.GetModelById(seed.Ids[0]) as IInteraction;
+        view=root==null?null:root.GetEditors().OfType<ISequenceDiagram>().SingleOrDefault(d=>d.Id==diagram.Id);
+        log.AppendLine("after delete model="+(remaining==null?"absent":remaining.IsDeleted?"deleted":"live")+" root messages="+(root==null?"missing":root.Messages.Count().ToString()));
+        if(view==null)throw new InvalidOperationException("E154: 削除後の図を再取得できませんでした。");
+        var afterShapes=view.Shapes.Select(sh=>sh.Id+":"+sh.ModelId).OrderBy(x=>x).ToArray();
+        log.AppendLine("after delete shape messages="+view.Messages.Count()+" missing shapes="+string.Join(",",priorShapes.Except(afterShapes))+" extra shapes="+string.Join(",",afterShapes.Except(priorShapes)));
+        if((remaining!=null && !remaining.IsDeleted) || root.Messages.Any(m=>m.Id==input.Ids[0]))
+            throw new InvalidOperationException("E154: 削除対象のメッセージモデルが残っています。");
+        if(!priorShapes.SequenceEqual(afterShapes))
+        {
+            // Model deletion need not update the stored editor. Do not repair unrelated differences.
+            if(priorShapes.Except(afterShapes).Any() || afterShapes.Except(priorShapes).Any(x=>!x.EndsWith(":"+input.Ids[0],StringComparison.Ordinal)))
+                throw new InvalidOperationException("E154: 削除で既存図形に差異が発生しました。");
+            string editorJson=SequenceDeltaInput.RestoreEditor(seed,schema);
+            SequenceExperiment.Write(Path.Combine(directory,"delta-delete-editor.json"),editorJson);
+            report("未取得（削除後の図形反映）",0);
+            var refreshed=project.ImportUnitFromJson(editorJson,null,null);
+            if(refreshed==null)throw new InvalidOperationException("E156: 削除後の図形反映結果がnullです。");
+            report(refreshed.State,refreshed.Errors.Count());
+            log.AppendLine("delete editor import state="+refreshed.State);
+            foreach(var error in refreshed.Errors)log.AppendLine(error.Kind+": "+error.Message);
+            if(refreshed.State!="success" || refreshed.Errors.Any(e=>e.Kind!=UnitImportErrorKind.Info))throw new InvalidOperationException("E156: 削除後の図形反映に失敗しました。");
+            view=root.GetEditors().OfType<ISequenceDiagram>().SingleOrDefault(d=>d.Id==diagram.Id);
+        }
+        remaining=project.GetModelById(input.Ids[0]);
+        log.AppendLine("final delete model="+(remaining==null?"absent":remaining.IsDeleted?"deleted":"live")+" root messages="+root.Messages.Count()+" shape messages="+(view==null?"missing":view.Messages.Count().ToString()));
+        if(view!=null)log.AppendLine("final missing shapes="+string.Join(",",priorShapes.Except(view.Shapes.Select(sh=>sh.Id+":"+sh.ModelId)))+" extra shapes="+string.Join(",",view.Shapes.Select(sh=>sh.Id+":"+sh.ModelId).Except(priorShapes)));
+        if((remaining!=null && !remaining.IsDeleted) || root.Messages.Count()!=1 || view==null || view.Messages.Count()!=1 || !priorShapes.SequenceEqual(view.Shapes.Select(sh=>sh.Id+":"+sh.ModelId).OrderBy(x=>x)))
+            throw new InvalidOperationException("E157: 削除後のモデル・図形の最終照合が一致しません。");
         for(int i=0;i<prior.Length;i++)
             if(project.GetModelById(seed.Ids[i])==null || prior[i].Name!=priorNames[i] || !priorRelations[i].SequenceEqual(Relations(prior[i])))
                 throw new InvalidOperationException("E155: 削除後の既存モデル・関連が一致しません。");
@@ -982,6 +1010,12 @@ public class SequenceIdentity
 
 public static class SequenceDeltaInput
 {
+    public static string RestoreEditor(SequencePayload seed,string schema)
+    {
+        if(seed==null || seed.Ids==null || seed.Ids.Length!=7 || string.IsNullOrEmpty(seed.EditorJson))throw new ArgumentException("Missing seed editor");
+        return "{\"Type\":\"Model\",\"SchemaVersion\":"+SequencePayload.Q(schema)+",\"TopElementId\":"+SequencePayload.Q(seed.Ids[0])+",\"Entities\":[],\"Relations\":[],\"Editors\":["+seed.EditorJson+"]}";
+    }
+
     public static SequencePayload Build(SequencePayload seed,string messageType,string schema)
     {
         var ids=seed==null?null:seed.Ids;

@@ -43,6 +43,7 @@ public static class PayloadTest {
    var deltaSeed=SequencePayload.Build(types,"fake-view","11.1");
    File.WriteAllText(Path.Combine(args[0], "delta-seed.json"),deltaSeed.Json);
    File.WriteAllText(Path.Combine(args[0], "delta.json"),SequenceDeltaInput.Build(deltaSeed,"messageType","11.1").Json);
+   File.WriteAllText(Path.Combine(args[0], "delta-delete.json"),SequenceDeltaInput.RestoreEditor(deltaSeed,"11.1"));
    int rejected=0;
    try { SequencePayload.Build(null, "fake", "13.0"); } catch(ArgumentException) { rejected++; }
    try { SequencePayload.Build(types, "", "13.0"); } catch(ArgumentException) { rejected++; }
@@ -60,6 +61,10 @@ public static class PayloadTest {
     delta = json.loads((work/'delta.json').read_text(encoding='utf-8-sig'))
     seed=json.loads((work/'delta-seed.json').read_text(encoding='utf-8-sig'))
     seed_ids=[e['Id'] for e in seed['Entities']]
+    deletion=json.loads((work/'delta-delete.json').read_text(encoding='utf-8-sig'))
+    assert deletion['Entities']==[] and deletion['Relations']==[]
+    assert deletion['Editors']==seed['Editors']
+    assert deletion['TopElementId']==seed['TopElementId']
     added, = delta['Entities']
     assert added['Name']=='deltaProbe()' and added['Fields']['MessageSort']=='Sync'
     assert added['Id'] not in seed_ids
