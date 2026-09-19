@@ -171,6 +171,11 @@ public static class InputTests
         context.App.Window.UI.SelectedFolder = pastDir;
         context.App.Window.UI.SelectedFile = Path.Combine(pastDir, "sample.nproj");
         var past = Project(Path.Combine(pastDir, "sample.nproj"), "past");
+        var pastTarget = new IModel { Id = root.Id, Name = "OldDetailed", Owner = past, Metaclass = root.Metaclass };
+        var otherPhase = new IModel { Id = "architecture", Name = "OtherPhase", Owner = past, Metaclass = root.Metaclass };
+        past.Children.Add(pastTarget); past.Children.Add(otherPhase);
+        pastTarget.Editors.Add(new ISequenceDiagram { Id = "detail-sequence", Model = pastTarget });
+        otherPhase.Editors.Add(new ISequenceDiagram { Id = "architecture-sequence", Model = otherPhase });
         context.App.Workspace.Historical = past;
         command.ProbeHistoricalExport(context, new ICommandParams());
         Check(context.App.Workspace.Opened && context.App.Workspace.Closed, "Historical model opened and released");
@@ -178,6 +183,9 @@ public static class InputTests
         Check(Directory.GetFiles(workspace, "probe.md", SearchOption.AllDirectories).Length == 1, "Probe report written");
         Check(context.App.Window.UI.Messages.Last().Contains("保存先:") && context.App.Window.UI.Messages.Last().Contains("design/_index.md"), "Completion explains location and contents");
         var probeFile = Directory.GetFiles(workspace, "probe.md", SearchOption.AllDirectories).Single();
+        var probeDesign = File.ReadAllText(Path.Combine(Path.GetDirectoryName(probeFile), "design", "design.md"));
+        Check(probeDesign.Contains("OldDetailed") && !probeDesign.Contains("OtherPhase"), "Only historical target exported, even when renamed");
+        Check(Directory.GetFiles(Path.Combine(Path.GetDirectoryName(probeFile), "design"), "*.puml", SearchOption.AllDirectories).Length == 1, "Other phase diagrams excluded");
         Check(File.ReadAllText(probeFile).Contains("[図の一覧](design/_index.md)"), "Report links exported artifacts");
         var probeLaunch = ReviewResultViewer.PrepareLaunch(Path.GetDirectoryName(probeFile), "Code.exe");
         Check(probeLaunch.Arguments.Contains(ReviewResultViewer.QuoteArgument(probeFile)) && probeLaunch.Arguments.Contains(".code-workspace"), "Viewer opens probe in workspace");
@@ -222,6 +230,19 @@ public static class InputTests
         Check(!context.App.Workspace.Closed && context.App.Window.UI.Messages.Last().Contains("解放に失敗"), "Unexpectedly current historical copy never closed");
         context.App.Workspace.SwitchCurrent = false;
         context.App.Workspace.CurrentProject = project;
+        var reportsBefore = Directory.GetFiles(workspace, "probe.md", SearchOption.AllDirectories).Length;
+        pastTarget.Id = "different-id";
+        pastTarget.Name = root.Name;
+        context.App.Workspace.Closed = false;
+        command.ProbeHistoricalExport(context, new ICommandParams());
+        Check(context.App.Workspace.Closed && Directory.GetFiles(workspace, "probe.md", SearchOption.AllDirectories).Length == reportsBefore
+            && context.App.Window.UI.Messages.Last().Contains("特定できません"), "Missing ID stops and releases without same-name fallback");
+        pastTarget.Id = root.Id;
+        context.App.Workspace.CurrentModel = project;
+        context.App.Workspace.Opened = false;
+        command.ProbeHistoricalExport(context, new ICommandParams());
+        Check(!context.App.Workspace.Opened && context.App.Window.UI.Messages.Last().Contains("工程成果物"), "Project-wide selection rejected before loading");
+        context.App.Workspace.CurrentModel = root;
         context.App.Window.UI.SelectedFolder = context.App.Window.UI.SelectedFile = null;
         var count = TerminalLauncher.Launches;
         FakePicker.None = true;

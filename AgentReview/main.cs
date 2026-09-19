@@ -2685,6 +2685,11 @@ public void ProbeHistoricalExport(ICommandContext context, ICommandParams comman
     try
     {
         if (current == null) throw new InvalidOperationException("プロジェクトを開いてください。");
+        var selectedTarget = ResolveRoot(app);
+        if (selectedTarget == null || selectedTarget.Id == current.Id || selectedTarget.IsDeleted || selectedTarget.IsProxy)
+            throw new InvalidOperationException("出力する工程成果物のモデルを選択してから実行してください。プロジェクト全体は出力しません。");
+        var targetId = selectedTarget.Id;
+        var targetPath = selectedTarget.ModelPath;
         currentPath = ProbeProjectPath(current);
         currentId = current.Id;
         var folder = app.Window.UI.ShowSelectFolderDialog("過去版一式のフォルダを選択（参照ファイルも含む）");
@@ -2721,11 +2726,20 @@ public void ProbeHistoricalExport(ICommandContext context, ICommandParams comman
             throw new InvalidOperationException("過去版を独立したプロジェクトとして取得できませんでした。");
         if (!ProbeMatchesProject(app.Workspace.CurrentProject, currentPath, currentId))
             throw new InvalidOperationException("カレントプロジェクトが変化しました。検証を中断します。");
+        var targetMatches = historical.GetAllChildren().Where(m => m.Id == targetId).ToList();
+        if (targetMatches.Count != 1 || targetMatches[0].IsDeleted || targetMatches[0].IsProxy)
+            throw new InvalidOperationException("選択した工程成果物に対応するモデルを過去版で特定できませんでした。\n"
+                + targetPath + "\n同じモデルIDを持つ過去版が必要です。プロジェクト全体への切り替えは行いません。");
+        var historicalTarget = targetMatches[0];
+        report.Append("\n## 出力対象\n\n- 現在版の選択: ").Append(ReviewSnapshot.Cell(targetPath))
+            .Append("\n- 過去版の対象: ").Append(ReviewSnapshot.Cell(historicalTarget.ModelPath))
+            .Append("\n- 対応モデルID: ").Append(ReviewSnapshot.Cell(targetId))
+            .Append("\n- 出力範囲: 上記モデルとその配下のみ\n");
         var designDir = Path.Combine(outDir, "design");
         Directory.CreateDirectory(designDir);
         var exporter = new MarkdownExporter(new MarkdownExportOptions(), designDir,
             DiagramGroupRules.Load(config.DiagramGroupsRulesFile));
-        WriteDesignArtifacts(app, "AgentReview", exporter, historical, designDir);
+        WriteDesignArtifacts(app, "AgentReview", exporter, historicalTarget, designDir);
         if (!ProbeMatchesProject(app.Workspace.CurrentProject, currentPath, currentId))
             throw new InvalidOperationException("出力後にカレントプロジェクトが変化しました。検証を中断します。");
         report.Append("\n## 出力結果\n\n- モデル: ").Append(exporter.ModelCount).Append("\n- 図: ")
