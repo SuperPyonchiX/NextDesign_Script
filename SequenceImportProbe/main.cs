@@ -16,7 +16,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.2.0";
+    public const string Title = "シーケンス生成実験 / 0.2.1";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -134,6 +134,12 @@ public static class SequenceExperiment
             stage = "読戻し照合";
             if (plan != null)
             {
+                detail.AppendLine("Expected model metadata:");
+                foreach(var e in payload.Expected)
+                {
+                    var actualModel=current.GetModelById(e.Id);
+                    detail.AppendLine(e.Kind+" id="+e.Id+" metaclass="+(actualModel==null?"missing":actualModel.Metaclass.Id));
+                }
                 PumlRuntime.Verify(current, result, payload, ownerId);
             }
             else
@@ -212,6 +218,12 @@ public static class PumlRuntime
         if(f==null || f.TypeClass==null || f.RelationshipClass==null)throw new InvalidOperationException("E121: 所有フィールドを取得できません: "+field);
         p.Relations[key]=f.RelationshipClass.Id; return f.TypeClass;
     }
+    static IClass Concrete(IEnumerable<IModel> models,IClass fallback,string label)
+    {
+        var types=models.Select(m=>m.Metaclass).GroupBy(c=>c.Id).Select(g=>g.First()).ToArray();
+        if(types.Length>1)throw new InvalidOperationException("E121: 見本の"+label+"に複数の型があり、自動選択できません。");
+        return types.Length==1?types[0]:fallback;
+    }
     public static PumlProfile Profile(ISequenceDiagram diagram,IModel[] source,PumlPlan plan)
     {
         var p=new PumlProfile();
@@ -225,8 +237,10 @@ public static class PumlRuntime
         if(plan.All().Any(n=>n.Kind=="fragment"))
         {
             var c=Child(p,source[0].Metaclass,"Fragments","CombinedFragments","___Interaction_CombinedFragment");
+            c=Concrete(diagram.Fragments.Select(f=>f.Model),c,"複合フラグメント");
             p.Types["CombinedFragment"]=c.Id; classes.Add(c);
             var operand=Child(p,c,"Operands","Operands","___CombinedFragment_InteractionOperand");
+            operand=Concrete(diagram.Fragments.Where(f=>f.Model.Metaclass.Id==c.Id).SelectMany(f=>f.Operands).Select(o=>o.Model),operand,"分岐");
             p.Types["InteractionOperand"]=operand.Id; classes.Add(operand);
             foreach(var op in plan.All().Where(n=>n.Kind=="fragment").Select(n=>n.Operator).Distinct())p.Operators[op]=Literal(c,"Operator",op);
         }
@@ -262,7 +276,10 @@ public static class PumlRuntime
         foreach(string id in p.Ids)Require(project.GetModelById(id)!=null,"生成モデルの存在");
         Require(root.Lifelines.Count()==p.Expected.Count(e=>e.Kind=="lifeline") && root.Messages.Count()==p.Expected.Count(e=>e.Kind=="sync" || e.Kind=="async"),"相互作用の要素数");
         Require(d.Lifelines.Count()==p.Expected.Count(e=>e.Kind=="lifeline") && d.Messages.Count()==p.Expected.Count(e=>e.Kind=="sync" || e.Kind=="async"),"ライフライン・メッセージ数");
-        Require(d.Fragments.Count()==p.Expected.Count(e=>e.Kind=="fragment") && d.Notes.Count()==p.Expected.Count(e=>e.Kind=="note") && d.InteractionUses.Count()==p.Expected.Count(e=>e.Kind=="ref"),"枠・Note数");
+        Require(d.Fragments.Count()==p.Expected.Count(e=>e.Kind=="fragment") && d.Notes.Count()==p.Expected.Count(e=>e.Kind=="note") && d.InteractionUses.Count()==p.Expected.Count(e=>e.Kind=="ref"),
+            "シェイプ数（期待/取得）\n複合フラグメント: "+p.Expected.Count(e=>e.Kind=="fragment")+"/"+d.Fragments.Count()
+            +" / ref: "+p.Expected.Count(e=>e.Kind=="ref")+"/"+d.InteractionUses.Count()
+            +" / Note: "+p.Expected.Count(e=>e.Kind=="note")+"/"+d.Notes.Count());
         foreach(var e in p.Expected)
         {
             var model=project.GetModelById(e.Id); Require(model!=null && !model.IsDeleted,e.Kind+"モデル");
