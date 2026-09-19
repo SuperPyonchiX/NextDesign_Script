@@ -1,0 +1,7 @@
+@startuml
+title Async sample
+participant A
+participant B
+A -> B : request()
+B ->> A : notify()
+@enduml

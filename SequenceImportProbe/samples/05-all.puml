@@ -1,0 +1,18 @@
+@startuml
+title Import sample
+participant "Client" as A
+participant "Worker" as B
+note over A, B
+Import verification
+Second line
+end note
+alt ready
+  A -> B : request()
+  B ->> A : notify()
+else waiting
+  loop retry < 3
+    A ->> B : retry()
+  end
+end
+ref over A, B : Follow-up interaction
+@enduml

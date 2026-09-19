@@ -1,0 +1,7 @@
+@startuml
+title Ref sample
+participant A
+participant B
+A -> B : request()
+ref over A, B : External interaction
+@enduml

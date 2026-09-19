@@ -1,23 +1,69 @@
 {
   "name": "SequenceImportProbe",
   "displayName": "シーケンス生成実験",
-  "description": "コピーしたプロジェクトに最小シーケンス図を新規生成する実験用拡張。",
-  "version": "0.1.1",
+  "description": "PlantUMLから新しいシーケンス図を生成する実験用拡張。",
+  "version": "0.2.0",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
   "extensionPoints": {
-    "ribbon": { "tabs": [{ "id": "SequenceImportProbe.Tab", "label": "シーケンス生成実験", "groups": [
-      { "id": "SequenceImportProbe.Run", "label": "新規図の検証", "controls": [
-        { "id": "SequenceImportProbe.CreateButton", "type": "Button", "label": "最小図を生成", "command": "SequenceImportProbe.Create" },
-        { "id": "SequenceImportProbe.ResultButton", "type": "Button", "label": "結果表示", "command": "SequenceImportProbe.Result" },
-        { "id": "SequenceImportProbe.DetailsButton", "type": "Button", "label": "診断表示", "command": "SequenceImportProbe.Details" }
-      ] }
-    ] }] },
+    "ribbon": {
+      "tabs": [
+        {
+          "id": "SequenceImportProbe.Tab",
+          "label": "シーケンス生成実験",
+          "groups": [
+            {
+              "id": "SequenceImportProbe.Run",
+              "label": "新規図の検証",
+              "controls": [
+                {
+                  "id": "SequenceImportProbe.ImportButton",
+                  "type": "Button",
+                  "label": "PlantUMLを取り込む",
+                  "command": "SequenceImportProbe.Import"
+                },
+                {
+                  "id": "SequenceImportProbe.CreateButton",
+                  "type": "Button",
+                  "label": "最小図を生成",
+                  "command": "SequenceImportProbe.Create"
+                },
+                {
+                  "id": "SequenceImportProbe.ResultButton",
+                  "type": "Button",
+                  "label": "結果表示",
+                  "command": "SequenceImportProbe.Result"
+                },
+                {
+                  "id": "SequenceImportProbe.DetailsButton",
+                  "type": "Button",
+                  "label": "診断表示",
+                  "command": "SequenceImportProbe.Details"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
     "commands": [
-      { "id": "SequenceImportProbe.Create", "execFunc": "CreateMinimalSequence" },
-      { "id": "SequenceImportProbe.Result", "execFunc": "ShowSequenceResult" },
-      { "id": "SequenceImportProbe.Details", "execFunc": "ShowSequenceDetails" }
+      {
+        "id": "SequenceImportProbe.Create",
+        "execFunc": "CreateMinimalSequence"
+      },
+      {
+        "id": "SequenceImportProbe.Result",
+        "execFunc": "ShowSequenceResult"
+      },
+      {
+        "id": "SequenceImportProbe.Details",
+        "execFunc": "ShowSequenceDetails"
+      },
+      {
+        "id": "SequenceImportProbe.Import",
+        "execFunc": "ImportPlantUml"
+      }
     ]
   }
 }

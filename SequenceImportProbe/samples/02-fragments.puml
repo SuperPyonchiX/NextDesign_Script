@@ -1,0 +1,12 @@
+@startuml
+title Fragment sample
+participant A
+participant B
+alt ready
+  A -> B : request()
+else waiting
+  loop retry < 3
+    B ->> A : notify()
+  end
+end
+@enduml

@@ -62,6 +62,6 @@ IUnitImportResult ImportUnitFromJson(string unitJson, IModel owner, string field
 
 ## 実験の検証範囲
 
-最初は既存図を変更せず、別の新規図として最小例を作る。入力はGUIで受け取り、JSONやIDを利用者に編集させない。生成直後のライフライン・メッセージ数、送受信先、図の表示、保存して開き直した結果、Undo/Redoを確認する。この結果を得てから、複合フラグメントと既存図への差分反映に進む。
+最初は既存図を変更せず、別の新規図として最小例を作る。入力はGUIで受け取り、JSONやIDを利用者に編集させない。生成直後のライフライン・メッセージ数、送受信先、図の表示、保存して開き直した結果、Undo/Redoを確認する。`SequenceImportProbe 0.2.0`ではPlantUML入力、非同期、複合フラグメント、ref表示枠、Noteへ検証対象を広げる。詳細な構文と未対応範囲は[拡張の手順](../SequenceImportProbe/README.md)を参照する。既存図への差分反映は未実装。
 
 会社固有のメタモデルや実機結果はこの文書へ転記せず、[知識の保存手順](nd-knowledge.md)に従ってローカルに保存する。

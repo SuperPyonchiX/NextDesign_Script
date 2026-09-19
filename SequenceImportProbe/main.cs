@@ -1,4 +1,4 @@
-// Experimental unit import. Shape/schema assumptions come from the public sample;
+﻿// Experimental unit import. Shape/schema assumptions come from the public sample;
 // successful rendering on the target runtime still requires a real-PC test.
 using System;
 using System.Collections.Generic;
@@ -10,17 +10,19 @@ using NextDesign.Core;
 using NextDesign.Desktop;
 
 public void CreateMinimalSequence(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App); }
+public void ImportPlantUml(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, true); }
 public void ShowSequenceResult(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Show(context.App); }
 public void ShowSequenceDetails(ICommandContext context, ICommandParams parameters) { context.App.Window.UI.ShowInformationDialog(SequenceExperiment.Details, SequenceExperiment.Title); }
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.1.1";
-    public static string Summary = "シーケンス図を開き「最小図を生成」を押してください。";
+    public const string Title = "シーケンス生成実験 / 0.2.0";
+    public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
 
-    public static void Run(IApplication app)
+    public static void Run(IApplication app) { Run(app, false); }
+    public static void Run(IApplication app, bool fromPlantUml)
     {
         string stage = "事前検査", directory = null, rootId = null;
         bool called = false, committed = false, rolledBack = false;
@@ -35,6 +37,16 @@ public static class SequenceExperiment
             var diagram = app.Workspace.CurrentEditor as ISequenceDiagram;
             var sample = diagram == null ? null : diagram.Model as IInteraction;
             if (project == null || sample == null) throw new InvalidOperationException("E101: シーケンス図をメインエディタに開いてください。");
+            PumlPlan plan = null;
+            string pumlText = null;
+            if (fromPlantUml)
+            {
+                var path = app.Window.UI.ShowOpenFileDialog("取り込むPlantUMLファイル", "PlantUML (*.puml;*.plantuml)|*.puml;*.plantuml");
+                if (string.IsNullOrEmpty(path)) return;
+                if (new FileInfo(path).Length > 300000) throw new InvalidOperationException("E120: 入力は300KB以下にしてください。");
+                pumlText = File.ReadAllText(path, new UTF8Encoding(false, true));
+                plan = PumlPlan.Parse(pumlText);
+            }
             var owner = sample.Owner;
             var ownerField = sample.GetOwnerField();
             if (owner == null || ownerField == null || !owner.IsEditable || owner.IsDeleted || owner.IsProxy)
@@ -81,6 +93,12 @@ public static class SequenceExperiment
                 if (match.Success) { schema = match.Groups[1].Value; fromFile = true; }
             }
             var payload = SequencePayload.Build(sources.Select(m => m.Metaclass.Id).ToArray(), diagram.EditorDefinition.Id, schema);
+            if (plan != null)
+            {
+                stage = "PlantUML生成データの構築";
+                payload = PumlBuild.Build(plan, PumlRuntime.Profile(diagram, sources, plan), diagram.EditorDefinition.Id, schema);
+                Write(Path.Combine(directory, "source.puml"), pumlText);
+            }
             rootId = payload.Ids[0];
             detail.AppendLine("schema=" + schema + "; source=" + (fromFile ? "project header" : "public sample hypothesis"));
             detail.AppendLine("SDK=" + typeof(IProject).Assembly.FullName);
@@ -88,7 +106,7 @@ public static class SequenceExperiment
             stage = "生成データの記録";
             Write(Path.Combine(directory, "input.json"), payload.Json);
             Write(Path.Combine(directory, "before.txt"), detail.ToString());
-            if (!app.Window.UI.ShowConfirmDialog("検証用の新しい図「" + payload.Name + "」を追加します。\nA → B : probe()\nライフライン2本・同期メッセージ1本\n入力データの記録: 済み\n続けますか？", Title))
+            if (!app.Window.UI.ShowConfirmDialog("新しい図「" + payload.Name + "」を追加します。\n" + (plan == null ? "A → B : probe()\nライフライン2本・同期メッセージ1本" : plan.Summary()) + "\n入力データの記録: 済み\n続けますか？", Title))
             { Summary = "キャンセル / インポートAPI呼出: なし"; Show(app); return; }
             var current = app.Workspace.CurrentProject;
             if (current == null || current.Id != projectId || !string.Equals(current.Path, projectPath, StringComparison.OrdinalIgnoreCase))
@@ -114,6 +132,12 @@ public static class SequenceExperiment
             if (result.State != "success" || result.Errors.Any(e => e.Kind != UnitImportErrorKind.Info))
                 throw new InvalidOperationException("E113: APIが失敗または警告を返しました。");
             stage = "読戻し照合";
+            if (plan != null)
+            {
+                PumlRuntime.Verify(current, result, payload, ownerId);
+            }
+            else
+            {
             var created = current.GetModelById(rootId) as IInteraction;
             if (created == null || created.Name != payload.Name || created.Owner == null || created.Owner.Id != ownerId
                 || created.Lifelines.Count() != 2 || created.Messages.Count() != 1)
@@ -128,12 +152,13 @@ public static class SequenceExperiment
             var importedDiagram = result.ImportedEditors.OfType<ISequenceDiagram>().SingleOrDefault(e => e.ModelId == rootId);
             if (importedDiagram == null || importedDiagram.Lifelines.Count() != 2 || importedDiagram.Messages.Count() != 1)
                 throw new InvalidOperationException("E116: 表示用シェイプの数が一致しません。");
+            }
             // Require a successful journal write before committing; failures enter rollback.
             Write(Path.Combine(directory, "checked.txt"), detail + "\nモデル・送受信・シェイプ照合: 一致\ncommit: 未実行");
             stage = "確定";
             completion.Commit(delegate { transaction.Commit(); }); committed = true;
-            Summary = "ケース: CREATE001 / モデル・シェイプ照合: 一致\n新しい図: " + payload.Name
-                + "\nライフライン: 2 / メッセージ: 1\n確定: 済み / プロジェクト保存: していません\n親モデルの配下で新しい図を開き、図とこの画面を撮影してください。\n図表示・Undo/Redo・再読込: 未確認";
+            Summary = "ケース: " + (fromPlantUml ? "IMPORT001" : "CREATE001") + " / モデル・シェイプ照合: 一致\n新しい図: " + payload.Name
+                + "\n" + (plan == null ? "ライフライン: 2 / メッセージ: 1" : plan.Summary()) + "\n確定: 済み / プロジェクト保存: していません\n親モデルの配下で新しい図を開き、図とこの画面を撮影してください。\n図表示・Undo/Redo・再読込: 未確認";
         }
         catch (Exception ex)
         {
@@ -143,7 +168,7 @@ public static class SequenceExperiment
                 try { completion.Cancel(delegate { transaction.Rollback(); }); rolledBack = true; }
                 catch (Exception rollbackError) { detail.AppendLine("ROLLBACK: " + rollbackError); }
             }
-            Summary = "ケース: CREATE001 / 停止段階: " + stage
+            Summary = "ケース: " + (fromPlantUml ? "IMPORT001" : "CREATE001") + " / 停止段階: " + stage
                 + "\nインポートAPI呼出: " + (called ? "あり" : "なし")
                 + "\nAPI結果: " + apiState + " / 診断件数: " + apiIssues
                 + "\n取消API: " + (rolledBack ? "正常終了（復元は未確認）" : transaction == null ? "未呼出" : "未確認・失敗")
@@ -171,9 +196,110 @@ public static class SequenceExperiment
     }
 }
 
+public static class PumlRuntime
+{
+    static IField Field(IClass c,string name) { return c.GetFields().Cast<IField>().FirstOrDefault(f=>f.Name==name); }
+    static string Literal(IClass c,string field,string value)
+    {
+        var f=Field(c,field);
+        var found=f==null || f.TypeEnum==null ? null : f.TypeEnum.Literals.FirstOrDefault(l=>string.Equals(l.Name,value,StringComparison.OrdinalIgnoreCase));
+        if(found==null)throw new InvalidOperationException("E121: 種別を取得できません: "+field+" / "+value);
+        return found.Name;
+    }
+    static IClass Child(PumlProfile p,IClass c,string key,string field,string relation)
+    {
+        var f=c.GetFields().Cast<IField>().FirstOrDefault(v=>v.RelationshipClass!=null && v.RelationshipClass.Id==SequencePayload.Prefix+relation) ?? Field(c,field);
+        if(f==null || f.TypeClass==null || f.RelationshipClass==null)throw new InvalidOperationException("E121: 所有フィールドを取得できません: "+field);
+        p.Relations[key]=f.RelationshipClass.Id; return f.TypeClass;
+    }
+    public static PumlProfile Profile(ISequenceDiagram diagram,IModel[] source,PumlPlan plan)
+    {
+        var p=new PumlProfile();
+        string[] names={"Interaction","Frame","Lifeline","Lifeline","ExecutionSpecification","ExecutionSpecification","Message"};
+        for(int i=0;i<source.Length;i++)p.Types[names[i]]=source[i].Metaclass.Id;
+        string[] keys={"Frame","Lifelines","ExecutionSpecifications","Messages","OwnedExecutionSpecification","SendMessage","ReceiveMessage"};
+        for(int i=0;i<keys.Length;i++)p.Relations[keys[i]]=SequencePayload.Prefix+SequencePayload.RelationTypes[i];
+        p.Sync=Literal(source[6].Metaclass,"MessageSort","Sync");
+        if(plan.All().Any(n=>n.Kind=="async"))p.Async=Literal(source[6].Metaclass,"MessageSort","Async");
+        var classes=new List<IClass>(source.Select(m=>m.Metaclass));
+        if(plan.All().Any(n=>n.Kind=="fragment"))
+        {
+            var c=Child(p,source[0].Metaclass,"Fragments","CombinedFragments","___Interaction_CombinedFragment");
+            p.Types["CombinedFragment"]=c.Id; classes.Add(c);
+            var operand=Child(p,c,"Operands","Operands","___CombinedFragment_InteractionOperand");
+            p.Types["InteractionOperand"]=operand.Id; classes.Add(operand);
+            foreach(var op in plan.All().Where(n=>n.Kind=="fragment").Select(n=>n.Operator).Distinct())p.Operators[op]=Literal(c,"Operator",op);
+        }
+        if(plan.All().Any(n=>n.Kind=="ref"))
+        {
+            var c=Child(p,source[0].Metaclass,"InteractionUses","InteractionUses","___Interaction_InteractionUse");
+            p.Types["InteractionUse"]=c.Id; classes.Add(c);
+        }
+        if(plan.All().Any(n=>n.Kind=="note"))
+        {
+            var c=Child(p,source[0].Metaclass,"Notes","Notes","___Interaction_InteractionNote");
+            p.Types["InteractionNote"]=c.Id; classes.Add(c);
+            var f=Field(c,"Body") ?? Field(c,"Text") ?? Field(c,"Name");
+            if(f==null)throw new InvalidOperationException("E121: Note本文フィールドを取得できません。");
+            p.NoteField=f.Name; p.NoteStorage=f.Type;
+            if(p.NoteStorage!="String" && p.NoteStorage!="RichText")throw new InvalidOperationException("E121: Note本文の型が未対応です。");
+        }
+        foreach(string key in new[]{"CrossingFragmentCoveredLifeline","OperandTargetMessage","NestedInteractionFragment"})
+        {
+            var f=classes.SelectMany(c=>c.GetFields().Cast<IField>()).FirstOrDefault(v=>v.RelationshipClass!=null && v.RelationshipClass.Id==SequencePayload.Prefix+key);
+            if(f!=null)p.Relations[key]=f.RelationshipClass.Id;
+        }
+        return p;
+    }
+    static void Require(bool condition,string text) { if(!condition)throw new InvalidOperationException("E122: 読戻し不一致: "+text); }
+    static string Normalize(string text) { return (text??"").Replace("\r\n","\n"); }
+    public static void Verify(IProject project,IUnitImportResult result,SequencePayload p,string owner)
+    {
+        var root=project.GetModelById(p.Ids[0]) as IInteraction;
+        Require(root!=null && root.Owner!=null && root.Owner.Id==owner && root.Name==p.Name,"図の所属・名前");
+        var d=result.ImportedEditors.OfType<ISequenceDiagram>().SingleOrDefault(e=>e.ModelId==p.Ids[0]);
+        Require(d!=null,"シーケンスエディタ");
+        foreach(string id in p.Ids)Require(project.GetModelById(id)!=null,"生成モデルの存在");
+        Require(root.Lifelines.Count()==p.Expected.Count(e=>e.Kind=="lifeline") && root.Messages.Count()==p.Expected.Count(e=>e.Kind=="sync" || e.Kind=="async"),"相互作用の要素数");
+        Require(d.Lifelines.Count()==p.Expected.Count(e=>e.Kind=="lifeline") && d.Messages.Count()==p.Expected.Count(e=>e.Kind=="sync" || e.Kind=="async"),"ライフライン・メッセージ数");
+        Require(d.Fragments.Count()==p.Expected.Count(e=>e.Kind=="fragment") && d.Notes.Count()==p.Expected.Count(e=>e.Kind=="note") && d.InteractionUses.Count()==p.Expected.Count(e=>e.Kind=="ref"),"枠・Note数");
+        foreach(var e in p.Expected)
+        {
+            var model=project.GetModelById(e.Id); Require(model!=null && !model.IsDeleted,e.Kind+"モデル");
+            if(e.Kind=="sync" || e.Kind=="async")
+            {
+                var m=model as IMessage;
+                Require(m!=null && m.Kind==e.Kind && m.Name==e.Text && m.Sender!=null && m.Receiver!=null && m.Sender.Id==e.Left && m.Receiver.Id==e.Right,"メッセージ種別・本文・送受信");
+            }
+            else if(e.Kind=="lifeline")Require(model.Name==e.Text,"参加者名");
+            else if(e.Kind=="fragment")Require(Convert.ToString(model.GetField("Operator"))==e.Operator,"複合フラグメント種別");
+            else if(e.Kind=="operand")
+            {
+                var shape=d.Fragments.SelectMany(f=>f.Operands).SingleOrDefault(o=>o.Model.Id==e.Id);
+                Require(shape!=null && Normalize(shape.Guard)==Normalize(e.Text) && shape.OwnerFragment.Model.Id==e.Owner,"条件・所属");
+                var ids=new HashSet<string>(shape.Messages.Select(m=>m.Model.Id));
+                Require(p.Expected.Where(m=>m.Owner==e.Id && (m.Kind=="sync" || m.Kind=="async")).All(m=>ids.Contains(m.Id)),"分岐内メッセージ");
+            }
+            else if(e.Kind=="ref")
+            {
+                var shape=d.InteractionUses.SingleOrDefault(v=>v.Model.Id==e.Id);
+                Require(shape!=null && Normalize(shape.Text)==Normalize(e.Text),"ref本文");
+            }
+            else if(e.Kind=="note")
+            {
+                if(p.ImportProfile.NoteStorage=="RichText")model.SetRichTextField(p.ImportProfile.NoteField,e.Text);
+                var shape=d.Notes.SingleOrDefault(v=>v.Model.Id==e.Id);
+                Require(shape!=null && Normalize(shape.Text)==Normalize(e.Text),"Note本文");
+            }
+        }
+    }
+}
+
 // Pure JSON builder. Only newly generated entity IDs appear as relation endpoints.
 public class SequencePayload
 {
+    public PumlProfile ImportProfile;
+    public List<PumlExpected> Expected = new List<PumlExpected>();
     public const string Prefix = "System.Behavior.Interaction.";
     public static readonly string[] RelationTypes = { "___Interaction_Frame", "___Interaction_Lifeline", "___Interaction_ExecutionSpecification", "___Interaction_Message", "OwnedExecutionSpecification", "SendMessage", "ReceiveMessage" };
     public string[] Ids;
@@ -227,5 +353,232 @@ public class SequenceCompletion
         if (committed || cancelAttempted) return;
         cancelAttempted = true;
         cancel();
+    }
+}
+
+public class PumlNode
+{
+    public string Kind, Text = "", Left, Right, Operator;
+    public int Line;
+    public List<string> Targets = new List<string>();
+    public List<PumlNode> Children = new List<PumlNode>();
+}
+public class PumlPlan
+{
+    public string Title = "PlantUML";
+    public List<string> Aliases = new List<string>(), Names = new List<string>();
+    public List<PumlNode> Nodes = new List<PumlNode>();
+    public IEnumerable<PumlNode> All() { return Walk(Nodes); }
+    public static IEnumerable<PumlNode> Walk(IEnumerable<PumlNode> nodes)
+    { foreach (var n in nodes) { yield return n; foreach (var c in Walk(n.Children)) yield return c; } }
+    public string Summary()
+    {
+        var a = All().ToList();
+        return "ライフライン: " + Aliases.Count + " / 同期: " + a.Count(n => n.Kind == "sync") + " / 非同期: " + a.Count(n => n.Kind == "async")
+            + "\n複合フラグメント: " + a.Count(n => n.Kind == "fragment") + " / ref: " + a.Count(n => n.Kind == "ref") + " / Note: " + a.Count(n => n.Kind == "note")
+            + (a.Any(n => n.Kind == "ref") ? "\nrefは表示枠として作成します。別の図への参照リンクは未設定です。" : "");
+    }
+    private void Participant(string alias, string name, int line, bool declared)
+    {
+        if (!Regex.IsMatch(alias, @"^[\p{L}\p{N}_]+$")) throw Error(line, "別名には文字・数字・_を使ってください。");
+        int i = Aliases.IndexOf(alias);
+        if (i >= 0) { if (declared) throw Error(line, "参加者の別名が重複しています。"); return; }
+        Aliases.Add(alias); Names.Add(name);
+        if (Aliases.Count > 50) throw Error(line, "ライフラインは50本までです。");
+    }
+    public static InvalidOperationException Error(int line, string message) { return new InvalidOperationException("E120: " + line + "行目: " + message); }
+    public static PumlPlan Parse(string input)
+    {
+        if (input == null || input.Length > 300000) throw Error(1, "入力サイズが上限を超えています。");
+        var p = new PumlPlan(); var lists = new Stack<List<PumlNode>>(); lists.Push(p.Nodes);
+        var fragments = new Stack<PumlNode>();
+        var lines = input.Replace("\r\n", "\n").Replace('\r','\n').Split('\n');
+        bool started = false, ended = false;
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string s = lines[i].Trim(); int line = i+1;
+            if (s.Length == 0 || s.StartsWith("'")) continue;
+            if (ended) throw Error(line, "@endumlの後に入力があります。1ファイル1図にしてください。");
+            if (Regex.IsMatch(s, @"^@startuml(?:\s+.*)?$"))
+            { if (started || p.Nodes.Count != 0) throw Error(line, "開始位置が不正です。"); started = true; continue; }
+            if (!started) throw Error(line,"@startumlより前に構文があります。");
+            if (s == "@enduml") { if (fragments.Count != 0) throw Error(line, "endが不足しています。"); ended = true; continue; }
+            var m = Regex.Match(s, "^participant\\s+(?:\"([^\"]+)\"\\s+as\\s+([\\p{L}\\p{N}_]+)|([\\p{L}\\p{N}_]+))$");
+            if (m.Success) { string alias = m.Groups[2].Success ? m.Groups[2].Value : m.Groups[3].Value; p.Participant(alias,m.Groups[1].Success?m.Groups[1].Value:alias,line,true); continue; }
+            if (s.StartsWith("title ")) { p.Title = s.Substring(6); continue; }
+            m = Regex.Match(s, @"^(alt|opt|loop|par|break|critical|group)\b\s*(.*)$");
+            if (m.Success)
+            {
+                if (fragments.Count >= 8) throw Error(line, "入れ子は8段までです。");
+                var f = new PumlNode { Kind="fragment", Operator=m.Groups[1].Value, Text=m.Groups[2].Value, Line=line };
+                var operand = new PumlNode { Kind="operand", Text=m.Groups[2].Value, Line=line };
+                f.Children.Add(operand); lists.Peek().Add(f); fragments.Push(f); lists.Push(operand.Children); continue;
+            }
+            m = Regex.Match(s, @"^else(?:\s+(.*))?$");
+            if (m.Success)
+            {
+                if (fragments.Count==0 || (fragments.Peek().Operator!="alt" && fragments.Peek().Operator!="par")) throw Error(line,"elseはalt/parの中に指定してください。");
+                var operand = new PumlNode { Kind="operand", Text=m.Groups[1].Value, Line=line };
+                lists.Pop(); fragments.Peek().Children.Add(operand); lists.Push(operand.Children); continue;
+            }
+            if (s=="end") { if (fragments.Count==0) throw Error(line,"対応する複合フラグメントがありません。"); fragments.Pop(); lists.Pop(); continue; }
+            m = Regex.Match(s, @"^(note|ref)\s+(over|left of|right of)\s+([\p{L}\p{N}_]+(?:\s*,\s*[\p{L}\p{N}_]+)*)(?:\s*:\s*(.*))?$");
+            if (m.Success)
+            {
+                if (m.Groups[1].Value=="ref" && m.Groups[2].Value!="over") throw Error(line,"refはoverで指定してください。");
+                var n = new PumlNode { Kind=m.Groups[1].Value, Operator=m.Groups[2].Value, Line=line, Text=m.Groups[4].Value };
+                n.Targets = m.Groups[3].Value.Split(',').Select(t=>t.Trim()).ToList();
+                if (n.Targets.Distinct().Count()!=n.Targets.Count) throw Error(line,"対象の重複があります。");
+                if (!m.Groups[4].Success)
+                {
+                    var body = new List<string>(); bool closed = false;
+                    while (++i < lines.Length) { if (lines[i].Trim()=="end "+n.Kind) { closed=true; break; } body.Add(lines[i]); }
+                    if (!closed) throw Error(line,"end "+n.Kind+"が不足しています。"); n.Text=string.Join("\n",body);
+                }
+                n.Text=n.Text.Replace("\\n","\n"); lists.Peek().Add(n); continue;
+            }
+            m = Regex.Match(s, @"^([\p{L}\p{N}_]+)\s*(->>|->)\s*([\p{L}\p{N}_]+)\s*:\s*(.*)$");
+            if (m.Success)
+            {
+                p.Participant(m.Groups[1].Value,m.Groups[1].Value,line,false); p.Participant(m.Groups[3].Value,m.Groups[3].Value,line,false);
+                if (m.Groups[1].Value==m.Groups[3].Value) throw Error(line,"自己メッセージはこの版では未対応です。");
+                lists.Peek().Add(new PumlNode { Kind=m.Groups[2].Value=="->>"?"async":"sync", Left=m.Groups[1].Value,Right=m.Groups[3].Value,Text=m.Groups[4].Value.Replace("\\n","\n"),Line=line }); continue;
+            }
+            throw Error(line,"未対応の構文です。取り込みは実行しません。" );
+        }
+        if (fragments.Count!=0) throw Error(lines.Length,"endが不足しています。");
+        if (!started || !ended) throw Error(1,"@startumlと@endumlが必要です。");
+        if (p.Aliases.Count<2 || p.All().Count()>500) throw Error(1,"参加者は2本以上、要素は500件以下にしてください。");
+        foreach (var n in p.All()) foreach (var target in n.Targets) if (!p.Aliases.Contains(target)) throw Error(n.Line,"note/refの参加者が未定義です。");
+        return p;
+    }
+}
+public class PumlExpected
+{
+    public string Id, Kind, Text, Left, Right, Owner, Operator;
+    }
+public class PumlProfile
+{
+    public Dictionary<string,string> Types = new Dictionary<string,string>();
+    public Dictionary<string,string> Relations = new Dictionary<string,string>();
+    public Dictionary<string,string> Operators = new Dictionary<string,string>();
+    public string NoteField = "Body", NoteStorage = "String", Sync="Sync", Async="Async";
+}
+public class PumlBuild
+{
+    private PumlProfile profile; private SequencePayload payload;
+    private List<object> entities=new List<object>(), relations=new List<object>();
+    private Dictionary<string,List<object>> shapes=new Dictionary<string,List<object>>();
+    private Dictionary<string,string> lifelines=new Dictionary<string,string>(), active=new Dictionary<string,string>();
+    private Dictionary<string,int> x=new Dictionary<string,int>(), indexes=new Dictionary<string,int>();
+    private Dictionary<string,Dictionary<string,object>> executions=new Dictionary<string,Dictionary<string,object>>();
+    private int y=60;
+    public static Dictionary<string,object> Obj(params object[] values)
+    { var d=new Dictionary<string,object>(); for(int i=0;i<values.Length;i+=2)d.Add((string)values[i],values[i+1]); return d; }
+    public static string Json(object value)
+    {
+        if(value==null)return "null";
+        var s=value as string; if(s!=null)return SequencePayload.Q(s);
+        var d=value as Dictionary<string,object>; if(d!=null)return "{"+string.Join(",",d.Select(k=>SequencePayload.Q(k.Key)+":"+Json(k.Value)))+"}";
+        var list=value as System.Collections.IEnumerable; if(list!=null)return "["+string.Join(",",list.Cast<object>().Select(Json))+"]";
+        if(value is bool)return (bool)value?"true":"false";
+        return Convert.ToString(value,System.Globalization.CultureInfo.InvariantCulture);
+    }
+    private string Entity(string kind,string text,Dictionary<string,object> fields=null)
+    {
+        string id=Guid.NewGuid().ToString(); if(fields==null)fields=Obj("Name",text);
+        entities.Add(Obj("Id",id,"EntityType",kind,"MetamodelId",profile.Types[kind],"Name",text,"Fields",fields)); return id;
+    }
+    private void Link(string kind,string source,string target,bool embed=false,int targetIndex=-1)
+    {
+        if(!profile.Relations.ContainsKey(kind))throw new InvalidOperationException("E121: 構造関連を取得できません: "+kind);
+        string key=kind+source; int order; indexes.TryGetValue(key,out order); indexes[key]=order+1;
+        relations.Add(Obj("Id",Guid.NewGuid().ToString(),"RelationType",embed?"Embed":"Ref","MetamodelId",profile.Relations[kind],"SourceId",source,"TargetId",target,"SourceIndex",order,"TargetIndex",targetIndex));
+    }
+    private Dictionary<string,object> Shape(string list,string model,params object[] values)
+    {
+        var d=Obj(values); d.Add("Id",Guid.NewGuid().ToString()); d.Add("ModelId",model);
+        if(!shapes.ContainsKey(list))shapes[list]=new List<object>(); shapes[list].Add(d); return d;
+    }
+    private void Owned(string kind,string id) { Link(kind,payload.Ids[0],id,true); }
+    private string Execution(string alias,int start)
+    {
+        string id=Entity("ExecutionSpecification",""); Owned("ExecutionSpecifications",id); Link("OwnedExecutionSpecification",lifelines[alias],id);
+        executions[id]=Shape("ExecutionSpecifications",id,"X",x[alias],"Y",start,"Length",40,"Height",40); return id;
+    }
+    private void Extend(string id,int at)
+    { var s=executions[id]; int size=Math.Max((int)s["Length"],at-(int)s["Y"]+35); s["Length"]=size; s["Height"]=size; }
+    private void Items(IEnumerable<PumlNode> nodes,string operand=null)
+    {
+        foreach(var n in nodes)
+        {
+            if(n.Kind=="sync" || n.Kind=="async")
+            {
+                string send; if(!active.TryGetValue(n.Left,out send))active[n.Left]=send=Execution(n.Left,y-20);
+                string receive=Execution(n.Right,y); active[n.Right]=receive; Extend(send,y);
+                string id=Entity("Message",n.Text,Obj("Name",n.Text,"MessageSort",n.Kind=="sync"?profile.Sync:profile.Async)); Owned("Messages",id);
+                Link("SendMessage",send,id,false,0); Link("ReceiveMessage",receive,id,false,0);
+                Shape("Messages",id,"SourceY",y,"TargetY",y,"IsRightAtFrame",false,"SelfloopBendsX",0);
+                if(operand!=null)Link("OperandTargetMessage",operand,id,false,0);
+                payload.Expected.Add(new PumlExpected{Id=id,Kind=n.Kind,Text=n.Text,Left=lifelines[n.Left],Right=lifelines[n.Right],Owner=operand});
+                y+=75; continue;
+            }
+            if(n.Kind=="fragment")
+            {
+                int top=y; string op=profile.Operators[n.Operator];
+                string id=Entity("CombinedFragment",n.Text,Obj("Name",n.Text,"Operator",op)); Owned("Fragments",id);
+                foreach(string line in lifelines.Values)Link("CrossingFragmentCoveredLifeline",id,line);
+                if(operand!=null)Link("NestedInteractionFragment",operand,id);
+                var expected=new PumlExpected{Id=id,Kind="fragment",Text=n.Text,Operator=op,Owner=operand}; payload.Expected.Add(expected);
+                foreach(var branch in n.Children)
+                {
+                    y+=35; string oid=Entity("InteractionOperand","",Obj("Name","","Guard",branch.Text)); Link("Operands",id,oid,true);
+                    Shape("Operands",oid,"Position",y-top);
+                    payload.Expected.Add(new PumlExpected{Id=oid,Kind="operand",Text=branch.Text,Owner=id});
+                    // Each branch starts with its own execution context.
+                    var saved=new Dictionary<string,string>(active); active.Clear();
+                    Items(branch.Children,oid); active=saved; y+=20;
+                }
+                Shape("Fragments",id,"X",20,"Y",top,"Width",x.Values.Max()+70,"Height",y-top); y+=30; continue;
+            }
+            int left=n.Targets.Select(t=>x[t]).Min(),right=n.Targets.Select(t=>x[t]).Max();
+            if(n.Kind=="ref")
+            {
+                string id=Entity("InteractionUse",n.Text); Owned("InteractionUses",id);
+                foreach(string t in n.Targets)Link("CrossingFragmentCoveredLifeline",id,lifelines[t]);
+                if(operand!=null)Link("NestedInteractionFragment",operand,id);
+                Shape("InteractionUses",id,"X",left-55,"Y",y,"Width",Math.Max(150,right-left+110),"Height",Math.Max(65,25+20*n.Text.Split('\n').Length));
+                payload.Expected.Add(new PumlExpected{Id=id,Kind="ref",Text=n.Text});
+            }
+            else if(n.Kind=="note")
+            {
+                var fields=Obj("Name",n.Text);
+                if(profile.NoteField!="Name" && profile.NoteStorage=="String")fields.Add(profile.NoteField,n.Text);
+                string id=Entity("InteractionNote",n.Text,fields); Owned("Notes",id);
+                int width=Math.Max(160,right-left+100),sx=left-50;
+                if(n.Operator=="left of")sx=left-width-30; if(n.Operator=="right of")sx=right+30;
+                Shape("Notes",id,"X",sx,"Y",y,"Width",width,"Height",Math.Max(65,25+20*n.Text.Split('\n').Length));
+                payload.Expected.Add(new PumlExpected{Id=id,Kind="note",Text=n.Text});
+            }
+            y+=Math.Max(100,50+20*n.Text.Split('\n').Length);
+        }
+    }
+    public static SequencePayload Build(PumlPlan plan,PumlProfile profile,string definition,string schema)
+    {
+        var b=new PumlBuild{profile=profile,payload=new SequencePayload()}; var p=b.payload; p.ImportProfile=profile;
+        string root=b.Entity("Interaction",plan.Title); p.Ids=new[]{root}; p.Name=plan.Title;
+        string frame=b.Entity("Frame",plan.Title); b.Owned("Frame",frame);
+        foreach(var alias in plan.Aliases)
+        {
+            int index=plan.Aliases.IndexOf(alias); string id=b.Entity("Lifeline",plan.Names[index]); b.lifelines[alias]=id; b.x[alias]=240+240*index;
+            b.Owned("Lifelines",id); b.Shape("Lifelines",id,"X",b.x[alias]-50,"Width",100,"LeftPadding",index==0?190:140,"LaneLength",300);
+            p.Expected.Add(new PumlExpected{Id=id,Kind="lifeline",Text=plan.Names[index]});
+        }
+        b.Items(plan.Nodes);
+        foreach(var s in b.shapes["Lifelines"].Cast<Dictionary<string,object>>())s["LaneLength"]=b.y+80;
+        var editor=Obj("Id",Guid.NewGuid().ToString(),"ViewType","SequenceDiagram","MetamodelId","DensoCreate.Indio.IMF.Extensions.Sequence.ViewInstance.SequenceDiagramViewInstance","DefinitionId",definition,"ModelId",root,"Frame",Obj("Id",Guid.NewGuid().ToString(),"ModelId",frame));
+        foreach(var pair in b.shapes)editor.Add(pair.Key,pair.Value);
+        p.Ids=b.entities.Cast<Dictionary<string,object>>().Select(e=>(string)e["Id"]).ToArray();
+        p.Json=Json(Obj("Type","Model","SchemaVersion",schema,"TopElementId",root,"Entities",b.entities,"Relations",b.relations,"Editors",new[]{editor})); return p;
     }
 }

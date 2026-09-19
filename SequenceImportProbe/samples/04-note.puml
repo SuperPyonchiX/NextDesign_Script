@@ -1,0 +1,10 @@
+@startuml
+title Note sample
+participant A
+participant B
+A -> B : request()
+note over A, B
+First line
+Second line
+end note
+@enduml

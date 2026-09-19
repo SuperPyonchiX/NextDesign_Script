@@ -22,6 +22,7 @@ with tempfile.TemporaryDirectory(prefix='sequence-payload-') as tmp:
     runner = '''
 public static class PayloadTest {
  public static void Main(string[] args) {
+   PumlTests.Run(args[0],args[1]);
    int commits=0, cancels=0;
    var success = new SequenceCompletion();
    success.Commit(delegate { commits++; });
@@ -48,11 +49,41 @@ public static class PayloadTest {
 }
 '''
     pure_file = work / 'Pure.cs'
-    pure_file.write_text('using System; using System.Collections.Generic; using System.Linq; using System.IO; using System.Text; using System.Text.RegularExpressions;\n' + pure + runner, encoding='utf-8-sig')
+    pure_file.write_text('using System; using System.Collections.Generic; using System.Linq; using System.IO; using System.Text; using System.Text.RegularExpressions;\n' + pure + runner + (root/'tests/PumlTests.cs').read_text(encoding='utf-8-sig'), encoding='utf-8-sig')
     compiler = Path(os.environ['WINDIR']) / 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
     exe = work / 'Tests.exe'
     subprocess.run([str(compiler), '/nologo', '/warnaserror+', '/out:' + str(exe), str(pure_file)], check=True)
-    subprocess.run([str(exe), str(work)], check=True)
+    subprocess.run([str(exe), str(work), str(root/'samples')], check=True)
+    for path in sorted(work.glob('0*.json')):
+        data = json.loads(path.read_text(encoding='utf-8-sig'))
+        entities = {e['Id']: e for e in data['Entities']}
+        editor, = data['Editors']
+        relations = data['Relations']
+        assert all(r['SourceId'] in entities and r['TargetId'] in entities for r in relations)
+        embeds = [r for r in relations if r['RelationType'] == 'Embed']
+        assert len(embeds) == len(entities) - 1
+        assert {r['TargetId'] for r in embeds} == set(entities) - {data['TopElementId']}
+        shapes = [editor['Frame']] + [s for k,v in editor.items() if isinstance(v,list) for s in v]
+        assert all(s['ModelId'] in entities for s in shapes)
+        assert len({s['Id'] for s in shapes}) == len(shapes)
+        if path.name == '05-all.json':
+            by_type = lambda t: [e for e in entities.values() if e['EntityType'] == t]
+            assert [m['Fields']['MessageSort'] for m in by_type('Message')] == ['Sync','Async','Async']
+            assert {m['Fields']['Operator'] for m in by_type('CombinedFragment')} == {'ALT','LOOP'}
+            assert {m['Fields']['Guard'] for m in by_type('InteractionOperand')} == {'ready','waiting','retry < 3'}
+            assert len(editor['Fragments']) == 2 and len(editor['Operands']) == 3
+            assert len(editor['Notes']) == len(editor['InteractionUses']) == 1
+            assert by_type('InteractionNote')[0]['Fields']['Body'] == 'Import verification\nSecond line'
+            assert by_type('InteractionUse')[0]['Name'] == 'Follow-up interaction'
+            branches = [r for r in relations if r['MetamodelId'] == 'OperandTargetMessage']
+            assert len(branches) == 3
+            assert {entities[r['SourceId']]['Fields']['Guard'] for r in branches} == {'ready','retry < 3'}
+            nested, = [r for r in relations if r['MetamodelId'] == 'NestedInteractionFragment']
+            assert entities[nested['SourceId']]['Fields']['Guard'] == 'waiting'
+            assert entities[nested['TargetId']]['Fields']['Operator'] == 'LOOP'
+            message_y = [s['SourceY'] for s in editor['Messages']]
+            assert message_y == sorted(set(message_y))
+    print('PASS: PlantUML samples, async sorts, branches/nesting, ref/Note payloads and unsupported syntax rejection')
     previous_ids = set()
     for path in sorted(work.glob('payload*.json')):
         data = json.loads(path.read_text(encoding='utf-8-sig'))
