@@ -2,7 +2,7 @@
   "name": "AgentReview",
   "displayName": "AI レビュー",
   "description": "Claude Code / Codex のエージェントで設計レビューと修正提案の生成を行います。設計情報をエクスポートし、ターミナルでエージェントと対話します。",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -22,7 +22,7 @@
                   "id": "AgentReview.StartButton",
                   "type": "Button",
                   "label": "レビュー開始",
-                  "description": "選択モデル配下の設計情報をエクスポートし、ターミナルでエージェントとの対話レビューを開始します。",
+                  "description": "選択モデルの設計と指定された上位文書を出力し、設計自体と上位要求との整合をまとめてレビューします。",
                   "imageSmall": "resources/start16.png",
                   "imageLarge": "resources/start32.png",
                   "command": "AgentReview.Command.Start"
@@ -35,13 +35,6 @@
                   "imageSmall": "resources/resume16.png",
                   "imageLarge": "resources/resume32.png",
                   "command": "AgentReview.Command.Resume"
-                },
-                {
-                  "id": "AgentReview.UpstreamButton",
-                  "type": "Button",
-                  "label": "上位整合レビュー",
-                  "description": "指定した上位モデルと外部資料を固定コピーし、選択モデルの設計への反映をレビューします。",
-                  "command": "AgentReview.Command.Upstream"
                 },
                 {
                   "id": "AgentReview.ChangeButton",
@@ -253,15 +246,6 @@
         "title": "エクスポート診断",
         "group": "agentreview",
         "execFunc": "ProbeExportTarget",
-        "canExecWhen": {
-          "uiState": "ProjectOpened"
-        }
-      },
-      {
-        "id": "AgentReview.Command.Upstream",
-        "title": "上位整合レビュー",
-        "group": "agentreview",
-        "execFunc": "StartUpstreamReview",
         "canExecWhen": {
           "uiState": "ProjectOpened"
         }

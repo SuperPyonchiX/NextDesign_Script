@@ -84,7 +84,12 @@ public class TestUI
     public List<string> Messages = new List<string>();
     public void ShowInformationDialog(string message, string category) { Messages.Add(message); }
     public bool Confirm = true;
-    public bool ShowConfirmDialog(string message, string category) { Messages.Add(message); return Confirm; }
+    public Queue<bool> ConfirmAnswers = new Queue<bool>();
+    public bool ShowConfirmDialog(string message, string category)
+    {
+        Messages.Add(message);
+        return ConfirmAnswers.Count > 0 ? ConfirmAnswers.Dequeue() : Confirm;
+    }
     public string ShowSelectFolderDialog(string message) { return null; }
 }
 public class ICommandContext
