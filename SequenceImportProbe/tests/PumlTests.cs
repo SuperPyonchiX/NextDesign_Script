@@ -17,7 +17,7 @@ public static class PumlTests
             "activate A", "deactivate A", "skinparam unknownOption value", "!include remote.puml",
             "alt test\nA -> B : call", "else test", "end", "participant A",
             "note over C : missing", "ref over A,A : duplicate", "note over A\nunclosed",
-            "activate A\nalt x\ndeactivate A\nelse y\nend\ndeactivate A", "A ->x] : unsupported", "[-> A : incoming", "actor C", "A <- B : reverse", "A -> B : call\n@enduml\nA -> B : extra"
+            "activate A\nalt x\ndeactivate A\nelse y\nend\ndeactivate A", "A ->x] : unsupported", "[->] : no lifeline", "actor C", "A <- B : reverse", "A -> B : call\n@enduml\nA -> B : extra"
         };
         foreach(string body in cases)
         {
@@ -32,6 +32,11 @@ public static class PumlTests
             if(p.Aliases.Count!=2 || p.Nodes[0].Right!="]")throw new Exception("Boundary became a participant");
             string expected=arrow.StartsWith("--")?"reply":arrow=="->>"?"async":"sync";
             if(p.Nodes[0].Kind!=expected)throw new Exception("Boundary message kind changed");
+            var incoming=PumlPlan.Parse("@startuml\n["+arrow+" A : incoming\nactivate A\ndeactivate A\n@enduml");
+            if(incoming.Aliases.Count!=1 || incoming.Nodes[0].Left!="[" || incoming.Nodes[0].Kind!=expected)throw new Exception("Incoming boundary parsing failed");
+            var built=PumlBuild.Build(incoming,profile,"fake-view","13.0");
+            var message=built.Expected.Single(e=>e.Kind==expected);
+            if(message.Left!=null || message.Right==null || message.SendPort==message.ReceivePort)throw new Exception("Incoming endpoint expectations failed");
         }
         bool outside=false;
         try{PumlPlan.Parse("participant A\n@startuml\nA -> B : x\n@enduml");}catch(InvalidOperationException){outside=true;}

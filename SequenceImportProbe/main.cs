@@ -16,7 +16,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.3.1";
+    public const string Title = "シーケンス生成実験 / 0.3.2";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -292,7 +292,7 @@ public static class PumlRuntime
             if(e.Kind=="sync" || e.Kind=="async" || e.Kind=="reply")
             {
                 var m=model as IMessage;
-                Require(m!=null && m.Kind==e.Kind && m.Name==e.Text && m.Sender!=null && m.Sender.Id==e.Left && (e.Right==null ? m.Receiver==null && m.ReceivePortType=="Frame" : m.Receiver!=null && m.Receiver.Id==e.Right),"メッセージ種別・本文・送受信");
+                Require(m!=null && m.Kind==e.Kind && m.Name==e.Text && (e.Left==null ? m.Sender==null && m.SendPortType=="Frame" : m.Sender!=null && m.Sender.Id==e.Left) && (e.Right==null ? m.Receiver==null && m.ReceivePortType=="Frame" : m.Receiver!=null && m.Receiver.Id==e.Right),"メッセージ種別・本文・送受信");
                 Require(m.SendPort!=null && m.ReceivePort!=null && ((IModel)m.SendPort).Id==e.SendPort && ((IModel)m.ReceivePort).Id==e.ReceivePort,"実行区間・フレームへの接続");
                 var shape=d.Messages.SingleOrDefault(v=>v.Model.Id==e.Id);
                 Require(shape!=null && Math.Abs(shape.SourceY-e.Y)<1 && Math.Abs(shape.TargetY-e.EndY)<1,"メッセージ位置・折返し");
@@ -406,7 +406,7 @@ public class PumlPlan
     public string Summary()
     {
         var a = All().ToList();
-        return "ライフライン: " + Aliases.Count + " / 同期: " + a.Count(n => n.Kind == "sync") + " / 非同期: " + a.Count(n => n.Kind == "async") + " / 返信: " + a.Count(n=>n.Kind=="reply") + " / 図外宛て: " + a.Count(n=>n.Right=="]")
+        return "ライフライン: " + Aliases.Count + " / 同期: " + a.Count(n => n.Kind == "sync") + " / 非同期: " + a.Count(n => n.Kind == "async") + " / 返信: " + a.Count(n=>n.Kind=="reply") + " / 図外宛て: " + a.Count(n=>n.Right=="]") + " / 図外から: " + a.Count(n=>n.Left=="[")
             + "\n複合フラグメント: " + a.Count(n => n.Kind == "fragment") + " / ref: " + a.Count(n => n.Kind == "ref") + " / Note: " + a.Count(n => n.Kind == "note")
             + (StyleDirectives>0 ? "\n表示設定: "+StyleDirectives+"件はNext Designの既定表示を使用します。" : "")
             + (a.Any(n => n.Kind == "ref") ? "\nrefは表示枠として作成します。別の図への参照リンクは未設定です。" : "");
@@ -478,10 +478,11 @@ public class PumlPlan
                 }
                 n.Text=n.Text.Replace("\\n","\n"); lists.Peek().Add(n); continue;
             }
-            m = Regex.Match(s, @"^([\p{L}\p{N}_]+)\s*(-->>|-->|->>|->)\s*([\p{L}\p{N}_]+|\])\s*:\s*(.*)$");
+            m = Regex.Match(s, @"^([\p{L}\p{N}_]+|\[)\s*(-->>|-->|->>|->)\s*([\p{L}\p{N}_]+|\])\s*:\s*(.*)$");
             if (m.Success)
             {
-                p.Participant(m.Groups[1].Value,m.Groups[1].Value,line,false);
+                if(m.Groups[1].Value=="[" && m.Groups[3].Value=="]")throw Error(line,"図外同士のメッセージは扱えません。");
+                if(m.Groups[1].Value!="[")p.Participant(m.Groups[1].Value,m.Groups[1].Value,line,false);
                 if(m.Groups[3].Value!="]")p.Participant(m.Groups[3].Value,m.Groups[3].Value,line,false);
                 lists.Peek().Add(new PumlNode { Kind=m.Groups[2].Value.StartsWith("--")?"reply":m.Groups[2].Value=="->>"?"async":"sync", Left=m.Groups[1].Value,Right=m.Groups[3].Value,Text=m.Groups[4].Value.Replace("\\n","\n"),Line=line }); continue;
             }
@@ -489,7 +490,7 @@ public class PumlPlan
         }
         if (fragments.Count!=0) throw Error(lines.Length,"endが不足しています。");
         if (!started || !ended) throw Error(1,"@startumlと@endumlが必要です。");
-        if (p.Aliases.Count<2 || p.All().Count()>500) throw Error(1,"参加者は2本以上、要素は500件以下にしてください。");
+        if (p.Aliases.Count<1 || p.All().Count()>500) throw Error(1,"参加者は1本以上、要素は500件以下にしてください。");
         foreach (var n in p.All()) foreach (var target in n.Targets) if (!p.Aliases.Contains(target)) throw Error(n.Line,"note/refの参加者が未定義です。");
         ValidateActivities(p.Nodes,new Dictionary<string,int>());
         return p;
@@ -599,7 +600,8 @@ public class PumlBuild
             if(n.Kind=="sync" || n.Kind=="async" || n.Kind=="reply")
             {
                 y+=18*(n.Text.Split('\n').Length-1);
-                string send; if(!active.TryGetValue(n.Left,out send))active[n.Left]=send=Execution(n.Left,y-20);
+                bool incoming=n.Left=="[";
+                string send; if(incoming)send=frameId; else if(!active.TryGetValue(n.Left,out send))active[n.Left]=send=Execution(n.Left,y-20);
                 bool outgoing=n.Right=="]"; bool self=n.Left==n.Right; int targetY=y+(self?24:0);
                 string receive;
                 bool beginsActivation=index+1<items.Count && items[index+1].Kind=="activate" && items[index+1].Left==n.Right;
@@ -610,13 +612,13 @@ public class PumlBuild
                 // activate may adopt this receiving execution.
                 if(!outgoing && (!activities.ContainsKey(n.Right) || activities[n.Right].Count==0))active[n.Right]=receive;
                 pendingAlias=outgoing?null:n.Right; pendingExecution=receive;
-                Extend(send,y); if(!outgoing)Extend(receive,targetY);
+                if(!incoming)Extend(send,y); if(!outgoing)Extend(receive,targetY);
                 foreach(var pair in activities)if(pair.Value.Count>0 && active.ContainsKey(pair.Key))Extend(active[pair.Key],targetY);
                 string id=Entity("Message",n.Text,Obj("Name",n.Text,"MessageSort",n.Kind=="reply"?profile.Reply:n.Kind=="sync"?profile.Sync:profile.Async)); Owned("Messages",id);
                 Link("SendMessage",send,id,false,0); Link("ReceiveMessage",receive,id,false,0);
                 Shape("Messages",id,"SourceY",y,"TargetY",targetY,"IsRightAtFrame",outgoing,"SelfloopBendsX",self?Math.Max((int)executions[send]["X"],(int)executions[receive]["X"])+80:0);
                 if(operand!=null)Link("OperandTargetMessage",operand,id,false,0);
-                payload.Expected.Add(new PumlExpected{Id=id,Kind=n.Kind,Text=n.Text,Left=lifelines[n.Left],Right=outgoing?null:lifelines[n.Right],Owner=operand,SendPort=send,ReceivePort=receive,Y=y,EndY=targetY});
+                payload.Expected.Add(new PumlExpected{Id=id,Kind=n.Kind,Text=n.Text,Left=incoming?null:lifelines[n.Left],Right=outgoing?null:lifelines[n.Right],Owner=operand,SendPort=send,ReceivePort=receive,Y=y,EndY=targetY});
                 y=targetY+50; continue;
             }
             if(n.Kind=="fragment")

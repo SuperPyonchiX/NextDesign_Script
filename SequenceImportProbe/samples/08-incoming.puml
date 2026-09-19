@@ -1,0 +1,13 @@
+@startuml
+title Incoming signal
+participant A
+participant B
+[->> A : external signal
+activate A
+A -> B : process()
+activate B
+B --> A : result
+deactivate B
+A ->] : finished
+deactivate A
+@enduml

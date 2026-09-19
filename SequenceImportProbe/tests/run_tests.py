@@ -66,6 +66,21 @@ public static class PayloadTest {
         shapes = [editor['Frame']] + [s for k,v in editor.items() if isinstance(v,list) for s in v]
         assert all(s['ModelId'] in entities for s in shapes)
         assert len({s['Id'] for s in shapes}) == len(shapes)
+        if path.name == '08-incoming.json':
+            assert len(editor['Lifelines']) == 2, 'External source must not become a participant'
+            messages = {e['Name']: e for e in entities.values() if e['EntityType']=='Message'}
+            ports = lambda label, kind: next(r['SourceId'] for r in relations if r['MetamodelId']==kind and r['TargetId']==messages[label]['Id'])
+            assert ports('external signal','SendMessage') == editor['Frame']['ModelId']
+            receiver = ports('external signal','ReceiveMessage')
+            assert entities[receiver]['EntityType'] == 'ExecutionSpecification'
+            assert ports('process()','SendMessage') == ports('result','ReceiveMessage') == ports('finished','SendMessage') == receiver
+            assert len(editor['ExecutionSpecifications']) == 2, 'activate must reuse incoming execution'
+            assert messages['external signal']['Fields']['MessageSort'] == 'Async'
+            shape = next(v for v in editor['Messages'] if v['ModelId']==messages['external signal']['Id'])
+            assert shape['IsRightAtFrame'] is False and shape['SelfloopBendsX']==0
+            assert shape['SourceY'] == shape['TargetY']
+            bar = next(v for v in editor['ExecutionSpecifications'] if v['ModelId']==receiver)
+            assert bar['Y'] <= shape['TargetY'] < bar['Y']+bar['Length']
         if path.name == '07-outgoing.json':
             assert len(editor['Lifelines'])==2, 'Diagram boundary must not become a participant'
             message = next(e for e in entities.values() if e['Name']=='leave diagram')
