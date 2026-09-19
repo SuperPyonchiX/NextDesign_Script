@@ -1,4 +1,4 @@
-// ModelUpdateProbe 0.2.0 — v3.x. Update success on the real runtime is unverified.
+// ModelUpdateProbe 0.2.1 — v3.x. Update success on the real runtime is unverified.
 using NextDesign.Core;
 using NextDesign.Desktop;
 using NextDesign.Extension;
@@ -25,7 +25,7 @@ public void ShowProbeFields(ICommandContext context, ICommandParams parameters) 
 
 public static class ProbeHost
 {
-    public const string Version = "0.2.0";
+    public const string Version = "0.2.1";
     public const string Title = "設計更新検証 / " + Version;
     public static ProbeSession Session;
     public static string LastSummary = "検証準備を実行してください。";
@@ -177,10 +177,23 @@ public static class ProbeHost
         if (session == null) throw new ProbeCheckException("C001", "準備状態がありません。未準備または状態が失われています。");
         var project = app.Workspace.CurrentProject;
         if (project == null) throw new ProbeCheckException("C002", "現在開いているプロジェクトがありません。");
-        if (!object.ReferenceEquals(project, session.Project))
-            throw new ProbeCheckException("C003", "プロジェクトのオブジェクト参照が準備時と一致しません。\n別プロジェクトか、SDKが別のオブジェクトを返したかは未確定です。");
-        if (session.Model.IsDeleted) throw new ProbeCheckException("C004", "準備時の対象モデルが削除済みです。");
-        if (session.Model.IsProxy) throw new ProbeCheckException("C005", "準備時の対象モデルがプロキシです。");
+        if (!string.Equals(project.Id.ToString(), session.ProjectId, StringComparison.Ordinal)
+            || !string.Equals(ProjectPath(project), session.ProjectPath, StringComparison.OrdinalIgnoreCase))
+            throw new ProbeCheckException("C003", "プロジェクトのIDまたは保存先が準備時と一致しません。再準備してください。");
+        var model = project.GetModelById(session.RootModelId);
+        if (model == null || model.IsDeleted) throw new ProbeCheckException("C004", "対象モデルが見つからないか、削除済みです。");
+        if (model.IsProxy) throw new ProbeCheckException("C005", "対象モデルがプロキシです。");
+        if (model.Id.ToString() != session.RootModelId || (session.Sequence && !(model is IInteraction)))
+            throw new ProbeCheckException("C007", "再取得した対象のIDまたは種類が一致しません。");
+        session.Model = model; // Only the newly resolved root is used by this command.
+    }
+
+    public static string ProjectPath(IProject project)
+    {
+        var path = project.Path;
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathRooted(path))
+            throw new ProbeCheckException("C006", "保存先を確認できません。コピーしたプロジェクトを保存して再準備してください。");
+        return Path.GetFullPath(path);
     }
 
     public static string Read(ProbeSession session, ProbeCase config)
@@ -270,7 +283,9 @@ public static class ProbeHost
         record.Add("extensionVersion", Version);
         record.Add("sessionId", Path.GetFileName(session.DirectoryPath));
         record.Add("scope", session.Sequence ? "interaction message" : "selected model");
-        record.Add("rootModelId", session.Model.Id.ToString());
+        record.Add("rootModelId", session.RootModelId);
+        record.Add("projectId", session.ProjectId);
+        record.Add("projectPath", session.ProjectPath);
         ProbeCore.WriteNew(Path.Combine(session.DirectoryPath, run.Id + "_" + ProbeCore.NewId() + ".json"), ProbeJson.Write(record));
     }
 
@@ -296,7 +311,7 @@ public static class ProbeHost
     {
         try
         {
-            CheckContext(app, Session);
+            if (Session == null) throw new ProbeCheckException("C001", "準備状態がありません。");
             Process.Start(new ProcessStartInfo("notepad.exe", "\"" + Path.Combine(Session.DirectoryPath, "case.json") + "\"") { UseShellExecute = false });
         }
         catch (Exception ex) { Failure(app, "検証ファイル", ex); }
@@ -336,15 +351,19 @@ public static class ProbeHost
 
 public class ProbeSession
 {
-    public readonly IProject Project;
-    public readonly IModel Model;
+    public readonly string ProjectId, ProjectPath, RootModelId;
+    public IModel Model;
     public readonly string DirectoryPath;
     public ProbeRun Run;
     public int CandidateCount;
     public string FieldSummary;
     public bool Sequence;
     public readonly HashSet<string> TargetIds = new HashSet<string>(StringComparer.Ordinal);
-    public ProbeSession(IProject project, IModel model, string directory) { Project = project; Model = model; DirectoryPath = directory; }
+    public ProbeSession(IProject project, IModel model, string directory)
+    {
+        ProjectId = project.Id.ToString(); ProjectPath = ProbeHost.ProjectPath(project);
+        RootModelId = model.Id.ToString(); Model = model; DirectoryPath = directory;
+    }
 }
 
 // No ND types below this line: these components are tested without the real SDK.

@@ -4,8 +4,16 @@ using System.Collections.Generic;
 namespace NextDesign.Extension { }
 namespace NextDesign.Core
 {
-    public interface IProject { }
-    public class Project : IProject { }
+    public interface IProject { string Id { get; } string Path { get; } IModel GetModelById(string id); }
+    public class Project : IProject
+    {
+        public string ProjectId = Guid.NewGuid().ToString();
+        public string FilePath = @"C:\fictional\project.nd";
+        public string Id { get { return ProjectId; } }
+        public string Path { get { return FilePath; } }
+        public Dictionary<string, IModel> Models = new Dictionary<string, IModel>();
+        public IModel GetModelById(string id) { IModel model; return Models.TryGetValue(id, out model) ? model : null; }
+    }
     public class IField
     {
         public string Name = "Description", Type = "String";

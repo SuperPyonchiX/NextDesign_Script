@@ -20,6 +20,7 @@ public static class Tests
     {
         var app = new IApplication();
         app.Workspace.CurrentProject = new Project(); app.Workspace.CurrentModel = new Model();
+        ((Project)app.Workspace.CurrentProject).Models.Add(app.Workspace.CurrentModel.Id, app.Workspace.CurrentModel);
         app.Window.UI.Folder = root;
         ProbeHost.Prepare(app);
         Check(ProbeHost.Session != null, "prepare failed");
@@ -168,6 +169,7 @@ public static class Tests
             interaction.MessageList.Add(first); interaction.MessageList.Add(second);
             interaction.LifelineList.Add(lifeline);
             app.Workspace.CurrentModel = interaction;
+            ((Project)app.Workspace.CurrentProject).Models[interaction.Id] = interaction;
             ProbeHost.PrepareSequence(app);
             Check(ProbeHost.Session != null && ProbeHost.Session.Sequence && ProbeHost.Session.CandidateCount == 2, "sequence prepare failed");
             Check(first.Writes + second.Writes + lifeline.Writes + interaction.Writes == 0, "sequence preparation mutated");
@@ -197,6 +199,44 @@ public static class Tests
         }
         app = Setup(); ProbeHost.PrepareSequence(app);
         Check(ProbeHost.Session == null && app.Window.UI.Last.Contains("S001"), "non-interaction accepted");
+
+        foreach (var scenario in new[] {"wrapper", "path", "id", "missing", "proxy", "deleted", "unsaved", "confirmSwitch"})
+        {
+            app = Setup(); model = (Model)app.Workspace.CurrentModel;
+            var original = (Project)app.Workspace.CurrentProject;
+            var fresh = new Model();
+            var replacement = new Project {ProjectId=original.Id, FilePath=original.Path};
+            replacement.Models.Add(fresh.Id, fresh);
+            if (scenario == "path") replacement.FilePath = @"C:\other\copy.nd";
+            if (scenario == "id") replacement.ProjectId = "other-project";
+            if (scenario == "missing") replacement.Models.Clear();
+            if (scenario == "proxy") fresh.IsProxy = true;
+            if (scenario == "deleted") fresh.IsDeleted = true;
+            if (scenario == "unsaved") replacement.FilePath = null;
+            if (scenario == "confirmSwitch") app.Window.UI.OnConfirm = () => replacement.FilePath = @"C:\other\copy.nd";
+            app.Workspace.CurrentProject = replacement;
+            ProbeHost.Execute(app);
+            Check(model.Writes == 0, "stale model wrapper used");
+            Check(fresh.Writes == (scenario == "wrapper" ? 1 : 0), "identity scenario " + scenario);
+        }
+
+        app = Setup();
+        var oldSequence = new Interaction();
+        var oldMessage = new Model {ModelId="sequence-message"}; oldSequence.MessageList.Add(oldMessage);
+        app.Workspace.CurrentModel = oldSequence;
+        var sequenceProject = (Project)app.Workspace.CurrentProject;
+        sequenceProject.Models[oldSequence.Id] = oldSequence;
+        ProbeHost.PrepareSequence(app);
+        var newSequence = new Interaction();
+        var newMessage = new Model {ModelId="sequence-message"}; newSequence.MessageList.Add(newMessage);
+        var newProject = new Project {ProjectId=sequenceProject.Id, FilePath=sequenceProject.Path};
+        newProject.Models.Add(newSequence.Id, newSequence);
+        app.Workspace.CurrentProject = newProject;
+        map = Config(); map["targetModelId"] = newMessage.Id; WriteConfig(map);
+        ProbeHost.Execute(app);
+        Check(oldMessage.Writes == 0 && newMessage.Writes == 1, "sequence reused stale wrappers");
+        newMessage.Value = "SECRET_BEFORE_VALUE"; ProbeHost.Compare(app, "Undo後");
+        Check(ProbeHost.Session.Run.Match("Undo後") == "一致", "fresh sequence undo readback");
 
         var collision = Path.Combine(root,"existing.txt"); File.WriteAllText(collision,"original");
         bool threw = false; try { ProbeCore.WriteNew(collision,"replacement"); } catch (IOException) { threw=true; }
