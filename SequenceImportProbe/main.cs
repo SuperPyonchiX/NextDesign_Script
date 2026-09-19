@@ -21,7 +21,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.6.0";
+    public const string Title = "シーケンス生成実験 / 0.6.1";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -684,16 +684,23 @@ public static class SequenceMappedUpdate
                 if(string.IsNullOrEmpty(path))throw new OperationCanceledException();
                 var map=SequenceMapFile.Read(path);
                 if(map.Project!=project.Id || map.Root!=root.Id || map.Editor!=diagram.Id)throw new InvalidOperationException("E166: 対応表が別のプロジェクトまたは図のものです。");
-                if(map.Fingerprint!=original)throw new InvalidOperationException("E167: 図が対応表の作成・更新時から変わっています。図を戻すか、現在の図と一致するPlantUMLで対応表を作り直してください。Undoや未保存終了の後は .bak が一致する場合があります。");
-                var edits=SequenceNameDiff.Analyze(map.Source,source);
+                // The saved fingerprint is historical. Normal diagram edits do not invalidate the map.
+                detail.AppendLine("Diagram changed since baseline="+(map.Fingerprint!=original));
+                var requested=SequenceNameDiff.Analyze(map.Source,source);
                 var before=SequenceNameDiff.Messages(PumlPlan.Parse(map.Source));
                 if(before.Length!=map.MessageIds.Length)throw new InvalidOperationException("E168: 対応表の件数が不正です。");
-                for(int i=0;i<before.Length;i++)
+                var currentNames=new Dictionary<int,string>();
+                foreach(var edit in requested)
                 {
-                    var m=project.GetModelById(map.MessageIds[i]) as IMessage;
-                    if(m==null || m.IsDeleted || m.Interaction.Id!=root.Id || m.Name!=before[i].Text)throw new InvalidOperationException("E168: 対応表のメッセージが現在の図と一致しません。");
+                    var m=project.GetModelById(map.MessageIds[edit.Index]) as IMessage;
+                    if(m==null || m.IsDeleted || m.Interaction==null || m.Interaction.Id!=root.Id)
+                        throw new InvalidOperationException("E168: "+edit.Line+"行目の更新対象は図側で削除または移動されています。この版の本文更新では再作成できません。");
+                    currentNames.Add(edit.Index,m.Name);
                 }
-                if(edits.Count==0)
+                var merge=SequenceNameMerge.Resolve(requested,currentNames);
+                var edits=merge.Writes;
+                detail.AppendLine("Name merge: requested="+requested.Count+", writes="+edits.Count+", PlantUML priority="+merge.Conflicts+", already matched="+merge.AlreadyMatched);
+                if(requested.Count==0)
                 {
                     SequenceExperiment.Summary="差分なし。更新APIは呼び出していません。\n図・PlantUML・対応表は変更していません。";
                     detail.AppendLine("No-op; no transaction or model write.");
@@ -704,7 +711,7 @@ public static class SequenceMappedUpdate
                     foreach(var id in names.Keys)if(!project.GetModelById(id).IsEditable)throw new InvalidOperationException("E169: 更新対象のメッセージを編集できません。");
                     string preview=string.Join("\n",edits.Take(15).Select(e=>e.Line+"行目: "+e.Before+" → "+e.After));
                     if(edits.Count>15)preview+="\nほか "+(edits.Count-15)+"件";
-                    if(!app.Window.UI.ShowConfirmDialog("コピーしたプロジェクトで実行してください。\n図「"+root.Name+"」のメッセージ本文を"+edits.Count+"件更新します。\n"+preview+"\nID・関連・配置を維持します。自動保存はしません。実行しますか？",SequenceExperiment.Title))throw new OperationCanceledException();
+                    if(edits.Count>0 && !app.Window.UI.ShowConfirmDialog("コピーしたプロジェクトで実行してください。\n図「"+root.Name+"」のメッセージ本文を"+edits.Count+"件更新します。\n"+preview+"\n競合はPlantUML優先: "+merge.Conflicts+"件\n図側だけの変更・ID・関連・配置を維持します。自動保存はしません。実行しますか？",SequenceExperiment.Title))throw new OperationCanceledException();
                     CheckContext(app,project,root,diagram,original);
                     if(SequenceMapFile.Read(path).Serialize()!=map.Serialize())throw new InvalidOperationException("E175: 確認中に対応表が変更されました。");
                     string expected=Signature(root,diagram,names);
@@ -712,8 +719,11 @@ public static class SequenceMappedUpdate
                     var next=new SequenceMapFile{Project=map.Project,Root=map.Root,Editor=map.Editor,Source=source,Fingerprint=expected,MessageIds=map.MessageIds};
                     SequenceMapFile.WriteNew(pending,next);prepared=true;
                     detail.AppendLine("Prepared map: "+pending);
-                    transaction=project.BeginUndoTransaction(false);
-                    if(transaction==null)throw new InvalidOperationException("E174: トランザクションを開始できませんでした。");
+                    if(edits.Count>0)
+                    {
+                        transaction=project.BeginUndoTransaction(false);
+                        if(transaction==null)throw new InvalidOperationException("E174: トランザクションを開始できませんでした。");
+                    }
                     foreach(var edit in edits)
                     {
                         string id=map.MessageIds[edit.Index];
@@ -724,9 +734,9 @@ public static class SequenceMappedUpdate
                     if(Signature(root,fresh)!=expected)throw new InvalidOperationException("E170: 本文更新後のID・関連・配置・内容が一致しません。");
                     foreach(var edit in edits)if(project.GetModelById(map.MessageIds[edit.Index]).Name!=edit.After)throw new InvalidOperationException("E170: 本文の読戻しが一致しません。");
                     if(SequenceMapFile.Read(path).Serialize()!=map.Serialize())throw new InvalidOperationException("E175: 更新中に対応表が変更されました。");
-                    completion.Commit(delegate{transaction.Commit();});committed=true;
+                    if(transaction!=null)completion.Commit(delegate{transaction.Commit();});committed=true;
                     File.Replace(pending,path,path+".bak");pending=null;
-                    SequenceExperiment.Summary="メッセージ本文の差分更新: "+edits.Count+"件\nID・関連・配置の照合: 一致\n対応表: 更新済み（前回分は .bak）\nプロジェクト保存: していません\n保存後のGit差分・Undo/Redo・再読込は別途確認してください。";
+                    SequenceExperiment.Summary="メッセージ本文の差分更新: "+edits.Count+"件\n競合はPlantUML優先: "+merge.Conflicts+"件 / 反映済み: "+merge.AlreadyMatched+"件\n図側だけの変更・ID・関連・配置の照合: 一致\n対応表: 更新済み（前回分は .bak）\nプロジェクト保存: していません\n保存後のGit差分・Undo/Redo・再読込は別途確認してください。";
                 }
             }
         }
@@ -1239,6 +1249,26 @@ public class SequenceNameEdit
 {
     public int Index,Line;
     public string Before,After;
+}
+public class SequenceNameMerge
+{
+    public List<SequenceNameEdit> Writes=new List<SequenceNameEdit>();
+    public int Conflicts,AlreadyMatched;
+    // Only changes between the two PlantUML inputs are candidates for writing.
+    // A diagram-only edit therefore cannot be reset by an unchanged input.
+    public static SequenceNameMerge Resolve(IEnumerable<SequenceNameEdit> requested,IDictionary<int,string> current)
+    {
+        var result=new SequenceNameMerge();
+        foreach(var edit in requested)
+        {
+            string value;
+            if(!current.TryGetValue(edit.Index,out value))throw new InvalidOperationException("E168: 更新対象の現在値がありません。");
+            if(value==edit.After){result.AlreadyMatched++;continue;}
+            if(value!=edit.Before)result.Conflicts++;
+            result.Writes.Add(new SequenceNameEdit{Index=edit.Index,Line=edit.Line,Before=value,After=edit.After});
+        }
+        return result;
+    }
 }
 public static class SequenceNameDiff
 {
