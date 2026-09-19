@@ -29,14 +29,9 @@ public static class Tests
         return app;
     }
     private static void WriteConfig(Dictionary<string, string> map) { File.WriteAllText(Path.Combine(ProbeHost.Session.DirectoryPath,"case.json"), ProbeJson.Write(map)); }
+    [STAThread]
     public static void Main(string[] args)
     {
-        if (args[0] == "--child-error")
-        {
-            Console.Error.WriteLine("FAKE_UI_ERROR");
-            for (int i = 0; i < 5000; i++) { Console.Error.WriteLine(new string('e', 100)); Console.WriteLine(new string('o', 100)); }
-            Environment.Exit(7); return;
-        }
         root = args[0];
         var map = Config(); map["newValue"] = "日本語\n\t\"\\😀";
         Check(ProbeCase.Parse(ProbeJson.Write(map)).NewValue == map["newValue"], "JSON roundtrip");
@@ -250,19 +245,44 @@ public static class Tests
         Reject(() => ProbeDialog.Selection("{\"index\":\"-1\",\"value\":\"x\"}", new[] {"first"}));
         Reject(() => ProbeDialog.Selection("{\"index\":\"1\",\"value\":\"x\"}", new[] {"first"}));
         Reject(() => ProbeDialog.Selection("{\"index\":\"0\",\"value\":\"x\",\"targetModelId\":\"other\"}", new[] {"first"}));
-        Check(ProbeDialog.Argument(@"C:\a b\data.json") == "\"C:\\a b\\data.json\"", "argument quoting");
 
-        var processResult = ProbeProcess.Run(new System.Diagnostics.ProcessStartInfo(
-            System.Reflection.Assembly.GetExecutingAssembly().Location, "--child-error"));
-        Check(processResult.ExitCode == 7 && processResult.Detail().Contains("FAKE_UI_ERROR"), "child error lost");
-        Check(processResult.Detail().Length < 67000, "child output unbounded");
-        var dialogError = new ProbeDialogException(processResult.Detail());
-        Check(dialogError.ToString().Contains("FAKE_UI_ERROR") && !dialogError.Message.Contains("FAKE_UI_ERROR"), "details not separated from summary");
-        app = Setup(); model = (Model)app.Workspace.CurrentModel;
-        ProbeHost.Failure(app, "入力画面", dialogError);
-        Check(ProbeHost.LastDetail.Contains("FAKE_UI_ERROR") && !app.Window.UI.Last.Contains("FAKE_UI_ERROR") && model.Writes == 0, "UI failure reporting boundary");
-        processResult = ProbeProcess.Run(new System.Diagnostics.ProcessStartInfo(Path.Combine(root,"missing-executable.exe")));
-        Check(processResult.StartError.Length > 0, "process start exception lost");
+        using (var dialog = new ProbeNativeDialog(new[] {"First message", "Second message"}))
+        {
+            Check(!(bool)ProbeNativeDialog.Get(dialog.Confirm, "Enabled"), "initial selection enabled");
+            ProbeNativeDialog.Set(dialog.List, "SelectedIndex", 1);
+            Check((string)ProbeNativeDialog.Get(dialog.Input, "Text") == "Second message", "name not filled");
+            Check(!(bool)ProbeNativeDialog.Get(dialog.Confirm, "Enabled"), "unchanged name enabled");
+            ProbeNativeDialog.Set(dialog.Input, "Text", "Changed message");
+            Check((bool)ProbeNativeDialog.Get(dialog.Confirm, "Enabled"), "edited name disabled");
+            ProbeNativeDialog.Set(dialog.Form, "StartPosition", "Manual");
+            ProbeNativeDialog.Set(dialog.Form, "Left", -30000); ProbeNativeDialog.Set(dialog.Form, "Top", -30000);
+            ProbeNativeDialog.Call(dialog.Form, "Show");
+            var drawing = System.Reflection.Assembly.Load("System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a");
+            var bitmap = Activator.CreateInstance(drawing.GetType("System.Drawing.Bitmap"), ProbeNativeDialog.Get(dialog.Form,"Width"), ProbeNativeDialog.Get(dialog.Form,"Height"));
+            try {
+                var rectangle = Activator.CreateInstance(drawing.GetType("System.Drawing.Rectangle"), 0, 0, ProbeNativeDialog.Get(dialog.Form,"Width"), ProbeNativeDialog.Get(dialog.Form,"Height"));
+                ProbeNativeDialog.Call(dialog.Form, "DrawToBitmap", bitmap, rectangle);
+                ProbeNativeDialog.Call(bitmap, "Save", Path.Combine(root,"native-dialog.png"));
+            } finally { ((IDisposable)bitmap).Dispose(); }
+            dialog.Accept();
+            Check(dialog.Result["index"] == "1" && dialog.Result["value"] == "Changed message", "native selection lost");
+        }
+        using (var dialog = new ProbeNativeDialog(new[] {"First"}))
+        {
+            ProbeNativeDialog.Set(dialog.Input, "Text", "Unselected"); dialog.Accept();
+            Check(dialog.Result == null, "unselected accepted");
+            ProbeNativeDialog.Call(dialog.Form, "Close"); Check(dialog.Result == null, "close was accepted");
+        }
+
+        var modalResult = ProbeNativeDialog.Show(new[] {"Sample"}, dialog => {
+            ProbeNativeDialog.Set(dialog.Form, "StartPosition", "Manual");
+            ProbeNativeDialog.Set(dialog.Form, "Left", -30000); ProbeNativeDialog.Set(dialog.Form, "Top", -30000);
+            dialog.Form.GetType().GetEvent("Shown").AddEventHandler(dialog.Form, new EventHandler(delegate {
+                ProbeNativeDialog.Set(dialog.List, "SelectedIndex", 0);
+                ProbeNativeDialog.Set(dialog.Input, "Text", "New sample"); dialog.Accept();
+            }));
+        });
+        Check(modalResult["value"] == "New sample", "STA modal result not returned");
 
         var collision = Path.Combine(root,"existing.txt"); File.WriteAllText(collision,"original");
         bool threw = false; try { ProbeCore.WriteNew(collision,"replacement"); } catch (IOException) { threw=true; }

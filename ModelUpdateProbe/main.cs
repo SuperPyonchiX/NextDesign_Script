@@ -1,4 +1,4 @@
-// ModelUpdateProbe 0.3.1 — v3.x. Update success on the real runtime is unverified.
+// ModelUpdateProbe 0.4.0 — v3.x. Update success on the real runtime is unverified.
 using NextDesign.Core;
 using NextDesign.Desktop;
 using NextDesign.Extension;
@@ -26,7 +26,7 @@ public void ShowProbeFields(ICommandContext context, ICommandParams parameters) 
 
 public static class ProbeHost
 {
-    public const string Version = "0.3.1";
+    public const string Version = "0.4.0";
     public const string Title = "設計更新検証 / " + Version;
     public static ProbeSession Session;
     public static string LastSummary = "検証準備を実行してください。";
@@ -167,35 +167,17 @@ public static class ProbeHost
                 .Where(m => session.TargetIds.Contains(m.Id.ToString()) && m.Metaclass.GetFields().Cast<IField>()
                     .Count(f => f != null && f.Name == "Name" && Eligible(f)) == 1).ToList();
             if (options.Count == 0) throw new ProbeCheckException("U001", "名前を変更できるメッセージがありません。");
-            var data = new Dictionary<string, string> {{"count", options.Count.ToString(CultureInfo.InvariantCulture)}};
             var ids = new List<string>();
             var before = new List<string>();
             foreach (var model in options)
             {
                 var value = model.GetField("Name");
                 if (value != null && !(value is string)) throw new InvalidOperationException("名前を文字列として取得できません。");
-                data.Add("name" + ids.Count, (string)value ?? "");
                 ids.Add(model.Id.ToString()); before.Add((string)value);
             }
-            var input = Path.Combine(session.DirectoryPath, "dialog-input.json");
-            var output = Path.Combine(session.DirectoryPath, "dialog-result.json");
-            var script = Path.Combine(session.DirectoryPath, "message-dialog.ps1");
-            ProbeCore.WriteNew(input, ProbeJson.Write(data));
-            ProbeCore.WriteNew(script, ProbeDialog.Script);
-            var executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
-            var start = new ProcessStartInfo(executable, "-NoProfile -STA -File " + ProbeDialog.Argument(script)
-                + " -InputPath " + ProbeDialog.Argument(input) + " -OutputPath " + ProbeDialog.Argument(output))
-                {UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden};
-            var result = ProbeProcess.Run(start);
-            var processDetail = result.Detail();
-            try { ProbeCore.WriteNew(Path.Combine(session.DirectoryPath, "dialog-process.txt"), processDetail); }
-            catch (Exception ex) { processDetail += "\r\n診断保存失敗: " + ex.GetType().FullName; }
-            if (result.ExitCode != 0 || result.StartError.Length != 0)
-                throw new ProbeDialogException(processDetail);
-
-            if (!File.Exists(output)) { LastSummary = Title + "\nキャンセルしました。モデル変更: なし"; Show(app); return; }
-            if (new FileInfo(output).Length > 1048576) throw new FormatException("入力結果が大きすぎます。");
-            var config = ProbeDialog.Selection(File.ReadAllText(output, Encoding.UTF8), ids);
+            var selected = ProbeNativeDialog.Show(before);
+            if (selected == null) { LastSummary = Title + "\nキャンセルしました。モデル変更: なし"; Show(app); return; }
+            var config = ProbeDialog.Selection(ProbeJson.Write(selected), ids);
             CheckContext(app, session);
             int index = ids.IndexOf(config["targetModelId"]);
             if (!string.Equals(Read(session, ProbeCase.Parse(ProbeJson.Write(config))), before[index], StringComparison.Ordinal))
@@ -594,67 +576,8 @@ public class ProbeJsonReader
     }
 }
 
-public class ProbeDialogException : ProbeCheckException
-{
-    private readonly string detail;
-    public ProbeDialogException(string text) : base("U002", "入力画面が終了しました。原因はまだ未確定です。\n「詳細（会社PC内）」を押し、エラー部分を撮影してください。\n設定変更・テキスト編集は不要です。") { detail = text; }
-    public override string ToString() { return base.ToString() + "\r\n\r\n" + detail; }
-}
-
-public class ProbeProcess
-{
-    public int ExitCode = -1;
-    public string StartError = "";
-    private readonly StringBuilder output = new StringBuilder(), error = new StringBuilder();
-    private static void Append(StringBuilder target, string line)
-    {
-        if (line == null) return;
-        lock (target)
-        {
-            const int limit = 32768;
-            if (target.Length >= limit) return;
-            var text = line + "\r\n";
-            target.Append(text, 0, Math.Min(text.Length, limit - target.Length));
-        }
-    }
-    public string Detail()
-    {
-        return "入力画面のプロセス診断\r\n終了コード: " + ExitCode
-            + "\r\n起動例外: " + (StartError.Length == 0 ? "なし" : StartError)
-            + "\r\n\r\n標準エラー（最大32768文字）:\r\n" + (error.Length == 0 ? "<出力なし>" : error.ToString())
-            + "\r\n\r\n標準出力（最大32768文字）:\r\n" + (output.Length == 0 ? "<出力なし>" : output.ToString());
-    }
-    public static ProbeProcess Run(ProcessStartInfo start)
-    {
-        var result = new ProbeProcess();
-        start.UseShellExecute = false; start.CreateNoWindow = true;
-        start.RedirectStandardOutput = true; start.RedirectStandardError = true;
-        using (var process = new Process())
-        {
-            process.StartInfo = start;
-            process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e) { Append(result.output, e.Data); };
-            process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e) { Append(result.error, e.Data); };
-            try
-            {
-                process.Start();
-                // Drain both pipes while the dialog is open; never wait with a full error pipe.
-                process.BeginOutputReadLine(); process.BeginErrorReadLine();
-                process.WaitForExit();
-                result.ExitCode = process.ExitCode;
-            }
-            catch (Exception ex) { result.StartError = ex.ToString(); }
-        }
-        return result;
-    }
-}
-
 public static class ProbeDialog
 {
-    public static string Argument(string path)
-    {
-        if (path.IndexOf('"') >= 0 || path.IndexOf('\r') >= 0 || path.IndexOf('\n') >= 0) throw new FormatException("Invalid path");
-        return "\"" + path + "\"";
-    }
     public static Dictionary<string, string> Selection(string text, IList<string> ids)
     {
         var result = ProbeJson.Parse(text);
@@ -669,80 +592,95 @@ public static class ProbeDialog
             {"profile", "未確認"}, {"profileVersion", "未確認"}
         };
     }
-    // Generated from tools/message-dialog.ps1; never interpolate model values into this script.
-    public const string Script = @"param([Parameter(Mandatory=$true)][string]$InputPath, [Parameter(Mandatory=$true)][string]$OutputPath, [switch]$SelfTest)
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-[System.Windows.Forms.Application]::EnableVisualStyles()
-$data = Get-Content -LiteralPath $InputPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$form = New-Object System.Windows.Forms.Form
-$form.Text = 'メッセージの名前を変更'
-$form.ClientSize = New-Object System.Drawing.Size(760, 550)
-$form.MinimumSize = New-Object System.Drawing.Size(640, 500)
-$form.StartPosition = 'CenterScreen'
-$form.Font = New-Object System.Drawing.Font('Yu Gothic UI', 11)
-$form.AutoScaleMode = 'Dpi'
-$layout = New-Object System.Windows.Forms.TableLayoutPanel
-$layout.Dock = 'Fill'; $layout.Padding = 16; $layout.ColumnCount = 1; $layout.RowCount = 6
-foreach ($height in @(32, 0, 30, 76, 54, 46)) {
- $style = New-Object System.Windows.Forms.RowStyle
- if ($height -eq 0) { $style.SizeType = 'Percent'; $style.Height = 100 } else { $style.SizeType = 'Absolute'; $style.Height = $height }
- [void]$layout.RowStyles.Add($style)
 }
-$form.Controls.Add($layout)
-$label = New-Object System.Windows.Forms.Label
-$label.Text = '1. 変更するメッセージを選ぶ'; $label.Dock = 'Fill'
-$layout.Controls.Add($label,0,0)
-$list = New-Object System.Windows.Forms.ListBox
-$list.Dock = 'Fill'; $list.IntegralHeight = $false; $list.HorizontalScrollbar = $true
-for ($i=0; $i -lt [int]$data.count; $i++) { [void]$list.Items.Add(('{0}. {1}' -f ($i+1), [string]$data.""name$i"")) }
-$layout.Controls.Add($list,0,1)
-$label2 = New-Object System.Windows.Forms.Label
-$label2.Text = '2. 変更後の名前を入力する'; $label2.Dock = 'Fill'
-$layout.Controls.Add($label2,0,2)
-$value = New-Object System.Windows.Forms.TextBox
-$value.Dock = 'Fill'; $value.Multiline = $true; $value.ScrollBars = 'Vertical'; $value.MaxLength = 4000
-$layout.Controls.Add($value,0,3)
-$hint = New-Object System.Windows.Forms.Label
-$hint.Text = '名前を変更した後、図上の表示も確認してください。次の確認画面でOKを押すまでは変更されません。'
-$hint.Dock = 'Fill'; $layout.Controls.Add($hint,0,4)
-$buttons = New-Object System.Windows.Forms.FlowLayoutPanel
-$buttons.Dock = 'Fill'; $buttons.FlowDirection = 'RightToLeft'
-$cancel = New-Object System.Windows.Forms.Button
-$cancel.Text = 'キャンセル'; $cancel.AutoSize = $true; $cancel.DialogResult = 'Cancel'
-$ok = New-Object System.Windows.Forms.Button
-$ok.Text = '変更内容を確認'; $ok.AutoSize = $true; $ok.Enabled = $false
-$buttons.Controls.Add($cancel); $buttons.Controls.Add($ok); $layout.Controls.Add($buttons,0,5)
-$form.CancelButton = $cancel
-$list.Add_SelectedIndexChanged({
- if ($list.SelectedIndex -ge 0) { $value.Text = [string]$data.('name'+$list.SelectedIndex); $ok.Enabled = $false }
-})
-$value.Add_TextChanged({
- $ok.Enabled = $list.SelectedIndex -ge 0 -and $value.Text -cne [string]$data.('name'+$list.SelectedIndex)
-})
-$accept = {
- if (-not $ok.Enabled) { return }
- $result = @{ index=[string]$list.SelectedIndex; value=$value.Text } | ConvertTo-Json
- $bytes = [System.Text.UTF8Encoding]::new($true).GetBytes($result)
- $stream = [System.IO.File]::Open($OutputPath, 'CreateNew', 'Write', 'None')
- try { $stream.Write($bytes,0,$bytes.Length) } finally { $stream.Dispose() }
- $form.DialogResult = 'OK'; $form.Close()
-}
-$ok.Add_Click($accept)
-try {
- if ($SelfTest) {
-  if ($ok.Enabled -or $list.SelectedIndex -ne -1) { throw 'Initial selection must be empty' }
-  $list.SelectedIndex = 1
-  if ($ok.Enabled) { throw 'Unchanged name accepted' }
-  $value.Text = 'Changed ""message""'
-  if (-not $ok.Enabled) { throw 'Changed name rejected' }
-  $form.StartPosition = ""Manual""; $form.Location = New-Object System.Drawing.Point(-30000,-30000)
-  $form.Show(); [System.Windows.Forms.Application]::DoEvents()
-  $bitmap = New-Object System.Drawing.Bitmap($form.Width, $form.Height)
-  try { $form.DrawToBitmap($bitmap, (New-Object System.Drawing.Rectangle(0,0,$form.Width,$form.Height))); $bitmap.Save($OutputPath+'.png') } finally { $bitmap.Dispose() }
-  & $accept
- } else { [void]$form.ShowDialog() }
-} finally { $form.Dispose() }
-";
+
+// Late-bound framework controls keep the ND script compiler independent of Forms references.
+// All model access stays on the calling ND thread; the UI receives strings only.
+public sealed class ProbeNativeDialog : IDisposable
+{
+    private readonly System.Reflection.Assembly forms = System.Reflection.Assembly.Load(
+        "System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089");
+    private readonly System.Reflection.Assembly drawing = System.Reflection.Assembly.Load(
+        "System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a");
+    public readonly object Form, List, Input, Confirm, Cancel;
+    private readonly object font;
+    private readonly IList<string> names;
+    public Dictionary<string, string> Result;
+
+    public static object Get(object target, string property) { return target.GetType().GetProperty(property).GetValue(target, null); }
+    public static void Set(object target, string property, object value)
+    {
+        var info = target.GetType().GetProperty(property);
+        if (info.PropertyType.IsEnum && value is string) value = Enum.Parse(info.PropertyType, (string)value);
+        info.SetValue(target, value, null);
+    }
+    public static object Call(object target, string method, params object[] args)
+    {
+        return target.GetType().InvokeMember(method, System.Reflection.BindingFlags.Public
+            | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.InvokeMethod, null, target, args);
+    }
+    private object New(string type) { return Activator.CreateInstance(forms.GetType("System.Windows.Forms." + type, true)); }
+    private object Shape(string type, params object[] args) { return Activator.CreateInstance(drawing.GetType("System.Drawing." + type, true), args); }
+    private object Control(string type, string text, int x, int y, int width, int height, string anchor)
+    {
+        var control = New(type);
+        Set(control, "Text", text); Set(control, "Left", x); Set(control, "Top", y);
+        Set(control, "Width", width); Set(control, "Height", height); Set(control, "Anchor", anchor);
+        Call(Get(Form, "Controls"), "Add", control);
+        return control;
+    }
+    private static void On(object control, string name, EventHandler handler) { control.GetType().GetEvent(name).AddEventHandler(control, handler); }
+    public ProbeNativeDialog(IList<string> values)
+    {
+        names = values;
+        Form = New("Form");
+        font = Shape("Font", "Yu Gothic UI", 11f);
+        Set(Form, "Font", font); Set(Form, "Text", "メッセージの名前を変更");
+        Set(Form, "ClientSize", Shape("Size", 760, 550)); Set(Form, "MinimumSize", Shape("Size", 650, 510));
+        Set(Form, "StartPosition", "CenterScreen"); Set(Form, "AutoScaleMode", "Dpi");
+        Set(Form, "TopMost", true); Set(Form, "MinimizeBox", false);
+        Control("Label", "1. 変更するメッセージを選ぶ", 16, 16, 720, 28, "Top, Left, Right");
+        List = Control("ListBox", "", 16, 48, 728, 280, "Top, Bottom, Left, Right");
+        Set(List, "IntegralHeight", false); Set(List, "HorizontalScrollbar", true);
+        for (int i = 0; i < names.Count; i++) Call(Get(List, "Items"), "Add", (i + 1) + ". " + (names[i] ?? ""));
+        Control("Label", "2. 変更後の名前を入力する", 16, 340, 720, 28, "Bottom, Left, Right");
+        Input = Control("TextBox", "", 16, 372, 728, 76, "Bottom, Left, Right");
+        Set(Input, "Multiline", true); Set(Input, "ScrollBars", "Vertical"); Set(Input, "MaxLength", 4000);
+        Control("Label", "次の確認画面でOKを押すまでは変更されません。変更後は図の表示も確認してください。", 16, 458, 728, 42, "Bottom, Left, Right");
+        Confirm = Control("Button", "変更内容を確認", 470, 504, 158, 34, "Bottom, Right");
+        Cancel = Control("Button", "キャンセル", 634, 504, 110, 34, "Bottom, Right");
+        Set(Confirm, "Enabled", false); Set(Cancel, "DialogResult", "Cancel"); Set(Form, "CancelButton", Cancel);
+        On(List, "SelectedIndexChanged", delegate {
+            int index = (int)Get(List, "SelectedIndex");
+            Set(Input, "Text", index < 0 ? "" : names[index] ?? ""); Set(Confirm, "Enabled", false);
+        });
+        On(Input, "TextChanged", delegate {
+            int index = (int)Get(List, "SelectedIndex");
+            Set(Confirm, "Enabled", index >= 0 && !string.Equals((string)Get(Input, "Text"), names[index] ?? "", StringComparison.Ordinal));
+        });
+        On(Confirm, "Click", delegate { Accept(); });
+    }
+    public void Accept()
+    {
+        if (!(bool)Get(Confirm, "Enabled")) return;
+        Result = new Dictionary<string, string> {
+            {"index", ((int)Get(List, "SelectedIndex")).ToString(CultureInfo.InvariantCulture)}, {"value", (string)Get(Input, "Text")}
+        };
+        Set(Form, "DialogResult", "OK"); Call(Form, "Close");
+    }
+    public static Dictionary<string, string> Show(IList<string> names) { return Show(names, null); }
+    public static Dictionary<string, string> Show(IList<string> names, Action<ProbeNativeDialog> beforeShow)
+    {
+        Dictionary<string, string> result = null;
+        Exception error = null;
+        var thread = new System.Threading.Thread(delegate() {
+            try { using (var dialog = new ProbeNativeDialog(names)) { if (beforeShow != null) beforeShow(dialog); Call(dialog.Form, "ShowDialog"); result = dialog.Result; } }
+            catch (Exception ex) { error = ex; }
+        });
+        thread.SetApartmentState(System.Threading.ApartmentState.STA);
+        thread.Start(); thread.Join();
+        if (error != null) throw new InvalidOperationException("拡張内の入力画面を表示できませんでした。「詳細」で理由を確認してください。", error);
+        return result;
+    }
+    public void Dispose() { ((IDisposable)Form).Dispose(); ((IDisposable)font).Dispose(); }
 }
