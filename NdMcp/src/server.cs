@@ -18,10 +18,6 @@ public void StartNdMcpServer(ICommandContext context, ICommandParams parameters)
             return;
         }
 
-        // 未表示エディタ配下でも最新値を取得できるようにする（AgentReview と同じ。
-        // Send() で戻ってきた読み出しにも効くかは実機で確認する項目）
-        context.ContextOption.EditorAccessMode = EditorAccessMode.GetInactiveValue;
-
         // UI スレッド（＝このハンドラのスレッド）の情報を捕獲する
         NdMcpServer.UiThreadId = Thread.CurrentThread.ManagedThreadId;
         NdMcpServer.SyncContext = SynchronizationContext.Current;
@@ -53,6 +49,29 @@ public void StartNdMcpServer(ICommandContext context, ICommandParams parameters)
         app.Output.WriteLine(category, "[error] サーバー開始に失敗: " + ex.ToString());
         app.Window.UI.ShowInformationDialog("サーバー開始に失敗しました。\n\n" + ex.Message, category);
     }
+}
+
+// HTTP から UI スレッドへ戻した後、正式なコマンドとして呼び出す。
+// エディタ取得設定の有効期間内に、モデル取得からファイル出力まで完了させる。
+public void ExecuteNdMcpRequest(ICommandContext context, ICommandParams parameters)
+{
+    var request = parameters[0] as NdMcpCommandRequest;
+    if (request == null) throw new ArgumentException("NdMcp の要求がありません。");
+    try
+    {
+        context.ContextOption.EditorAccessMode = EditorAccessMode.GetInactiveValue;
+        request.Result = request.Work(context.App);
+    }
+    catch (Exception ex) { request.Error = ex; }
+    finally { request.Completed = true; }
+}
+
+public class NdMcpCommandRequest
+{
+    public Func<IApplication, object> Work;
+    public object Result;
+    public Exception Error;
+    public bool Completed;
 }
 
 public void StopNdMcpServer(ICommandContext context, ICommandParams parameters)
@@ -321,7 +340,7 @@ public class NdMcpHttpError : Exception
 
 public static class NdMcpServer
 {
-    public const string Version = "0.1.0";
+    public const string Version = "0.1.1";
 
     public static int Port = 3560;
     public static string ExportDir;
@@ -436,27 +455,26 @@ public static class NdMcpServer
         }
         if (path == "/") return Usage();
 
-        // ここから先は ND API を触るので UI スレッドへ戻す。
-        // direct=1 は診断用（マーシャリングなしの直呼び。挙動比較のためだけに残す）
-        var direct = q["direct"] == "1";
+        // ND API は必ずコマンド内で呼ぶ。診断用の直呼びも許可しない。
+        if (q["direct"] == "1") throw new NdMcpHttpError(400, "direct=1 は廃止しました。通常のコマンド経由で実行してください。");
         var modelPath = q["path"] ?? "";
         var modelId = q["id"] ?? "";
 
-        Func<object> work = null;
+        Func<IApplication, object> work = null;
         switch (path)
         {
-            case "/project": work = () => ModelApi.Project(App); break;
-            case "/tree": work = () => ModelApi.Tree(App, modelPath, modelId, ParseInt(q["depth"], 2, 0, 20)); break;
-            case "/model": work = () => ModelApi.Model(App, modelPath, modelId); break;
-            case "/search": work = () => ModelApi.Search(App, q["q"] ?? "", q["metaclass"] ?? "", ParseInt(q["limit"], 50, 1, 1000)); break;
-            case "/markdown": work = () => ModelApi.Markdown(App, modelPath, modelId); break;
-            case "/export": work = () => ModelApi.Export(App, modelPath, modelId, q["out"] ?? "", ExportDir); break;
+            case "/project": work = app => ModelApi.Project(app); break;
+            case "/tree": work = app => ModelApi.Tree(app, modelPath, modelId, ParseInt(q["depth"], 2, 0, 20)); break;
+            case "/model": work = app => ModelApi.Model(app, modelPath, modelId); break;
+            case "/search": work = app => ModelApi.Search(app, q["q"] ?? "", q["metaclass"] ?? "", ParseInt(q["limit"], 50, 1, 1000)); break;
+            case "/markdown": work = app => ModelApi.Markdown(app, modelPath, modelId); break;
+            case "/export": work = app => ModelApi.Export(app, modelPath, modelId, q["out"] ?? "", ExportDir); break;
             default: throw new NdMcpHttpError(404, "不明なパス: " + path);
         }
-        return direct ? work() : OnUiThread(work);
+        return OnUiThread(work);
     }
 
-    private static object OnUiThread(Func<object> work)
+    private static object OnUiThread(Func<IApplication, object> work)
     {
         var context = SyncContext;
         if (context == null) throw new NdMcpHttpError(503, "SynchronizationContext が捕獲できていません");
@@ -464,7 +482,17 @@ public static class NdMcpServer
         Exception error = null;
         context.Send(delegate(object state)
         {
-            try { result = work(); }
+            try
+            {
+                var request = new NdMcpCommandRequest { Work = work };
+                var parameters = App.CreateCommandParams();
+                parameters.AddParam(request);
+                App.ExecuteCommand("NdMcp.Command.ExecuteRequest", parameters);
+                if (!request.Completed)
+                    throw new NdMcpHttpError(500, "NdMcp の要求コマンドが完了しませんでした。manifest.json と main.cs を一緒に更新してください。");
+                if (request.Error != null) throw request.Error;
+                result = request.Result;
+            }
             catch (Exception e) { error = e; }
         }, null);
         if (error != null) throw error;
@@ -593,26 +621,12 @@ public static class ModelApi
         }
         Directory.CreateDirectory(outDir);
 
-        var exporter = new MarkdownExporter(new MarkdownExportOptions(), outDir);
-        var markdown = exporter.Export(root);
-        var utf8 = new UTF8Encoding(false);
+        // AgentReview と同じ対応表・エクスポータ・ファイル出力メソッドを使う。
+        var exporter = new MarkdownExporter(new MarkdownExportOptions(), outDir, LoadDiagramGroupRules());
+        DesignArtifactWriter.Write(app, "NdMcp", exporter, root, outDir);
         var files = new List<object>();
-
-        var designPath = Path.Combine(outDir, "design.md");
-        File.WriteAllText(designPath, markdown, utf8);
-        files.Add(designPath);
-
-        if (exporter.IndexRows.Count > 0)
-        {
-            var index = new StringBuilder();
-            index.Append("# 図一覧\n\n");
-            index.Append("| 図名 | 種別 | ファイル | モデルパス |\n");
-            index.Append("|---|---|---|---|\n");
-            foreach (var row in exporter.IndexRows) index.Append(row).Append('\n');
-            var indexPath = Path.Combine(outDir, "_index.md");
-            File.WriteAllText(indexPath, index.ToString(), utf8);
-            files.Add(indexPath);
-        }
+        files.Add(Path.Combine(outDir, "design.md"));
+        files.Add(Path.Combine(outDir, "_index.md"));
         var diagramsDir = Path.Combine(outDir, "diagrams");
         if (Directory.Exists(diagramsDir))
             foreach (var f in Directory.GetFiles(diagramsDir, "*.puml", SearchOption.AllDirectories))
@@ -627,6 +641,17 @@ public static class ModelApi
     }
 
     // ---- 内部 ----
+
+    private static DiagramGroupRules LoadDiagramGroupRules()
+    {
+        var config = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".nd-agent-review", "config.ini");
+        var rulesFile = "";
+        if (File.Exists(config))
+            foreach (var pair in IniFile.Read(config))
+                if (pair.Key == "diagramGroups.rulesFile") rulesFile = pair.Value;
+        return DiagramGroupRules.Load(rulesFile);
+    }
 
     private static IProject RequireProject(IApplication app)
     {

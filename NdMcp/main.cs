@@ -137,6 +137,201 @@ public class MarkdownExportOptions
     public int MaxHeadingLevel = 6;         // Markdown 見出しの上限（# の最大数）
 }
 
+// 所有フィールドの型から図グループを判別する。明示的な対応表があれば優先する。
+public class DiagramGroupRules
+{
+    private readonly Dictionary<string, HashSet<string>> _types = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+    public readonly List<string> Warnings = new List<string>();
+
+    public static DiagramGroupRules Load(string file)
+    {
+        var rules = new DiagramGroupRules();
+        if (string.IsNullOrWhiteSpace(file)) return rules;
+        try
+        {
+            if (!Path.IsPathRooted(file) || !string.Equals(Path.GetFullPath(file), file, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("対応表には正規化した絶対パスを指定してください。");
+            var assigned = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var raw in File.ReadAllLines(file, Encoding.UTF8))
+            {
+                var line = raw.Trim();
+                if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal)) continue;
+                var eq = line.IndexOf('=');
+                if (eq < 1) throw new InvalidDataException("対応表は key=value 形式で指定してください。");
+                var key = line.Substring(0, eq).Trim();
+                if (key != "sequence" && key != "class" && key != "state")
+                    throw new InvalidDataException("対応表の種別が不正です: " + key);
+                if (rules._types.ContainsKey(key)) throw new InvalidDataException("対応表の種別が重複しています: " + key);
+                var types = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var value in line.Substring(eq + 1).Split(';'))
+                {
+                    var type = value.Trim();
+                    if (type.Length == 0 || type.IndexOf('.') < 1 || type.EndsWith(".", StringComparison.Ordinal))
+                        throw new InvalidDataException("空でないメタクラス完全名を指定してください。");
+                    if (!assigned.Add(type)) throw new InvalidDataException("対応表のメタクラスが重複しています。");
+                    types.Add(type);
+                }
+                rules._types.Add(key, types);
+            }
+            if (rules._types.Count == 0) throw new InvalidDataException("対応表が空です。");
+        }
+        catch (Exception ex)
+        {
+            rules._types.Clear();
+            rules.Warnings.Add("図グループ対応表: " + ex.Message + " 所有フィールドから自動判別します。");
+        }
+        return rules;
+    }
+
+    public bool Matches(string kind, string fullName)
+    {
+        HashSet<string> types;
+        return fullName != null && _types.TryGetValue(kind, out types) && types.Contains(fullName);
+    }
+
+    public List<IModel> Directories(IModel model, string kind, List<string> warnings)
+    {
+        var chain = new List<IModel>(); // 図の親から上へ。図モデル自身はファイル名に使う。
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        try
+        {
+            seen.Add(model.Id);
+            for (var owner = model.Owner; owner != null; owner = owner.Owner)
+            {
+                if (chain.Count >= 1024 || !seen.Add(owner.Id))
+                    throw new InvalidDataException("所有関係の循環または階層上限を検出しました。");
+                chain.Add(owner);
+            }
+            var groupIndex = -1;
+            for (var i = 0; i < chain.Count; i++)
+                if (chain[i].Metaclass != null && Matches(kind, chain[i].Metaclass.FullName)) groupIndex = i;
+            if (groupIndex < 0 && model.Metaclass != null)
+            {
+                // グループは図のメタクラスを所有フィールドの型として宣言している。
+                // 表示名・型名の接尾辞には依存しない。参照フィールドは対象外。
+                var diagramType = model.Metaclass.FullName;
+                if (!string.IsNullOrEmpty(diagramType))
+                    for (var i = 0; i < chain.Count; i++)
+                    {
+                        var cls = chain[i].Metaclass;
+                        if (cls == null) continue;
+                        try
+                        {
+                            if (cls.GetFields().Cast<IField>().Any(f => f != null && f.IsEmbedded
+                                && !f.IsReference && f.TypeClass != null
+                                && string.Equals(f.TypeClass.FullName, diagramType, StringComparison.Ordinal)))
+                                groupIndex = i;
+                        }
+                        catch (Exception ex)
+                        {
+                            warnings.Add("モデル「" + chain[i].Name + "」: グループ判別用フィールドの取得に失敗: " + ex.Message);
+                        }
+                    }
+            }
+            if (groupIndex >= 0)
+            {
+                var result = chain.Take(groupIndex + 1).ToList();
+                result.Reverse();
+                return result;
+            }
+        }
+        catch (Exception ex)
+        {
+            warnings.Add("図「" + model.Name + "」: 祖先の取得に失敗: " + ex.Message);
+        }
+        // 判別できなくても選択モデルからの長い階層には戻さない。
+        warnings.Add("図「" + model.Name + "」: グループを特定できません。"
+            + (chain.Count > 0 ? "図の直接の親だけを保存先に使用します。" : "種別フォルダ直下に出力します。"));
+        return chain.Take(1).ToList();
+    }
+}
+
+// OS に書き込む前に、ディレクトリとファイルを同じ名前空間で割り当てる。
+public class DiagramPathNode
+{
+    public string Id, Name, Suffix, Assigned;
+    public bool IsFile;
+    public DiagramPathNode Parent;
+    public readonly List<DiagramPathNode> Children = new List<DiagramPathNode>();
+    public string RelativePath()
+    {
+        return Parent == null ? Assigned : Parent.RelativePath() + "/" + Assigned;
+    }
+}
+
+public static class DiagramPaths
+{
+    public static string Segment(string name)
+    {
+        var result = AgentText.SafeFileName(name).TrimEnd(' ', '.');
+        if (result.Length == 0) result = "unnamed";
+        if (Regex.IsMatch(result, @"^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)", RegexOptions.IgnoreCase))
+            result = "_" + result;
+        return result;
+    }
+
+    public static string Hash(string id)
+    {
+        using (var sha = System.Security.Cryptography.SHA256.Create())
+            return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(id))).Replace("-", "").ToLowerInvariant();
+    }
+
+    public static DiagramPathNode Directory(DiagramPathNode parent, string id, string name)
+    {
+        var node = parent.Children.FirstOrDefault(n => !n.IsFile && n.Id == id);
+        if (node == null)
+        {
+            node = new DiagramPathNode { Id = id, Name = Segment(name), Suffix = "", Parent = parent };
+            parent.Children.Add(node);
+        }
+        return node;
+    }
+
+    public static void Allocate(DiagramPathNode parent)
+    {
+        var counts = parent.Children.GroupBy(n => n.Name + n.Suffix, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+        var used = new HashSet<string>(counts.Keys, StringComparer.OrdinalIgnoreCase);
+        foreach (var node in parent.Children.OrderBy(n => n.Id, StringComparer.Ordinal).ThenBy(n => n.IsFile))
+        {
+            var original = node.Name + node.Suffix;
+            node.Assigned = original;
+            if (counts[original] > 1)
+            {
+                var hash = Hash((node.IsFile ? "file:" : "dir:") + node.Id);
+                var length = 8;
+                while (true)
+                {
+                    var candidate = node.Name + "_" + hash.Substring(0, length) + node.Suffix;
+                    if (used.Add(candidate)) { node.Assigned = candidate; break; }
+                    if (length == hash.Length) throw new InvalidDataException("図の保存先を一意に割り当てられません。");
+                    length = Math.Min(length + 4, hash.Length);
+                }
+            }
+            Allocate(node);
+        }
+    }
+
+    public static string Link(string relativePath)
+    {
+        // .NET Framework の URI 設定によっては括弧が残るため、Markdown 用に明示処理する。
+        return string.Join("/", relativePath.Split('/').Select(s => Uri.EscapeDataString(s)
+            .Replace("(", "%28").Replace(")", "%29").Replace("'", "%27").Replace("*", "%2A").Replace("!", "%21")).ToArray());
+    }
+
+    public static string Label(string text)
+    {
+        return (text ?? "").Replace("\\", "\\\\").Replace("[", "\\[").Replace("]", "\\]")
+            .Replace("|", "\\|").Replace("\r", " ").Replace("\n", " ");
+    }
+}
+
+public class PendingDiagram
+{
+    public string Token, Name, Uml;
+    public DiagramPathNode Node;
+}
+
 public class MarkdownExporter
 {
     private readonly MarkdownExportOptions _options;
@@ -146,7 +341,9 @@ public class MarkdownExporter
     // 図の .puml 出力（null なら図は出力しない）
     private readonly string _diagramDir;
     private readonly HashSet<string> _seenEditors = new HashSet<string>(StringComparer.Ordinal);
-    private readonly HashSet<string> _usedFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    private readonly List<PendingDiagram> _pending = new List<PendingDiagram>();
+    private readonly DiagramGroupRules _groupRules;
+    private DiagramPathNode _pathRoot;
     private readonly HashSet<string> _seenDiagramWarnings = new HashSet<string>(StringComparer.Ordinal);
     private readonly PlantUmlOptions _seqOptions = new PlantUmlOptions();
     private readonly ClassPlantUmlOptions _classOptions = new ClassPlantUmlOptions();
@@ -158,10 +355,11 @@ public class MarkdownExporter
     public List<string> Warnings = new List<string>();
     public List<string> IndexRows = new List<string>();   // _index.md 用「| 図名 | 種別 | ファイル | モデルパス |」
 
-    public MarkdownExporter(MarkdownExportOptions options, string diagramDir)
+    public MarkdownExporter(MarkdownExportOptions options, string diagramDir, DiagramGroupRules groupRules = null)
     {
         _options = options ?? new MarkdownExportOptions();
         _diagramDir = diagramDir;
+        _groupRules = groupRules ?? DiagramGroupRules.Load("");
         RegisterDesideMaps(_classOptions);
     }
 
@@ -192,12 +390,20 @@ public class MarkdownExporter
         var nl = _options.NewLine;
         _sb = new StringBuilder();
         _visited.Clear();
+        _seenEditors.Clear();
+        _seenDiagramWarnings.Clear();
+        _pending.Clear();
+        IndexRows.Clear();
+        DiagramCount = 0;
+        SkippedModelCount = 0;
+        _pathRoot = new DiagramPathNode { Id = "diagrams", Assigned = "diagrams" };
         ModelCount = 0;
         Warnings.Clear();
+        if (_diagramDir != null) Warnings.AddRange(_groupRules.Warnings);
 
         // 件数をプリアンブルに載せるため、本文を先に組み立てる
         WriteModel(root, 0, null);
-        var body = _sb.ToString();
+        var body = WriteDiagramFiles(_sb.ToString());
 
         var head = new StringBuilder();
         head.Append("<!-- Next Design 設計情報エクスポート (AgentReview) -->").Append(nl);
@@ -297,9 +503,10 @@ public class MarkdownExporter
                             ? seq.Model.Name
                             : (string.IsNullOrEmpty(seq.ViewDefinitionName) ? "Sequence" : seq.ViewDefinitionName);
                         var uml = new SequencePlantUmlExporter(seq, _seqOptions).Export();
-                        var file = SaveDiagram(seqName, "_seq", "シーケンス図", uml);
-                        refs.Add("- 図: [" + seqName + "](" + file + ")（シーケンス図）");
-                        AddIndexRow(seqName, "シーケンス図", file, m);
+                        var owner = seq.Model ?? m;
+                        var file = SaveDiagram(seqName, "_seq", "シーケンス図", "sequence", uml, owner, editor.Id);
+                        refs.Add("- 図: [" + DiagramPaths.Label(seqName) + "](" + file + ")（シーケンス図）");
+                        AddIndexRow(seqName, "シーケンス図", file, owner);
                         continue;
                     }
 
@@ -307,6 +514,7 @@ public class MarkdownExporter
                     if (diagram == null) continue;
 
                     var representation = editor as IRepresentation;
+                    var diagramOwner = representation != null && representation.Model != null ? representation.Model : m;
                     var diagramName = representation != null && representation.Model != null
                         && !string.IsNullOrEmpty(representation.Model.Name)
                         ? representation.Model.Name : (m.Name ?? "Diagram");
@@ -322,9 +530,9 @@ public class MarkdownExporter
                             Warnings.Add("図「" + diagramName + "」: 対応するノードが無いため出力をスキップ");
                             continue;
                         }
-                        var file = SaveDiagram(diagramName, "_state", "状態遷移図", uml);
-                        refs.Add("- 図: [" + diagramName + "](" + file + ")（状態遷移図）");
-                        AddIndexRow(diagramName, "状態遷移図", file, m);
+                        var file = SaveDiagram(diagramName, "_state", "状態遷移図", "state", uml, diagramOwner, editor.Id);
+                        refs.Add("- 図: [" + DiagramPaths.Label(diagramName) + "](" + file + ")（状態遷移図）");
+                        AddIndexRow(diagramName, "状態遷移図", file, diagramOwner);
                     }
                     else if (ClassExportRunner.IsClassDiagramEditor(editor))
                     {
@@ -337,9 +545,9 @@ public class MarkdownExporter
                             Warnings.Add("図「" + diagramName + "」: 対応するノードが無いため出力をスキップ");
                             continue;
                         }
-                        var file = SaveDiagram(diagramName, "_class", "クラス図", uml);
-                        refs.Add("- 図: [" + diagramName + "](" + file + ")（クラス図）");
-                        AddIndexRow(diagramName, "クラス図", file, m);
+                        var file = SaveDiagram(diagramName, "_class", "クラス図", "class", uml, diagramOwner, editor.Id);
+                        refs.Add("- 図: [" + DiagramPaths.Label(diagramName) + "](" + file + ")（クラス図）");
+                        AddIndexRow(diagramName, "クラス図", file, diagramOwner);
                     }
                 }
                 catch (Exception ex)
@@ -361,24 +569,46 @@ public class MarkdownExporter
         return skipChildren;
     }
 
-    // 種別フォルダ（diagrams\<kindFolder>）へ書き、design.md からのリンクに使う相対パスを返す。
-    // フォルダは最初の図の出力時に作る（該当する図が無い種別の空フォルダは作らない）
-    private string SaveDiagram(string name, string suffix, string kindFolder, string uml)
+    // 出力予定を集めてからパスを確定する。本文と索引の仮参照は書込み成功後に置換する。
+    private string SaveDiagram(string name, string suffix, string kindFolder, string kind, string uml, IModel owner, string editorId)
     {
-        var baseName = AgentText.SafeFileName(name);
-        if (baseName.Length == 0) baseName = "diagram";
-        var file = baseName + suffix + ".puml";
-        var serial = 2;
-        while (!_usedFileNames.Add(kindFolder + "/" + file))
+        var parent = DiagramPaths.Directory(_pathRoot, kind, kindFolder);
+        foreach (var model in _groupRules.Directories(owner, kind, Warnings))
+            parent = DiagramPaths.Directory(parent, model.Id, model.Name);
+        var node = new DiagramPathNode { Id = editorId, Name = DiagramPaths.Segment(name),
+            Suffix = suffix + ".puml", IsFile = true, Parent = parent };
+        parent.Children.Add(node);
+        var token = "ND_DIAGRAM_" + Guid.NewGuid().ToString("N");
+        _pending.Add(new PendingDiagram { Token = token, Name = name, Uml = uml, Node = node });
+        return token;
+    }
+
+    private string WriteDiagramFiles(string body)
+    {
+        DiagramPaths.Allocate(_pathRoot);
+        foreach (var diagram in _pending)
         {
-            file = baseName + suffix + "_" + serial + ".puml";
-            serial++;
+            try
+            {
+                var relative = diagram.Node.RelativePath();
+                var path = Path.Combine(_diagramDir, relative.Replace('/', Path.DirectorySeparatorChar));
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                File.WriteAllText(path, diagram.Uml, new UTF8Encoding(false));
+                var link = DiagramPaths.Link(relative);
+                body = body.Replace(diagram.Token, link);
+                for (var i = 0; i < IndexRows.Count; i++)
+                    IndexRows[i] = IndexRows[i].Replace(diagram.Token + "_LABEL", DiagramPaths.Label(relative))
+                        .Replace(diagram.Token, link);
+                DiagramCount++;
+            }
+            catch (Exception ex)
+            {
+                Warnings.Add("図「" + diagram.Name + "」: " + diagram.Node.RelativePath() + " の書込みに失敗: " + ex.Message);
+                body = Regex.Replace(body, @"(?m)^- 図: [^\r\n]*" + diagram.Token + @"[^\r\n]*(?:\r?\n|$)", "");
+                IndexRows.RemoveAll(row => row.Contains(diagram.Token));
+            }
         }
-        var dir = Path.Combine(_diagramDir, "diagrams", kindFolder);
-        Directory.CreateDirectory(dir);
-        File.WriteAllText(Path.Combine(dir, file), uml, new UTF8Encoding(false));
-        DiagramCount++;
-        return "diagrams/" + kindFolder + "/" + file;
+        return body;
     }
 
     // エクスポータの警告に図名を付けて写す。同一内容の繰り返しは初出だけ残す
@@ -396,8 +626,8 @@ public class MarkdownExporter
 
     private void AddIndexRow(string name, string kind, string file, IModel owner)
     {
-        IndexRows.Add("| " + name.Replace("|", "\\|") + " | " + kind + " | " + file
-            + " | " + PathOf(owner).Replace("|", "\\|") + " |");
+        IndexRows.Add("| " + DiagramPaths.Label(name) + " | " + kind + " | [" + file + "_LABEL](" + file + ")"
+            + " | " + DiagramPaths.Label(PathOf(owner)) + " |");
     }
 
     private static int CountSubtree(IModel m)
@@ -4671,6 +4901,33 @@ public class StateExportRunner
     }
 }
 
+public static class DesignArtifactWriter
+{
+public static void Write(IApplication app, string category, MarkdownExporter exporter, IModel root, string outDir)
+{
+    var markdown = exporter.Export(root);
+
+    var utf8 = new UTF8Encoding(false);
+    File.WriteAllText(Path.Combine(outDir, "design.md"), markdown, utf8);
+    // 図が0件でも索引を更新し、前回の参照を残さない。
+    {
+        var index = new StringBuilder();
+        index.Append("# 図一覧\n\n");
+        index.Append("| 図名 | 種別 | ファイル | モデルパス |\n");
+        index.Append("|---|---|---|---|\n");
+        foreach (var row in exporter.IndexRows) index.Append(row).Append('\n');
+        File.WriteAllText(Path.Combine(outDir, "_index.md"), index.ToString(), utf8);
+    }
+
+    foreach (var warning in exporter.Warnings)
+        app.Output.WriteLine(category, "[warn]  " + warning);
+    app.Output.WriteLine(category, "[info]  モデル " + exporter.ModelCount + " 件を design.md に出力");
+    app.Output.WriteLine(category, "[info]  図 " + exporter.DiagramCount + " 件を diagrams\\<種別>\\<階層>\\*.puml に出力"
+        + (exporter.SkippedModelCount > 0
+            ? "（図の構成要素 " + exporter.SkippedModelCount + " モデルはテキスト出力から除外）" : ""));
+}
+}
+
 // ============================================================
 //  Part S / MCP ブリッジ用 HTTP サーバー（NdMcp 固有部。src/server.cs）
 // ============================================================
@@ -4690,10 +4947,6 @@ public void StartNdMcpServer(ICommandContext context, ICommandParams parameters)
             app.Output.WriteLine(category, "[info] サーバーは既に稼働中です: " + NdMcpServer.BaseUrl());
             return;
         }
-
-        // 未表示エディタ配下でも最新値を取得できるようにする（AgentReview と同じ。
-        // Send() で戻ってきた読み出しにも効くかは実機で確認する項目）
-        context.ContextOption.EditorAccessMode = EditorAccessMode.GetInactiveValue;
 
         // UI スレッド（＝このハンドラのスレッド）の情報を捕獲する
         NdMcpServer.UiThreadId = Thread.CurrentThread.ManagedThreadId;
@@ -4726,6 +4979,29 @@ public void StartNdMcpServer(ICommandContext context, ICommandParams parameters)
         app.Output.WriteLine(category, "[error] サーバー開始に失敗: " + ex.ToString());
         app.Window.UI.ShowInformationDialog("サーバー開始に失敗しました。\n\n" + ex.Message, category);
     }
+}
+
+// HTTP から UI スレッドへ戻した後、正式なコマンドとして呼び出す。
+// エディタ取得設定の有効期間内に、モデル取得からファイル出力まで完了させる。
+public void ExecuteNdMcpRequest(ICommandContext context, ICommandParams parameters)
+{
+    var request = parameters[0] as NdMcpCommandRequest;
+    if (request == null) throw new ArgumentException("NdMcp の要求がありません。");
+    try
+    {
+        context.ContextOption.EditorAccessMode = EditorAccessMode.GetInactiveValue;
+        request.Result = request.Work(context.App);
+    }
+    catch (Exception ex) { request.Error = ex; }
+    finally { request.Completed = true; }
+}
+
+public class NdMcpCommandRequest
+{
+    public Func<IApplication, object> Work;
+    public object Result;
+    public Exception Error;
+    public bool Completed;
 }
 
 public void StopNdMcpServer(ICommandContext context, ICommandParams parameters)
@@ -4994,7 +5270,7 @@ public class NdMcpHttpError : Exception
 
 public static class NdMcpServer
 {
-    public const string Version = "0.1.0";
+    public const string Version = "0.1.1";
 
     public static int Port = 3560;
     public static string ExportDir;
@@ -5109,27 +5385,26 @@ public static class NdMcpServer
         }
         if (path == "/") return Usage();
 
-        // ここから先は ND API を触るので UI スレッドへ戻す。
-        // direct=1 は診断用（マーシャリングなしの直呼び。挙動比較のためだけに残す）
-        var direct = q["direct"] == "1";
+        // ND API は必ずコマンド内で呼ぶ。診断用の直呼びも許可しない。
+        if (q["direct"] == "1") throw new NdMcpHttpError(400, "direct=1 は廃止しました。通常のコマンド経由で実行してください。");
         var modelPath = q["path"] ?? "";
         var modelId = q["id"] ?? "";
 
-        Func<object> work = null;
+        Func<IApplication, object> work = null;
         switch (path)
         {
-            case "/project": work = () => ModelApi.Project(App); break;
-            case "/tree": work = () => ModelApi.Tree(App, modelPath, modelId, ParseInt(q["depth"], 2, 0, 20)); break;
-            case "/model": work = () => ModelApi.Model(App, modelPath, modelId); break;
-            case "/search": work = () => ModelApi.Search(App, q["q"] ?? "", q["metaclass"] ?? "", ParseInt(q["limit"], 50, 1, 1000)); break;
-            case "/markdown": work = () => ModelApi.Markdown(App, modelPath, modelId); break;
-            case "/export": work = () => ModelApi.Export(App, modelPath, modelId, q["out"] ?? "", ExportDir); break;
+            case "/project": work = app => ModelApi.Project(app); break;
+            case "/tree": work = app => ModelApi.Tree(app, modelPath, modelId, ParseInt(q["depth"], 2, 0, 20)); break;
+            case "/model": work = app => ModelApi.Model(app, modelPath, modelId); break;
+            case "/search": work = app => ModelApi.Search(app, q["q"] ?? "", q["metaclass"] ?? "", ParseInt(q["limit"], 50, 1, 1000)); break;
+            case "/markdown": work = app => ModelApi.Markdown(app, modelPath, modelId); break;
+            case "/export": work = app => ModelApi.Export(app, modelPath, modelId, q["out"] ?? "", ExportDir); break;
             default: throw new NdMcpHttpError(404, "不明なパス: " + path);
         }
-        return direct ? work() : OnUiThread(work);
+        return OnUiThread(work);
     }
 
-    private static object OnUiThread(Func<object> work)
+    private static object OnUiThread(Func<IApplication, object> work)
     {
         var context = SyncContext;
         if (context == null) throw new NdMcpHttpError(503, "SynchronizationContext が捕獲できていません");
@@ -5137,7 +5412,17 @@ public static class NdMcpServer
         Exception error = null;
         context.Send(delegate(object state)
         {
-            try { result = work(); }
+            try
+            {
+                var request = new NdMcpCommandRequest { Work = work };
+                var parameters = App.CreateCommandParams();
+                parameters.AddParam(request);
+                App.ExecuteCommand("NdMcp.Command.ExecuteRequest", parameters);
+                if (!request.Completed)
+                    throw new NdMcpHttpError(500, "NdMcp の要求コマンドが完了しませんでした。manifest.json と main.cs を一緒に更新してください。");
+                if (request.Error != null) throw request.Error;
+                result = request.Result;
+            }
             catch (Exception e) { error = e; }
         }, null);
         if (error != null) throw error;
@@ -5266,26 +5551,12 @@ public static class ModelApi
         }
         Directory.CreateDirectory(outDir);
 
-        var exporter = new MarkdownExporter(new MarkdownExportOptions(), outDir);
-        var markdown = exporter.Export(root);
-        var utf8 = new UTF8Encoding(false);
+        // AgentReview と同じ対応表・エクスポータ・ファイル出力メソッドを使う。
+        var exporter = new MarkdownExporter(new MarkdownExportOptions(), outDir, LoadDiagramGroupRules());
+        DesignArtifactWriter.Write(app, "NdMcp", exporter, root, outDir);
         var files = new List<object>();
-
-        var designPath = Path.Combine(outDir, "design.md");
-        File.WriteAllText(designPath, markdown, utf8);
-        files.Add(designPath);
-
-        if (exporter.IndexRows.Count > 0)
-        {
-            var index = new StringBuilder();
-            index.Append("# 図一覧\n\n");
-            index.Append("| 図名 | 種別 | ファイル | モデルパス |\n");
-            index.Append("|---|---|---|---|\n");
-            foreach (var row in exporter.IndexRows) index.Append(row).Append('\n');
-            var indexPath = Path.Combine(outDir, "_index.md");
-            File.WriteAllText(indexPath, index.ToString(), utf8);
-            files.Add(indexPath);
-        }
+        files.Add(Path.Combine(outDir, "design.md"));
+        files.Add(Path.Combine(outDir, "_index.md"));
         var diagramsDir = Path.Combine(outDir, "diagrams");
         if (Directory.Exists(diagramsDir))
             foreach (var f in Directory.GetFiles(diagramsDir, "*.puml", SearchOption.AllDirectories))
@@ -5300,6 +5571,17 @@ public static class ModelApi
     }
 
     // ---- 内部 ----
+
+    private static DiagramGroupRules LoadDiagramGroupRules()
+    {
+        var config = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".nd-agent-review", "config.ini");
+        var rulesFile = "";
+        if (File.Exists(config))
+            foreach (var pair in IniFile.Read(config))
+                if (pair.Key == "diagramGroups.rulesFile") rulesFile = pair.Value;
+        return DiagramGroupRules.Load(rulesFile);
+    }
 
     private static IProject RequireProject(IApplication app)
     {

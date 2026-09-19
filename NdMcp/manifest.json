@@ -2,7 +2,7 @@
   "name": "NdMcp",
   "displayName": "NdMcp",
   "description": "Next Design のモデルを MCP クライアント（Claude Code 等）から読み出すための HTTP サーバー（読み取り専用）",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -60,6 +60,7 @@
     },
 
     "commands": [
+      { "id": "NdMcp.Command.ExecuteRequest", "execFunc": "ExecuteNdMcpRequest" },
       { "id": "NdMcp.Command.Start", "execFunc": "StartNdMcpServer" },
       { "id": "NdMcp.Command.Stop", "execFunc": "StopNdMcpServer" },
       { "id": "NdMcp.Command.Status", "execFunc": "ShowNdMcpStatus" },

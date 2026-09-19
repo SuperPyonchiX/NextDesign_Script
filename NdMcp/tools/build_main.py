@@ -50,7 +50,8 @@ def split_parts(text: str) -> dict:
 def build() -> str:
     header = (ROOT / "src" / "header.cs").read_text(encoding="utf-8")
     server = (ROOT / "src" / "server.cs").read_text(encoding="utf-8")
-    parts = split_parts(AGENT_REVIEW.read_text(encoding="utf-8"))
+    agent_source = AGENT_REVIEW.read_text(encoding="utf-8")
+    parts = split_parts(agent_source)
     missing = [n for n in PARTS if n not in parts]
     if missing:
         raise SystemExit(f"AgentReview/main.cs に Part {missing} が見つからない")
@@ -62,6 +63,13 @@ def build() -> str:
     for n in PARTS:
         chunks.append("")
         chunks.append("\n".join(parts[n]).rstrip("\n"))
+    # AgentReview の出力メソッドもそのまま使い、索引やログの挙動を揃える。
+    start = agent_source.index("private void WriteDesignArtifacts(")
+    end = agent_source.index("// レビューセッションを作らず", start)
+    writer = agent_source[start:end].strip().replace(
+        "private void WriteDesignArtifacts(", "public static void Write(", 1
+    )
+    chunks.append("\npublic static class DesignArtifactWriter\n{\n" + writer + "\n}")
     chunks.append("")
     chunks.append(server.rstrip("\n"))
     chunks.append("")

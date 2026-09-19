@@ -3,7 +3,7 @@
 Next Design がインストールされた PC で実施する。McpPoC（技術検証用の最小拡張）の検証項目を NdMcp に統合したもので、
 前半（Step 1〜5）は本実装の前提となる技術検証、後半（Step 6〜8）は MCP ブリッジを含めた機能確認。
 
-前提となる3点は**この PC では未検証**である。
+0.1.0 は会社PCで HTTP 応答・モデル取得まで確認済み。図出力は0件となったため、0.1.1 では内部コマンド内で取得設定から出力まで実行する。修正版の再確認は以下の手順で行う。
 
 - 検証1: スクリプト実行環境で `System.Net.HttpListener` が使えるか
 - 検証2: コマンドハンドラ終了後も HTTP 受付が生存するか
@@ -70,14 +70,17 @@ curl "http://127.0.0.1:3560/tree?depth=2"
 - 実行中に Next Design の UI が固まらないか、操作して確認する
 - curl が返ってこない場合は Next Design 側でダイアログ等が開いていないか確認し、状況を記録する（Ctrl+C で中断してよい）
 
-### Step 5: モデル読み出し・直呼び（比較用）
+### Step 5: 未表示の図のエクスポート（0.1.1 の再確認）
 
 ```
-curl "http://127.0.0.1:3560/project?direct=1"
+curl "http://127.0.0.1:3560/export?id=<対象モデルのID>"
 ```
 
-- **失敗してよいテスト**。正常応答・例外（JSON の error）・Next Design のクラッシュのどれになったかを記録する
-- 万一落ちた場合は、再起動して Step 1〜4 が再現することだけ確認すればよい
+- `manifest.json` と `main.cs` の両方を更新して再起動し、`/ping` の version が `0.1.1` であることを先に確認する。
+- 状態遷移図・シーケンス図を表示していない状態で、両方を含むモデルの ID を指定する。
+- AgentReview の「設計情報を出力」でも同じモデルを別のフォルダへ出力し、図の件数・内容・保存階層を比較する。design.md の日時と図数、warnings も記録する。
+- `diagrams` 配下に両種の `.puml` があり、`design.md` と `_index.md` から参照できることを確認する。HTTP が成功でも、図が0件なら合格にしない。
+- `direct=1` は廃止済み。比較用の直呼びは実施しない。
 
 ### Step 6: フィールド・検索・エクスポート
 
@@ -89,7 +92,7 @@ curl "http://127.0.0.1:3560/export?path=<modelPath>"
 
 - `/model`: `fields[]` に richtext / value / reference / embedded の各 kind が期待どおり出るか（`kind:"error"` があればその `error` を記録）
 - `/export`: 返された `dir` に design.md / _index.md / diagrams\*.puml ができているか。内容が AgentReview の「設計成果物を書き出す」と同等か
-- `EditorAccessMode.GetInactiveValue` は「サーバー開始」ハンドラ内で設定しているが、**Send() で戻った別のコールバック内でも効いているかは未確認**。エディタで編集中（未確定）のフィールドが `/model` にどう出るかを1件試して記録する
+- `EditorAccessMode.GetInactiveValue` は各リクエストの内部コマンド内で設定する。エディタで編集中（未確定）のフィールドが `/model` にどう出るかを1件試して記録する。
 
 ### Step 7: MCP ブリッジ経由（Claude Code）
 
@@ -113,7 +116,7 @@ README.md の手順でブリッジを登録した状態で、Claude Code から�
 | 2 | Step2: ping 直後 / 放置後 / syncContext の型名 | |
 | 3 | Step3: /thread の出力 | |
 | 4 | Step4: /project /tree の出力 / UI の応答性 | |
-| 5 | Step5: direct=1 の結果 | |
+| 5 | Step5: 0.1.1 の未表示図出力 / AgentReview との比較 | |
 | 6 | Step6: fields の kind / export の生成物 / 編集中フィールドの見え方 | |
 | 7 | Step7: Claude Code からの呼び出し | |
 | 8 | Step8: 停止 / プロジェクトを閉じた後 / ND 終了時 | |

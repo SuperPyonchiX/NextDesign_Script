@@ -7,10 +7,10 @@ Claude Code ── stdio (MCP) ── Python ブリッジ (bridge/) ── HTTP 
                                                             127.0.0.1:3560
 ```
 
-- **C# 側（Next Design 内）**: リボンの「サーバー開始」で `HttpListener` を起動し、`/project` `/tree` `/model` `/search` `/markdown` `/export` を JSON で返す。Next Design API の呼び出しは捕獲した `SynchronizationContext` 経由で UI スレッドへ戻す。
+- **C# 側（Next Design 内）**: リボンの「サーバー開始」で `HttpListener` を起動し、`/project` `/tree` `/model` `/search` `/markdown` `/export` を JSON で返す。UI スレッドへ戻した後、内部コマンド `NdMcp.Command.ExecuteRequest` を実行する。そのハンドラ内で `EditorAccessMode.GetInactiveValue` を設定し、モデル・未表示の図を取得する。
 - **Python 側（ブリッジ）**: 公式 `mcp` SDK（2.x）の stdio サーバー。MCP ツール 1 つが HTTP エンドポイント 1 つに対応する。
 
-> **状態: 実機未検証。** C# 側は stub に対するコンパイル確認まで、Python 側はモックに対する自動テストまでこの PC で通している。Next Design 実機での検証手順と未確認事項は [VERIFY.md](VERIFY.md)。
+> **状態: 0.1.1 の実機確認待ち。** 0.1.0 は実機で疎通・プロジェクト・階層・モデル詳細・検索と design.md 出力を確認済み。ただし図が0件となる問題を確認。0.1.1 は AgentReview と同じコマンド内の取得設定・出力処理へ揃えた修正版。検証手順は [VERIFY.md](VERIFY.md)。
 
 ## ファイル構成
 
@@ -24,7 +24,9 @@ Claude Code ── stdio (MCP) ── Python ブリッジ (bridge/) ── HTTP 
 | `bridge/` | Python ブリッジ（`uv` プロジェクト）。`nd_mcp_bridge/` 本体、`tests/` モック ND とテスト |
 | `VERIFY.md` | 実機検証手順 |
 
-`main.cs` の Markdown / PlantUML 出力部は `AgentReview/main.cs` の Part 0 / 4 / 7 / 8 をそのまま転記している（実機検証済みコードを流用するため）。エクスポータの修正は AgentReview 側で行い、`python NdMcp/tools/build_main.py` で再生成する。
+`main.cs` の Markdown / PlantUML 出力部は `AgentReview/main.cs` の Part 0 / 4 / 7 / 8 と `WriteDesignArtifacts` を生成時に転記する。エクスポータの修正は AgentReview 側で行い、`python NdMcp/tools/build_main.py` で再生成する。
+
+`/export` は AgentReview と同じ図グループ判定・保存階層・索引生成を使う。対応表を設定する場合も、AgentReview の `%USERPROFILE%\.nd-agent-review\config.ini` にある `diagramGroups.rulesFile` を参照する。未設定なら共通の自動判別を使う。図が0件でも `_index.md` を更新する。
 
 ## セットアップ
 
@@ -107,7 +109,9 @@ uv run pytest                 # モック ND に対するテスト + stdio 経�
 uv run python tests/mock_nd.py   # モック ND を 3560 で単体起動（ブリッジの手動確認用）
 ```
 
-C# 側を直したら `python NdMcp/tools/build_main.py` で `main.cs` を再生成し、`validate_manifest.py` を通してから配置する。
+C# 側を直したら `python NdMcp/tools/build_main.py` で `main.cs` を再生成し、`validate_manifest.py` を通してから配置する。内部コマンドがリボンから参照されていないという警告は想定どおり。
+
+コマンド境界での設定・例外伝播は `python NdMcp/tests/run_command_tests.py`、共通出力処理は `python AgentReview/tests/run_export_tests.py` で検証する（Windows の .NET Framework C# コンパイラと模擬 SDK を使用）。実機確認の代わりにはならない。
 
 ## 既知の制約
 
@@ -116,4 +120,4 @@ C# 側を直したら `python NdMcp/tools/build_main.py` で `main.cs` を再生
 - リクエスト処理中は Next Design の UI スレッドを占有する。大きなサブツリーの `nd_markdown` / `nd_export` は UI が一時的に固まる。
 - 127.0.0.1 のみで待ち受ける。認証は無い（同一 PC の他プロセスからは誰でも読める）。
 - 同時リクエストは UI スレッドへ直列化されるため、並列には処理されない。
-- **実機未検証**の事項（HttpListener の可否、ハンドラ終了後のスレッド生存、`SynchronizationContext.Send` によるマーシャリング、プロジェクトを閉じた後・Next Design 終了時の挙動）は VERIFY.md 参照。
+- 0.1.1 の内部コマンド経由での図取得、長時間の受付継続、プロジェクトを閉じた後・Next Design 終了時の挙動は実機確認が必要。診断用の `direct=1` は廃止し、指定すると HTTP 400 を返す。
