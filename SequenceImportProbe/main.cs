@@ -16,7 +16,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.3.3";
+    public const string Title = "シーケンス生成実験 / 0.3.4";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -236,7 +236,7 @@ public static class PumlRuntime
         if(plan.All().Any(n=>n.Kind=="async"))p.Async=Literal(source[6].Metaclass,"MessageSort","Async");
         if(plan.All().Any(n=>n.Kind=="reply"))p.Reply=Literal(source[6].Metaclass,"MessageSort","Reply");
         var classes=new List<IClass>(source.Select(m=>m.Metaclass));
-        if(plan.All().Any(n=>n.Right=="]"))
+        if(plan.All().Any(n=>n.Left=="[" || n.Right=="]"))
         {
             var c=Child(p,source[0].Metaclass,"MessageEnds","MessageEnds","___Interaction_MessageEnd");
             c=Concrete(diagram.MessageEnds.Select(e=>e.Model),c,"メッセージ端");
@@ -299,7 +299,7 @@ public static class PumlRuntime
             if(e.Kind=="sync" || e.Kind=="async" || e.Kind=="reply")
             {
                 var m=model as IMessage;
-                Require(m!=null && m.Kind==e.Kind && m.Name==e.Text && (e.Left==null ? m.Sender==null && m.SendPortType=="Frame" : m.Sender!=null && m.Sender.Id==e.Left) && (e.Right==null ? m.Receiver==null && m.ReceivePortType=="MessageEnd" && m.IsLost : m.Receiver!=null && m.Receiver.Id==e.Right),"メッセージ種別・本文・送受信");
+                Require(m!=null && m.Kind==e.Kind && m.Name==e.Text && (e.Left==null ? m.Sender==null && m.SendPortType=="MessageEnd" : m.Sender!=null && m.Sender.Id==e.Left) && (e.Right==null ? m.Receiver==null && m.ReceivePortType=="MessageEnd" && m.IsLost : m.Receiver!=null && m.Receiver.Id==e.Right),"メッセージ種別・本文・送受信");
                 Require(m.SendPort!=null && m.ReceivePort!=null && ((IModel)m.SendPort).Id==e.SendPort && ((IModel)m.ReceivePort).Id==e.ReceivePort,"実行区間・メッセージ端・フレームへの接続");
                 var shape=d.Messages.SingleOrDefault(v=>v.Model.Id==e.Id);
                 Require(shape!=null && Math.Abs(shape.SourceY-e.Y)<1 && Math.Abs(shape.TargetY-e.EndY)<1,"メッセージ位置・折返し");
@@ -614,7 +614,7 @@ public class PumlBuild
             {
                 y+=18*(n.Text.Split('\n').Length-1);
                 bool incoming=n.Left=="[";
-                string send; if(incoming)send=frameId; else if(!active.TryGetValue(n.Left,out send))active[n.Left]=send=Execution(n.Left,y-20);
+                string send; if(incoming)send=null; else if(!active.TryGetValue(n.Left,out send))active[n.Left]=send=Execution(n.Left,y-20);
                 bool outgoing=n.Right=="]"; bool self=n.Left==n.Right; int targetY=y+(self?24:0);
                 string receive;
                 bool beginsActivation=index+1<items.Count && items[index+1].Kind=="activate" && items[index+1].Left==n.Right;
@@ -627,6 +627,13 @@ public class PumlBuild
                 }
                 else if((n.Kind=="reply" || (!beginsActivation && activities.ContainsKey(n.Right) && activities[n.Right].Count>0)) && active.TryGetValue(n.Right,out receive)) { }
                 else receive=Execution(n.Right,targetY);
+                if(incoming)
+                {
+                    send=Entity("MessageEnd",""); Owned("MessageEnds",send);
+                    int endX=(int)executions[receive]["X"]-60;
+                    Shape("MessageEnds",send,"X",endX,"Y",y-5,"Width",10,"Height",10);
+                    payload.Expected.Add(new PumlExpected{Id=send,Kind="messageEnd",Y=y-5,X=endX});
+                }
                 // Keep explicit activation contexts until deactivate; an immediately following
                 // activate may adopt this receiving execution.
                 if(!outgoing && (!activities.ContainsKey(n.Right) || activities[n.Right].Count==0))active[n.Right]=receive;

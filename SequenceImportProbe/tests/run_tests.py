@@ -70,7 +70,10 @@ public static class PayloadTest {
             assert len(editor['Lifelines']) == 2, 'External source must not become a participant'
             messages = {e['Name']: e for e in entities.values() if e['EntityType']=='Message'}
             ports = lambda label, kind: next(r['SourceId'] for r in relations if r['MetamodelId']==kind and r['TargetId']==messages[label]['Id'])
-            assert ports('external signal','SendMessage') == editor['Frame']['ModelId']
+            sender = ports('external signal','SendMessage')
+            assert entities[sender]['EntityType'] == 'MessageEnd' and sender != editor['Frame']['ModelId']
+            end = next(v for v in editor['MessageEnds'] if v['ModelId']==sender)
+            assert not any(r['MetamodelId']=='OwnedExecutionSpecification' and r['TargetId']==sender for r in relations)
             receiver = ports('external signal','ReceiveMessage')
             assert entities[receiver]['EntityType'] == 'ExecutionSpecification'
             assert ports('process()','SendMessage') == ports('result','ReceiveMessage') == ports('finished','SendMessage') == receiver
@@ -80,6 +83,7 @@ public static class PayloadTest {
             assert shape['IsRightAtFrame'] is False and shape['SelfloopBendsX']==0
             assert shape['SourceY'] == shape['TargetY']
             bar = next(v for v in editor['ExecutionSpecifications'] if v['ModelId']==receiver)
+            assert end['X'] == bar['X']-60 and end['Y']+5 == shape['SourceY']
             assert bar['Y'] <= shape['TargetY'] < bar['Y']+bar['Length']
         if path.name == '07-outgoing.json':
             assert len(editor['Lifelines'])==2, 'Diagram boundary must not become a participant'
