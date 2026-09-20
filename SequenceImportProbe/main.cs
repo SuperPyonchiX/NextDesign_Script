@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.30";
+    public const string Title = "シーケンス生成実験 / 0.8.31";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -933,6 +933,7 @@ public static class SequenceSyncRuntime
 public static class SequenceStructureTrial
 {
     static string Port(IMessagePort value) {var m=value as IModel;return m==null?"":m.Id;}
+    static string FieldId(IField value) {return value==null?"":value.Id;}
     static string Number(double value){return value.ToString("R",System.Globalization.CultureInfo.InvariantCulture);}
     static SequenceTrialState Read(IInteraction root,ISequenceDiagram diagram)
     {
@@ -945,6 +946,7 @@ public static class SequenceStructureTrial
             foreach(var r in model.GetRelationsWhere((relation,field)=>true))
             {
                 state.Relations[r.Id]=new[]{r.Source.Id,r.Target.Id,r.SourceIndex.ToString(System.Globalization.CultureInfo.InvariantCulture),r.TargetIndex.ToString(System.Globalization.CultureInfo.InvariantCulture)};
+                state.RelationFields[r.Id]=PumlBuild.Json(new[]{FieldId(r.SourceField),FieldId(r.TargetField)});
                 record(r.Source);record(r.Target);
             }
         }
@@ -3135,20 +3137,29 @@ public sealed class SequenceTrialState
 {
     public Dictionary<string,string> Models=new Dictionary<string,string>(), Shapes=new Dictionary<string,string>(), ShapeModels=new Dictionary<string,string>();
     // Relations: source, target, source index, target index. Ports: send port, receive port, sender, receiver, kind.
+    // RelationFields: the endpoint field pair. Index positions belong to one
+    // source/field collection, so compaction has to be computed within it.
+    public Dictionary<string,string> RelationFields=new Dictionary<string,string>();
     public Dictionary<string,string[]> Relations=new Dictionary<string,string[]>(), Ports=new Dictionary<string,string[]>();
+    public string Field(string id)
+    { string value;return RelationFields.TryGetValue(id,out value)?value:""; }
+    public string RelationSignature(string id)
+    { return PumlBuild.Json(Relations[id])+"|"+Field(id); }
+    Dictionary<string,string> RelationRows()
+    { return Relations.Keys.ToDictionary(id=>id,id=>RelationSignature(id)); }
     public string Signature()
     {
         return PumlBuild.Json(new object[]{Models.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>new[]{p.Key,p.Value}).ToArray(),
             Shapes.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>new[]{p.Key,p.Value}).ToArray(),
             ShapeModels.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>new[]{p.Key,p.Value}).ToArray(),
-            Relations.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>new[]{p.Key}.Concat(p.Value).ToArray()).ToArray(),
+            Relations.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>new[]{p.Key,RelationSignature(p.Key)}).ToArray(),
             Ports.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>new[]{p.Key}.Concat(p.Value).ToArray()).ToArray()});
     }
     static int Differences(Dictionary<string,string> a,Dictionary<string,string> b)
     {return a.Keys.Union(b.Keys).Count(k=>!a.ContainsKey(k) || !b.ContainsKey(k) || a[k]!=b[k]);}
     public string DifferenceCounts(SequenceTrialState actual)
     {
-        return "モデル="+Differences(Models,actual.Models)+" 関連="+Differences(Relations.ToDictionary(p=>p.Key,p=>PumlBuild.Json(p.Value)),actual.Relations.ToDictionary(p=>p.Key,p=>PumlBuild.Json(p.Value)))
+        return "モデル="+Differences(Models,actual.Models)+" 関連="+Differences(RelationRows(),actual.RelationRows())
             +" 図形="+Differences(Shapes,actual.Shapes)+" 図形所属="+Differences(ShapeModels,actual.ShapeModels)
             +" 送受信="+Differences(Ports.ToDictionary(p=>p.Key,p=>PumlBuild.Json(p.Value)),actual.Ports.ToDictionary(p=>p.Key,p=>PumlBuild.Json(p.Value)));
     }
@@ -3157,7 +3168,7 @@ public sealed class SequenceTrialState
         var lines=new List<string>();
         var fields=new[]{"SourceId","TargetId","SourceIndex","TargetIndex"};
         var changed=Relations.Keys.Union(actual.Relations.Keys).OrderBy(id=>id,StringComparer.Ordinal)
-            .Where(id=>!Relations.ContainsKey(id) || !actual.Relations.ContainsKey(id) || !Relations[id].SequenceEqual(actual.Relations[id])).ToArray();
+            .Where(id=>!Relations.ContainsKey(id) || !actual.Relations.ContainsKey(id) || RelationSignature(id)!=actual.RelationSignature(id)).ToArray();
         foreach(string id in changed.Take(12))
         {
             lines.Add("relation="+id);
@@ -3165,6 +3176,7 @@ public sealed class SequenceTrialState
             if(!actual.Relations.ContainsKey(id)){lines.Add("missing actual; expected="+PumlBuild.Json(Relations[id]));continue;}
             for(int n=0;n<4;n++)if(Relations[id][n]!=actual.Relations[id][n])
                 lines.Add(fields[n]+": expected="+Relations[id][n]+" actual="+actual.Relations[id][n]);
+            if(Field(id)!=actual.Field(id))lines.Add("Field: expected="+Field(id)+" actual="+actual.Field(id));
             lines.Add("endpoints: "+actual.Relations[id][0]+" -> "+actual.Relations[id][1]);
         }
         if(changed.Length>12)lines.Add("additional changed relations="+(changed.Length-12));
@@ -3188,7 +3200,7 @@ public sealed class SequenceTrialState
             var rows=Relations.Where(p=>p.Value[0]==owner)
                 .OrderBy(p=>int.Parse(p.Value[2],System.Globalization.CultureInfo.InvariantCulture))
                 .ThenBy(p=>p.Key,StringComparer.Ordinal)
-                .Select(p=>p.Value[2]+":"+p.Key+(removed.Contains(p.Value[1])?"*":"")).ToArray();
+                .Select(p=>p.Value[2]+":"+p.Key+"/"+Field(p.Key)+(removed.Contains(p.Value[1])?"*":"")).ToArray();
             lines.Add("source="+owner+" "+(rows.Length==0?"(なし)":string.Join(" ",rows)));
         }
         return string.Join("\n",lines);
@@ -3196,7 +3208,8 @@ public sealed class SequenceTrialState
     public SequenceTrialState Expected(SequenceStructurePreparation prepared,SyncPlan plan,bool delete)
     {
         var result=new SequenceTrialState{Models=new Dictionary<string,string>(Models),Shapes=new Dictionary<string,string>(Shapes),ShapeModels=new Dictionary<string,string>(ShapeModels),
-            Relations=Relations.ToDictionary(p=>p.Key,p=>p.Value.ToArray()),Ports=Ports.ToDictionary(p=>p.Key,p=>p.Value.ToArray())};
+            Relations=Relations.ToDictionary(p=>p.Key,p=>p.Value.ToArray()),Ports=Ports.ToDictionary(p=>p.Key,p=>p.Value.ToArray()),
+            RelationFields=new Dictionary<string,string>(RelationFields)};
         var patch=SequenceJson.Parse(prepared.ReconnectJson);
         foreach(var r in patch["Relations"].Items)
         {
@@ -3223,7 +3236,19 @@ public sealed class SequenceTrialState
         {
             var removed=new HashSet<string>(prepared.DeleteIds);
             foreach(string id in removed)result.Models.Remove(id);
-            foreach(string id in result.Relations.Where(p=>removed.Contains(p.Value[0]) || removed.Contains(p.Value[1])).Select(p=>p.Key).ToArray())result.Relations.Remove(id);
+            // Measured on the product: deleting a model closes the gap it leaves in the
+            // source/field collection that held it. Relations in other fields keep their index.
+            foreach(string id in result.Relations.Where(p=>removed.Contains(p.Value[0]) || removed.Contains(p.Value[1])).Select(p=>p.Key).ToArray())
+            {
+                string source=result.Relations[id][0],field=result.Field(id);
+                int gap=int.Parse(result.Relations[id][2],System.Globalization.CultureInfo.InvariantCulture);
+                result.Relations.Remove(id);result.RelationFields.Remove(id);
+                foreach(string peer in result.Relations.Where(p=>p.Value[0]==source && result.Field(p.Key)==field).Select(p=>p.Key).ToArray())
+                {
+                    int index=int.Parse(result.Relations[peer][2],System.Globalization.CultureInfo.InvariantCulture);
+                    if(index>gap)result.Relations[peer][2]=(index-1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                }
+            }
             foreach(string id in result.ShapeModels.Where(p=>removed.Contains(p.Value)).Select(p=>p.Key).ToArray()){result.Shapes.Remove(id);result.ShapeModels.Remove(id);}
             if(result.Ports.Values.Any(p=>removed.Contains(p[0]) || removed.Contains(p[1])))throw new InvalidOperationException("S230: 削除区間への接続が残っています。");
         }

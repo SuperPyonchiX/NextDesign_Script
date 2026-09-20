@@ -275,6 +275,7 @@ public static class SequenceSyncRuntime
 public static class SequenceStructureTrial
 {
     static string Port(IMessagePort value) {var m=value as IModel;return m==null?"":m.Id;}
+    static string FieldId(IField value) {return value==null?"":value.Id;}
     static string Number(double value){return value.ToString("R",System.Globalization.CultureInfo.InvariantCulture);}
     static SequenceTrialState Read(IInteraction root,ISequenceDiagram diagram)
     {
@@ -287,6 +288,7 @@ public static class SequenceStructureTrial
             foreach(var r in model.GetRelationsWhere((relation,field)=>true))
             {
                 state.Relations[r.Id]=new[]{r.Source.Id,r.Target.Id,r.SourceIndex.ToString(System.Globalization.CultureInfo.InvariantCulture),r.TargetIndex.ToString(System.Globalization.CultureInfo.InvariantCulture)};
+                state.RelationFields[r.Id]=PumlBuild.Json(new[]{FieldId(r.SourceField),FieldId(r.TargetField)});
                 record(r.Source);record(r.Target);
             }
         }
