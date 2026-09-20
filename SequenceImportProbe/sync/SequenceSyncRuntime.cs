@@ -172,6 +172,15 @@ public static class SequenceSyncRuntime
         while(model!=null) {if(!visited.Add(model.Id))throw new InvalidOperationException("S210: モデルの所有関係が循環しています。");parts.Add(model.Name);model=model.Owner;}
         parts.Reverse();return string.Join("::",parts);
     }
+    const string UnsavedAdvice="S220: 退避データを取得できません。プロジェクトを保存してから実行してください。"
+        +"試行して戻した直後も保存が必要です。この操作は自動保存しません。";
+    // HasUnsavedChanges answers false when the dirty state holds nothing savable, but the
+    // export still refuses, so ask the design model as well.
+    static bool Unsaved(IProject project)
+    {
+        try {return project.HasUnsavedChanges() || (project.DesignModel!=null && project.DesignModel.IsDirty);}
+        catch(Exception) {return false;}
+    }
     public static void Preview(IApplication app,bool prepare=false,bool trial=false,bool retain=false,bool reconnectCommit=false)
     {
         var log=new StringBuilder();string report=null;string screenshot=null;
@@ -200,8 +209,7 @@ public static class SequenceSyncRuntime
             // The snapshot goes through ExportModelUnit, which refuses to run while the
             // project has unsaved changes. Say so before any work instead of letting the
             // export throw halfway. This command never saves for you.
-            if(prepare && project.HasUnsavedChanges())
-                throw new InvalidOperationException("S220: 未保存の変更があります。プロジェクトを保存してから実行してください。この操作は自動保存しません。");
+            if(prepare && Unsaved(project))throw new InvalidOperationException(UnsavedAdvice);
             if(retain && !preflight.CanCommit(reconnectCommit))
                 throw new InvalidOperationException(reconnectCommit
                     ?"S231: 確定できるのは受信接続変更・実行区間の追加削除・参加者の追加削除だけです。他の差分は「差分を検証」で確認してください。"
@@ -227,7 +235,14 @@ public static class SequenceSyncRuntime
                     if(root==null || !root.IsEditable || root.IsProxy || root.IsDeleted || string.IsNullOrEmpty(project.Path))
                         throw new InvalidOperationException("S220: 保存済みで編集可能な図を開いてください。");
                     string exported=null;
-                    SequenceEditorCapture.Read(project,root,diagram,log,delegate(string value){exported=value;});
+                    try {SequenceEditorCapture.Read(project,root,diagram,log,delegate(string value){exported=value;});}
+                    catch(Exception ex)
+                    {
+                        // The export refuses on a dirty project even when nothing is savable,
+                        // for instance right after a trial has rolled its changes back.
+                        if(ex.Message.IndexOf("保存",StringComparison.Ordinal)<0)throw;
+                        throw new InvalidOperationException(UnsavedAdvice,ex);
+                    }
                     var preparation=SequenceStructurePreparation.Build(exported,diagram.Id,current.Document,plan);
                     var raw=SequenceJson.Parse(exported);
                     var exportedRelations=new HashSet<string>(raw["Relations"].Items.Select(r=>SequenceEditorDocument.Value(r,"Id")));
