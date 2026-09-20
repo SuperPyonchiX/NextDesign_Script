@@ -16,19 +16,20 @@ public void CreateMinimalSequence(ICommandContext context, ICommandParams parame
 public void ImportPlantUml(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, true); }
 public void ReplaceSequence(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, true, false, true); }
 public void ProbeSequenceDelta(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, false, true, false, true); }
+public void ProbeSequenceStructure(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, false, true, false, false, true); }
 public void ProbeSequenceUpdate(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, false, true); }
 public void ShowSequenceResult(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Show(context.App); }
 public void ShowSequenceDetails(ICommandContext context, ICommandParams parameters) { foreach(var page in SequenceExperiment.Details.Split('\f')) context.App.Window.UI.ShowInformationDialog(page, SequenceExperiment.Title); }
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.16";
+    public const string Title = "シーケンス生成実験 / 0.8.17";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
 
     public static void Run(IApplication app) { Run(app, false); }
-    public static void Run(IApplication app, bool fromPlantUml, bool updateProbe=false, bool replaceExisting=false, bool deltaProbe=false)
+    public static void Run(IApplication app, bool fromPlantUml, bool updateProbe=false, bool replaceExisting=false, bool deltaProbe=false, bool structureProbe=false)
     {
         string stage = "事前検査", directory = null, rootId = null;
         bool called = false, committed = false, rolledBack = false;
@@ -39,6 +40,8 @@ public static class SequenceExperiment
         var completion = new SequenceCompletion();
         SequenceReplacement replacement=null;
         bool mutationStarted=false;
+        Action verifyTemporaryRollback=null;
+        bool rollbackVerified=false;
         try
         {
             var project = app.Workspace.CurrentProject;
@@ -72,7 +75,7 @@ public static class SequenceExperiment
             var ownerField = sample.GetOwnerField();
             if (owner == null || ownerField == null || !owner.IsEditable || owner.IsDeleted || owner.IsProxy)
                 throw new InvalidOperationException("E102: 新しい図を置く親モデルを取得できないか、編集できません。");
-            if (!app.Window.UI.ShowConfirmDialog(replaceExisting ? "コピーのプロジェクトで実行してください。\n現在の図をPlantUMLの内容で置き換えます。図自体のIDは維持します。\n配下の要素と手作業の配置は作り直します。子要素と外部モデルとの関連は引き継ぎません。自動保存はしません。" : deltaProbe ? "コピーのプロジェクトで実行してください。\n一時図で名前変更・メッセージ1件の差分追加と削除を検証し、最後に取り消します。\n削除中だけSDKの編集可否検査を一時停止する実験です。既存図は更新せず、自動保存もしません。" : updateProbe ? "コピーのプロジェクトで実行してください。\n一時図を作り、同じIDでメッセージ名を再取り込みします。\n最後に一時図を含む操作を取り消します。既存図を更新する検証ではありません。\n自動保存はしません。" : "実プロジェクトのコピーを開いていますか？\n新しい検証用シーケンス図を同じ親に追加する実験です。\n既存図の内容は入力にコピーしません。自動保存しません。\n失敗時はトランザクションの取消を試みますが、実機での復元動作は未確認です。", Title)) return;
+            if (!app.Window.UI.ShowConfirmDialog(structureProbe ? "コピーのプロジェクトで実行してください。\n一時図の受信先変更と実行区間の削除・再作成を検証し、最後にすべて取り消します。\n削除中だけSDKの編集可否検査を一時停止します。自動保存はしません。" : replaceExisting ? "コピーのプロジェクトで実行してください。\n現在の図をPlantUMLの内容で置き換えます。図自体のIDは維持します。\n配下の要素と手作業の配置は作り直します。子要素と外部モデルとの関連は引き継ぎません。自動保存はしません。" : deltaProbe ? "コピーのプロジェクトで実行してください。\n一時図で名前変更・メッセージ1件の差分追加と削除を検証し、最後に取り消します。\n削除中だけSDKの編集可否検査を一時停止する実験です。既存図は更新せず、自動保存もしません。" : updateProbe ? "コピーのプロジェクトで実行してください。\n一時図を作り、同じIDでメッセージ名を再取り込みします。\n最後に一時図を含む操作を取り消します。既存図を更新する検証ではありません。\n自動保存はしません。" : "実プロジェクトのコピーを開いていますか？\n新しい検証用シーケンス図を同じ親に追加する実験です。\n既存図の内容は入力にコピーしません。自動保存しません。\n失敗時はトランザクションの取消を試みますが、実機での復元動作は未確認です。", Title)) return;
             var folder = app.Window.UI.ShowSelectFolderDialog("会社PC内の実験結果の保存先");
             if (string.IsNullOrEmpty(folder)) return;
             directory = Path.Combine(folder, "sequence_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + Guid.NewGuid().ToString("N").Substring(0,8));
@@ -128,7 +131,7 @@ public static class SequenceExperiment
             stage = "生成データの記録";
             Write(Path.Combine(directory, "input.json"), payload.Json);
             Write(Path.Combine(directory, "before.txt"), detail.ToString()+(replacement==null?"":"\n更新前の構造:\n"+replacement.Before));
-            if (!app.Window.UI.ShowConfirmDialog(replaceExisting ? "現在の図「"+sample.Name+"」を「"+payload.Name+"」へ更新します。\n"+plan.Summary()+"\n旧子要素: "+(replacement.AllIds.Length-2)+"件を置換します。\n図IDは維持し、子要素IDは変わります。続けますか？" : updateProbe ? "同じIDへの再取り込みを一時図で検証します。\nprobe()をupdatedProbe()へ変更したデータを再取り込みし、取消後に一時モデルが消えたことを確認します。\n続けますか？" : "新しい図「" + payload.Name + "」を追加します。\n" + (plan == null ? "A → B : probe()\nライフライン2本・同期メッセージ1本" : plan.Summary()) + "\n入力データの記録: 済み\n続けますか？", Title))
+            if (!app.Window.UI.ShowConfirmDialog(structureProbe ? "一時図で受信先をライフラインへ変更し、受信実行区間を削除・再作成して接続を戻します。\n各段階を照合し、最後に一時図を取り消します。続けますか？" : replaceExisting ? "現在の図「"+sample.Name+"」を「"+payload.Name+"」へ更新します。\n"+plan.Summary()+"\n旧子要素: "+(replacement.AllIds.Length-2)+"件を置換します。\n図IDは維持し、子要素IDは変わります。続けますか？" : updateProbe ? "同じIDへの再取り込みを一時図で検証します。\nprobe()をupdatedProbe()へ変更したデータを再取り込みし、取消後に一時モデルが消えたことを確認します。\n続けますか？" : "新しい図「" + payload.Name + "」を追加します。\n" + (plan == null ? "A → B : probe()\nライフライン2本・同期メッセージ1本" : plan.Summary()) + "\n入力データの記録: 済み\n続けますか？", Title))
             { Summary = "キャンセル / インポートAPI呼出: なし"; Show(app); return; }
             var current = app.Workspace.CurrentProject;
             if (current == null || current.Id != projectId || !string.Equals(current.Path, projectPath, StringComparison.OrdinalIgnoreCase))
@@ -142,6 +145,13 @@ public static class SequenceExperiment
             foreach (string id in payload.Ids)
                 if (!(replaceExisting && (id==replacement.Identity.Root || id==replacement.Identity.Frame)) && current.GetModelById(id) != null) throw new InvalidOperationException("E111: 生成IDが既存モデルと衝突しました。");
             var originalChildren=new HashSet<string>(owner.GetChildren().Select(m=>m.Id));
+            var sourceSnapshot=structureProbe?SequenceReplacement.Capture((IInteraction)fresh,diagram):null;
+            if(structureProbe)verifyTemporaryRollback=delegate {
+                if(payload.Ids.Any(id=>current.GetModelById(id)!=null) || !originalChildren.SetEquals(owner.GetChildren().Select(m=>m.Id)))
+                    throw new InvalidOperationException("E135: 一時モデルの除去・親配下の復元が不一致です。");
+                var sourceRoot=current.GetModelById(sampleId) as IInteraction;
+                sourceSnapshot.CheckUnchanged(sourceRoot,sourceRoot==null?null:sourceRoot.GetEditors().OfType<ISequenceDiagram>().SingleOrDefault(d=>d.Id==sourceSnapshot.Identity.Editor));
+            };
             stage = "トランザクション開始";
             transaction = current.BeginUndoTransaction(false);
             if (transaction == null) throw new InvalidOperationException("E117: トランザクションを開始できませんでした。");
@@ -216,12 +226,20 @@ public static class SequenceExperiment
                     apiState="未取得（差分追加）"; apiIssues=0;
                     addedId=SequenceDeltaProbe.Run(current,payload,updatedDiagram,schema,directory,detail,delegate(string state,int issues){apiState=state;apiIssues=issues;});
                 }
+                if(structureProbe)
+                {
+                    stage="接続・実行区間の検証";
+                    SequenceStructureProbe.Run(current,payload,updatedDiagram,schema,directory,detail,
+                        delegate(string value){stage=value;},delegate(string state,int issues){apiState=state;apiIssues=issues;});
+                }
                 stage="検証操作の取消";
-                completion.Cancel(delegate { transaction.Rollback(); }); rolledBack=true;
+                completion.Cancel(delegate { transaction.Rollback(); rolledBack=true; });
                 if((addedId!=null && current.GetModelById(addedId)!=null) || payload.Ids.Any(id=>current.GetModelById(id)!=null) || !originalChildren.SetEquals(owner.GetChildren().Select(m=>m.Id)))
                     throw new InvalidOperationException("E135: 一時モデルの削除または親配下の復元を確認できませんでした。");
+                if(verifyTemporaryRollback!=null){verifyTemporaryRollback();rollbackVerified=true;}
                 detail.AppendLine("same-ID rename and temporary model removal: verified");
                 Summary="ケース: UPDATE001 / 同じIDへの名称更新: 一致\n一時図・一時モデル: 取消後の除去を確認\n既存図への更新: 未実施 / プロジェクト保存: していません\n要素追加・削除・図形置換・参照保持は未検証です。\nこの結果画面を撮影してください。";
+                if(structureProbe)Summary="ケース: UPDATE004 / 受信先変更・実行区間削除・再作成: 一致\nモデル・関連・図形IDの復元: 一致\n一時図・モデル: 取消後の除去を確認\n既存図への本反映・保存後再読込: 未検証\nこの結果と診断表示を撮影してください。";
                 if(deltaProbe)Summary="ケース: UPDATE003 / 一時図での差分追加・削除: 一致\n既存モデル・関連・図形IDの保持: 一致\n一時図・モデル: 取消後の除去を確認\n既存図の差分更新: 未実装 / 保存・Git差分: 未確認\nこの結果と診断表示を撮影してください。";
             }
             else
@@ -230,7 +248,7 @@ public static class SequenceExperiment
             Write(Path.Combine(directory, "checked.txt"), detail + "\nモデル・送受信・シェイプ照合: 一致\ncommit: 未実行");
             stage = "確定";
             completion.Commit(delegate { transaction.Commit(); }); committed = true;
-            Summary = "ケース: " + (replaceExisting ? "UPDATE002" : updateProbe ? (deltaProbe ? "UPDATE003" : "UPDATE001") : fromPlantUml ? "IMPORT001" : "CREATE001") + " / モデル・シェイプ照合: 一致\n"+(replaceExisting?"更新した図: ":"新しい図: ") + payload.Name
+            Summary = "ケース: " + (structureProbe ? "UPDATE004" : replaceExisting ? "UPDATE002" : updateProbe ? (deltaProbe ? "UPDATE003" : "UPDATE001") : fromPlantUml ? "IMPORT001" : "CREATE001") + " / モデル・シェイプ照合: 一致\n"+(replaceExisting?"更新した図: ":"新しい図: ") + payload.Name
                 + "\n" + (plan == null ? "ライフライン: 2 / メッセージ: 1" : plan.Summary()) + "\n確定: 済み / プロジェクト保存: していません\n図を開き直し、図とこの画面を撮影してください。\n図表示・Undo/Redo・再読込: 未確認";
             }
         }
@@ -239,18 +257,23 @@ public static class SequenceExperiment
             detail.AppendLine(ex.ToString());
             if (transaction != null && !committed)
             {
-                try { completion.Cancel(delegate { transaction.Rollback(); }); rolledBack = true; }
+                try { completion.Cancel(delegate { transaction.Rollback(); rolledBack = true; }); }
                 catch (Exception rollbackError) { detail.AppendLine("ROLLBACK: " + rollbackError); }
+            }
+            if(rolledBack && verifyTemporaryRollback!=null)
+            {
+                try { verifyTemporaryRollback();rollbackVerified=true;detail.AppendLine("temporary rollback: verified"); }
+                catch(Exception restoreError){detail.AppendLine("temporary rollback verification: "+restoreError);}
             }
             if(rolledBack && replacement!=null)
             {
                 try { replacement.CheckUnchanged(app.Workspace.CurrentProject.GetModelById(replacement.Identity.Root) as IInteraction,app.Workspace.CurrentEditor as ISequenceDiagram); detail.AppendLine("Rollback structure and shape IDs: verified"); }
                 catch(Exception restoreError) { detail.AppendLine("Rollback verification: "+restoreError); }
             }
-            Summary = "ケース: " + (replaceExisting ? "UPDATE002" : updateProbe ? (deltaProbe ? "UPDATE003" : "UPDATE001") : fromPlantUml ? "IMPORT001" : "CREATE001") + " / 停止段階: " + stage
+            Summary = "ケース: " + (structureProbe ? "UPDATE004" : replaceExisting ? "UPDATE002" : updateProbe ? (deltaProbe ? "UPDATE003" : "UPDATE001") : fromPlantUml ? "IMPORT001" : "CREATE001") + " / 停止段階: " + stage
                 + "\nインポートAPI呼出: " + (called ? "あり" : "なし")
                 + "\nAPI結果: " + apiState + " / 診断件数: " + apiIssues
-                + "\n取消API: " + (rolledBack ? "正常終了（復元は未確認）" : transaction == null ? "未呼出" : "未確認・失敗")
+                + "\n取消API: " + (rolledBack ? (rollbackVerified ? "正常終了・一時モデル除去確認済み" : "正常終了（復元は未確認）") : transaction == null ? "未呼出" : "未確認・失敗")
                 + "\n理由: " + (ex.Message.StartsWith("E1", StringComparison.Ordinal) ? ex.Message : ex.GetType().Name)
                 + "\nこの画面を撮影してください。詳細は「診断表示」で確認できます。"
                 + (called || mutationStarted ? "\n再実行前にコピーを開き直してください。" : "\nこのコマンドによるモデル変更はありません。");
@@ -273,6 +296,78 @@ public static class SequenceExperiment
     {
         using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
         using (var writer = new StreamWriter(stream, new UTF8Encoding(true))) writer.Write(text);
+    }
+}
+
+public static class SequenceStructureProbe
+{
+    static string[] Relations(IModel model)
+    { return model.GetRelationsWhere((r,f)=>true).Select(r=>r.Id+":"+r.Source.Id+":"+r.Target.Id+":"+r.SourceIndex+":"+r.TargetIndex).Distinct().OrderBy(x=>x).ToArray(); }
+    public static void Run(IProject project,SequencePayload seed,ISequenceDiagram diagram,string schema,string directory,StringBuilder log,Action<string> stage,Action<string,int> report)
+    {
+        var names=seed.Ids.Select(id=>project.GetModelById(id).Name).ToArray();
+        var relations=seed.Ids.Select(id=>Relations(project.GetModelById(id))).ToArray();
+        var shapes=diagram.Shapes.Select(sh=>sh.Id+":"+sh.ModelId).OrderBy(x=>x).ToArray();
+        string editorId=diagram.Id;
+        var message=(IMessage)project.GetModelById(seed.Ids[6]);
+        var receiver=project.GetModelById(seed.Ids[5]);
+        var link=message.GetRelationsWhere((r,f)=>r.Source.Id==receiver.Id && r.Target.Id==message.Id).Single();
+        string linkId=link.Id; int sourceIndex=link.SourceIndex,targetIndex=link.TargetIndex;
+        if(message.ReceivePort==null || ((IModel)message.ReceivePort).Id!=receiver.Id || message.SendPort==null || ((IModel)message.SendPort).Id!=seed.Ids[4])
+            throw new InvalidOperationException("E160: 検証開始時のポートが一致しません。");
+        stage("受信先をライフラインへ変更");
+        link.Relate(project.GetModelById(seed.Ids[3]),message,sourceIndex,targetIndex);
+        CheckPorts(project,seed,seed.Ids[3]);
+        log.AppendLine("receiver reconnected to lifeline: verified");
+        stage("受信実行区間を削除");
+        using(project.SuspendModelVerification()){receiver.Delete();}
+        string editor=SequenceStructureInput.WithoutReceiver(seed,schema);
+        Import(project,editor,directory,"structure-delete-editor.json",log,report);
+        var removed=project.GetModelById(seed.Ids[5]);
+        var root=(IInteraction)project.GetModelById(seed.Ids[0]);
+        var view=root.GetEditors().OfType<ISequenceDiagram>().Single(d=>d.Id==editorId);
+        var expectedShapes=shapes.Where(x=>!x.EndsWith(":"+seed.Ids[5],StringComparison.Ordinal)).ToArray();
+        if((removed!=null && !removed.IsDeleted) || root.GetChildren().OfType<IExecutionSpecification>().Count()!=1 || !expectedShapes.SequenceEqual(view.Shapes.Select(sh=>sh.Id+":"+sh.ModelId).OrderBy(x=>x)))
+            throw new InvalidOperationException("E161: 受信実行区間の削除または残す図形の保持が不一致です。");
+        CheckPorts(project,seed,seed.Ids[3]);
+        for(int i=0;i<seed.Ids.Length;i++)if(i!=5 && project.GetModelById(seed.Ids[i]).Name!=names[i])
+            throw new InvalidOperationException("E162: 残すモデルの名前が変化しました。");
+        log.AppendLine("receiver execution deletion and retained shape IDs: verified");
+        stage("同じIDで実行区間を再作成・再接続");
+        Import(project,SequenceUpdateProbe.Payload(seed.Json),directory,"structure-restore.json",log,report);
+        CheckPorts(project,seed,seed.Ids[5]);
+        root=(IInteraction)project.GetModelById(seed.Ids[0]);
+        view=root.GetEditors().OfType<ISequenceDiagram>().Single(d=>d.Id==editorId);
+        if(root.GetChildren().OfType<IExecutionSpecification>().Count()!=2 || !shapes.SequenceEqual(view.Shapes.Select(sh=>sh.Id+":"+sh.ModelId).OrderBy(x=>x)))
+            throw new InvalidOperationException("E163: 再作成後の実行区間数・図形IDが不一致です。");
+        for(int i=0;i<seed.Ids.Length;i++)
+        {
+            var model=project.GetModelById(seed.Ids[i]);
+            if(model==null || model.Name!=names[i] || !relations[i].SequenceEqual(Relations(model)))
+                throw new InvalidOperationException("E164: 再作成後のモデル・関連IDまたは関連順序が不一致です。");
+        }
+        if(!Relations(project.GetModelById(seed.Ids[6])).Any(x=>x.StartsWith(linkId+":",StringComparison.Ordinal)))
+            throw new InvalidOperationException("E165: 受信関連IDが変化しました。");
+        log.AppendLine("execution recreation, ports, model/relationship/shape identities: verified");
+    }
+    static void CheckPorts(IProject project,SequencePayload seed,string receivePort)
+    {
+        var root=(IInteraction)project.GetModelById(seed.Ids[0]);
+        var message=project.GetModelById(seed.Ids[6]) as IMessage;
+        if(message==null || root.Messages.Count()!=1 || root.Lifelines.Count()!=2 || message.Kind!="sync" || message.Sender==null || message.Sender.Id!=seed.Ids[2] || message.Receiver==null || message.Receiver.Id!=seed.Ids[3]
+            || message.SendPort==null || ((IModel)message.SendPort).Id!=seed.Ids[4] || message.ReceivePort==null || ((IModel)message.ReceivePort).Id!=receivePort)
+            throw new InvalidOperationException("E166: メッセージのID・種類・送受信先が不一致です。");
+    }
+    static void Import(IProject project,string json,string directory,string file,StringBuilder log,Action<string,int> report)
+    {
+        SequenceExperiment.Write(Path.Combine(directory,file),json);
+        report("未取得（構造更新）",0);
+        var result=project.ImportUnitFromJson(json,null,null);
+        if(result==null)throw new InvalidOperationException("E167: 構造更新の結果がnullです。");
+        report(result.State,result.Errors.Count());
+        log.AppendLine(file+": "+result.State);
+        foreach(var error in result.Errors)log.AppendLine(error.Kind+": "+error.Message);
+        if(result.State!="success" || result.Errors.Any(e=>e.Kind!=UnitImportErrorKind.Info))throw new InvalidOperationException("E168: 構造更新が失敗または警告を返しました。");
     }
 }
 
@@ -1651,6 +1746,19 @@ public class SequenceIdentity
     {
         var ids=new[]{Root,Frame,FrameRelation,Editor,FrameShape};
         if(ids.Any(string.IsNullOrEmpty) || ids.Distinct().Count()!=ids.Length)throw new ArgumentException("Incomplete replacement identity");
+    }
+}
+
+public static class SequenceStructureInput
+{
+    // Only for the generated two-execution probe; not a general diagram writer.
+    public static string WithoutReceiver(SequencePayload seed,string schema)
+    {
+        var document=SequenceJson.Parse(SequenceDeltaInput.RestoreEditor(seed,schema));
+        var bars=document["Editors"].Items.Single()["ExecutionSpecifications"].Items;
+        if(bars.RemoveAll(sh=>sh["ModelId"].StringValue()==seed.Ids[5])!=1)
+            throw new ArgumentException("Missing unique receiver execution shape");
+        return document.ToJsonString();
     }
 }
 
