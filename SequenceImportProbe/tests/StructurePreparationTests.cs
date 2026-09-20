@@ -60,6 +60,69 @@ public static class StructurePreparationTests
         completion.Run(()=>{live.Models.Remove(package.DeleteIds[0]);throw new Exception("second deletion failed");},()=>{commits++;},()=>{rollbacks++;live=snapshot;},()=>{Require(live.Signature()==signature,"partial batch not restored");});
         Require(!completion.Committed && completion.Restored && commits==0 && rollbacks==1,"partial batch committed or rollback failed");
     }
+    // Destinations other than a single shared execution: separate targets, a shared
+    // origin, mixed explicit/omitted indices, and a reconnect whose origin is deleted.
+    static SequenceTrialState Spread()
+    {
+        var state=new SequenceTrialState();
+        state.Relations["a1"]=new[]{"srcX","mA1","0","0"};
+        state.Relations["a2"]=new[]{"srcX","mA2","1","0"};
+        state.Relations["b1"]=new[]{"srcY","mB1","0","0"};
+        state.Relations["p0"]=new[]{"destP","mP","0","0"};
+        foreach(string id in new[]{"mA1","mA2","mB1","mP"})state.Ports[id]=new[]{"send",Source(state,id),"A","B","sync"};
+        var plan=new SyncPlan{Expected=new SequenceDocument()};
+        foreach(string id in new[]{"mA1","mA2","mB1","mP"})
+        {var e=new SequenceElement{Id=id};e.Links["receiver"]=new[]{"B"};plan.Expected.Elements.Add(e);}
+        var package=new SequenceStructurePreparation{DeleteIds=new string[0],
+            ReceiveRelationIds=new[]{"a1","a2","b1","p0"},ReconnectJson=Patch(
+                PumlBuild.Obj("Id","a1","SourceId","destP","TargetId","mA1"),
+                PumlBuild.Obj("Id","b1","SourceId","destQ","TargetId","mB1"))};
+        var split=state.Expected(package,plan,false);
+        Require(split.Relations["a2"][2]=="0","origin order not compacted after a move away");
+        Require(split.Relations["a1"][2]=="1" && split.Relations["p0"][2]=="0","append past an existing destination relation failed");
+        Require(split.Relations["b1"][2]=="0","empty destination did not start at zero");
+
+        package.ReconnectJson=Patch(PumlBuild.Obj("Id","a1","SourceId","destP","TargetId","mA1"),
+            PumlBuild.Obj("Id","a2","SourceId","destQ","TargetId","mA2"));
+        var shared=state.Expected(package,plan,false);
+        Require(shared.Relations["a1"][2]=="1" && shared.Relations["a2"][2]=="0" && shared.Relations["p0"][2]=="0",
+            "shared origin to separate destinations ordered incorrectly");
+
+        var mixed=PumlBuild.Obj("Id","a1","SourceId","destP","TargetId","mA1");
+        package.ReconnectJson=Patch(mixed,PumlBuild.Obj("Id","b1","SourceId","destP","TargetId","mB1"));
+        var withIndex=SequenceJson.Parse(package.ReconnectJson);
+        withIndex["Relations"].Items[0].Properties["SourceIndex"]=SequenceJson.Parse("0");
+        package.ReconnectJson=withIndex.ToJsonString();
+        var blended=state.Expected(package,plan,false);
+        Require(blended.Relations["a1"][2]=="0" && blended.Relations["p0"][2]=="1" && blended.Relations["b1"][2]=="2",
+            "explicit index followed by an omitted one ordered incorrectly");
+        Reject(delegate {
+            var bad=SequenceJson.Parse(package.ReconnectJson);
+            bad["Relations"].Items[0].Properties["SourceIndex"]=SequenceJson.Parse("3");
+            var reach=new SequenceStructurePreparation{DeleteIds=package.DeleteIds,
+                ReceiveRelationIds=package.ReceiveRelationIds,ReconnectJson=bad.ToJsonString()};
+            state.Expected(reach,plan,false);
+        },"out of range insertion accepted");
+
+        // The origin of a reconnect is itself deleted, as in the batch sample.
+        state.Relations["own-x"]=new[]{"lane","srcX","1","0"};
+        state.Relations["own-w"]=new[]{"lane","srcW","0","0"};
+        state.Relations["root-x"]=new[]{"root","srcX","0","0"};
+        state.Models["srcX"]="origin";
+        package.DeleteIds=new[]{"srcX"};
+        package.ReconnectJson=Patch(PumlBuild.Obj("Id","a1","SourceId","destP","TargetId","mA1"),
+            PumlBuild.Obj("Id","a2","SourceId","destP","TargetId","mA2"));
+        var dropped=state.Expected(package,plan,true);
+        Require(dropped.Relations["a1"][2]=="1" && dropped.Relations["a2"][2]=="2","moved relations lost their destination order on deletion");
+        Require(!dropped.Relations.ContainsKey("own-x") && !dropped.Relations.ContainsKey("root-x"),"owning relations of the deleted origin remain");
+        Require(dropped.Relations["own-w"][2]=="0" && dropped.Relations.ContainsKey("b1"),"unrelated relations were disturbed");
+        Require(!dropped.Models.ContainsKey("srcX") && state.Models.ContainsKey("srcX"),"deletion leaked into the snapshot");
+        return state;
+    }
+    static string Source(SequenceTrialState state,string message)
+    { return state.Relations.Where(p=>p.Value[1]==message).Select(p=>p.Value[0]).DefaultIfEmpty("").First(); }
+    static string Patch(params object[] relations)
+    { return PumlBuild.Json(PumlBuild.Obj("Relations",relations)); }
     public static void Run()
     {
         var ordered=new SequenceTrialState();
@@ -81,6 +144,7 @@ public static class StructurePreparationTests
         var insertion=SequenceJson.Parse(orderPackage.ReconnectJson);insertion["Relations"].Items[0].Properties["SourceIndex"]=SequenceJson.Parse("0");orderPackage.ReconnectJson=insertion.ToJsonString();
         var inserted=ordered.Expected(orderPackage,orderPlan,false);
         Require(inserted.Relations["r2"][2]=="0" && inserted.Relations["existing"][2]=="1" && inserted.Relations["r1"][2]=="2","explicit insertion order incorrect");
+        Spread();
         var owned=new SequenceTrialState();
         owned.Models["execB"]="removed";
         owned.Relations["own-a"]=new[]{"lane","execA","0","0"};
