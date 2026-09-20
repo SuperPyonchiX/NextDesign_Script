@@ -6,6 +6,18 @@ public static class MappingTests
     { bool rejected=false;try{action();}catch(InvalidOperationException){rejected=true;}Require(rejected,text); }
     public static void Run(string directory)
     {
+        // All messages use the same route: position alone cannot identify them.
+        var baseline=Enumerable.Range(0,20).Select(i=>"operation"+i).ToArray();
+        var route=Enumerable.Repeat("same-route",baseline.Length).ToArray();
+        var inserted=baseline.Take(5).Concat(new[]{"added1","added2","added3"}).Concat(baseline.Skip(5)).ToArray();
+        var afterInsert=SequenceExportMatch.Align(route,baseline,Enumerable.Repeat("same-route",inserted.Length).ToArray(),inserted);
+        Require(afterInsert.SequenceEqual(Enumerable.Range(0,20).Select(i=>i<5?i:i+3)),"block insertion misidentifies unchanged suffix");
+        var deleted=baseline.Take(5).Concat(baseline.Skip(8)).ToArray();
+        var afterDelete=SequenceExportMatch.Align(route,baseline,Enumerable.Repeat("same-route",deleted.Length).ToArray(),deleted);
+        Require(afterDelete.SequenceEqual(Enumerable.Range(0,20).Select(i=>i<5?i:i<8?-1:i-3)),"block deletion misidentifies unchanged suffix");
+        var renamedWithInsert=inserted.ToArray();renamedWithInsert[15]="renamed";
+        Require(SequenceExportMatch.Align(route,baseline,Enumerable.Repeat("same-route",renamedWithInsert.Length).ToArray(),renamedWithInsert).SequenceEqual(afterInsert),"insertion plus rename shifts following identities");
+        Require(SequenceExportMatch.Align(new[]{"r","r","r","r"},new[]{"head","void","void","tail"},new[]{"r","r","r","r","r"},new[]{"head","added","void","void","tail"}).SequenceEqual(new[]{0,2,3,4}),"insert before repeated replies shifts unchanged suffix");
         Require(SequenceExportMatch.Align(new[]{"k"},new[]{"old"},new[]{"k"},new[]{"renamed"}).SequenceEqual(new[]{0}),"rename treated as absent");
         Require(SequenceExportMatch.Align(new[]{"k","anchor","k"},new[]{"repeat","middle","repeat"},new[]{"k","anchor","k"},new[]{"renamed","middle","repeat"}).SequenceEqual(new[]{0,1,2}),"rename stolen by later exact match");
         Require(SequenceExportMatch.Align(new[]{"k","k"},new[]{"first","second"},new[]{"k","k","k"},new[]{"extra","first","second"}).SequenceEqual(new[]{1,2}),"diagram insertion shifts existing identities");
