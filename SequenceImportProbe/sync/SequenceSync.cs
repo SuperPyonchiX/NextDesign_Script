@@ -131,7 +131,7 @@ public sealed class SyncPlan
     }
     static string Text(string value) { return (value??"").Replace("\r\n","\n").Replace('\r','\n'); }
     static string Properties(SequenceElement e)
-    { return SequencePayload.Q(Text(e.Text))+string.Join("",e.Attributes.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>SequencePayload.Q(p.Key)+SequencePayload.Q(p.Value))); }
+    { return SequencePayload.Q(e.Kind=="participant" || e.Kind=="interaction" ? SequenceLabels.Fold(e.Text) : Text(e.Text))+string.Join("",e.Attributes.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>SequencePayload.Q(p.Key)+SequencePayload.Q(p.Value))); }
     static string LinkKey(SequenceElement e,Dictionary<string,string> ids)
     {
         return string.Join("",e.Links.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>SequencePayload.Q(p.Key)+
@@ -160,7 +160,7 @@ public sealed class SyncPlan
             string key;if(keys.TryGetValue(e.Id,out key))return key;
             key=e.Kind+Properties(e);
             if(e.Kind=="fragment" || e.Kind=="operand")
-                key+="["+string.Join("",doc.Elements.Where(n=>n.Parent==e.Id).OrderBy(n=>n.Order).Select(n=>SequencePayload.Q(get(n))))+"]";
+                key+="["+string.Join("",doc.Elements.Where(n=>n.Parent==e.Id && n.Kind!="execution").OrderBy(n=>n.Order).Select(n=>SequencePayload.Q(get(n))))+"]";
             keys.Add(e.Id,key);return key;
         };
         foreach(var e in doc.Elements)get(e);return keys;
@@ -181,6 +181,12 @@ public sealed class SyncPlan
             foreach(var a in desired.Elements.Where(e=>!map.ContainsKey(e.Id)).ToArray())
             {
                 if(a.Parent==null || !map.ContainsKey(a.Parent))continue;
+                if(a.Kind=="fragment" || a.Kind=="operand")
+                {
+                    var peers=current.Elements.Where(b=>!used.Contains(b.Id) && b.Parent==map[a.Parent] && b.Kind==a.Kind && Properties(b)==Properties(a)).ToArray();
+                    int inputs=desired.Elements.Count(b=>!map.ContainsKey(b.Id) && b.Parent==a.Parent && b.Kind==a.Kind && Properties(b)==Properties(a));
+                    if(peers.Length==1 && inputs==1) {bind(a,peers[0]);progress=true;continue;}
+                }
                 var candidates=current.Elements.Where(b=>!used.Contains(b.Id) && b.Parent==map[a.Parent] && Comparable(a,b,map) && desiredKeys[a.Id]==currentKeys[b.Id]).ToArray();
                 int equivalent=desired.Elements.Count(b=>!map.ContainsKey(b.Id) && b.Parent==a.Parent && b.Kind==a.Kind && desiredKeys[b.Id]==desiredKeys[a.Id]);
                 if(candidates.Length==1 && equivalent==1) {bind(a,candidates[0]);progress=true;}
@@ -415,8 +421,17 @@ public static class SequenceAudit
         lines.Add("参加者 追加+削除: "+plan.Changes.Count(c=>c.Kind=="participant" && (c.Action=="add" || c.Action=="delete"))+" → "+simulated.Changes.Count(c=>c.Kind=="participant" && (c.Action=="add" || c.Action=="delete")));
         lines.Add("全種類 再作成候補: "+plan.Recreated+" → "+simulated.Recreated);
         lines.Add("全種類 差分操作数: "+plan.Changes.Count+" → "+simulated.Changes.Count);
-        lines.Add("数の減少は表記差の影響。残差の原因は別途照合。");
+        lines.Add("実行区間数 図/入力: "+current.Elements.Count(e=>e.Kind=="execution")+" / "+desired.Elements.Count(e=>e.Kind=="execution"));
+        foreach(var role in new[]{"sendExecution","receiveExecution"})
+            lines.Add((role=="sendExecution"?"送信":"受信")+"実行区間への接続数 図/入力: "+current.Elements.Count(e=>e.Kind=="message" && e.Links.ContainsKey(role))+" / "+desired.Elements.Count(e=>e.Kind=="message" && e.Links.ContainsKey(role)));
+        lines.Add("本文の空白以外は一律に正規化していません。");
         lines.Add("本文・モデルID・パスはこの画面には表示しません。");
         return string.Join("\n",lines);
     }
+}
+
+public static class SequenceLabels
+{
+    // Exporter folds whitespace in participant labels and the diagram title.
+    public static string Fold(string value) { return Regex.Replace(value??"",@"\s+"," ").Trim(); }
 }

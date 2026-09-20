@@ -123,6 +123,12 @@ public static class SyncTests
         Require(audit.Contains("参加者 追加+削除") && audit.Contains("差分操作数"),"normalization experiment missing");
         Require(SequenceAudit.Summary(auditPlan,3).Split('\n').Length<=16,"summary exceeds screenshot row budget");
         Require(privateDoc.Elements.Single(e=>e.Kind=="participant" && e.Text.Contains("A")).Text==" A\n","diagnostic mutated current document");
+        Require(auditPlan.IsEmpty,"participant whitespace triggered a semantic change");
+        var withBars=Doc("opt check\nactivate A\nA -> B : first\ndeactivate A\nend");Ids(withBars);
+        var withoutBars=Doc("opt check\nA -> B : first\nend");
+        var barPlan=Plan(withBars,withoutBars);
+        Require(!barPlan.Changes.Any(c=>(c.Kind=="fragment" || c.Kind=="operand" || c.Kind=="message") && (c.Action=="add" || c.Action=="delete")),"activation difference recreated enclosing structure");
+        Require(barPlan.Changes.Any(c=>c.Kind=="execution" && c.Action=="delete"),"activation difference silently suppressed");
         Console.WriteLine("PASS: all-kind semantic plans, mixed changes, ID retention, block edits, ambiguity, moves, source trivia and idempotence");
     }
 }
