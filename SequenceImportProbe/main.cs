@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.38";
+    public const string Title = "シーケンス生成実験 / 0.8.39";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -1076,19 +1076,23 @@ public static class SequenceStructureTrial
                 // Undo and redo the committed change here so the result is checked the same
                 // way every other stage is, by reading the model back.
                 stage="Undo";
-                if(!project.CanUndo)cycle="\nUndo: 実行できません";
+                // The ribbon's undo is the workspace one; the project-level stack reported
+                // nothing to undo right after the commit.
+                log.AppendLine("undo availability: project="+project.CanUndo+" workspace="+app.Workspace.CanUndo());
+                if(!app.Workspace.CanUndo())cycle="\nUndo: 実行できません";
                 else
                 {
-                    project.Undo();Refresh(app,log);
+                    app.Workspace.Undo();Refresh(app,log);
                     bool undone=Matches(delegate {Verify(before,Rounded(project,rootId,fresh,newShapes),"Undo後",log);},log);
                     stage="Redo";
-                    bool redone=false;
-                    if(project.CanRedo)
+                    bool available=app.Workspace.CanRedo(),redone=false;
+                    log.AppendLine("redo availability: project="+project.CanRedo+" workspace="+available);
+                    if(available)
                     {
-                        project.Redo();Refresh(app,log);
+                        app.Workspace.Redo();Refresh(app,log);
                         redone=Matches(delegate {Verify(expectedFinal,Rounded(project,rootId,fresh,newShapes),"Redo後",log);},log);
                     }
-                    cycle="\nUndo照合: "+(undone?"一致":"不一致")+" / Redo照合: "+(redone?"一致":project.CanRedo?"不一致":"実行できません");
+                    cycle="\nUndo照合: "+(undone?"一致":"不一致")+" / Redo照合: "+(redone?"一致":available?"不一致":"実行できません");
                     if(!undone || !redone)cycle+="\n保存せずコピーを開き直してください。";
                 }
             }
