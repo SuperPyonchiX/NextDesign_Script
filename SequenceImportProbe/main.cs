@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.37";
+    public const string Title = "シーケンス生成実験 / 0.8.38";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -935,6 +935,17 @@ public static class SequenceStructureTrial
     static string Port(IMessagePort value) {var m=value as IModel;return m==null?"":m.Id;}
     static string FieldId(IField value) {return value==null?"":value.Id;}
     static string Number(double value){return value.ToString("R",System.Globalization.CultureInfo.InvariantCulture);}
+    // The editor keeps its old drawing until the page is refreshed, so switching diagrams
+    // by hand was the only way to see a result. Refresh it here instead.
+    static void Refresh(IApplication app,StringBuilder log)
+    {
+        try {app.Window.EditorPage.UpdateEditors();}
+        catch(Exception ex) {log.AppendLine("editor refresh failed: "+ex.Message);}
+    }
+    static bool Matches(Action verify,StringBuilder log)
+    {
+        try {verify();return true;} catch(Exception ex) {log.AppendLine(ex.ToString());return false;}
+    }
     static SequenceTrialState Rounded(IProject project,string rootId,Func<ISequenceDiagram> fresh,string[] newShapes)
     {
         var state=Read((IInteraction)project.GetModelById(rootId),fresh());
@@ -1013,7 +1024,7 @@ public static class SequenceStructureTrial
             return model.GetEditors().OfType<ISequenceDiagram>().Single(d=>d.Id==editorId);
         };
         string confirmation=retain
-            ? "コピーのプロジェクトで実行してください。\n受信接続変更: "+reconnectCount+"件 / 実行区間削除: "+prepared.DeleteIds.Length+"件。照合成功時に変更を確定します。\n自動保存はしません。確定後はUndo/Redoと保存再読込を確認してください。実行しますか？"
+            ? "コピーのプロジェクトで実行してください。\n受信接続変更: "+reconnectCount+"件 / 実行区間削除: "+prepared.DeleteIds.Length+"件 / 実行区間追加: "+prepared.AddedExecutions.Length+"件。照合成功時に変更を確定します。\n確定後にUndoとRedoをこのコマンドが実行し、読み戻して照合します。最終状態は確定後と同じです。\n自動保存はしません。実行しますか？"
             : "コピーのプロジェクトで実行してください。\n受信接続変更と実行区間削除を一時適用し、照合後に必ず取り消します。\n自動保存・変更の確定は行いません。試行しますか？";
         if(!app.Window.UI.ShowConfirmDialog(confirmation,SequenceExperiment.Title))
             return caseId+": キャンセル / 図への変更なし";
@@ -1058,14 +1069,39 @@ public static class SequenceStructureTrial
             var completion=new SequenceCommitTrial();
             completion.Run(apply,delegate {stage="変更の確定";transaction.Commit();},rollback,verifyRestored);
             foreach(var error in new[]{completion.ApplyError,completion.CommitError,completion.RollbackError,completion.VerifyError})if(error!=null)log.AppendLine(error.ToString());
+            Refresh(app,log);
+            string cycle="";
+            if(completion.Committed)
+            {
+                // Undo and redo the committed change here so the result is checked the same
+                // way every other stage is, by reading the model back.
+                stage="Undo";
+                if(!project.CanUndo)cycle="\nUndo: 実行できません";
+                else
+                {
+                    project.Undo();Refresh(app,log);
+                    bool undone=Matches(delegate {Verify(before,Rounded(project,rootId,fresh,newShapes),"Undo後",log);},log);
+                    stage="Redo";
+                    bool redone=false;
+                    if(project.CanRedo)
+                    {
+                        project.Redo();Refresh(app,log);
+                        redone=Matches(delegate {Verify(expectedFinal,Rounded(project,rootId,fresh,newShapes),"Redo後",log);},log);
+                    }
+                    cycle="\nUndo照合: "+(undone?"一致":"不一致")+" / Redo照合: "+(redone?"一致":project.CanRedo?"不一致":"実行できません");
+                    if(!undone || !redone)cycle+="\n保存せずコピーを開き直してください。";
+                }
+            }
             summary="ケース: "+caseId+" / "+(completion.Committed?"構造更新・SDK照合・変更確定: 成功":"停止段階: "+stage)
-                +(completion.Committed?"\nUndo/Redoと保存再読込を確認してください。":"\n取消API: "+(completion.RollbackReturned?"正常終了":"失敗・未確認")+" / 復元照合: "+(completion.Restored?"一致":"未確認・不一致"))
+                +cycle
+                +(completion.Committed?"\n保存して開き直し、見た目と差分0件を確認してください。":"\n取消API: "+(completion.RollbackReturned?"正常終了":"失敗・未確認")+" / 復元照合: "+(completion.Restored?"一致":"未確認・不一致"))
                 +(!completion.Committed && !completion.Restored?"\n保存せずコピーを開き直してください。":"")
-                +"\nプロジェクトの自動保存: していません\nUndo/Redo・スタイル読戻し・保存再読込: 未検証\nこの結果と診断表示を撮影してください。";
+                +"\nプロジェクトの自動保存: していません\nスタイル読戻し・保存再読込: 未検証\nこの結果と診断表示を撮影してください。";
         }
         else
         {
             var trial=new SequenceRollbackTrial();trial.Run(apply,rollback,verifyRestored);
+            Refresh(app,log);
             foreach(var error in new[]{trial.ApplyError,trial.RollbackError,trial.VerifyError})if(error!=null)log.AppendLine(error.ToString());
             summary="ケース: UPDATE005 / "+(trial.Applied?"一時適用・SDK読戻し照合: 一致":"停止段階: "+stage)
                 +"\n取消API: "+(trial.RollbackReturned?"正常終了":"失敗・未確認")+" / 復元照合: "+(trial.Restored?"一致":"未確認・不一致")
