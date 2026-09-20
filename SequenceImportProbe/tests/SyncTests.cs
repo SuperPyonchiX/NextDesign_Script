@@ -39,9 +39,50 @@
         Require(SequenceStructurePreflight.Check(before,plan).DeleteExecutions.SequenceEqual(new[]{original}),"unreferenced execution deletion missing");
         Require(!SequenceStructurePreflight.Check(before,new SyncPlan{Expected=before.Copy()}).Candidate,"no-op marked candidate");
     }
+    // Going the other way from the structural samples: the input asks for a receive bar
+    // that the diagram does not have. Acceptance is settled here; writing is not.
+    static void AddedExecutionPreflight()
+    {
+        var before=Doc("activate B\nA -> B : first\nB --> A : firstDone\nA -> B : second\ndeactivate B");
+        var after=Doc("activate B\nA -> B : first\nB --> A : firstDone\nA -> B : second\nactivate B\ndeactivate B\ndeactivate B");
+        var plan=Plan(before,after);
+        var added=plan.Expected.Elements.Where(e=>e.Kind=="execution" && !before.Elements.Any(o=>o.Id==e.Id)).ToArray();
+        Require(added.Length==1,"sample does not add exactly one execution");
+        string unchanged=before.ToJson()+plan.Expected.ToJson()+plan.ToJson();
+        var gate=SequenceStructurePreflight.Check(before,plan);
+        Require(gate.AddExecutions.SequenceEqual(new[]{added[0].Id}),"added receive bar was not accepted: "+plan.ToJson()+gate.ToJson());
+        Require(!gate.Candidate && gate.Reasons.Any(r=>r.Contains("書込みは未実装")),"unimplemented addition was treated as applicable");
+        Require(!gate.CanCommit(true) && !gate.CanCommit(false),"addition reached a commit mode");
+        Require(unchanged==before.ToJson()+plan.Expected.ToJson()+plan.ToJson(),"preflight changed diff");
+
+        Func<Action<SequenceElement>,SequenceStructurePreflight> probe=mutate=>{
+            var copy=plan.Expected.Copy();mutate(copy.Elements.Single(e=>e.Id==added[0].Id));
+            var trial=new SyncPlan{Expected=copy};trial.Changes.AddRange(plan.Changes);
+            return SequenceStructurePreflight.Check(before,trial);
+        };
+        Require(probe(e=>e.Links["participant"]=new string[0]).AddExecutions.Count==0,"execution without a participant accepted");
+        Require(probe(e=>e.Links["participant"]=new[]{added[0].Id}).AddExecutions.Count==0,"execution owned by a new participant accepted");
+        string interaction=before.Elements.Single(e=>e.Kind=="interaction").Id;
+        Require(probe(e=>e.Links["outer"]=new[]{interaction}).AddExecutions.Count==0,"nesting in a non-execution accepted");
+        Require(probe(e=>e.Links["note"]=new[]{added[0].Id}).AddExecutions.Count==0,"extra link on a new execution accepted");
+        var outerId=before.Elements.First(e=>e.Kind=="execution").Id;
+        Require(probe(e=>e.Links["outer"]=new[]{outerId}).AddExecutions.Count==1,"nesting in an existing bar of the same participant rejected");
+
+        var sender=before.Elements.First(e=>e.Kind=="message").Links["sender"].Single();
+        var wrongLane=plan.Expected.Copy();wrongLane.Elements.Single(e=>e.Id==added[0].Id).Links["outer"]=new[]{outerId};
+        wrongLane.Elements.Single(e=>e.Id==added[0].Id).Links["participant"]=new[]{sender};
+        Require(SequenceStructurePreflight.Check(before,new SyncPlan{Expected=wrongLane}).AddExecutions.Count==0,"nesting across lifelines accepted");
+
+        var unused=plan.Expected.Copy();
+        unused.Elements.Single(e=>e.Kind=="message" && e.Links.ContainsKey("receiveExecution")
+            && e.Links["receiveExecution"].Contains(added[0].Id)).Links["receiveExecution"]=new[]{outerId};
+        var unusedPlan=new SyncPlan{Expected=unused};unusedPlan.Changes.AddRange(plan.Changes);
+        Require(SequenceStructurePreflight.Check(before,unusedPlan).AddExecutions.Count==0,"execution nothing receives on accepted");
+    }
     public static void Run()
     {
         StructurePreflight();
+        AddedExecutionPreflight();
         string body="activate A\nA -> B : first\nalt ready\nA -> B : work\nnote over B\nline one\nline two\nend note\nelse wait\nB --> A : wait\nref over A,B : Service\nend\ndeactivate A";
         var old=Doc(body);Ids(old);
         Require(Plan(old,Doc(body)).IsEmpty,"all-kind no-op changed semantics");

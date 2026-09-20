@@ -584,6 +584,7 @@ public sealed class SequenceStructurePreflight
     public List<string> Reasons=new List<string>();
     public List<string> ReconnectMessages=new List<string>();
     public List<string> DeleteExecutions=new List<string>();
+    public List<string> AddExecutions=new List<string>();
     public bool Candidate { get { return Reasons.Count==0 && (ReconnectMessages.Count+DeleteExecutions.Count)>0; } }
     public bool CanCommit(bool reconnect)
     { return Candidate && DeleteExecutions.Count>0 && (reconnect?ReconnectMessages.Count>0:ReconnectMessages.Count==0); }
@@ -594,14 +595,62 @@ public sealed class SequenceStructurePreflight
         var copy=e.Copy();copy.Links.Remove("receiveExecution");copy.Line=0;copy.Order=0;
         return new SequenceDocument{Elements=new List<SequenceElement>{copy}}.ToJson();
     }
+    // An added execution is only describable when it is a plain receive bar on an
+    // existing participant: owned by the interaction, optionally nested in one of that
+    // participant's existing bars, and referenced by messages as receiveExecution only.
+    static string AddReason(SequenceDocument current,SyncPlan plan,SequenceElement added)
+    {
+        var before=current.Elements.ToDictionary(e=>e.Id);
+        string root=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
+        if(added.Parent!=root)return "追加する実行区間の所有先が相互作用ではありません。";
+        var participant=Link(added,"participant");
+        if(participant.Length!=1 || !before.ContainsKey(participant[0]) || before[participant[0]].Kind!="participant")
+            return "追加する実行区間の参加者が既存の参加者ではありません。";
+        var outer=Link(added,"outer");
+        if(outer.Length>1 || (outer.Length==1 && (!before.ContainsKey(outer[0]) || before[outer[0]].Kind!="execution"
+            || !Link(before[outer[0]],"participant").SequenceEqual(participant))))
+            return "追加する実行区間の入れ子先が同じ参加者の既存区間ではありません。";
+        var known=new[]{"participant","outer","startAfter","endBefore","endContainer"};
+        if(added.Links.Keys.Any(key=>!known.Contains(key)))return "追加する実行区間に未対応の接続があります。";
+        if(!Link(added,"endContainer").SequenceEqual(new[]{root}))return "追加する実行区間の終了位置が相互作用の直下ではありません。";
+        foreach(string key in new[]{"startAfter","endBefore"})
+        {
+            var anchor=Link(added,key);
+            if(anchor.Length>1 || (anchor.Length==1 && !before.ContainsKey(anchor[0])))
+                return "追加する実行区間の境界が既存要素を指していません。";
+        }
+        if(plan.Expected.Elements.Any(e=>e.Parent==added.Id))return "追加する実行区間が他の要素を所有しています。";
+        int receivers=0;
+        foreach(var e in plan.Expected.Elements)
+            foreach(var pair in e.Links)
+                if(pair.Value.Contains(added.Id))
+                {
+                    if(pair.Key!="receiveExecution" || e.Kind!="message")return "追加する実行区間が受信以外から参照されています。";
+                    receivers++;
+                }
+        if(receivers==0)return "追加する実行区間を受信先にするメッセージがありません。";
+        return null;
+    }
     public static SequenceStructurePreflight Check(SequenceDocument current,SyncPlan plan)
     {
         current.Validate();plan.Expected.Validate();
         var result=new SequenceStructurePreflight();
         var before=current.Elements.ToDictionary(e=>e.Id);
         var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        foreach(var change in plan.Changes.Where(c=>c.Action=="add" && c.Kind=="execution"))
+        {
+            SequenceElement added;
+            if(before.ContainsKey(change.Id) || !after.TryGetValue(change.Id,out added))
+            { result.Reasons.Add("L"+change.Line+" 追加する実行区間を期待状態から取得できません。");continue; }
+            string why=AddReason(current,plan,added);
+            if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
+            result.AddExecutions.Add(change.Id);
+            // Acceptance is settled here; building and applying the new model is not.
+            result.Reasons.Add("L"+change.Line+" 実行区間の追加は受理条件を満たしますが、書込みは未実装です。");
+        }
         foreach(var change in plan.Changes)
         {
+            if(change.Action=="add" && change.Kind=="execution")continue;
             string row="L"+change.Line+" ";
             SequenceElement old,next;
             if(change.Action=="delete" && change.Kind=="execution" && before.TryGetValue(change.Id,out old) && !after.ContainsKey(change.Id))
@@ -618,8 +667,9 @@ public sealed class SequenceStructurePreflight
             if(newPorts.Length==0)
             { result.Reasons.Add(row+"受信実行区間なしの書込み表現が未確定です。ライフライン直結や区間の自動補完は行いません。");continue; }
             SequenceElement port;
-            if(oldPorts.Length!=1 || newPorts.Length!=1 || !before.ContainsKey(newPorts[0]) || !after.TryGetValue(newPorts[0],out port) || port.Kind!="execution")
-            { result.Reasons.Add(row+"接続先は既存の実行区間1件である必要があります。");continue; }
+            if(oldPorts.Length!=1 || newPorts.Length!=1 || !after.TryGetValue(newPorts[0],out port) || port.Kind!="execution"
+                || !(before.ContainsKey(newPorts[0]) || result.AddExecutions.Contains(newPorts[0])))
+            { result.Reasons.Add(row+"接続先は既存の実行区間か、この計画で追加する実行区間1件である必要があります。");continue; }
             if(!Link(port,"participant").SequenceEqual(Link(next,"receiver")))
             { result.Reasons.Add(row+"受信参加者と接続先実行区間の所属が一致しません。");continue; }
             if(oldPorts.SequenceEqual(newPorts) || Comparable(old)!=Comparable(next))
@@ -632,11 +682,13 @@ public sealed class SequenceStructurePreflight
     public string Summary()
     {
         return "構造更新の事前判定（図への反映なし）\n受信接続変更候補: "+ReconnectMessages.Count+" / 実行区間削除候補: "+DeleteExecutions.Count
+            +" / 実行区間追加候補: "+AddExecutions.Count
             +"\n"+(Reasons.Count>0?"全体を停止: "+Reasons.Count+"件の未対応条件":Candidate?"限定範囲の候補あり。既存図での適用・保持検証は未実施です。":"対象の変更なし")
             +"\n"+string.Join("\n",Reasons.Distinct());
     }
     public string ToJson()
-    { return PumlBuild.Json(PumlBuild.Obj("Candidate",Candidate,"ReconnectMessages",ReconnectMessages.ToArray(),"DeleteExecutions",DeleteExecutions.ToArray(),"Reasons",Reasons.ToArray())); }
+    { return PumlBuild.Json(PumlBuild.Obj("Candidate",Candidate,"ReconnectMessages",ReconnectMessages.ToArray(),"DeleteExecutions",DeleteExecutions.ToArray(),
+        "AddExecutions",AddExecutions.ToArray(),"Reasons",Reasons.ToArray())); }
 }
 
 // Prepared files are diagnostic artifacts; they are never imported by this command.
