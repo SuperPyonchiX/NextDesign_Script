@@ -168,6 +168,11 @@ public sealed class SyncPlan
         };
         foreach(var e in doc.Elements)get(e);return keys;
     }
+    static string BranchHeader(SequenceDocument doc,SequenceElement fragment)
+    {
+        return Properties(fragment)+"["+string.Join("",doc.Elements.Where(e=>e.Parent==fragment.Id && e.Kind=="operand")
+            .OrderBy(e=>e.Order).Select(e=>SequencePayload.Q(Properties(e))))+"]";
+    }
     public static SyncPlan Build(SequenceDocument current,SequenceDocument desired,Func<string> newId)
     {
         current.Validate();desired.Validate();
@@ -184,6 +189,15 @@ public sealed class SyncPlan
             foreach(var a in desired.Elements.Where(e=>e.Kind!="execution" && !map.ContainsKey(e.Id)).ToArray())
             {
                 if(a.Parent==null || !map.ContainsKey(a.Parent))continue;
+                // Resolve duplicate operators by their ordered branch headers,
+                // independently of descendant edits. Require uniqueness both ways.
+                if(a.Kind=="fragment")
+                {
+                    string header=BranchHeader(desired,a);
+                    var peers=current.Elements.Where(b=>b.Kind=="fragment" && !used.Contains(b.Id) && b.Parent==map[a.Parent] && BranchHeader(current,b)==header).ToArray();
+                    int inputs=desired.Elements.Count(b=>b.Kind=="fragment" && !map.ContainsKey(b.Id) && b.Parent==a.Parent && BranchHeader(desired,b)==header);
+                    if(peers.Length==1 && inputs==1) {bind(a,peers[0]);progress=true;continue;}
+                }
                 if(a.Kind=="fragment" || a.Kind=="operand")
                 {
                     var peers=current.Elements.Where(b=>!used.Contains(b.Id) && b.Parent==map[a.Parent] && b.Kind==a.Kind && Properties(b)==Properties(a)).ToArray();

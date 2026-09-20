@@ -185,6 +185,15 @@
         string containerAudit=SequenceAudit.Reasons(containers,containerInput,containerPlan);
         Require(containerAudit.Contains("図側候補=") && containerAudit.Contains("演算子=その他"),"unmatched container diagnostics missing");
         Require(!containerAudit.Contains("private-one") && !containerAudit.Contains("private-two") && !containerAudit.Contains("private-operator"),"container diagnostics disclosed private text");
+        // Two sibling alts cannot be distinguished by operator alone. A child
+        // annotation move must not destroy the identities of both containers.
+        string siblingBlocks="alt first\nA -> B : one\nloop repeat\nB -> A : nested\nend\nref over A : hint\nelse fallback\nB -> A : two\nend\nalt second\nA -> B : three\nelse fallback\nB -> A : four\nend";
+        var siblingOld=Doc(siblingBlocks);Ids(siblingOld);
+        var siblingInput=Doc(siblingBlocks.Replace("end\nref over A : hint","ref over A : hint\nend").Replace("three","changed"));
+        var siblingPlan=Plan(siblingOld,siblingInput);
+        Require(!siblingPlan.Changes.Any(c=>(c.Kind=="fragment" || c.Kind=="operand") && (c.Action=="add" || c.Action=="delete")),"sibling alt child edit recreated containers");
+        Require(siblingPlan.Changes.Any(c=>c.Kind=="ref" && c.Action=="move") && siblingPlan.Changes.Any(c=>c.Kind=="message" && c.Action=="update"),"container matching hid real child edits");
+        Require(Plan(siblingOld,Doc(siblingBlocks)).IsEmpty,"sibling alt no-op changed");
         Console.WriteLine("PASS: all-kind semantic plans, mixed changes, ID retention, block edits, ambiguity, moves, source trivia and idempotence");
     }
 }
