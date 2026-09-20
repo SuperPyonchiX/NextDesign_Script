@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.35";
+    public const string Title = "シーケンス生成実験 / 0.8.36";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -986,7 +986,7 @@ public static class SequenceStructureTrial
     }
     public static string Run(IApplication app,IProject project,ISequenceDiagram diagram,SequenceStructurePreparation prepared,SyncPlan plan,string exported,string directory,StringBuilder log,bool retain=false,bool reconnectCommit=false)
     {
-        int reconnectCount=SequenceJson.Parse(prepared.ReconnectJson)["Relations"].Items.Count;
+        int reconnectCount=prepared.ReconnectCount;
         if(reconnectCommit && !retain)throw new InvalidOperationException("S231: 確定モードが不正です。");
         if(retain && (prepared.DeleteIds.Length==0 || (reconnectCommit?reconnectCount==0:reconnectCount!=0)
             || plan.Changes.Any(c=>!(c.Action=="delete" && c.Kind=="execution") && !(reconnectCommit && c.Action=="update" && c.Kind=="message"))))
@@ -1021,9 +1021,13 @@ public static class SequenceStructureTrial
         if(transaction==null)throw new InvalidOperationException("S230: トランザクションを開始できません。");
         Action apply=delegate {
             stage=prepared.AddedExecutions.Length>0?"実行区間の追加と受信接続の変更":"受信接続の変更";
+            foreach(var entry in prepared.AddedExecutions)
+                log.AppendLine("add execution payload: model="+entry.ModelId+" shape="+entry.ShapeId
+                    +" geometry(X,Y,Length)="+entry.Geometry+" relation order="+PumlBuild.Json(entry.RelationSources));
             Import(project,prepared.ReconnectJson,log);
             Verify(expectedReconnect,Read((IInteraction)project.GetModelById(rootId),fresh()),"接続変更後",log);
-            log.AppendLine("receiver reconnection count: "+SequenceJson.Parse(prepared.ReconnectJson)["Relations"].Items.Count+"; SDK state verified");
+            log.AppendLine("receiver reconnection count: "+prepared.ReconnectCount
+                +"; added executions: "+prepared.AddedExecutions.Length+"; SDK state verified");
             stage="不要実行区間の削除";
             using(project.SuspendModelVerification())foreach(string id in prepared.DeleteIds)project.GetModelById(id).Delete();
             stage="削除後のエディタ反映";Import(project,prepared.EditorAfterDeleteJson,log);
@@ -3081,6 +3085,7 @@ public sealed class SequenceAddedExecution
 public sealed class SequenceStructurePreparation
 {
     public string ReconnectJson, EditorAfterDeleteJson;
+    public int ReconnectCount;
     public string[] DeleteIds;
     public string[] ReceiveRelationIds=new string[0];
     public SequenceAddedExecution[] AddedExecutions=new SequenceAddedExecution[0];
@@ -3174,7 +3179,9 @@ public sealed class SequenceStructurePreparation
             entity.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(id));
             newEntities.Add(entity);
             var relationIds=new List<string>();var relationSources=new List<string>();var templateIds=new List<string>();
-            foreach(var origin in new[]{ownerLink,owned[0]})
+            // The lifeline has to be in place first: adding the bar to the interaction makes
+            // the product build its shape, and that lookup needs the owning lifeline.
+            foreach(var origin in new[]{owned[0],ownerLink})
             {
                 var copy=SequenceJson.Parse(origin.ToJsonString());
                 string relationId=Guid.NewGuid().ToString();
@@ -3216,7 +3223,7 @@ public sealed class SequenceStructurePreparation
             Require(bars!=null && bars.Items!=null,"エディタに実行区間の図形配列がありません。");
             bars.Items.AddRange(newShapes);
         }
-        return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),
+        return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),ReconnectCount=changed.Count,
             EditorAfterDeleteJson=Deleted(editor,newShapes,gate.DeleteExecutions),DeleteIds=gate.DeleteExecutions.ToArray(),
             AddedExecutions=additions.ToArray(),
             ReceiveRelationIds=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage").Select(r=>V(r,"Id")).ToArray()};

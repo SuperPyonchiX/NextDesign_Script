@@ -703,6 +703,7 @@ public sealed class SequenceAddedExecution
 public sealed class SequenceStructurePreparation
 {
     public string ReconnectJson, EditorAfterDeleteJson;
+    public int ReconnectCount;
     public string[] DeleteIds;
     public string[] ReceiveRelationIds=new string[0];
     public SequenceAddedExecution[] AddedExecutions=new SequenceAddedExecution[0];
@@ -796,7 +797,9 @@ public sealed class SequenceStructurePreparation
             entity.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(id));
             newEntities.Add(entity);
             var relationIds=new List<string>();var relationSources=new List<string>();var templateIds=new List<string>();
-            foreach(var origin in new[]{ownerLink,owned[0]})
+            // The lifeline has to be in place first: adding the bar to the interaction makes
+            // the product build its shape, and that lookup needs the owning lifeline.
+            foreach(var origin in new[]{owned[0],ownerLink})
             {
                 var copy=SequenceJson.Parse(origin.ToJsonString());
                 string relationId=Guid.NewGuid().ToString();
@@ -838,7 +841,7 @@ public sealed class SequenceStructurePreparation
             Require(bars!=null && bars.Items!=null,"エディタに実行区間の図形配列がありません。");
             bars.Items.AddRange(newShapes);
         }
-        return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),
+        return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),ReconnectCount=changed.Count,
             EditorAfterDeleteJson=Deleted(editor,newShapes,gate.DeleteExecutions),DeleteIds=gate.DeleteExecutions.ToArray(),
             AddedExecutions=additions.ToArray(),
             ReceiveRelationIds=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage").Select(r=>V(r,"Id")).ToArray()};

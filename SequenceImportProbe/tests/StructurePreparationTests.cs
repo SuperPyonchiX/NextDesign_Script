@@ -200,8 +200,9 @@ public static class StructurePreparationTests
         string before=state.Signature();
         var expected=state.Expected(package,plan,false);
         Require(expected.Models.ContainsKey(bar) && expected.Models[bar]==PumlBuild.Json(new[]{"execB","",ids[0],"False"}),"new model not in the expected state");
-        Require(expected.Relations[add.RelationIds[0]].SequenceEqual(new[]{ids[0],bar,"2","0"}),"interaction owning order not appended");
-        Require(expected.Relations[add.RelationIds[1]].SequenceEqual(new[]{ids[3],bar,"1","0"}),"participant owning order not appended");
+        Require(expected.Relations[add.RelationIds[0]].SequenceEqual(new[]{ids[3],bar,"1","0"}),"participant owning order not appended");
+        Require(expected.Relations[add.RelationIds[1]].SequenceEqual(new[]{ids[0],bar,"2","0"}),"interaction owning order not appended");
+        Require(add.RelationSources[0]==ids[3],"the lifeline link is not sent first");
         Require(expected.Shapes[add.ShapeId]==PumlBuild.Json(new[]{"278","80","16","80","80"}),"new bar shape not predicted");
         Require(expected.ShapeModels[add.ShapeId]==bar,"new shape owner missing");
         Require(expected.Ports[ids[6]][1]==bar,"receive port not moved onto the new bar");
