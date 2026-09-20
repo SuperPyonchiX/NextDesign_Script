@@ -6,6 +6,18 @@ public static class MappingTests
     { bool rejected=false;try{action();}catch(InvalidOperationException){rejected=true;}Require(rejected,text); }
     public static void Run(string directory)
     {
+        var repeatedShapes=new[]{
+            new{Id="c",Model="third",Y=20.0,X=10.0},
+            new{Id="b",Model="second",Y=10.0,X=20.0},
+            new{Id="a",Model="first",Y=10.0,X=20.0},
+            new{Id="z",Model="earliest",Y=10.0,X=5.0}};
+        var bound=new List<string>();
+        for(int occurrence=0;occurrence<repeatedShapes.Length;occurrence++)
+        {
+            var selected=SequenceExportMatch.Order(repeatedShapes.Where(s=>!bound.Contains(s.Model)),s=>s.Y,s=>s.X,s=>s.Id).First();
+            bound.Add(selected.Model);
+        }
+        Require(bound.SequenceEqual(new[]{"earliest","first","second","third"}),"duplicate occurrences must bind once each in export order");
         // Export emits shape.Text, which may contain a signature absent from model.Name.
         Require(SequenceExportMatch.Message("async","start(void) : int","a","b","async","start(void) : int","a","b"),"exported signature cannot bind");
         Require(!SequenceExportMatch.Message("async","start","a","b","async","start(void) : int","a","b"),"raw model name accepted instead of exported label");

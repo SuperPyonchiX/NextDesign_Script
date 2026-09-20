@@ -21,7 +21,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.6.4";
+    public const string Title = "シーケンス生成実験 / 0.6.5";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -615,6 +615,13 @@ public static class SequenceMappedUpdate
             shape.Sender==null?null:shape.Sender.Model.Id,shape.Receiver==null?null:shape.Receiver.Model.Id,
             node.Kind,node.Text,node.Left=="["?null:lines[node.Left],node.Right=="]"?null:lines[node.Right]);
     }
+    static double MessageX(IMessageShape message)
+    {
+        var send=message.SendPort as ISequenceNodeShape;
+        if(send!=null)return send.LocationX;
+        var receive=message.ReceivePort as ISequenceNodeShape;
+        return receive==null?0:receive.LocationX;
+    }
     static SequenceMapFile Bind(IApplication app,IProject project,IInteraction root,ISequenceDiagram diagram,string source,string before,StringBuilder detail)
     {
         var plan=PumlPlan.Parse(source); var nodes=SequenceNameDiff.Messages(plan);
@@ -653,7 +660,7 @@ public static class SequenceMappedUpdate
         var ids=new List<string>();
         foreach(var node in nodes)
         {
-            var candidates=diagram.Messages.Where(m=>!ids.Contains(m.Model.Id) && Matches(m,node,lines)).OrderBy(m=>m.SourceY).ToArray();
+            var candidates=SequenceExportMatch.Order(diagram.Messages.Where(m=>!ids.Contains(m.Model.Id) && Matches(m,node,lines)),m=>m.SourceY,m=>MessageX(m),m=>m.Id).ToArray();
             if(candidates.Length==0)
             {
                 detail.AppendLine("Unmatched message line="+node.Line+", kind="+node.Kind+", left="+node.Left+", right="+node.Right+", text="+PumlBuild.Json(node.Text));
@@ -664,19 +671,10 @@ public static class SequenceMappedUpdate
                 }
                 throw new InvalidOperationException("E163: 基準PlantUMLの"+node.Line+"行目に対応するメッセージがありません: "+node.Text);
             }
-            string id=null;
-            if(candidates.Length==1)id=candidates[0].Model.Id;
-            else
-            {
-                foreach(var candidate in candidates)
-                {
-                    var surrounding=diagram.Messages.OrderBy(m=>m.SourceY).ToArray();
-                    int at=Array.FindIndex(surrounding,m=>m.Id==candidate.Id);
-                    string context="\n図で直前: "+(at>0?surrounding[at-1].Text:"（先頭）")+"\n図で直後: "+(at+1<surrounding.Length?surrounding[at+1].Text:"（末尾）");
-                    if(app.Window.UI.ShowConfirmDialog("基準PlantUML "+node.Line+"行目: "+node.Left+" → "+node.Right+" : "+node.Text+"\n候補の図内Y位置: "+Number(candidate.SourceY)+context+"\nこの候補に対応付けますか？「いいえ」で次の候補。全候補を断ると中止します。",SequenceExperiment.Title)){id=candidate.Model.Id;break;}
-                }
-                if(id==null)throw new OperationCanceledException();
-            }
+            // The user requested automatic confirmation of the first matching occurrence.
+            // Use exactly the export message order, including deterministic equal-Y ties.
+            string id=candidates[0].Model.Id;
+            detail.AppendLine("Message auto-bound line="+node.Line+", candidates="+candidates.Length+", model="+id+", shape="+candidates[0].Id+", y="+Number(candidates[0].SourceY));
             ids.Add(id);
         }
         return new SequenceMapFile{Project=project.Id,Root=root.Id,Editor=diagram.Id,Source=source,Fingerprint=before,MessageIds=ids.ToArray()};
@@ -1294,6 +1292,8 @@ public class SequenceNameEdit
 }
 public static class SequenceExportMatch
 {
+    public static IEnumerable<T> Order<T>(IEnumerable<T> messages,Func<T,double> y,Func<T,double> x,Func<T,string> id)
+    { return messages.OrderBy(y).ThenBy(x).ThenBy(id,StringComparer.Ordinal); }
     // Same whitespace policy as PlantUmlTool.PlantUmlText.Normalize.
     public static string Text(string value)
     { return Regex.Replace(value??"",@"\s+"," ").Trim(); }
