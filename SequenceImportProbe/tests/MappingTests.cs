@@ -6,6 +6,15 @@ public static class MappingTests
     { bool rejected=false;try{action();}catch(InvalidOperationException){rejected=true;}Require(rejected,text); }
     public static void Run(string directory)
     {
+        // Export emits shape.Text, which may contain a signature absent from model.Name.
+        Require(SequenceExportMatch.Message("async","start(void) : int","a","b","async","start(void) : int","a","b"),"exported signature cannot bind");
+        Require(!SequenceExportMatch.Message("async","start","a","b","async","start(void) : int","a","b"),"raw model name accepted instead of exported label");
+        Require(SequenceExportMatch.Message("reply","  result\r\n value ","a","b","reply","result value","a","b"),"export whitespace mismatch");
+        Require(SequenceExportMatch.Message("create","new()","a","b","sync","new()","a","b"),"export create arrow projection mismatch");
+        Require(SequenceExportMatch.Message("async","signal",null,"b","async","signal",null,"b"),"export incoming endpoint mismatch");
+        Require(!SequenceExportMatch.Message("sync","call","a","b","async","call","a","b"),"kind mismatch ignored");
+        Require(!SequenceExportMatch.Message("sync","call","a","b","sync","call","b","a"),"direction mismatch ignored");
+        Require(SequenceNameMerge.Resolve(new[]{new SequenceNameEdit{Index=0,Before="start(void) : int",After="start(void) : int"}},new Dictionary<int,string>{{0,"start(void) : int"}}).Writes.Count==0,"exported signature causes unnecessary Name write");
         Require(SequenceParticipantMatch.Equivalent("Service:: Worker","Service::\nWorker"),"linebreak label mismatch");
         Require(SequenceParticipantMatch.Equivalent("Service : Worker","Service:Worker"),"colon spacing mismatch");
         Require(SequenceParticipantMatch.Equivalent(" Service::\\nWorker ","Service:: Worker"),"escaped linebreak mismatch");

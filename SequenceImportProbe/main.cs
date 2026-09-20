@@ -21,7 +21,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.6.3";
+    public const string Title = "シーケンス生成実験 / 0.6.4";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -608,11 +608,12 @@ public static class SequenceMappedUpdate
         if(new FileInfo(path).Length>300000)throw new InvalidOperationException("E160: PlantUMLは300KB以下にしてください。");
         return path;
     }
-    static bool Matches(IMessage m,PumlNode node,Dictionary<string,string> lines)
+    static bool Matches(IMessageShape shape,PumlNode node,Dictionary<string,string> lines)
     {
-        return m!=null && m.Kind==node.Kind && m.Name==node.Text
-            && (node.Left=="["?m.Sender==null && m.SendPortType=="MessageEnd":m.Sender!=null && m.Sender.Id==lines[node.Left])
-            && (node.Right=="]"?m.Receiver==null && m.IsLost:m.Receiver!=null && m.Receiver.Id==lines[node.Right]);
+        var model=shape.Model as IMessage;
+        return SequenceExportMatch.Message(model==null?null:model.Kind,shape.Text,
+            shape.Sender==null?null:shape.Sender.Model.Id,shape.Receiver==null?null:shape.Receiver.Model.Id,
+            node.Kind,node.Text,node.Left=="["?null:lines[node.Left],node.Right=="]"?null:lines[node.Right]);
     }
     static SequenceMapFile Bind(IApplication app,IProject project,IInteraction root,ISequenceDiagram diagram,string source,string before,StringBuilder detail)
     {
@@ -652,8 +653,17 @@ public static class SequenceMappedUpdate
         var ids=new List<string>();
         foreach(var node in nodes)
         {
-            var candidates=diagram.Messages.Where(m=>!ids.Contains(m.Model.Id) && Matches(m.Model as IMessage,node,lines)).OrderBy(m=>m.SourceY).ToArray();
-            if(candidates.Length==0)throw new InvalidOperationException("E163: 基準PlantUMLの"+node.Line+"行目に対応するメッセージがありません: "+node.Text);
+            var candidates=diagram.Messages.Where(m=>!ids.Contains(m.Model.Id) && Matches(m,node,lines)).OrderBy(m=>m.SourceY).ToArray();
+            if(candidates.Length==0)
+            {
+                detail.AppendLine("Unmatched message line="+node.Line+", kind="+node.Kind+", left="+node.Left+", right="+node.Right+", text="+PumlBuild.Json(node.Text));
+                foreach(var shape in diagram.Messages.OrderBy(m=>m.SourceY))
+                {
+                    var model=shape.Model as IMessage;
+                    detail.AppendLine("Message id="+shape.Model.Id+", used="+ids.Contains(shape.Model.Id)+", kind="+(model==null?null:model.Kind)+", name="+PumlBuild.Json(shape.Model.Name)+", text="+PumlBuild.Json(shape.Text)+", sender="+(shape.Sender==null?"[":shape.Sender.Model.Id)+", receiver="+(shape.Receiver==null?"]":shape.Receiver.Model.Id));
+                }
+                throw new InvalidOperationException("E163: 基準PlantUMLの"+node.Line+"行目に対応するメッセージがありません: "+node.Text);
+            }
             string id=null;
             if(candidates.Length==1)id=candidates[0].Model.Id;
             else
@@ -662,7 +672,7 @@ public static class SequenceMappedUpdate
                 {
                     var surrounding=diagram.Messages.OrderBy(m=>m.SourceY).ToArray();
                     int at=Array.FindIndex(surrounding,m=>m.Id==candidate.Id);
-                    string context="\n図で直前: "+(at>0?surrounding[at-1].Model.Name:"（先頭）")+"\n図で直後: "+(at+1<surrounding.Length?surrounding[at+1].Model.Name:"（末尾）");
+                    string context="\n図で直前: "+(at>0?surrounding[at-1].Text:"（先頭）")+"\n図で直後: "+(at+1<surrounding.Length?surrounding[at+1].Text:"（末尾）");
                     if(app.Window.UI.ShowConfirmDialog("基準PlantUML "+node.Line+"行目: "+node.Left+" → "+node.Right+" : "+node.Text+"\n候補の図内Y位置: "+Number(candidate.SourceY)+context+"\nこの候補に対応付けますか？「いいえ」で次の候補。全候補を断ると中止します。",SequenceExperiment.Title)){id=candidate.Model.Id;break;}
                 }
                 if(id==null)throw new OperationCanceledException();
@@ -718,7 +728,10 @@ public static class SequenceMappedUpdate
                     var m=project.GetModelById(map.MessageIds[edit.Index]) as IMessage;
                     if(m==null || m.IsDeleted || m.Interaction==null || m.Interaction.Id!=root.Id)
                         throw new InvalidOperationException("E168: "+edit.Line+"行目の更新対象は図側で削除または移動されています。この版の本文更新では再作成できません。");
-                    currentNames.Add(edit.Index,m.Name);
+                    var shapes=diagram.Messages.Where(s=>s.Model.Id==m.Id).ToArray();
+                    if(shapes.Length!=1)throw new InvalidOperationException("E168: 更新対象のメッセージ図形を一意に取得できません。");
+                    // Match the export-visible label, not the underlying Name field.
+                    currentNames.Add(edit.Index,SequenceExportMatch.Text(shapes[0].Text));
                 }
                 var merge=SequenceNameMerge.Resolve(requested,currentNames);
                 var edits=merge.Writes;
@@ -756,6 +769,12 @@ public static class SequenceMappedUpdate
                     var fresh=root.GetEditors().OfType<ISequenceDiagram>().Single(d=>d.Id==diagram.Id);
                     if(Signature(root,fresh)!=expected)throw new InvalidOperationException("E170: 本文更新後のID・関連・配置・内容が一致しません。");
                     foreach(var edit in edits)if(project.GetModelById(map.MessageIds[edit.Index]).Name!=edit.After)throw new InvalidOperationException("E170: 本文の読戻しが一致しません。");
+                    foreach(var target in requested)
+                    {
+                        var shape=fresh.Messages.Single(s=>s.Model.Id==map.MessageIds[target.Index]);
+                        if(SequenceExportMatch.Text(shape.Text)!=SequenceExportMatch.Text(target.After))
+                            throw new InvalidOperationException("E170: 表示本文がPlantUMLに一致しません。Name以外から合成される表示には、この版の本文更新を適用できません。");
+                    }
                     if(SequenceMapFile.Read(path).Serialize()!=map.Serialize())throw new InvalidOperationException("E175: 更新中に対応表が変更されました。");
                     if(transaction!=null)completion.Commit(delegate{transaction.Commit();});committed=true;
                     File.Replace(pending,path,path+".bak");pending=null;
@@ -1273,6 +1292,19 @@ public class SequenceNameEdit
     public int Index,Line;
     public string Before,After;
 }
+public static class SequenceExportMatch
+{
+    // Same whitespace policy as PlantUmlTool.PlantUmlText.Normalize.
+    public static string Text(string value)
+    { return Regex.Replace(value??"",@"\s+"," ").Trim(); }
+    public static string Kind(string value)
+    {
+        value=(value??"").ToLowerInvariant();
+        return value=="async"?"async":value=="reply"?"reply":"sync";
+    }
+    public static bool Message(string kind,string label,string sender,string receiver,string desiredKind,string desiredLabel,string desiredSender,string desiredReceiver)
+    { return Kind(kind)==desiredKind && Text(label)==Text(desiredLabel) && sender==desiredSender && receiver==desiredReceiver; }
+}
 public static class SequenceParticipantMatch
 {
     public static string Normalize(string value)
@@ -1298,7 +1330,7 @@ public class SequenceNameMerge
         {
             string value;
             if(!current.TryGetValue(edit.Index,out value))throw new InvalidOperationException("E168: 更新対象の現在値がありません。");
-            if(value==edit.After){result.AlreadyMatched++;continue;}
+            if(SequenceExportMatch.Text(value)==SequenceExportMatch.Text(edit.After)){result.AlreadyMatched++;continue;}
             if(value!=edit.Before)result.Conflicts++;
             result.Writes.Add(new SequenceNameEdit{Index=edit.Index,Line=edit.Line,Before=value,After=edit.After});
         }
