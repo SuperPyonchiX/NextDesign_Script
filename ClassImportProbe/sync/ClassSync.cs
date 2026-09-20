@@ -291,9 +291,13 @@ public sealed class ClassSyncOptions
         { "Aggregation", "o--" }, { "集約", "o--" },
         { "Composition", "*--" }, { "合成", "*--" }, { "コンポジション", "*--" },
         { "Association", "-->" }, { "関連", "-->" },
-        // DeSIDE fields (SuperClasses/SubClasses/Whole/Parts/Related/RelateFrom/Children) are
-        // deliberately absent: PlantUmlTool has no entry for them either, so its export draws
-        // them with DefaultLink and this table must produce the same text. Arrows are not compared.
+        // DeSIDE fields as the deployed PlantUmlTool draws them (observed in a real export on
+        // 2026-09-21). Arrows are never compared; this table only keeps the written-back
+        // PlantUML in the same shape as the export so the two files can be diffed.
+        { "SuperClasses", "--|>" }, { "SubClasses", "<|--" },
+        { "Whole", "--*" }, { "Parts", "*--" },
+        { "Related", "-->" }, { "RelateFrom", "<--" },
+        { "Children", "o--" },
     };
     public Dictionary<string,string> VisibilityMap = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase)
     {
@@ -728,9 +732,11 @@ public sealed class ClassSyncPlan
             {
                 if(map.ContainsKey(a.Id))continue;
                 string key=LinkKey(a,map);
-                Func<ClassElement,bool> same=b=>b.Kind=="link" && !used.Contains(b.Id) && LinkKey(b,null)==key && (!exact || (b.Attr("arrow")==a.Attr("arrow") && b.Text==a.Text));
+                // The label is the field name, which is the identity in Next Design. The arrow is
+                // presentation and must not keep two same-direction lines apart.
+                Func<ClassElement,bool> same=b=>b.Kind=="link" && !used.Contains(b.Id) && LinkKey(b,null)==key && (!exact || b.Text==a.Text);
                 var candidates=current.Elements.Where(same).OrderBy(b=>b.Order).ToArray();
-                var inputs=desired.Elements.Where(b=>b.Kind=="link" && !map.ContainsKey(b.Id) && resolvable(b) && LinkKey(b,map)==key && (!exact || (b.Attr("arrow")==a.Attr("arrow") && b.Text==a.Text))).OrderBy(b=>b.Order).ToArray();
+                var inputs=desired.Elements.Where(b=>b.Kind=="link" && !map.ContainsKey(b.Id) && resolvable(b) && LinkKey(b,map)==key && (!exact || b.Text==a.Text)).OrderBy(b=>b.Order).ToArray();
                 if(candidates.Length==0)continue;
                 int pairs=Math.Min(candidates.Length,inputs.Length);
                 if(exact || (candidates.Length==1 && inputs.Length==1))for(int i=0;i<pairs;i++)bind(inputs[i],candidates[i]);

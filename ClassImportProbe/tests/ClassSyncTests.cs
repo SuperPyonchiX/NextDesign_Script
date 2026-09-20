@@ -66,6 +66,12 @@ public static class ClassSyncTests
         var once = Plan(ClassDocument.Parse(twice), ClassDocument.Parse(twice.Replace("A --> B\nA --> B", "A --> B")));
         Check(once.Changes.Count == 1 && once.Changes[0].Action == "delete" && once.Changes[0].Kind == "link", "surplus anonymous line: " + Describe(once));
 
+        // Two same-direction lines with different arrows pair by label even when the other
+        // side drew both with the default arrow (real-machine case: Children and SubClasses).
+        var drawn = ClassDocument.Parse("@startuml\nclass \"A\" as A\nclass \"B\" as B\n\nA o-- \"0..*\" B : Children\nA <|-- \"0..*\" B : SubClasses\n\n@enduml\n");
+        var plain = ClassDocument.Parse("@startuml\nclass \"A\" as A\nclass \"B\" as B\n\nA --> \"0..*\" B : Children\nA --> \"0..*\" B : SubClasses\n\n@enduml\n");
+        Check(Plan(plain, drawn).Changes.Count == 0 && Plan(drawn, plain).Changes.Count == 0, "arrow-only difference on paired lines: " + Describe(Plan(plain, drawn)));
+
         // Summary and reasons are counts and line numbers only.
         string summary = ClassAudit.Summary(added, 2);
         Check(summary.Contains("差分候補 3件") && summary.Contains("class") && !summary.Contains("Logger"), "summary text: " + summary);
