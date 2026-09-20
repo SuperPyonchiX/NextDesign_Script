@@ -23,7 +23,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.17";
+    public const string Title = "シーケンス生成実験 / 0.8.18";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -312,11 +312,11 @@ public static class SequenceStructureProbe
         var message=(IMessage)project.GetModelById(seed.Ids[6]);
         var receiver=project.GetModelById(seed.Ids[5]);
         var link=message.GetRelationsWhere((r,f)=>r.Source.Id==receiver.Id && r.Target.Id==message.Id).Single();
-        string linkId=link.Id; int sourceIndex=link.SourceIndex,targetIndex=link.TargetIndex;
+        string linkId=link.Id;
         if(message.ReceivePort==null || ((IModel)message.ReceivePort).Id!=receiver.Id || message.SendPort==null || ((IModel)message.SendPort).Id!=seed.Ids[4])
             throw new InvalidOperationException("E160: 検証開始時のポートが一致しません。");
         stage("受信先をライフラインへ変更");
-        link.Relate(project.GetModelById(seed.Ids[3]),message,sourceIndex,targetIndex);
+        Import(project,SequenceStructureInput.ReconnectReceiver(seed,linkId),directory,"structure-reconnect.json",log,report);
         CheckPorts(project,seed,seed.Ids[3]);
         log.AppendLine("receiver reconnected to lifeline: verified");
         stage("受信実行区間を削除");
@@ -1751,6 +1751,19 @@ public class SequenceIdentity
 
 public static class SequenceStructureInput
 {
+    public static string ReconnectReceiver(SequencePayload seed,string relationId)
+    {
+        var document=SequenceJson.Parse(seed.Json);
+        var link=document["Relations"].Items.Single(r=>r["Id"].StringValue()==relationId
+            && r["MetamodelId"].StringValue()==SequencePayload.Prefix+"ReceiveMessage"
+            && r["SourceId"].StringValue()==seed.Ids[5] && r["TargetId"].StringValue()==seed.Ids[6]);
+        link.Properties["SourceId"]=SequenceJson.Parse(SequencePayload.Q(seed.Ids[3]));
+        document["Entities"].Items.Clear();
+        document["Relations"].Items.Clear();
+        document["Relations"].Items.Add(link);
+        return document.ToJsonString();
+    }
+
     // Only for the generated two-execution probe; not a general diagram writer.
     public static string WithoutReceiver(SequencePayload seed,string schema)
     {

@@ -51,6 +51,11 @@ public static class PayloadTest {
    File.WriteAllText(Path.Combine(args[0], "delta.json"),SequenceDeltaInput.Build(deltaSeed,"messageType","11.1").Json);
    File.WriteAllText(Path.Combine(args[0], "delta-delete.json"),SequenceDeltaInput.RestoreEditor(deltaSeed,"11.1"));
    File.WriteAllText(Path.Combine(args[0], "structure-delete.json"),SequenceStructureInput.WithoutReceiver(deltaSeed,"11.1"));
+   var receiveRelation=SequenceJson.Parse(deltaSeed.Json)["Relations"].Items.Single(r=>r["MetamodelId"].StringValue()==SequencePayload.Prefix+"ReceiveMessage");
+   File.WriteAllText(Path.Combine(args[0], "structure-reconnect.json"),SequenceStructureInput.ReconnectReceiver(deltaSeed,receiveRelation["Id"].StringValue()));
+   bool badLinkRejected=false;
+   try { SequenceStructureInput.ReconnectReceiver(deltaSeed,"unknown"); } catch(InvalidOperationException){badLinkRejected=true;}
+   if(!badLinkRejected)throw new Exception("unknown receiver relation accepted");
    int rejected=0;
    try { SequencePayload.Build(null, "fake", "13.0"); } catch(ArgumentException) { rejected++; }
    try { SequencePayload.Build(types, "", "13.0"); } catch(ArgumentException) { rejected++; }
@@ -80,6 +85,12 @@ public static class PayloadTest {
     assert structure['Editors']==[expected_editor]
     assert structure['TopElementId']==seed_ids[0]
     assert structure['SchemaVersion']=='11.1'
+    reconnect=json.loads((work/'structure-reconnect.json').read_text(encoding='utf-8-sig'))
+    expected_link=next(r.copy() for r in seed['Relations'] if r['MetamodelId'].endswith('.ReceiveMessage'))
+    expected_link['SourceId']=seed_ids[3]
+    assert reconnect['Entities']==[] and reconnect['Relations']==[expected_link]
+    assert reconnect['Editors']==seed['Editors']
+    assert reconnect['SchemaVersion']==seed['SchemaVersion'] and reconnect['TopElementId']==seed['TopElementId']
     added, = delta['Entities']
     assert added['Name']=='deltaProbe()' and added['Fields']['MessageSort']=='Sync'
     assert added['Id'] not in seed_ids
