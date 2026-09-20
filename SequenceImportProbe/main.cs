@@ -9,6 +9,7 @@ using System.Text.RegularExpressions;
 using NextDesign.Core;
 using NextDesign.Desktop;
 
+public void CommitUnusedExecutions(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App,true,true,true); }
 public void TrialSequenceStructure(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App,true,true); }
 public void PrepareSequenceStructure(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App,true); }
 public void PreviewSequenceSync(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App); }
@@ -25,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.22";
+    public const string Title = "シーケンス生成実験 / 0.8.23";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -828,10 +829,10 @@ public static class SequenceSyncRuntime
         while(model!=null) {if(!visited.Add(model.Id))throw new InvalidOperationException("S210: モデルの所有関係が循環しています。");parts.Add(model.Name);model=model.Owner;}
         parts.Reverse();return string.Join("::",parts);
     }
-    public static void Preview(IApplication app,bool prepare=false,bool trial=false)
+    public static void Preview(IApplication app,bool prepare=false,bool trial=false,bool retain=false)
     {
         var log=new StringBuilder();string report=null;string screenshot=null;
-        prepare=prepare||trial;
+        trial=trial||retain;prepare=prepare||trial;
         try
         {
             var diagram=app.Workspace.CurrentEditor as ISequenceDiagram;
@@ -853,6 +854,8 @@ public static class SequenceSyncRuntime
             }
             var plan=SequenceNotePolicy.Build(current.Document,desired,()=>Guid.NewGuid().ToString());
             var preflight=SequenceStructurePreflight.Check(current.Document,plan);
+            if(retain && (!preflight.Candidate || preflight.ReconnectMessages.Count!=0 || preflight.DeleteExecutions.Count==0))
+                throw new InvalidOperationException("S231: 確定できるのは未使用実行区間の削除だけです。差分を検証してください。");
             report="{\"version\":1,\"project\":"+SequencePayload.Q(project.Id)+",\"diagram\":"+SequencePayload.Q(diagram.Id)
                 +",\"current\":"+current.Document.ToJson()+",\"desired\":"+desired.ToJson()+",\"plan\":"+plan.ToJson()
                 +",\"structurePreflight\":"+preflight.ToJson()+",\"expected\":"+plan.Expected.ToJson()+",\"limitations\":"+PumlBuild.Json(current.Limitations.ToArray())
@@ -905,7 +908,7 @@ public static class SequenceSyncRuntime
                         +"\n保存先: "+directory+"\n準備ファイルの手動インポートはしないでください。保存ファイルから適用する機能はありません。";
                     if(trial)
                     {
-                        SequenceExperiment.Summary=SequenceStructureTrial.Run(app,project,diagram,preparation,plan,exported,directory,log);
+                        SequenceExperiment.Summary=SequenceStructureTrial.Run(app,project,diagram,preparation,plan,exported,directory,log,retain);
                         screenshot=SequenceExperiment.Summary+"\f会社PC内の試行診断\n"+log.ToString();
                     }
                 }
@@ -974,8 +977,10 @@ public static class SequenceStructureTrial
         foreach(var e in result.Errors)log.AppendLine(e.Kind+": "+e.Message);
         if(result.State!="success" || result.Errors.Any(e=>e.Kind!=UnitImportErrorKind.Info))throw new InvalidOperationException("S230: インポートが失敗または警告を返しました。");
     }
-    public static string Run(IApplication app,IProject project,ISequenceDiagram diagram,SequenceStructurePreparation prepared,SyncPlan plan,string exported,string directory,StringBuilder log)
+    public static string Run(IApplication app,IProject project,ISequenceDiagram diagram,SequenceStructurePreparation prepared,SyncPlan plan,string exported,string directory,StringBuilder log,bool retain=false)
     {
+        if(retain && (prepared.DeleteIds.Length==0 || plan.Changes.Any(c=>c.Action!="delete" || c.Kind!="execution") || SequenceJson.Parse(prepared.ReconnectJson)["Relations"].Items.Count!=0))
+            throw new InvalidOperationException("S231: 削除以外の差分は確定対象外です。");
         var root=diagram.Model as IInteraction;
         var before=Read(root,diagram);string original=before.Signature();
         var expectedReconnect=before.Expected(prepared,plan,false);
@@ -986,8 +991,11 @@ public static class SequenceStructureTrial
             if(model==null)throw new InvalidOperationException("S230: 対象の図を取得できません。");
             return model.GetEditors().OfType<ISequenceDiagram>().Single(d=>d.Id==editorId);
         };
-        if(!app.Window.UI.ShowConfirmDialog("コピーのプロジェクトで実行してください。\n現在の図に受信接続変更と実行区間削除を一時適用し、照合後に必ず取り消します。\n受信接続変更: "+SequenceJson.Parse(prepared.ReconnectJson)["Relations"].Items.Count+" / 実行区間削除: "+prepared.DeleteIds.Length+"\n自動保存・変更の確定は行いません。試行しますか？",SequenceExperiment.Title))
-            return "UPDATE005: キャンセル / 図への変更なし";
+        string confirmation=retain
+            ? "コピーのプロジェクトで実行してください。\n未使用実行区間を"+prepared.DeleteIds.Length+"件削除し、照合成功時に変更を確定します。\n自動保存はしません。確定後はUndo/Redoと保存再読込を確認してください。実行しますか？"
+            : "コピーのプロジェクトで実行してください。\n受信接続変更と実行区間削除を一時適用し、照合後に必ず取り消します。\n自動保存・変更の確定は行いません。試行しますか？";
+        if(!app.Window.UI.ShowConfirmDialog(confirmation,SequenceExperiment.Title))
+            return (retain?"UPDATE006":"UPDATE005")+": キャンセル / 図への変更なし";
         if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=editorId
             || Read(root,fresh()).Signature()!=original)
             throw new InvalidOperationException("S230: 確認中に対象の図が変化しました。");
@@ -999,26 +1007,40 @@ public static class SequenceStructureTrial
         string stage="トランザクション開始";
         var transaction=project.BeginUndoTransaction(false);
         if(transaction==null)throw new InvalidOperationException("S230: トランザクションを開始できません。");
-        var trial=new SequenceRollbackTrial();
-        trial.Run(delegate {
+        Action apply=delegate {
             stage="受信接続の変更";Import(project,prepared.ReconnectJson,log);
             Verify(expectedReconnect,Read((IInteraction)project.GetModelById(rootId),fresh()),"接続変更後",log);
-            log.AppendLine("trial receiver reconnection: verified");
+            log.AppendLine("receiver reconnection count: "+SequenceJson.Parse(prepared.ReconnectJson)["Relations"].Items.Count+"; SDK state verified");
             stage="不要実行区間の削除";
             using(project.SuspendModelVerification())foreach(string id in prepared.DeleteIds)project.GetModelById(id).Delete();
             stage="削除後のエディタ反映";Import(project,prepared.EditorAfterDeleteJson,log);
             foreach(string id in prepared.DeleteIds){var m=project.GetModelById(id);if(m!=null && !m.IsDeleted)throw new InvalidOperationException("S230: 削除対象が残っています。");}
             Verify(expectedFinal,Read((IInteraction)project.GetModelById(rootId),fresh()),"削除後",log);
             log.AppendLine("trial execution deletion and SDK state: verified");
-        },delegate {transaction.Rollback();},delegate {
-            Verify(before,Read((IInteraction)project.GetModelById(rootId),fresh()),"取消後",log);
-        });
-        // Explicit rollback only; Dispose may trigger a second rollback with autoCommit=false.
-        foreach(var error in new[]{trial.ApplyError,trial.RollbackError,trial.VerifyError})if(error!=null)log.AppendLine(error.ToString());
-        string summary="ケース: UPDATE005 / "+(trial.Applied?"一時適用・SDK読戻し照合: 一致":"停止段階: "+stage)
-            +"\n取消API: "+(trial.RollbackReturned?"正常終了":"失敗・未確認")+" / 復元照合: "+(trial.Restored?"一致":"未確認・不一致")
-            +"\n変更の確定・プロジェクト保存: していません\nスタイルの適用後読戻し・保存再読込: 未検証"
-            +(trial.Restored?"":"\n保存せずコピーを開き直してください。")+"\nこの結果と診断表示を撮影してください。";
+        };
+        Action rollback=delegate {transaction.Rollback();};
+        Action verifyRestored=delegate {Verify(before,Read((IInteraction)project.GetModelById(rootId),fresh()),"取消後",log);};
+        // Explicit completion only; Dispose may attempt a second rollback.
+        string summary;
+        if(retain)
+        {
+            var completion=new SequenceCommitTrial();
+            completion.Run(apply,delegate {stage="変更の確定";transaction.Commit();},rollback,verifyRestored);
+            foreach(var error in new[]{completion.ApplyError,completion.CommitError,completion.RollbackError,completion.VerifyError})if(error!=null)log.AppendLine(error.ToString());
+            summary="ケース: UPDATE006 / "+(completion.Committed?"削除・SDK照合・変更確定: 成功":"停止段階: "+stage)
+                +(completion.Committed?"\nUndo/Redoと保存再読込を確認してください。":"\n取消API: "+(completion.RollbackReturned?"正常終了":"失敗・未確認")+" / 復元照合: "+(completion.Restored?"一致":"未確認・不一致"))
+                +(!completion.Committed && !completion.Restored?"\n保存せずコピーを開き直してください。":"")
+                +"\nプロジェクトの自動保存: していません\nUndo/Redo・スタイル読戻し・保存再読込: 未検証\nこの結果と診断表示を撮影してください。";
+        }
+        else
+        {
+            var trial=new SequenceRollbackTrial();trial.Run(apply,rollback,verifyRestored);
+            foreach(var error in new[]{trial.ApplyError,trial.RollbackError,trial.VerifyError})if(error!=null)log.AppendLine(error.ToString());
+            summary="ケース: UPDATE005 / "+(trial.Applied?"一時適用・SDK読戻し照合: 一致":"停止段階: "+stage)
+                +"\n取消API: "+(trial.RollbackReturned?"正常終了":"失敗・未確認")+" / 復元照合: "+(trial.Restored?"一致":"未確認・不一致")
+                +"\n変更の確定・プロジェクト保存: していません\nスタイルの適用後読戻し・保存再読込: 未検証"
+                +(trial.Restored?"":"\n保存せずコピーを開き直してください。")+"\nこの結果と診断表示を撮影してください。";
+        }
         log.AppendLine(summary);
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
         catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}
@@ -3073,6 +3095,21 @@ public sealed class SequenceRollbackTrial
                 catch(Exception ex){VerifyError=ex;}
             }
         }
+    }
+}
+
+// Commit only after verified application; failures get one rollback attempt.
+public sealed class SequenceCommitTrial
+{
+    public bool Applied, Committed, RollbackReturned, Restored;
+    public Exception ApplyError, CommitError, RollbackError, VerifyError;
+    public void Run(Action apply,Action commit,Action rollback,Action verifyRestored)
+    {
+        try {apply();Applied=true;} catch(Exception ex){ApplyError=ex;}
+        if(Applied) {try {commit();Committed=true;} catch(Exception ex){CommitError=ex;}}
+        if(Committed)return;
+        try {rollback();RollbackReturned=true;} catch(Exception ex){RollbackError=ex;}
+        if(RollbackReturned) {try {verifyRestored();Restored=true;} catch(Exception ex){VerifyError=ex;}}
     }
 }
 

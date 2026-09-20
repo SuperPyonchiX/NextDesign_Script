@@ -26,6 +26,21 @@ public static class StructurePreparationTests
     public static void Run()
     {
         RollbackTrials();
+        for(int failure=0;failure<4;failure++)
+        {
+            int commits=0,rollbacks=0,verifications=0;var result=new SequenceCommitTrial();
+            result.Run(()=>{if(failure==1)throw new Exception("apply");},
+                ()=>{commits++;if(failure>=2)throw new Exception("commit");},
+                ()=>{rollbacks++;if(failure==3)throw new Exception("rollback");},()=>{verifications++;});
+            Require(result.Committed==(failure==0),"commit status incorrect");
+            Require(commits==(failure==1?0:1),"commit before successful apply");
+            Require(rollbacks==(failure==0?0:1),"rollback retried or committed change rolled back");
+            Require(verifications==(failure==1 || failure==2?1:0),"restore verified after failed rollback");
+            Require(result.Restored==(failure==1 || failure==2),"restore status incorrect");
+        }
+        var mismatch=new SequenceCommitTrial();
+        mismatch.Run(()=>{throw new Exception("readback mismatch");},()=>{throw new Exception("must not commit");},()=>{},()=>{throw new Exception("restore mismatch");});
+        Require(mismatch.ApplyError!=null && mismatch.CommitError==null && mismatch.VerifyError!=null && !mismatch.Restored,"mismatch error lost");
         var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
         var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;string replacement="replacement-execution";
         var extra=Clone(raw["Entities"].Items[5]);Set(extra,"Id",replacement);raw["Entities"].Items.Add(extra);

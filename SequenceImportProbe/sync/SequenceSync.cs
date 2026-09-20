@@ -740,6 +740,21 @@ public sealed class SequenceRollbackTrial
     }
 }
 
+// Commit only after verified application; failures get one rollback attempt.
+public sealed class SequenceCommitTrial
+{
+    public bool Applied, Committed, RollbackReturned, Restored;
+    public Exception ApplyError, CommitError, RollbackError, VerifyError;
+    public void Run(Action apply,Action commit,Action rollback,Action verifyRestored)
+    {
+        try {apply();Applied=true;} catch(Exception ex){ApplyError=ex;}
+        if(Applied) {try {commit();Committed=true;} catch(Exception ex){CommitError=ex;}}
+        if(Committed)return;
+        try {rollback();RollbackReturned=true;} catch(Exception ex){RollbackError=ex;}
+        if(RollbackReturned) {try {verifyRestored();Restored=true;} catch(Exception ex){VerifyError=ex;}}
+    }
+}
+
 public sealed class SequenceTrialState
 {
     public Dictionary<string,string> Models=new Dictionary<string,string>(), Shapes=new Dictionary<string,string>(), ShapeModels=new Dictionary<string,string>();
