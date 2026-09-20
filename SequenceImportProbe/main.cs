@@ -21,7 +21,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.7.0";
+    public const string Title = "シーケンス生成実験 / 0.7.1";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -582,9 +582,8 @@ public static class SequenceMappedUpdate
         foreach(var shape in diagram.Shapes.Where(s=>!removed.Contains(s.ModelId)).OrderBy(s=>s.Id))
         {
             rows.Add("shape:"+shape.Id+":"+shape.ModelId);
-            var visual=shape as IShape;
-            if(visual!=null && visual.Style!=null)
-                rows.Add(PumlBuild.Json(PumlBuild.Obj("styleOf",shape.Id,"back",visual.Style.BackColor,"fore",visual.Style.ForeColor,"border",visual.Style.BorderColor,"quick",visual.Style.QuickStyle,"thickness",visual.Style.BorderThickness,"line",visual.Style.BorderStyle)));
+            // Sequence shape style getters are not reliable on the target SDK runtime.
+            // Deletion preserves and verifies serialized styles through the full editor snapshot.
             var node=shape as ISequenceNodeShape;
             if(node!=null)rows.Add("bounds:"+Number(node.LocationX)+":"+Number(node.LocationY)+":"+Number(node.Width)+":"+Number(node.Height));
         }
