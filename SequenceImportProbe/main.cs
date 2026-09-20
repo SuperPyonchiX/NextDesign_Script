@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.49";
+    public const string Title = "シーケンス生成実験 / 0.8.50";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -549,10 +549,15 @@ public static class PumlRuntime
         if(plan.All().Any(n=>n.Kind=="fragment"))
         {
             var c=Child(p,source[0].Metaclass,"Fragments","CombinedFragments","___Interaction_CombinedFragment");
+            // Without a sample the concrete type falls back to the abstract one, and the
+            // product then creates the models but no frame. ref and Note already say so.
+            if(!diagram.Fragments.Any())throw new InvalidOperationException("E121: 型の見本が必要です。複合フラグメント（alt/opt/loop等）がある既存の図を開いてから取り込んでください。");
             c=Concrete(diagram.Fragments.Select(f=>f.Model),c,"複合フラグメント");
             p.Types["CombinedFragment"]=c.Id; classes.Add(c);
             var operand=Child(p,c,"Operands","Operands","___CombinedFragment_InteractionOperand");
-            operand=Concrete(diagram.Fragments.Where(f=>f.Model.Metaclass.Id==c.Id).SelectMany(f=>f.Operands).Select(o=>o.Model),operand,"分岐");
+            var samples=diagram.Fragments.Where(f=>f.Model.Metaclass.Id==c.Id).SelectMany(f=>f.Operands).Select(o=>o.Model).ToArray();
+            if(samples.Length==0)throw new InvalidOperationException("E121: 型の見本が必要です。分岐（オペランド）を持つ複合フラグメントがある図を開いてください。");
+            operand=Concrete(samples,operand,"分岐");
             p.Types["InteractionOperand"]=operand.Id; classes.Add(operand);
             foreach(var op in plan.All().Where(n=>n.Kind=="fragment").Select(n=>n.Operator).Distinct())p.Operators[op]=Literal(c,"Operator",op);
         }
