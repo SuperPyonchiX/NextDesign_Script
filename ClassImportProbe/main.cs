@@ -16,7 +16,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.1.0";
+    public const string Version = "0.1.1";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -650,7 +650,20 @@ public static class ClassSyncRuntime
             if(new FileInfo(path).Length>300000)throw new InvalidOperationException("C120: 入力は300KB以下にしてください。");
             log.AppendLine("PlantUML file: "+path);
             var parser=new ClassPumlParser();
-            var desired=parser.Parse(File.ReadAllText(path,new UTF8Encoding(false,true)));
+            string pumlText=File.ReadAllText(path,new UTF8Encoding(false,true));
+            ClassDocument desired;
+            try { desired=parser.Parse(pumlText); }
+            catch(InvalidOperationException parseError)
+            {
+                // The offending lines go to the local diagnostic file only.
+                var match=Regex.Match(parseError.Message,@"E120: (\d+)行目:");int row;
+                if(match.Success && int.TryParse(match.Groups[1].Value,out row))
+                {
+                    var inputLines=pumlText.Replace("\r\n","\n").Replace('\r','\n').Split('\n');
+                    for(int i=Math.Max(0,row-3);i<Math.Min(inputLines.Length,row+2);i++)log.AppendLine((i+1)+": "+inputLines[i]);
+                }
+                throw;
+            }
             foreach(var ignored in parser.Ignored)log.AppendLine("表示指定を無視: "+ignored);
             var snapshot=ClassDiagramSnapshot.Read(diagram,new ClassSyncOptions(),log);
             var current=snapshot.Document;
@@ -973,11 +986,9 @@ public sealed class ClassSyncOptions
         { "Aggregation", "o--" }, { "集約", "o--" },
         { "Composition", "*--" }, { "合成", "*--" }, { "コンポジション", "*--" },
         { "Association", "-->" }, { "関連", "-->" },
-        // DeSIDE two-way fields (field-name inference; adjust after the probe).
-        { "SuperClasses", "--|>" }, { "SubClasses", "<|--" },
-        { "Whole", "--*" }, { "Parts", "*--" },
-        { "Related", "-->" }, { "RelateFrom", "<--" },
-        { "Children", "o--" },
+        // DeSIDE fields (SuperClasses/SubClasses/Whole/Parts/Related/RelateFrom/Children) are
+        // deliberately absent: PlantUmlTool has no entry for them either, so its export draws
+        // them with DefaultLink and this table must produce the same text. Arrows are not compared.
     };
     public Dictionary<string,string> VisibilityMap = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase)
     {
@@ -1003,6 +1014,7 @@ public sealed class ClassPumlParser
 {
     static readonly Regex ClassLine=new Regex(@"^(?<kw>abstract\s+class|class|interface|enum|entity|struct|package|component|annotation|abstract)\s+(?:""(?<qname>[^""]*)""|(?<name>[^\s""{<]+))(?:\s+as\s+(?<alias>[^\s{<]+))?(?:\s*<<(?<st>[^>]*)>>)?\s*(?<open>\{)?\s*$");
     static readonly Regex LinkLine=new Regex(@"^(?<from>[A-Za-z0-9_]+)\s+(?:""(?<fm>[^""]*)""\s+)?(?<arrow>(?:<\||<|o|\*)?[-.]+(?:\|>|>|o|\*)?)\s+(?:""(?<tm>[^""]*)""\s+)?(?<to>[A-Za-z0-9_]+)\s*(?::\s*(?<label>.*?))?\s*$");
+    static readonly Regex OperationLine=new Regex(@"^(?<name>[^(:]*[^\s(:])\((?<params>.*)\)(?:\s*:\s*(?<ret>(?!.*(?: \[| = )).*))?$");
     class Frame { public string Kind, Id, Keyword; }
     class Pending { public int Line; public string From, To, Arrow, FromMult, ToMult, Label; }
     ClassDocument doc; int order;
@@ -1094,18 +1106,15 @@ public sealed class ClassPumlParser
             break;
         }
         var element=new ClassElement{Id="m"+doc.Elements.Count,Parent=owner.Id,Order=order++,Line=n};
-        int open=rest.IndexOf('(');
-        if(open>=0)
+        // The exporter writes operations as name(params)[ : ret]. Anything else with
+        // parentheses (a type such as "uint8 (raw)", a name with brackets) is an attribute.
+        var operation=OperationLine.Match(rest);
+        if(operation.Success)
         {
-            int close=rest.LastIndexOf(')');
-            if(close<open)throw Error(n,"操作の括弧が閉じていません。");
             element.Kind="operation";
-            element.Text=rest.Substring(0,open).Trim();
-            element.Attributes["parameters"]=rest.Substring(open+1,close-open-1).Trim();
-            string tail=rest.Substring(close+1).Trim();
-            string returnType="";
-            if(tail.StartsWith(":",StringComparison.Ordinal))returnType=tail.Substring(1).Trim();
-            else if(tail.Length>0)throw Error(n,"操作の戻り値の書式が不正です。");
+            element.Text=operation.Groups["name"].Value.Trim();
+            element.Attributes["parameters"]=operation.Groups["params"].Value.Trim();
+            string returnType=operation.Groups["ret"].Success?operation.Groups["ret"].Value.Trim():"";
             element.Attributes["visibility"]=visibility;element.Attributes["static"]=isStatic?"true":"";
             element.Attributes["abstract"]=isAbstract?"true":"";element.Attributes["returnType"]=returnType;
         }
@@ -1296,7 +1305,7 @@ public sealed class ClassSyncPlan
         return ClassJson.Json(ClassJson.Obj("Changes",Changes.Select(c=>ClassJson.Obj("Action",c.Action,"Kind",c.Kind,"Id",c.Id,"Line",c.Line,"Detail",c.Detail)).ToArray(),
             "Identities",Identities.ToDictionary(p=>p.Key,p=>(object)p.Value),"Expected",Expected==null?null:(object)Expected.ToJson()));
     }
-    static readonly string[] Ignored = { "alias", "field" };
+    static readonly string[] Ignored = { "alias", "field", "arrow" };
     static string Properties(ClassElement e)
     {
         return e.Kind+"|"+e.Text+"|"+string.Join("|",e.Attributes.Where(p=>!Ignored.Contains(p.Key)).OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>p.Key+"="+p.Value));

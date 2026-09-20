@@ -37,9 +37,11 @@ public static class ClassSyncTests
         var moved = Plan(baseline, Load(samples, "move-class.puml"));
         Check(moved.Changes.Count == 1 && moved.Changes[0].Action == "move" && moved.Changes[0].Kind == "class" && moved.Changes[0].Detail == "parent", "move-class: " + Describe(moved));
 
-        // Changing only the arrow or multiplicity of a link is an update, not delete plus add.
+        // The arrow is presentation derived from the field name in Next Design, so it is not a difference.
         var arrow = Plan(baseline, ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("Controller ..> Mode : Uses", "Controller --> Mode : Uses")));
-        Check(arrow.Changes.Count == 1 && arrow.Changes[0].Action == "update" && arrow.Changes[0].Kind == "link" && arrow.Changes[0].Detail == "arrow", "arrow change: " + Describe(arrow));
+        Check(arrow.Changes.Count == 0, "arrow change: " + Describe(arrow));
+        var mult = Plan(baseline, ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("\"0..*\" IDriver", "\"1..*\" IDriver")));
+        Check(mult.Changes.Count == 1 && mult.Changes[0].Action == "update" && mult.Changes[0].Kind == "link" && mult.Changes[0].Detail == "toMultiplicity", "multiplicity change: " + Describe(mult));
 
         // Renaming a class keeps members and links attached to the same identity.
         var classRename = Plan(baseline, ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("\"制御部\"", "\"制御装置\"")));

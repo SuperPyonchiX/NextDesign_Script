@@ -600,7 +600,20 @@ public static class ClassSyncRuntime
             if(new FileInfo(path).Length>300000)throw new InvalidOperationException("C120: 入力は300KB以下にしてください。");
             log.AppendLine("PlantUML file: "+path);
             var parser=new ClassPumlParser();
-            var desired=parser.Parse(File.ReadAllText(path,new UTF8Encoding(false,true)));
+            string pumlText=File.ReadAllText(path,new UTF8Encoding(false,true));
+            ClassDocument desired;
+            try { desired=parser.Parse(pumlText); }
+            catch(InvalidOperationException parseError)
+            {
+                // The offending lines go to the local diagnostic file only.
+                var match=Regex.Match(parseError.Message,@"E120: (\d+)行目:");int row;
+                if(match.Success && int.TryParse(match.Groups[1].Value,out row))
+                {
+                    var inputLines=pumlText.Replace("\r\n","\n").Replace('\r','\n').Split('\n');
+                    for(int i=Math.Max(0,row-3);i<Math.Min(inputLines.Length,row+2);i++)log.AppendLine((i+1)+": "+inputLines[i]);
+                }
+                throw;
+            }
             foreach(var ignored in parser.Ignored)log.AppendLine("表示指定を無視: "+ignored);
             var snapshot=ClassDiagramSnapshot.Read(diagram,new ClassSyncOptions(),log);
             var current=snapshot.Document;

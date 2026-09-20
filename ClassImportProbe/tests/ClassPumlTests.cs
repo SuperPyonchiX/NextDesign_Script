@@ -66,6 +66,16 @@ public static class ClassPumlTests
         Check(loose.Elements.Single(e => e.Kind == "class" && e.Text == "Foo").Attr("alias") == "Foo", "unquoted alias");
         Check(loose.Elements.Single(e => e.Kind == "link").Attr("arrow") == "-->", "single dash normalized");
 
+        // Parentheses inside a type or name do not turn an attribute into an operation.
+        var parens = ClassDocument.Parse("@startuml\nclass \"A\" as A {\n  + raw : uint8 (unsigned)\n  + data(old) : int [0..1] = 3\n  - f(a : int, b : int) : bool\n  + g()\n  Idle (default)\n}\n@enduml\n");
+        var raw = parens.Elements.Single(e => e.Text == "raw");
+        Check(raw.Kind == "attribute" && raw.Attr("type") == "uint8 (unsigned)", "type with parentheses");
+        var data = parens.Elements.Single(e => e.Text == "data(old)");
+        Check(data.Kind == "attribute" && data.Attr("type") == "int" && data.Attr("multiplicity") == "0..1" && data.Attr("default") == "3", "name with parentheses");
+        Check(parens.Elements.Single(e => e.Text == "f").Kind == "operation" && parens.Elements.Single(e => e.Text == "g").Kind == "operation", "operations");
+        Check(parens.Elements.Single(e => e.Text == "Idle (default)").Kind == "attribute", "bare name with parentheses in a class");
+        Check(ClassPumlWriter.Write(parens) == ClassPumlWriter.Write(ClassDocument.Parse(ClassPumlWriter.Write(parens))), "parentheses round trip");
+
         // Unknown lines and undeclared aliases stop with the input line number.
         Expect("@startuml\nclass \"A\" as A\nA --> B\n@enduml\n", "3行目");
         Expect("@startuml\nclass \"A\" as A\nfoo bar\n@enduml\n", "3行目");
