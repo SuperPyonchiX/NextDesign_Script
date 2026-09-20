@@ -214,6 +214,15 @@
         Require(reply.Links["receiveExecution"].SequenceEqual(returnInner.Links["outer"]),"self reply did not return to outer activation");
         var selfNoClose=Doc("activate A\nactivate A\nA --> A : result\nA -> B : later\ndeactivate A\ndeactivate A").Elements.First(e=>e.Kind=="message");
         Require(selfNoClose.Links["sendExecution"].SequenceEqual(selfNoClose.Links["receiveExecution"]),"self reply without immediate close was guessed");
+        var destroyInput=Doc("A -> B : finish-one\ndestroy B\nB -> A : finish-two\ndestroy A");
+        Require(destroyInput.Elements.Count(e=>e.Kind=="message" && e.Attributes["sort"]=="destroy")==2,"destroy message kinds lost");
+        Require(destroyInput.Elements.Count(e=>e.Kind=="destroy")==2,"destroy markers lost");
+        var destroyCurrent=destroyInput.Copy();Ids(destroyCurrent);
+        foreach(var e in destroyCurrent.Elements.Where(e=>e.Kind=="message"))e.Attributes["sort"]="destroy";
+        Require(Plan(destroyCurrent,destroyInput).IsEmpty,"two destruction messages recreated");
+        Require(Doc("A -> B : normal\ndestroy A").Elements.Single(e=>e.Kind=="message").Attributes["sort"]=="sync","unrelated destruction changed message kind");
+        Require(Doc("A -> B : normal\nnote over B : gap\ndestroy B").Elements.Single(e=>e.Kind=="message").Attributes["sort"]=="sync","non-adjacent destruction changed message kind");
+        Require(Doc("A --> B : reply\ndestroy B").Elements.Single(e=>e.Kind=="message").Attributes["sort"]=="reply","reply kind overwritten");
         Console.WriteLine("PASS: all-kind semantic plans, mixed changes, ID retention, block edits, ambiguity, moves, source trivia and idempotence");
     }
 }

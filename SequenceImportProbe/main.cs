@@ -22,7 +22,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.15";
+    public const string Title = "シーケンス生成実験 / 0.8.16";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -2162,6 +2162,11 @@ public sealed class SequenceDocument
                 if(n.Kind=="reply" && n.Left==n.Right && active.ContainsKey(n.Left) && active[n.Left].Count>1
                     && nodeIndex+1<orderedNodes.Length && orderedNodes[nodeIndex+1].Kind=="deactivate" && orderedNodes[nodeIndex+1].Left==n.Left)
                     item.Links["receiveExecution"]=new[]{active[n.Left].Skip(1).First().Id};
+                // The exporter writes a destruction message as -> followed by
+                // destroy of that receiver. Recover its kind, retaining the destroy event.
+                if(item.Kind=="message" && n.Kind=="sync" && nodeIndex+1<orderedNodes.Length
+                    && orderedNodes[nodeIndex+1].Kind=="destroy" && orderedNodes[nodeIndex+1].Left==n.Right)
+                    item.Attributes["sort"]="destroy";
                 if(n.Kind=="fragment") {item.Attributes["operator"]=n.Operator;if(n.Operator!="group")item.Text="";}
                 if(n.Kind=="note" || n.Kind=="ref") { item.Links["targets"]=n.Targets.Select(t=>aliases[t]).ToArray();if(n.Kind=="note")item.Attributes["position"]=n.Operator; }
                 if(n.Kind=="destroy" || n.Kind=="create")item.Links["participant"]=new[]{aliases[n.Left]};
