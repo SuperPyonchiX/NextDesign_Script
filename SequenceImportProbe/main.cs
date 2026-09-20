@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.28";
+    public const string Title = "シーケンス生成実験 / 0.8.29";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -3010,6 +3010,7 @@ public sealed class SequenceStructurePreparation
 {
     public string ReconnectJson, EditorAfterDeleteJson;
     public string[] DeleteIds;
+    public string[] ReceiveRelationIds=new string[0];
     static string V(SequenceJson n,string key) { return SequenceEditorDocument.Value(n,key); }
     static SequenceJson[] Array(SequenceJson n,string key)
     {
@@ -3077,7 +3078,8 @@ public sealed class SequenceStructurePreparation
         var patch=SequenceJson.Parse(editor.ImportJson());
         patch["Relations"].Items.AddRange(changed);
         return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),
-            EditorAfterDeleteJson=editor.Without(gate.DeleteExecutions).ImportJson(),DeleteIds=gate.DeleteExecutions.ToArray()};
+            EditorAfterDeleteJson=editor.Without(gate.DeleteExecutions).ImportJson(),DeleteIds=gate.DeleteExecutions.ToArray(),
+            ReceiveRelationIds=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage").Select(r=>V(r,"Id")).ToArray()};
     }
     static bool Mentions(SequenceJson node,HashSet<string> ids)
     {
@@ -3171,9 +3173,20 @@ public sealed class SequenceTrialState
         {
             string id=r["Id"].StringValue(),source=r["SourceId"].StringValue(),target=r["TargetId"].StringValue();
             if(!result.Relations.ContainsKey(id) || result.Relations[id][1]!=target || !result.Ports.ContainsKey(target))throw new InvalidOperationException("S230: 変更前の受信関連が一致しません。");
-            // The patch changes SourceId only. Export can omit indices; retain live SDK ordering.
+            // SourceIndex belongs to the source endpoint collection, not to the relationship identity.
+            // Omitted indices append on import. An explicit index inserts at that position.
             var previous=result.Relations[id];
-            result.Relations[id]=new[]{source,target,previous[2],previous[3]};
+            if(!prepared.ReceiveRelationIds.Contains(id))throw new InvalidOperationException("S230: 受信関連の種別情報が不足しています。");
+            var oldPeers=prepared.ReceiveRelationIds.Where(k=>result.Relations.ContainsKey(k) && k!=id && result.Relations[k][0]==previous[0]).ToArray();
+            int oldIndex=int.Parse(previous[2],System.Globalization.CultureInfo.InvariantCulture);
+            foreach(string peer in oldPeers)
+            {int index=int.Parse(result.Relations[peer][2],System.Globalization.CultureInfo.InvariantCulture);if(index>oldIndex)result.Relations[peer][2]=(index-1).ToString(System.Globalization.CultureInfo.InvariantCulture);}
+            var newPeers=prepared.ReceiveRelationIds.Where(k=>result.Relations.ContainsKey(k) && k!=id && result.Relations[k][0]==source).ToArray();
+            int insertion=r["SourceIndex"]==null?newPeers.Length:int.Parse(r["SourceIndex"].Raw,System.Globalization.CultureInfo.InvariantCulture);
+            if(insertion<0 || insertion>newPeers.Length)throw new InvalidOperationException("S230: 受信関連の挿入順序が範囲外です。");
+            foreach(string peer in newPeers)
+            {int index=int.Parse(result.Relations[peer][2],System.Globalization.CultureInfo.InvariantCulture);if(index>=insertion)result.Relations[peer][2]=(index+1).ToString(System.Globalization.CultureInfo.InvariantCulture);}
+            result.Relations[id]=new[]{source,target,insertion.ToString(System.Globalization.CultureInfo.InvariantCulture),previous[3]};
             result.Ports[target][1]=source;
             result.Ports[target][3]=plan.Expected.Elements.Single(e=>e.Id==target).Links["receiver"].Single();
         }

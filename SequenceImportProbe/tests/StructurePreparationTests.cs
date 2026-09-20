@@ -62,6 +62,25 @@ public static class StructurePreparationTests
     }
     public static void Run()
     {
+        var ordered=new SequenceTrialState();
+        ordered.Relations["r1"]=new[]{"old1","m1","0","0"};ordered.Relations["r2"]=new[]{"old2","m2","0","0"};
+        ordered.Ports["m1"]=new[]{"send","old1","A","B","sync"};ordered.Ports["m2"]=new[]{"send","old2","A","B","sync"};
+        var orderPlan=new SyncPlan{Expected=new SequenceDocument()};
+        foreach(string id in new[]{"m1","m2"}){var e=new SequenceElement{Id=id};e.Links["receiver"]=new[]{"B"};orderPlan.Expected.Elements.Add(e);}
+        var orderPackage=new SequenceStructurePreparation{DeleteIds=new string[0],ReceiveRelationIds=new[]{"r1","r2"},ReconnectJson=PumlBuild.Json(PumlBuild.Obj("Relations",new object[]{PumlBuild.Obj("Id","r1","SourceId","new","TargetId","m1"),PumlBuild.Obj("Id","r2","SourceId","new","TargetId","m2")}))};
+        var appended=ordered.Expected(orderPackage,orderPlan,false);
+        Require(appended.Relations["r1"][2]=="0" && appended.Relations["r2"][2]=="1","shared receiver append ordering incorrect");
+        Require(ordered.Relations["r2"][2]=="0","original order mutated");
+        var reversed=SequenceJson.Parse(orderPackage.ReconnectJson);reversed["Relations"].Items.Reverse();orderPackage.ReconnectJson=reversed.ToJsonString();
+        var reverseResult=ordered.Expected(orderPackage,orderPlan,false);
+        Require(reverseResult.Relations["r2"][2]=="0" && reverseResult.Relations["r1"][2]=="1","patch order was ignored");
+        ordered.Relations["existing"]=new[]{"new","kept","0","0"};
+        orderPackage.ReceiveRelationIds=new[]{"r1","r2","existing"};
+        var occupied=ordered.Expected(orderPackage,orderPlan,false);
+        Require(occupied.Relations["existing"][2]=="0" && occupied.Relations["r2"][2]=="1" && occupied.Relations["r1"][2]=="2","existing destination order not preserved");
+        var insertion=SequenceJson.Parse(orderPackage.ReconnectJson);insertion["Relations"].Items[0].Properties["SourceIndex"]=SequenceJson.Parse("0");orderPackage.ReconnectJson=insertion.ToJsonString();
+        var inserted=ordered.Expected(orderPackage,orderPlan,false);
+        Require(inserted.Relations["r2"][2]=="0" && inserted.Relations["existing"][2]=="1" && inserted.Relations["r1"][2]=="2","explicit insertion order incorrect");
         var expectedOrder=new SequenceTrialState();var actualOrder=new SequenceTrialState();
         expectedOrder.Relations["r"]=new[]{"source","target","0","0"};actualOrder.Relations["r"]=new[]{"source","target","1","0"};
         Require(expectedOrder.RelationDifferences(actualOrder).Contains("SourceIndex: expected=0 actual=1"),"relation order diagnostic missing");
@@ -120,14 +139,14 @@ public static class StructurePreparationTests
         Require(finalState.Relations.ContainsKey(receiver["Id"].StringValue()) && finalState.Relations[receiver["Id"].StringValue()][0]==replacement,"reconnected relation dropped with old port");
         Require(finalState.Ports[ids[6]][0]==ids[4] && finalState.Ports[ids[6]][3]==ids[3] && state.Signature()==beforeState,"expected SDK state mutated source or unrelated port");
         // Exported relations may omit index properties. The patch changes SourceId only;
-        // expected ordering must come from the live SDK snapshot, never an assumed zero.
+        // source ordering follows the destination collection; target ordering remains unchanged.
         var sparse=Clone(raw);
         var sparseRelation=sparse["Relations"].Items.Single(r=>r["Id"].StringValue()==receiver["Id"].StringValue());
         sparseRelation.Properties.Remove("SourceIndex");sparseRelation.Properties.Remove("TargetIndex");
         var sparsePackage=SequenceStructurePreparation.Build(sparse.ToJsonString(),editorId,current,plan);
         state.Relations[receiver["Id"].StringValue()][2]="7";state.Relations[receiver["Id"].StringValue()][3]="3";
         var sparseExpected=state.Expected(sparsePackage,plan,true);
-        Require(sparseExpected.Relations[receiver["Id"].StringValue()].SequenceEqual(new[]{replacement,ids[6],"7","3"}),"omitted JSON indices lost SDK order");
+        Require(sparseExpected.Relations[receiver["Id"].StringValue()].SequenceEqual(new[]{replacement,ids[6],"0","3"}),"omitted source index did not append; target order lost");
         var sparsePatch=SequenceJson.Parse(sparsePackage.ReconnectJson)["Relations"].Items.Single();
         Require(sparsePatch["SourceIndex"]==null && sparsePatch["TargetIndex"]==null,"omitted indices were synthesized in import JSON");
         Batch(raw,editorId,current,plan,state,ids[5],ids[6]);
