@@ -195,16 +195,17 @@ public static class SequenceSyncRuntime
                 if(matches.Length!=1)current.Limitations.Add("ref参照先 "+e.Line+"行: "+matches.Length+"候補");
             }
             var plan=SequenceNotePolicy.Build(current.Document,desired,()=>Guid.NewGuid().ToString());
+            var preflight=SequenceStructurePreflight.Check(current.Document,plan);
             report="{\"version\":1,\"project\":"+SequencePayload.Q(project.Id)+",\"diagram\":"+SequencePayload.Q(diagram.Id)
                 +",\"current\":"+current.Document.ToJson()+",\"desired\":"+desired.ToJson()+",\"plan\":"+plan.ToJson()
-                +",\"expected\":"+plan.Expected.ToJson()+",\"limitations\":"+PumlBuild.Json(current.Limitations.ToArray())
+                +",\"structurePreflight\":"+preflight.ToJson()+",\"expected\":"+plan.Expected.ToJson()+",\"limitations\":"+PumlBuild.Json(current.Limitations.ToArray())
                 +",\"shapes\":"+PumlBuild.Json(current.ShapeIds.ToDictionary(p=>p.Key,p=>(object)p.Value))
                 +",\"geometry\":"+PumlBuild.Json(current.Geometry)+"}";
             foreach(var c in plan.Changes)log.AppendLine(c.Action+" "+c.Kind+" line="+c.Line+" id="+c.Id);
             foreach(var warning in current.Limitations)log.AppendLine("要照合: "+warning);
-            screenshot=SequenceAudit.Reasons(current.Document,desired,plan);
+            screenshot=SequenceAudit.Reasons(current.Document,desired,plan)+"\f"+preflight.Summary();
             log.AppendLine(screenshot);
-            SequenceExperiment.Summary=SequenceAudit.Summary(plan,current.Limitations.Count);
+            SequenceExperiment.Summary=SequenceAudit.Summary(plan,current.Limitations.Count)+"\n構造更新の停止理由: "+preflight.Reasons.Count+"件（診断表示）";
             log.AppendLine("Scope: "+project.Id+" / "+diagram.ModelId+" / "+diagram.Id);
         }
         catch(Exception ex) {SequenceExperiment.Summary="図全体の読取り検証を完了できませんでした。\n"+ex.Message;log.AppendLine(ex.ToString());}

@@ -23,7 +23,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.19";
+    public const string Title = "シーケンス生成実験 / 0.8.20";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -849,16 +849,17 @@ public static class SequenceSyncRuntime
                 if(matches.Length!=1)current.Limitations.Add("ref参照先 "+e.Line+"行: "+matches.Length+"候補");
             }
             var plan=SequenceNotePolicy.Build(current.Document,desired,()=>Guid.NewGuid().ToString());
+            var preflight=SequenceStructurePreflight.Check(current.Document,plan);
             report="{\"version\":1,\"project\":"+SequencePayload.Q(project.Id)+",\"diagram\":"+SequencePayload.Q(diagram.Id)
                 +",\"current\":"+current.Document.ToJson()+",\"desired\":"+desired.ToJson()+",\"plan\":"+plan.ToJson()
-                +",\"expected\":"+plan.Expected.ToJson()+",\"limitations\":"+PumlBuild.Json(current.Limitations.ToArray())
+                +",\"structurePreflight\":"+preflight.ToJson()+",\"expected\":"+plan.Expected.ToJson()+",\"limitations\":"+PumlBuild.Json(current.Limitations.ToArray())
                 +",\"shapes\":"+PumlBuild.Json(current.ShapeIds.ToDictionary(p=>p.Key,p=>(object)p.Value))
                 +",\"geometry\":"+PumlBuild.Json(current.Geometry)+"}";
             foreach(var c in plan.Changes)log.AppendLine(c.Action+" "+c.Kind+" line="+c.Line+" id="+c.Id);
             foreach(var warning in current.Limitations)log.AppendLine("要照合: "+warning);
-            screenshot=SequenceAudit.Reasons(current.Document,desired,plan);
+            screenshot=SequenceAudit.Reasons(current.Document,desired,plan)+"\f"+preflight.Summary();
             log.AppendLine(screenshot);
-            SequenceExperiment.Summary=SequenceAudit.Summary(plan,current.Limitations.Count);
+            SequenceExperiment.Summary=SequenceAudit.Summary(plan,current.Limitations.Count)+"\n構造更新の停止理由: "+preflight.Reasons.Count+"件（診断表示）";
             log.AppendLine("Scope: "+project.Id+" / "+diagram.ModelId+" / "+diagram.Id);
         }
         catch(Exception ex) {SequenceExperiment.Summary="図全体の読取り検証を完了できませんでした。\n"+ex.Message;log.AppendLine(ex.ToString());}
@@ -2760,5 +2761,64 @@ public static class SequenceNotePolicy
         }
         plan.Expected.Validate();return plan;
     }
+}
+
+// Feasibility only. A candidate is not permission to write the live diagram.
+public sealed class SequenceStructurePreflight
+{
+    public List<string> Reasons=new List<string>();
+    public List<string> ReconnectMessages=new List<string>();
+    public List<string> DeleteExecutions=new List<string>();
+    public bool Candidate { get { return Reasons.Count==0 && (ReconnectMessages.Count+DeleteExecutions.Count)>0; } }
+    static string[] Link(SequenceElement e,string role)
+    { string[] ids;return e.Links.TryGetValue(role,out ids)?ids:new string[0]; }
+    static string Comparable(SequenceElement e)
+    {
+        var copy=e.Copy();copy.Links.Remove("receiveExecution");copy.Line=0;copy.Order=0;
+        return new SequenceDocument{Elements=new List<SequenceElement>{copy}}.ToJson();
+    }
+    public static SequenceStructurePreflight Check(SequenceDocument current,SyncPlan plan)
+    {
+        current.Validate();plan.Expected.Validate();
+        var result=new SequenceStructurePreflight();
+        var before=current.Elements.ToDictionary(e=>e.Id);
+        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        foreach(var change in plan.Changes)
+        {
+            string row="L"+change.Line+" ";
+            SequenceElement old,next;
+            if(change.Action=="delete" && change.Kind=="execution" && before.TryGetValue(change.Id,out old) && !after.ContainsKey(change.Id))
+            {
+                // Links include note anchors, nesting and boundary references, not just ports.
+                if(plan.Expected.Elements.Any(e=>e.Parent==change.Id || e.Links.Values.SelectMany(v=>v).Contains(change.Id)))
+                    result.Reasons.Add(row+"実行区間への参照が残るため削除できません。");
+                else result.DeleteExecutions.Add(change.Id);
+                continue;
+            }
+            if(change.Action!="update" || change.Kind!="message" || !before.TryGetValue(change.Id,out old) || !after.TryGetValue(change.Id,out next))
+            { result.Reasons.Add(row+change.Kind+" "+change.Action+"は今回の構造更新対象外です。");continue; }
+            var oldPorts=Link(old,"receiveExecution");var newPorts=Link(next,"receiveExecution");
+            if(newPorts.Length==0)
+            { result.Reasons.Add(row+"受信実行区間なしの書込み表現が未確定です。ライフライン直結や区間の自動補完は行いません。");continue; }
+            SequenceElement port;
+            if(oldPorts.Length!=1 || newPorts.Length!=1 || !before.ContainsKey(newPorts[0]) || !after.TryGetValue(newPorts[0],out port) || port.Kind!="execution")
+            { result.Reasons.Add(row+"接続先は既存の実行区間1件である必要があります。");continue; }
+            if(!Link(port,"participant").SequenceEqual(Link(next,"receiver")))
+            { result.Reasons.Add(row+"受信参加者と接続先実行区間の所属が一致しません。");continue; }
+            if(oldPorts.SequenceEqual(newPorts) || Comparable(old)!=Comparable(next))
+            { result.Reasons.Add(row+"受信実行区間以外の変更を含むため対象外です。");continue; }
+            result.ReconnectMessages.Add(change.Id);
+        }
+        // Keep candidates for diagnostics, but never permit applying a supported subset.
+        return result;
+    }
+    public string Summary()
+    {
+        return "構造更新の事前判定（図への反映なし）\n受信接続変更候補: "+ReconnectMessages.Count+" / 実行区間削除候補: "+DeleteExecutions.Count
+            +"\n"+(Reasons.Count>0?"全体を停止: "+Reasons.Count+"件の未対応条件":Candidate?"限定範囲の候補あり。既存図での適用・保持検証は未実施です。":"対象の変更なし")
+            +"\n"+string.Join("\n",Reasons.Distinct());
+    }
+    public string ToJson()
+    { return PumlBuild.Json(PumlBuild.Obj("Candidate",Candidate,"ReconnectMessages",ReconnectMessages.ToArray(),"DeleteExecutions",DeleteExecutions.ToArray(),"Reasons",Reasons.ToArray())); }
 }
 // END GENERATED SequenceSync.cs

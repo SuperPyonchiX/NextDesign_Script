@@ -9,8 +9,39 @@
         var ids=d.Elements.ToDictionary(e=>e.Id,e=>"old-"+e.Id);
         foreach(var e in d.Elements) {e.Id=ids[e.Id];e.Parent=e.Parent==null?null:ids[e.Parent];e.Links=e.Links.ToDictionary(p=>p.Key,p=>p.Value.Select(id=>ids[id]).ToArray());}
     }
+    static void StructurePreflight()
+    {
+        var before=Doc("activate A\nA -> B : call\nactivate B\ndeactivate B\ndeactivate A");
+        var message=before.Elements.Single(e=>e.Kind=="message");
+        string original=message.Links["receiveExecution"].Single();
+        var extra=before.Elements.Single(e=>e.Id==original).Copy();extra.Id="second-receiver";extra.Order+=1;before.Elements.Add(extra);
+        var after=before.Copy();after.Elements.Single(e=>e.Id==message.Id).Links["receiveExecution"]=new[]{extra.Id};
+        var plan=new SyncPlan{Expected=after};plan.Changes.Add(new SequenceChange{Action="update",Kind="message",Id=message.Id,Line=3});
+        string unchanged=before.ToJson()+plan.Expected.ToJson()+plan.ToJson();
+        var candidate=SequenceStructurePreflight.Check(before,plan);
+        Require(candidate.Candidate && candidate.ReconnectMessages.SequenceEqual(new[]{message.Id}),"existing receiver candidate missing");
+        Require(unchanged==before.ToJson()+plan.Expected.ToJson()+plan.ToJson(),"preflight changed diff");
+        after.Elements.Single(e=>e.Id==message.Id).Links.Remove("receiveExecution");
+        var missing=SequenceStructurePreflight.Check(before,plan);
+        Require(!missing.Candidate && missing.Reasons.Any(r=>r.Contains("書込み表現が未確定")),"missing receiver was allowed");
+        after.Elements.Single(e=>e.Id==message.Id).Links["receiveExecution"]=new[]{extra.Id};
+        after.Elements.Single(e=>e.Id==message.Id).Text="changed";
+        Require(!SequenceStructurePreflight.Check(before,plan).Candidate,"text change silently accepted");
+        after.Elements.Single(e=>e.Id==message.Id).Text=message.Text;
+        plan.Changes.Add(new SequenceChange{Action="move",Kind="message",Id=message.Id,Line=3});
+        Require(!SequenceStructurePreflight.Check(before,plan).Candidate,"supported subset accepted");
+        plan.Changes.RemoveAt(1);
+        after.Elements.Single(e=>e.Id==extra.Id).Links["participant"]=message.Links["sender"];
+        Require(!SequenceStructurePreflight.Check(before,plan).Candidate,"wrong lifeline accepted");
+        after.Elements.Single(e=>e.Id==extra.Id).Links["participant"]=message.Links["receiver"];
+        after.Elements.RemoveAll(e=>e.Id==original);
+        plan.Changes.Add(new SequenceChange{Action="delete",Kind="execution",Id=original});
+        Require(SequenceStructurePreflight.Check(before,plan).DeleteExecutions.SequenceEqual(new[]{original}),"unreferenced execution deletion missing");
+        Require(!SequenceStructurePreflight.Check(before,new SyncPlan{Expected=before.Copy()}).Candidate,"no-op marked candidate");
+    }
     public static void Run()
     {
+        StructurePreflight();
         string body="activate A\nA -> B : first\nalt ready\nA -> B : work\nnote over B\nline one\nline two\nend note\nelse wait\nB --> A : wait\nref over A,B : Service\nend\ndeactivate A";
         var old=Doc(body);Ids(old);
         Require(Plan(old,Doc(body)).IsEmpty,"all-kind no-op changed semantics");
