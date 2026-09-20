@@ -21,7 +21,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.7.2";
+    public const string Title = "シーケンス生成実験 / 0.7.3";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -583,7 +583,7 @@ public static class SequenceMappedUpdate
         {
             rows.Add("shape:"+shape.Id+":"+shape.ModelId);
             // Sequence shape style getters are not reliable on the target SDK runtime.
-            // Deletion preserves and verifies serialized styles through the full editor snapshot.
+            // Deletion preserves serialized styles in the full editor import payload.
             var node=shape as ISequenceNodeShape;
             if(node!=null)rows.Add("bounds:"+Number(node.LocationX)+":"+Number(node.LocationY)+":"+Number(node.Width)+":"+Number(node.Height));
         }
@@ -690,7 +690,7 @@ public static class SequenceMappedUpdate
     {
         IUndoTransaction transaction=null; var completion=new SequenceCompletion(); bool committed=false,prepared=false,rollbackRestored=false;
         string pending=null,original=null; IInteraction root=null; ISequenceDiagram diagram=null;
-        IProject project=null;SequenceEditorDocument originalEditor=null;
+        IProject project=null;
         var detail=new StringBuilder();
         try
         {
@@ -764,12 +764,12 @@ public static class SequenceMappedUpdate
                     SequenceEditorDocument editorBefore=null,editorAfter=null;
                     if(unmapped.Length>0)
                     {
-                        editorBefore=SequenceEditorCapture.Read(project,root,diagram,detail);originalEditor=editorBefore;
+                        editorBefore=SequenceEditorCapture.Read(project,root,diagram,detail);
                         editorAfter=editorBefore.Without(unmapped);
                     }
                     string preview=string.Join("\n",edits.Take(10).Select(e=>e.Line+"行目: "+e.Before+" → "+e.After));
                     preview+="\n"+string.Join("\n",deletionModels.Take(10).Select(m=>"削除: "+m.Name));
-                    if(!app.Window.UI.ShowConfirmDialog("図「"+root.Name+"」をPlantUMLに合わせます。\n本文更新: "+edits.Count+"件 / メッセージ削除: "+unmapped.Length+"件\n"+preview+"\n削除対象につながる関連も削除します。残す要素のID・配置・表示設定を照合します。プロジェクトは自動保存しません。実行しますか？",SequenceExperiment.Title))throw new OperationCanceledException();
+                    if(!app.Window.UI.ShowConfirmDialog("図「"+root.Name+"」をPlantUMLに合わせます。\n本文更新: "+edits.Count+"件 / メッセージ削除: "+unmapped.Length+"件\n"+preview+"\n削除対象につながる関連も削除します。残す要素のID・配置を照合し、表示設定は元のデータを引き継ぎます。プロジェクトは自動保存しません。実行しますか？",SequenceExperiment.Title))throw new OperationCanceledException();
                     CheckContext(app,project,root,diagram,original);
                     if(SequenceMapFile.Read(path).Serialize()!=map.Serialize())throw new InvalidOperationException("E175: 確認中に対応表が変更されました。");
                     if(editorBefore!=null && SequenceEditorCapture.Read(project,root,diagram,detail).Fingerprint()!=editorBefore.Fingerprint())
@@ -806,8 +806,21 @@ public static class SequenceMappedUpdate
                         if(result.State!="success" || result.Errors.Any(e=>e.Kind!=UnitImportErrorKind.Info))throw new InvalidOperationException("E182: 削除後の図形反映に失敗しました。");
                     }
                     var fresh=root.GetEditors().OfType<ISequenceDiagram>().Single(d=>d.Id==diagram.Id);
-                    if(editorAfter!=null && SequenceEditorCapture.Read(project,root,fresh,detail).Fingerprint()!=editorAfter.Fingerprint())
-                        throw new InvalidOperationException("E183: 削除後の図形・配置・表示設定が期待値と一致しません。");
+                    // ExportModelUnit rejects a project dirtied by this transaction.
+                    // Verify the live SDK state here; never save or re-export to make verification pass.
+                    if(editorAfter!=null)
+                    {
+                        if(!new HashSet<string>(editorAfter.Shapes().Select(n=>SequenceEditorDocument.Value(n,"Id")+":"+SequenceEditorDocument.Value(n,"ModelId")))
+                            .SetEquals(fresh.Shapes.Select(n=>n.Id+":"+n.ModelId)))
+                            throw new InvalidOperationException("E183: 削除後の図形IDが期待値と一致しません。");
+                        foreach(string id in unmapped)
+                        {
+                            var deleted=project.GetModelById(id);
+                            if((deleted!=null && !deleted.IsDeleted) || fresh.Messages.Any(m=>m.ModelId==id))
+                                throw new InvalidOperationException("E183: 削除対象のモデルまたは図形が再出現しました。");
+                        }
+                        detail.AppendLine("Deletion readback: live model/shape removal verified; serialized styles preserved in import payload, runtime style readback unavailable.");
+                    }
                     foreach(var pair in external)
                     {
                         var model=project.GetModelById(pair.Key);
@@ -837,12 +850,12 @@ public static class SequenceMappedUpdate
             {
                 try {
                     completion.Cancel(delegate{transaction.Rollback();});
+                    detail.AppendLine("Rollback API returned normally.");
                     var restored=root.GetEditors().OfType<ISequenceDiagram>().Single(d=>d.Id==diagram.Id);
                     rollbackRestored=Signature(root,restored)==original;
-                    if(originalEditor!=null)rollbackRestored=rollbackRestored && SequenceEditorCapture.Read(project,root,restored,detail).Fingerprint()==originalEditor.Fingerprint();
-                    detail.AppendLine("Rollback returned; snapshot restored="+rollbackRestored);
+                    detail.AppendLine("Rollback live SDK snapshot restored="+rollbackRestored+"; serialized style readback not performed.");
                 }
-                catch(Exception failure){detail.AppendLine("Rollback failure: "+failure);}
+                catch(Exception failure){detail.AppendLine("Rollback or subsequent live readback failure: "+failure);}
             }
             SequenceExperiment.Summary=(committed?"図の更新は確定しましたが、対応表の更新に失敗しました。\n残っている .pending を対応表として選択できます。\n":"差分更新を完了できませんでした。\n")+ex.Message+(transaction!=null && !committed && !rollbackRestored?"\n取消・復元を確認できませんでした。保存せずコピーを開き直してください。":"")+"\n詳細は診断表示で確認してください。";
         }
@@ -897,7 +910,7 @@ public static class SequenceEditorCapture
             }
             // SDK display coordinates and persisted values are separate representations.
             // Never rewrite one using the other. Signature verifies SDK values before/after;
-            // the complete editor fingerprint separately verifies persisted values before/after.
+            // the editor payload retains serialized values; post-update export is unavailable while dirty.
             foreach(var node in diagram.Shapes.OfType<ISequenceNodeShape>())
             {
                 var shape=shapes[node.Id];
@@ -906,7 +919,7 @@ public static class SequenceEditorCapture
                 if(shape["Width"]!=null)Observe(log,node.Id,"Width",node.Width,shape,ref differences);
                 if(shape["Height"]!=null)Observe(log,node.Id,"Height",node.Height,shape,ref differences);
             }
-            log.AppendLine("Editor snapshot: live identities verified, shapes="+shapes.Count+", cross-representation differences="+differences+" (first 20 logged; SDK and JSON preservation checked independently after mutation)");
+            log.AppendLine("Editor snapshot: live identities verified, shapes="+shapes.Count+", cross-representation differences="+differences+" (first 20 logged; SDK preservation checked after mutation; serialized values retained in payload)");
             return snapshot;
         }
         finally
