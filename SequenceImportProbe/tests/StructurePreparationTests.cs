@@ -23,6 +23,43 @@ public static class StructurePreparationTests
         verifyFailure.Run(delegate{},delegate{},delegate{throw new Exception("mismatch");});
         Require(verifyFailure.Applied && verifyFailure.RollbackReturned && !verifyFailure.Restored && verifyFailure.VerifyError!=null,"verification failure ignored");
     }
+    static void Batch(SequenceJson raw,string editorId,SequenceDocument current,SyncPlan plan,SequenceTrialState state,string oldPort,string message)
+    {
+        var data=Clone(raw);var map=new Dictionary<string,string>{{oldPort,"batch-old"},{message,"batch-message"}};
+        foreach(var e in raw["Entities"].Items.Where(e=>map.ContainsKey(e["Id"].StringValue())))
+        {var copy=Clone(e);Set(copy,"Id",map[e["Id"].StringValue()]);data["Entities"].Items.Add(copy);}
+        foreach(var r in raw["Relations"].Items.Where(r=>map.ContainsKey(r["SourceId"].StringValue()) || map.ContainsKey(r["TargetId"].StringValue())))
+        {
+            var copy=Clone(r);Set(copy,"Id",r["Id"].StringValue()+"-batch");
+            foreach(string key in new[]{"SourceId","TargetId"})if(map.ContainsKey(r[key].StringValue()))Set(copy,key,map[r[key].StringValue()]);
+            data["Relations"].Items.Add(copy);
+        }
+        var editor=data["Editors"].Items.Single();
+        foreach(string kind in new[]{"Messages","ExecutionSpecifications"})foreach(var shape in raw["Editors"].Items.Single()[kind].Items.Where(sh=>map.ContainsKey(sh["ModelId"].StringValue())))
+        {var copy=Clone(shape);Set(copy,"Id",shape["Id"].StringValue()+"-batch");Set(copy,"ModelId",map[shape["ModelId"].StringValue()]);editor[kind].Items.Add(copy);}
+        var before=current.Copy();var desired=plan.Expected.Copy();
+        foreach(var e in current.Elements.Where(e=>map.ContainsKey(e.Id)))
+        {var copy=e.Copy();copy.Id=map[e.Id];foreach(var key in copy.Links.Keys.ToArray())copy.Links[key]=copy.Links[key].Select(id=>map.ContainsKey(id)?map[id]:id).ToArray();before.Elements.Add(copy);}
+        var next=plan.Expected.Elements.Single(e=>e.Id==message).Copy();next.Id=map[message];desired.Elements.Add(next);
+        var combined=new SyncPlan{Expected=desired};combined.Changes.AddRange(plan.Changes);
+        combined.Changes.Add(new SequenceChange{Action="update",Kind="message",Id=map[message]});combined.Changes.Add(new SequenceChange{Action="delete",Kind="execution",Id=map[oldPort]});
+        var package=SequenceStructurePreparation.Build(data.ToJsonString(),editorId,before,combined);
+        Require(package.DeleteIds.Length==2 && SequenceJson.Parse(package.ReconnectJson)["Relations"].Items.Count==2,"batch package count");
+        var snapshot=new SequenceTrialState();
+        foreach(var e in data["Entities"].Items)snapshot.Models[e["Id"].StringValue()]=e.ToJsonString();
+        foreach(var r in data["Relations"].Items)snapshot.Relations[r["Id"].StringValue()]=new[]{r["SourceId"].StringValue(),r["TargetId"].StringValue(),"7","3"};
+        foreach(var sh in SequenceEditorDocument.Read(data.ToJsonString(),before.Elements.Single(e=>e.Kind=="interaction").Id,editorId).Shapes())
+        {snapshot.Shapes[sh["Id"].StringValue()]=sh.ToJsonString();snapshot.ShapeModels[sh["Id"].StringValue()]=sh["ModelId"].StringValue();}
+        snapshot.Ports[message]=state.Ports[message].ToArray();snapshot.Ports[map[message]]=state.Ports[message].ToArray();snapshot.Ports[map[message]][1]=map[oldPort];
+        string signature=snapshot.Signature();var connected=snapshot.Expected(package,combined,false);var final=snapshot.Expected(package,combined,true);
+        Require(package.DeleteIds.All(id=>connected.Models.ContainsKey(id) && !final.Models.ContainsKey(id)),"batch deletion not staged");
+        Require(final.Ports[message][1]==final.Ports[map[message]][1] && final.Ports[message][1]!=oldPort,"batch shared destination lost");
+        Require(snapshot.Signature()==signature,"batch snapshot mutated");
+        Require(final.Shapes.Count==snapshot.Shapes.Count-2 && final.Relations.Values.All(r=>!package.DeleteIds.Contains(r[0]) && !package.DeleteIds.Contains(r[1])),"batch dangling relation or extra shape deletion");
+        var live=connected;int commits=0,rollbacks=0;var completion=new SequenceCommitTrial();
+        completion.Run(()=>{live.Models.Remove(package.DeleteIds[0]);throw new Exception("second deletion failed");},()=>{commits++;},()=>{rollbacks++;live=snapshot;},()=>{Require(live.Signature()==signature,"partial batch not restored");});
+        Require(!completion.Committed && completion.Restored && commits==0 && rollbacks==1,"partial batch committed or rollback failed");
+    }
     public static void Run()
     {
         RollbackTrials();
@@ -85,6 +122,7 @@ public static class StructurePreparationTests
         Require(sparseExpected.Relations[receiver["Id"].StringValue()].SequenceEqual(new[]{replacement,ids[6],"7","3"}),"omitted JSON indices lost SDK order");
         var sparsePatch=SequenceJson.Parse(sparsePackage.ReconnectJson)["Relations"].Items.Single();
         Require(sparsePatch["SourceIndex"]==null && sparsePatch["TargetIndex"]==null,"omitted indices were synthesized in import JSON");
+        Batch(raw,editorId,current,plan,state,ids[5],ids[6]);
         var unscheduled=new SequenceTrialState();unscheduled.Ports["kept"]=new[]{ids[5],"","","","sync"};
         var deletionOnly=new SequenceStructurePreparation{DeleteIds=new[]{ids[5]},ReconnectJson="{\"Relations\":[]}"};
         Reject(()=>unscheduled.Expected(deletionOnly,plan,true),"deleting referenced port accepted");

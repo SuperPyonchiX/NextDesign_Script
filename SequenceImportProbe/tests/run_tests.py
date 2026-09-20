@@ -51,6 +51,15 @@ public static class PayloadTest {
    var emptyGate=new SequenceStructurePreflight();
    if(emptyGate.CanCommit(false) || emptyGate.CanCommit(true))throw new Exception("empty commit accepted");
 
+   var batchBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-batch-before.puml")));
+   var batchAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-batch-after.puml")));
+   var batchPlan=SyncPlan.Build(batchBefore,batchAfter,()=>Guid.NewGuid().ToString());
+   var batchGate=SequenceStructurePreflight.Check(batchBefore,batchPlan);
+   if(!batchGate.CanCommit(true) || batchPlan.Changes.Count!=4 || batchGate.ReconnectMessages.Count!=2 || batchGate.DeleteExecutions.Count!=2)
+       throw new Exception("batch sample must contain two reconnects and two deletions: "+batchPlan.ToJson()+batchGate.ToJson());
+   if(SyncPlan.Build(batchPlan.Expected,batchAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
+       throw new Exception("batch semantic plan is not idempotent");
+
    int commits=0, cancels=0;
    var success = new SequenceCompletion();
    success.Commit(delegate { commits++; });
