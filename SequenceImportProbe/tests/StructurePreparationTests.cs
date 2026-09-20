@@ -228,7 +228,7 @@ public static class StructurePreparationTests
 
         var gate=SequenceStructurePreflight.Check(current,plan);
         Require(gate.Candidate && gate.AddParticipants.SequenceEqual(new[]{lane}),"added lane was not a candidate");
-        Require(!gate.CanCommit(true) && !gate.CanCommit(false),"a participant change reached a commit mode");
+        Require(gate.CanCommit(true) && !gate.CanCommit(false),"commit modes accepted the wrong scope for a lane");
 
         var middle=current.Copy();
         middle.Elements.Add(new SequenceElement{Id=lane,Kind="participant",Parent=ids[0],Order=-1,Text="C"});

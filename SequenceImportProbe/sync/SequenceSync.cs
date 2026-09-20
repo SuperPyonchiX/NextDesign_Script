@@ -594,9 +594,11 @@ public sealed class SequenceStructurePreflight
     // covers a receiver change together with deletions, additions, or both.
     public bool CanCommit(bool reconnect)
     {
-        if(!Candidate || AddParticipants.Count+DeleteParticipants.Count>0)return false;
-        if(DeleteExecutions.Count+AddExecutions.Count==0)return false;
-        return reconnect?ReconnectMessages.Count>0:ReconnectMessages.Count==0 && AddExecutions.Count==0;
+        if(!Candidate)return false;
+        // The deletion-only button stays exactly where the product first confirmed it.
+        if(!reconnect)return DeleteExecutions.Count==Targets;
+        // The general button takes everything the deletion-only one cannot.
+        return Targets>DeleteExecutions.Count;
     }
     static bool Referenced(SyncPlan plan,string id)
     {

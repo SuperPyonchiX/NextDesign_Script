@@ -198,7 +198,9 @@ public static class SequenceSyncRuntime
             var plan=SequenceNotePolicy.Build(current.Document,desired,()=>Guid.NewGuid().ToString());
             var preflight=SequenceStructurePreflight.Check(current.Document,plan);
             if(retain && !preflight.CanCommit(reconnectCommit))
-                throw new InvalidOperationException(reconnectCommit?"S231: 既存区間への受信接続変更と区間削除だけの差分が必要です。":"S231: 確定できるのは未使用実行区間の削除だけです。差分を検証してください。");
+                throw new InvalidOperationException(reconnectCommit
+                    ?"S231: 確定できるのは受信接続変更・実行区間の追加削除・参加者の追加削除だけです。他の差分は「差分を検証」で確認してください。"
+                    :"S231: このボタンで確定できるのは未使用実行区間の削除だけです。他を含む場合は「接続変更・削除を確定」を使ってください。");
             report="{\"version\":1,\"project\":"+SequencePayload.Q(project.Id)+",\"diagram\":"+SequencePayload.Q(diagram.Id)
                 +",\"current\":"+current.Document.ToJson()+",\"desired\":"+desired.ToJson()+",\"plan\":"+plan.ToJson()
                 +",\"structurePreflight\":"+preflight.ToJson()+",\"expected\":"+plan.Expected.ToJson()+",\"limitations\":"+PumlBuild.Json(current.Limitations.ToArray())
@@ -346,10 +348,15 @@ public static class SequenceStructureTrial
     {
         int reconnectCount=prepared.ReconnectCount;
         if(reconnectCommit && !retain)throw new InvalidOperationException("S231: 確定モードが不正です。");
-        if(retain && (prepared.DeleteIds.Length+prepared.AddedExecutions.Length==0 || (reconnectCommit?reconnectCount==0:reconnectCount!=0)
-            || plan.Changes.Any(c=>!(c.Action=="delete" && c.Kind=="execution")
-                && !(reconnectCommit && c.Action=="update" && c.Kind=="message")
-                && !(reconnectCommit && c.Action=="add" && c.Kind=="execution"))))
+        int touched=prepared.DeleteIds.Length+prepared.AddedExecutions.Length
+            +prepared.AddedParticipants.Length+prepared.DeleteParticipantIds.Length+reconnectCount;
+        Func<SequenceChange,bool> supported=c=>
+            (c.Action=="delete" && c.Kind=="execution")
+            || (reconnectCommit && c.Action=="update" && c.Kind=="message")
+            || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant"))
+            || (reconnectCommit && c.Action=="delete" && c.Kind=="participant");
+        if(retain && (touched==0 || (!reconnectCommit && touched!=prepared.DeleteIds.Length)
+            || plan.Changes.Any(c=>!supported(c))))
             throw new InvalidOperationException("S231: 確定モードの対象外の差分があります。");
         string caseId=reconnectCommit?"UPDATE007":retain?"UPDATE006":"UPDATE005";
         var root=diagram.Model as IInteraction;

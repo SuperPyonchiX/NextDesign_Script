@@ -105,8 +105,8 @@ public static class PayloadTest {
    var laneGate=SequenceStructurePreflight.Check(batchAfter,lanePlan);
    if(!laneGate.Candidate || lanePlan.Changes.Count!=1 || laneGate.AddParticipants.Count!=1 || laneGate.Targets!=1)
        throw new Exception("participant sample must add exactly one lane: "+lanePlan.ToJson()+laneGate.ToJson());
-   if(laneGate.CanCommit(true) || laneGate.CanCommit(false))
-       throw new Exception("a participant change reached a commit mode before the product confirmed it");
+   if(!laneGate.CanCommit(true) || laneGate.CanCommit(false))
+       throw new Exception("participant sample did not reach exactly the receiver-change commit mode");
    if(SyncPlan.Build(lanePlan.Expected,laneAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("participant semantic plan is not idempotent");
 
@@ -114,6 +114,8 @@ public static class PayloadTest {
    var dropGate=SequenceStructurePreflight.Check(laneAfter,dropPlan);
    if(!dropGate.Candidate || dropPlan.Changes.Count!=1 || dropGate.DeleteParticipants.Count!=1 || dropGate.Targets!=1)
        throw new Exception("participant removal sample must delete exactly one lane: "+dropPlan.ToJson()+dropGate.ToJson());
+   if(!dropGate.CanCommit(true) || dropGate.CanCommit(false))
+       throw new Exception("participant removal did not reach exactly the receiver-change commit mode");
 
    int commits=0, cancels=0;
    var success = new SequenceCompletion();
