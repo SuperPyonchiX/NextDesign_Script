@@ -14,6 +14,11 @@
         var unit=PumlBuild.Obj("Type","Model","SchemaVersion","11.1","Editors",new[]{editor});
         var before=SequenceEditorDocument.Read(PumlBuild.Json(unit),"root","editor");
         string original=before.Editor.ToJsonString();
+        var altered=SequenceEditorDocument.Read(before.ImportJson(),"root","editor");
+        altered.Messages()[0].Properties["SourceY"]=SequenceJson.Parse("0.000001");
+        Require(altered.Fingerprint()!=before.Fingerprint(),"small persisted coordinate change hidden by preservation check");
+        Require(before.Messages()[0]["SourceY"].Raw=="0","geometry check mutates original snapshot");
+
         foreach(int count in new[]{1,5,10,20}) {
             var ids=Enumerable.Range(0,count).Select(i=>"message"+i).ToArray();
             var after=before.Without(ids);

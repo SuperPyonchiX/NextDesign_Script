@@ -21,7 +21,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.7.1";
+    public const string Title = "シーケンス生成実験 / 0.7.2";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -859,10 +859,17 @@ public static class SequenceMappedUpdate
 
 public static class SequenceEditorCapture
 {
-    static double Number(SequenceJson node,string key)
-    { return node[key]==null?0:double.Parse(node[key].Raw,System.Globalization.CultureInfo.InvariantCulture); }
-    static void Equal(double actual,double serialized)
-    { if(Math.Abs(actual-serialized)>0.0000001)throw new InvalidOperationException("E180: 現在の図とエクスポートの配置が一致しません。削除は行いません。"); }
+    static void Observe(StringBuilder log,string id,string property,double actual,SequenceJson shape,ref int differences)
+    {
+        var value=shape[property];
+        string serialized=value==null?"<omitted>":value.Raw;
+        double number;
+        bool equal=value!=null && double.TryParse(serialized,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out number)
+            && !double.IsNaN(actual) && !double.IsInfinity(actual) && Math.Abs(actual-number)<=0.0000001;
+        if(equal)return;
+        differences++;
+        if(differences<=20)log.AppendLine("Geometry representations differ: shape="+id+", property="+property+", SDK="+actual.ToString("R",System.Globalization.CultureInfo.InvariantCulture)+", JSON="+serialized);
+    }
     public static SequenceEditorDocument Read(IProject project,IInteraction root,ISequenceDiagram diagram,StringBuilder log)
     {
         // Never read the previously saved unit: it may omit current unsaved edits.
@@ -880,20 +887,26 @@ public static class SequenceEditorCapture
             var shapes=snapshot.Shapes().ToDictionary(n=>SequenceEditorDocument.Value(n,"Id"));
             if(!new HashSet<string>(diagram.Shapes.Select(n=>n.Id+":"+n.ModelId)).SetEquals(shapes.Values.Select(n=>SequenceEditorDocument.Value(n,"Id")+":"+SequenceEditorDocument.Value(n,"ModelId"))))
                 throw new InvalidOperationException("E180: 現在の図とエクスポートの図形IDが一致しません。");
+            int differences=0;
             foreach(var message in diagram.Messages)
             {
-                var shape=shapes[message.Id];Equal(message.SourceY,Number(shape,"SourceY"));Equal(message.TargetY,Number(shape,"TargetY"));Equal(message.SelfloopBendsX,Number(shape,"SelfloopBendsX"));
+                var shape=shapes[message.Id];
+                Observe(log,message.Id,"SourceY",message.SourceY,shape,ref differences);
+                Observe(log,message.Id,"TargetY",message.TargetY,shape,ref differences);
+                Observe(log,message.Id,"SelfloopBendsX",message.SelfloopBendsX,shape,ref differences);
             }
-            // Compare documented persisted geometry as well as identities before using the snapshot.
+            // SDK display coordinates and persisted values are separate representations.
+            // Never rewrite one using the other. Signature verifies SDK values before/after;
+            // the complete editor fingerprint separately verifies persisted values before/after.
             foreach(var node in diagram.Shapes.OfType<ISequenceNodeShape>())
             {
                 var shape=shapes[node.Id];
-                if(shape["X"]!=null)Equal(node.LocationX,Number(shape,"X"));
-                if(shape["Y"]!=null)Equal(node.LocationY,Number(shape,"Y"));
-                if(shape["Width"]!=null)Equal(node.Width,Number(shape,"Width"));
-                if(shape["Height"]!=null)Equal(node.Height,Number(shape,"Height"));
+                if(shape["X"]!=null)Observe(log,node.Id,"X",node.LocationX,shape,ref differences);
+                if(shape["Y"]!=null)Observe(log,node.Id,"Y",node.LocationY,shape,ref differences);
+                if(shape["Width"]!=null)Observe(log,node.Id,"Width",node.Width,shape,ref differences);
+                if(shape["Height"]!=null)Observe(log,node.Id,"Height",node.Height,shape,ref differences);
             }
-            log.AppendLine("Editor snapshot: live identities and geometry verified, shapes="+shapes.Count);
+            log.AppendLine("Editor snapshot: live identities verified, shapes="+shapes.Count+", cross-representation differences="+differences+" (first 20 logged; SDK and JSON preservation checked independently after mutation)");
             return snapshot;
         }
         finally
