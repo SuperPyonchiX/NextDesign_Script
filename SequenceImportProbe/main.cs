@@ -22,7 +22,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.8";
+    public const string Title = "シーケンス生成実験 / 0.8.9";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -1311,6 +1311,18 @@ public class PumlPlan
                 lists.Pop(); fragments.Peek().Children.Add(operand); lists.Push(operand.Children); continue;
             }
             if (s=="end") { if (fragments.Count==0) throw Error(line,"対応する複合フラグメントがありません。"); fragments.Pop(); lists.Pop(); continue; }
+            m = Regex.Match(s, @"^note\s+across(?:\s*:\s*(.*))?$");
+            if(m.Success)
+            {
+                var n=new PumlNode{Kind="note",Operator="free",Line=line,Text=m.Groups[1].Value};
+                if(!m.Groups[1].Success)
+                {
+                    var body=new List<string>();bool closed=false;
+                    while(++i<lines.Length) {if(lines[i].Trim()=="end note") {closed=true;break;}body.Add(lines[i]);}
+                    if(!closed)throw Error(line,"end noteが不足しています。");n.Text=string.Join("\n",body);
+                }
+                n.Text=n.Text.Replace("\\n","\n");lists.Peek().Add(n);continue;
+            }
             m = Regex.Match(s, @"^(note|ref)\s+(over|left of|right of)\s+([\p{L}\p{N}_]+(?:\s*,\s*[\p{L}\p{N}_]+)*)(?:\s*:\s*(.*))?$");
             if (m.Success)
             {
@@ -1552,7 +1564,7 @@ public class PumlBuild
                 }
                 Shape("Fragments",id,"X",20+16*depth,"Y",top,"Width",x.Values.Max()+210-32*depth,"Height",y-top); y+=16; continue;
             }
-            int left=n.Targets.Select(t=>x[t]).Min(),right=n.Targets.Select(t=>x[t]).Max();
+            int left=n.Targets.Count==0?x.Values.Min():n.Targets.Select(t=>x[t]).Min(),right=n.Targets.Count==0?x.Values.Max():n.Targets.Select(t=>x[t]).Max();
             if(n.Kind=="ref")
             {
                 string id=Entity("InteractionUse",n.Text); Owned("InteractionUses",id);

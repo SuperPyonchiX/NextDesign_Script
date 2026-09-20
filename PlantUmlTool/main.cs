@@ -859,6 +859,14 @@ public class SequencePlantUmlExporter
     {
         if (PlantUmlText.Normalize(n.Text).Length == 0) return;
 
+        if (!n.NoteAnchors.Cast<INoteAnchorShape>().Any())
+        {
+            Line("note across");
+            foreach (var raw in n.Text.Replace("\r\n", "\n").Split('\n'))
+                LineAt(_stack.Count + 1, raw.TrimEnd());
+            Line("end note");
+            return;
+        }
         var target = AnchoredLifelineOf(n);
         var alias = target != null ? AliasOf(target) : NearestAlias(n.LocationX + n.Width / 2.0);
         if (alias == null)

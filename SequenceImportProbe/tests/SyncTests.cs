@@ -154,6 +154,10 @@ public static class SyncTests
         var freeNode=freeNote.Elements.Single(e=>e.Kind=="note");freeNode.Links["targets"]=new string[0];freeNode.Attributes["position"]="free";
         var noteProjection=Plan(freeNote,Doc("opt scope\nnote over A : remark\nend"));
         Require(noteProjection.Changes.Any(c=>c.Kind=="note" && c.Action=="update") && !noteProjection.Changes.Any(c=>c.Kind=="note" && (c.Action=="add" || c.Action=="delete")),"unique note projection replaced identity or hid semantic difference");
+        var across=Doc("opt scope\nnote across\nremark\nend note\nend");
+        Require(across.Elements.Single(e=>e.Kind=="note").Links["targets"].Length==0,"across invented participant anchor");
+        Require(Plan(freeNote,across).IsEmpty,"free note export roundtrip changed connection or position");
+        Require(Doc("note across : remark").Elements.Single(e=>e.Kind=="note").Text=="remark","inline across note parse");
         Console.WriteLine("PASS: all-kind semantic plans, mixed changes, ID retention, block edits, ambiguity, moves, source trivia and idempotence");
     }
 }

@@ -82,3 +82,38 @@ with tempfile.TemporaryDirectory(prefix='sequence-export-') as tmp:
         subprocess.run([str(exe)], check=True)
 assert handlers[0] == handlers[1] == handlers[2], 'Exporter handlers have drifted'
 print('PASS: all three exporters use identical message lifecycle handlers')
+
+# Exercise the production Note handler, including the unattached path.
+NOTE_HARNESS = r'''
+using System;
+using System.Linq;
+using System.Collections.Generic;
+class INoteAnchorShape {}
+class ILifelineShape {}
+class INoteShape { public string Text; public double LocationX=0, Width=100; public List<INoteAnchorShape> NoteAnchors=new List<INoteAnchorShape>(); }
+static class PlantUmlText { public static string Normalize(string s) {return s.Trim();} public static string Inline(string s) {return s;} }
+class Test {
+    List<string> lines=new List<string>();List<int> _stack=new List<int>();
+    void Line(string s) {lines.Add(s);} void LineAt(int depth,string s) {lines.Add(s);}
+    ILifelineShape AnchoredLifelineOf(INoteShape n) {return new ILifelineShape();}
+    string AliasOf(ILifelineShape l) {return "A";}
+    string NearestAlias(double x) {throw new Exception("free Note must not infer an anchor");}
+    // PRODUCTION
+    public static void Main() {
+        var t=new Test();t.OnNote(new INoteShape{Text="line1\r\nline2"});
+        if(!t.lines.SequenceEqual(new[]{"note across","line1","line2","end note"}))throw new Exception("free Note output");
+        t=new Test();var linked=new INoteShape{Text="linked"};linked.NoteAnchors.Add(new INoteAnchorShape());t.OnNote(linked);
+        if(!t.lines.SequenceEqual(new[]{"note over A","linked","end note"}))throw new Exception("linked Note changed");
+        Console.WriteLine("PASS: production free and anchored Note output");
+    }
+}
+'''
+source=(ROOT/'PlantUmlTool/main.cs').read_text(encoding='utf-8-sig')
+start=source.index('    private void OnNote(INoteShape n)')
+end=source.index('    private ILifelineShape AnchoredLifelineOf',start)
+with tempfile.TemporaryDirectory(prefix='sequence-note-') as tmp:
+    program=Path(tmp)/'Note.cs'
+    program.write_text(NOTE_HARNESS.replace('// PRODUCTION',source[start:end]),encoding='utf-8-sig')
+    exe=program.with_suffix('.exe')
+    subprocess.run([str(compiler),'/nologo','/warnaserror+','/out:'+str(exe),str(program)],check=True)
+    subprocess.run([str(exe)],check=True)
