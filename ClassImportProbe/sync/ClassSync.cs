@@ -790,6 +790,82 @@ public sealed class ClassSyncPlan
     }
 }
 
+// One member rename the text-update step may write: the current element, its old and new name.
+public sealed class ClassRename { public string CurrentId, Kind, OldText, NewText; public int Line; }
+
+// Preflight for 0.2.0: accept a plan only when every change is a member rename. Any other
+// change is a stop reason, so nothing is written for a plan the step cannot fully apply.
+public sealed class ClassTextPreflight
+{
+    public List<ClassRename> Renames = new List<ClassRename>();
+    public List<string> Reasons = new List<string>();
+    public bool Candidate { get { return Reasons.Count==0 && Renames.Count>0; } }
+    public static ClassTextPreflight Check(ClassDocument current,ClassDocument desired,ClassSyncPlan plan)
+    {
+        var result=new ClassTextPreflight();
+        var old=current.Elements.ToDictionary(e=>e.Id);
+        var target=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        foreach(var c in plan.Changes)
+        {
+            string where=c.Line>0?" 入力"+c.Line+"行":"";
+            if(c.Action!="update") { result.Reasons.Add(c.Action+" "+c.Kind+where+": 本文更新では扱えません"); continue; }
+            if(!ClassDocument.MemberKinds.Contains(c.Kind)) { result.Reasons.Add("update "+c.Kind+where+": 属性・操作以外の更新は扱えません"); continue; }
+            if(c.Detail!="name") { result.Reasons.Add("update "+c.Kind+where+" ["+c.Detail+"]: 名前以外の変更は扱えません"); continue; }
+            ClassElement before,after;
+            if(!old.TryGetValue(c.Id,out before) || !target.TryGetValue(c.Id,out after)) { result.Reasons.Add("update "+c.Kind+where+": 対応する要素を特定できません"); continue; }
+            if(after.Text.Length==0 || after.Text.Contains("\\n") || before.Text.Contains("\\n")) { result.Reasons.Add("update "+c.Kind+where+": 空または改行を含む名前は扱えません"); continue; }
+            result.Renames.Add(new ClassRename{CurrentId=c.Id,Kind=c.Kind,OldText=before.Text,NewText=after.Text,Line=c.Line});
+        }
+        if(plan.Changes.Count==0)result.Reasons.Add("差分候補がありません");
+        return result;
+    }
+    public string Summary()
+    {
+        var sb=new StringBuilder();
+        sb.Append("本文更新の事前判定: ").Append(Candidate?"候補あり":"停止").Append('\n');
+        sb.Append("改名 ").Append(Renames.Count).Append("件 / 停止理由 ").Append(Reasons.Count).Append("件\n");
+        foreach(var r in Reasons)sb.Append("  ").Append(r).Append('\n');
+        return sb.ToString().TrimEnd();
+    }
+}
+
+// Apply, then always roll back; verify the restored state. One rollback attempt only.
+public sealed class ClassRollbackTrial
+{
+    public bool Applied, RollbackReturned, Restored;
+    public Exception ApplyError, RollbackError, VerifyError;
+    public void Run(Action apply,Action rollback,Action verifyRestored)
+    {
+        try {apply();Applied=true;}
+        catch(Exception ex){ApplyError=ex;}
+        finally
+        {
+            try {rollback();RollbackReturned=true;}
+            catch(Exception ex){RollbackError=ex;}
+            if(RollbackReturned)
+            {
+                try {verifyRestored();Restored=true;}
+                catch(Exception ex){VerifyError=ex;}
+            }
+        }
+    }
+}
+
+// Commit only after verified application; failures get one rollback attempt.
+public sealed class ClassCommitTrial
+{
+    public bool Applied, Committed, RollbackReturned, Restored;
+    public Exception ApplyError, CommitError, RollbackError, VerifyError;
+    public void Run(Action apply,Action commit,Action rollback,Action verifyRestored)
+    {
+        try {apply();Applied=true;} catch(Exception ex){ApplyError=ex;}
+        if(Applied) {try {commit();Committed=true;} catch(Exception ex){CommitError=ex;}}
+        if(Committed)return;
+        try {rollback();RollbackReturned=true;} catch(Exception ex){RollbackError=ex;}
+        if(RollbackReturned) {try {verifyRestored();Restored=true;} catch(Exception ex){VerifyError=ex;}}
+    }
+}
+
 // Screens: counts only. Names, IDs and design text stay in the local report files.
 public static class ClassAudit
 {

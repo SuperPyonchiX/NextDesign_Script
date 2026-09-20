@@ -11,12 +11,14 @@ using NextDesign.Desktop;
 
 public void ProbeClassDiagram(ICommandContext context, ICommandParams parameters) { ClassDiagramProbe.Run(context.App); }
 public void PreviewClassSync(ICommandContext context, ICommandParams parameters) { ClassSyncRuntime.Preview(context.App); }
+public void TrialClassText(ICommandContext context, ICommandParams parameters) { ClassSyncRuntime.Preview(context.App, true); }
+public void CommitClassText(ICommandContext context, ICommandParams parameters) { ClassSyncRuntime.Preview(context.App, true, true); }
 public void ShowClassResult(ICommandContext context, ICommandParams parameters) { ClassExperiment.Show(context.App); }
 public void ShowClassDetails(ICommandContext context, ICommandParams parameters) { foreach(var page in ClassExperiment.Details.Split('\f')) context.App.Window.UI.ShowInformationDialog(page, ClassExperiment.Title); }
 
 public static class ClassExperiment
 {
-    public const string Version = "0.1.4";
+    public const string Version = "0.2.0";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -646,9 +648,109 @@ public static class ClassDiagramProbe
 
 public static class ClassSyncRuntime
 {
-    public static void Preview(IApplication app)
+    static void Refresh(IApplication app,StringBuilder log)
+    {
+        try {app.Window.EditorPage.UpdateEditors();log.AppendLine("editors refreshed");}
+        catch(Exception ex){log.AppendLine("editor refresh failed: "+ex.Message);}
+    }
+    static bool Matches(Action verify,StringBuilder log) { try {verify();return true;} catch(Exception ex){log.AppendLine(ex.ToString());return false;} }
+    // Re-read the diagram through the SDK and compare it with the input. Never re-export.
+    static void VerifyAgainst(IApplication app,string editorId,ClassDocument desired,string stage,StringBuilder log)
+    {
+        var editor=app.Workspace.CurrentEditor;
+        if(editor==null || editor.Id!=editorId)throw new InvalidOperationException("C230: "+stage+": 対象の図が表示されていません。");
+        var after=ClassDiagramSnapshot.Read((IDiagram)editor,new ClassSyncOptions(),log).Document;
+        var residual=ClassSyncPlan.Build(after,desired,()=>Guid.NewGuid().ToString());
+        foreach(var c in residual.Changes)log.AppendLine(stage+" residual: "+c.Action+" "+c.Kind+" line="+c.Line+" detail="+c.Detail);
+        if(residual.Changes.Count>0)throw new InvalidOperationException("C230: "+stage+": 読戻しで残差 "+residual.Changes.Count+"件（診断ファイル参照）");
+        log.AppendLine(stage+": SDK read-back matches the input");
+    }
+    static void VerifyRestored(IApplication app,string editorId,string originalJson,StringBuilder log)
+    {
+        var editor=app.Workspace.CurrentEditor;
+        if(editor==null || editor.Id!=editorId)throw new InvalidOperationException("C230: 取消後: 対象の図が表示されていません。");
+        var after=ClassDiagramSnapshot.Read((IDiagram)editor,new ClassSyncOptions(),log).Document;
+        if(after.ToJson()!=originalJson)throw new InvalidOperationException("C230: 取消後: 図が処理前の状態に戻っていません。");
+        log.AppendLine("restored: SDK read-back equals the pre-trial state");
+    }
+    // 0.2.0 text update: only member renames, one SetField("Name") per rename, verified by
+    // read-back and by re-reading the whole diagram. Trial always rolls back; commit keeps
+    // the change only after the same verification succeeds.
+    static string RunTextUpdate(IApplication app,IProject project,IEditor editor,ClassDiagramSnapshot snapshot,ClassDocument desired,ClassTextPreflight preflight,bool retain,StringBuilder log)
+    {
+        string editorId=editor.Id;string originalJson=snapshot.Document.ToJson();
+        var targets=new List<KeyValuePair<IModel,ClassRename>>();
+        foreach(var rename in preflight.Renames)
+        {
+            string modelId;
+            if(!snapshot.ModelIds.TryGetValue(rename.CurrentId,out modelId))throw new InvalidOperationException("C220: 更新対象のモデルIDを特定できません。");
+            var model=project.GetModelById(modelId);
+            if(model==null || model.IsDeleted || model.IsProxy || !model.IsEditable)throw new InvalidOperationException("C220: 更新対象に編集不可のモデルがあります。");
+            string live=ClassText.Inline(ClassText.Normalize(model.Name));
+            if(live!=rename.OldText)throw new InvalidOperationException("C220: 更新対象の現在の名前が読取りと一致しません。");
+            var nameField=model.Metaclass.GetFields().Cast<IField>().FirstOrDefault(f=>f.Name=="Name");
+            if(nameField==null || nameField.IsReference || nameField.Type!="String")throw new InvalidOperationException("C220: Name が文字列フィールドではありません。");
+            log.AppendLine("rename target: model="+modelId+" class="+model.ClassName+" '"+rename.OldText+"' -> '"+rename.NewText+"'");
+            targets.Add(new KeyValuePair<IModel,ClassRename>(model,rename));
+        }
+        string confirmation=(retain?"コピーのプロジェクトで実行してください。\n属性・操作の名前 "+targets.Count+"件を更新し、読戻しが一致したときだけ確定します。":"コピーのプロジェクトで実行してください。\n属性・操作の名前 "+targets.Count+"件を更新し、読戻しを照合した後に必ず取り消します。")
+            +"\n自動保存はしません。Undo/Redo と保存再読込は手動で確認してください。";
+        if(!app.Window.UI.ShowConfirmDialog(confirmation,ClassExperiment.Title))return "本文更新: 中止（確認で取消）";
+        if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=editorId
+            || ClassDiagramSnapshot.Read((IDiagram)app.Workspace.CurrentEditor,new ClassSyncOptions(),new StringBuilder()).Document.ToJson()!=originalJson)
+            throw new InvalidOperationException("C220: 確認中に対象の図が変化しました。");
+        string stage="開始前";
+        var transaction=project.BeginUndoTransaction(false);
+        Action apply=delegate {
+            stage="名前の更新";
+            foreach(var pair in targets)
+            {
+                pair.Key.SetField("Name",pair.Value.NewText);
+                string readBack=pair.Key.GetFieldString("Name");
+                if(readBack!=pair.Value.NewText)throw new InvalidOperationException("C230: SetField 後の読戻しが一致しません: '"+readBack+"'");
+            }
+            log.AppendLine("SetField(Name) x"+targets.Count+": read-back matched");
+            stage="更新後の照合";
+            VerifyAgainst(app,editorId,desired,"更新後",log);
+        };
+        Action rollback=delegate {stage="取消";transaction.Rollback();};
+        Action verifyRestored=delegate {stage="取消後の照合";VerifyRestored(app,editorId,originalJson,log);};
+        var lines=new List<string>();
+        if(retain)
+        {
+            var completion=new ClassCommitTrial();
+            completion.Run(apply,delegate {stage="確定";transaction.Commit();},rollback,verifyRestored);
+            foreach(var error in new[]{completion.ApplyError,completion.CommitError,completion.RollbackError,completion.VerifyError})if(error!=null)log.AppendLine(error.ToString());
+            Refresh(app,log);
+            lines.Add("適用と照合: "+(completion.Applied?"一致":"失敗 ("+stage+")"));
+            lines.Add("確定: "+(completion.Committed?"成功":completion.Applied?"失敗":"未実施"));
+            if(completion.Committed)
+            {
+                bool still=Matches(delegate {VerifyAgainst(app,editorId,desired,"確定後",log);},log);
+                lines.Add("確定後の再照合: "+(still?"一致":"不一致（診断ファイル参照）"));
+                log.AppendLine("undo availability: project="+project.CanUndo+" workspace="+app.Workspace.CanUndo()+" (nested transaction; see K113)");
+                lines.Add("Undo/Redo・保存再読込: 手動で確認してください");
+            }
+            else
+            {
+                lines.Add("取消API: "+(completion.RollbackReturned?"正常終了":"失敗"));
+                lines.Add("復元照合: "+(completion.Restored?"一致":"未確認または不一致。保存せずにコピーを開き直してください"));
+            }
+            return "本文更新の確定 (UPDATE-C001)\n"+string.Join("\n",lines.ToArray());
+        }
+        var trial=new ClassRollbackTrial();
+        trial.Run(apply,rollback,verifyRestored);
+        foreach(var error in new[]{trial.ApplyError,trial.RollbackError,trial.VerifyError})if(error!=null)log.AppendLine(error.ToString());
+        Refresh(app,log);
+        lines.Add("一時適用と照合: "+(trial.Applied?"一致":"失敗 ("+stage+")"));
+        lines.Add("取消API: "+(trial.RollbackReturned?"正常終了":"失敗"));
+        lines.Add("復元照合: "+(trial.Restored?"一致":"未確認または不一致。保存せずにコピーを開き直してください"));
+        return "本文更新の試行 (UPDATE-C000)\n"+string.Join("\n",lines.ToArray());
+    }
+    public static void Preview(IApplication app,bool trial=false,bool retain=false)
     {
         var log=new StringBuilder();string report=null;string screenshot=null;string currentPuml=null;
+        trial=trial||retain;
         try
         {
             var editor=app.Workspace.CurrentEditor;
@@ -686,14 +788,23 @@ public static class ClassSyncRuntime
                 +",\"geometry\":"+ClassJson.Json(snapshot.Geometry.ToDictionary(p=>p.Key,p=>(object)p.Value))+"}";
             foreach(var c in plan.Changes)log.AppendLine(c.Action+" "+c.Kind+" line="+c.Line+" id="+c.Id+" detail="+c.Detail);
             foreach(var warning in snapshot.Limitations)log.AppendLine("要照合: "+warning);
-            screenshot="現在の図と入力の比較結果（図は変更していません）\n"+ClassAudit.Summary(plan,snapshot.Limitations.Count)
+            var preflight=ClassTextPreflight.Check(current,desired,plan);
+            screenshot=(trial?"適用前の比較結果（更新後の残差ではありません）\n":"現在の図と入力の比較結果（図は変更していません）\n")+ClassAudit.Summary(plan,snapshot.Limitations.Count)
                 +"\f変更候補の内訳（入力行と種類のみ）\n"+ClassAudit.Reasons(plan)
-                +"\f要照合項目 "+snapshot.Limitations.Count+"件\n"+(snapshot.Limitations.Count==0?"なし":string.Join("\n",snapshot.Limitations.ToArray()));
+                +"\f要照合項目 "+snapshot.Limitations.Count+"件\n"+(snapshot.Limitations.Count==0?"なし":string.Join("\n",snapshot.Limitations.ToArray()))
+                +"\f"+preflight.Summary();
             log.AppendLine(screenshot.Replace('\f','\n'));
-            ClassExperiment.Summary=ClassAudit.Summary(plan,snapshot.Limitations.Count)+"\n図への反映は行いません（0.1.0は読取り専用）。";
+            ClassExperiment.Summary=ClassAudit.Summary(plan,snapshot.Limitations.Count)+(trial?"":"\n図への反映は行いません。")+"\n本文更新の停止理由: "+preflight.Reasons.Count+"件（診断表示）";
             log.AppendLine("Scope: "+(project==null?"":project.Id)+" / "+editor.ModelId+" / "+editor.Id);
+            if(trial)
+            {
+                if(!preflight.Candidate)throw new InvalidOperationException("C231: このボタンで反映できるのは属性・操作の改名だけです。\n"+preflight.Summary());
+                if(project==null)throw new InvalidOperationException("C220: プロジェクトを取得できません。");
+                ClassExperiment.Summary=RunTextUpdate(app,project,editor,snapshot,desired,preflight,retain,log);
+                screenshot=ClassExperiment.Summary+"\f会社PC内の試行診断\n"+log.ToString();
+            }
         }
-        catch(Exception ex) { ClassExperiment.Summary="図全体の読取り検証を完了できませんでした。\n"+ex.Message;log.AppendLine(ex.ToString());screenshot=null; }
+        catch(Exception ex) { ClassExperiment.Summary=(trial?"本文更新を完了できませんでした。診断表示を確認してください。":"図全体の読取り検証を完了できませんでした。")+"\n"+ex.Message;log.AppendLine(ex.ToString());screenshot=null; }
         string stem=ClassExperiment.SaveReport("preview",log.ToString(),report,currentPuml);
         if(stem!=null)ClassExperiment.Summary+="\n診断保存先: "+stem+".txt";
         ClassExperiment.Details=screenshot??log.ToString();
@@ -1492,6 +1603,82 @@ public sealed class ClassSyncPlan
         }
         foreach(var e in current.Elements.Where(e=>!map.ContainsValue(e.Id)))plan.Changes.Add(new ClassChange{Action="delete",Id=e.Id,Kind=e.Kind,Detail=Describe(e,current)});
         plan.Expected.Validate();return plan;
+    }
+}
+
+// One member rename the text-update step may write: the current element, its old and new name.
+public sealed class ClassRename { public string CurrentId, Kind, OldText, NewText; public int Line; }
+
+// Preflight for 0.2.0: accept a plan only when every change is a member rename. Any other
+// change is a stop reason, so nothing is written for a plan the step cannot fully apply.
+public sealed class ClassTextPreflight
+{
+    public List<ClassRename> Renames = new List<ClassRename>();
+    public List<string> Reasons = new List<string>();
+    public bool Candidate { get { return Reasons.Count==0 && Renames.Count>0; } }
+    public static ClassTextPreflight Check(ClassDocument current,ClassDocument desired,ClassSyncPlan plan)
+    {
+        var result=new ClassTextPreflight();
+        var old=current.Elements.ToDictionary(e=>e.Id);
+        var target=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        foreach(var c in plan.Changes)
+        {
+            string where=c.Line>0?" 入力"+c.Line+"行":"";
+            if(c.Action!="update") { result.Reasons.Add(c.Action+" "+c.Kind+where+": 本文更新では扱えません"); continue; }
+            if(!ClassDocument.MemberKinds.Contains(c.Kind)) { result.Reasons.Add("update "+c.Kind+where+": 属性・操作以外の更新は扱えません"); continue; }
+            if(c.Detail!="name") { result.Reasons.Add("update "+c.Kind+where+" ["+c.Detail+"]: 名前以外の変更は扱えません"); continue; }
+            ClassElement before,after;
+            if(!old.TryGetValue(c.Id,out before) || !target.TryGetValue(c.Id,out after)) { result.Reasons.Add("update "+c.Kind+where+": 対応する要素を特定できません"); continue; }
+            if(after.Text.Length==0 || after.Text.Contains("\\n") || before.Text.Contains("\\n")) { result.Reasons.Add("update "+c.Kind+where+": 空または改行を含む名前は扱えません"); continue; }
+            result.Renames.Add(new ClassRename{CurrentId=c.Id,Kind=c.Kind,OldText=before.Text,NewText=after.Text,Line=c.Line});
+        }
+        if(plan.Changes.Count==0)result.Reasons.Add("差分候補がありません");
+        return result;
+    }
+    public string Summary()
+    {
+        var sb=new StringBuilder();
+        sb.Append("本文更新の事前判定: ").Append(Candidate?"候補あり":"停止").Append('\n');
+        sb.Append("改名 ").Append(Renames.Count).Append("件 / 停止理由 ").Append(Reasons.Count).Append("件\n");
+        foreach(var r in Reasons)sb.Append("  ").Append(r).Append('\n');
+        return sb.ToString().TrimEnd();
+    }
+}
+
+// Apply, then always roll back; verify the restored state. One rollback attempt only.
+public sealed class ClassRollbackTrial
+{
+    public bool Applied, RollbackReturned, Restored;
+    public Exception ApplyError, RollbackError, VerifyError;
+    public void Run(Action apply,Action rollback,Action verifyRestored)
+    {
+        try {apply();Applied=true;}
+        catch(Exception ex){ApplyError=ex;}
+        finally
+        {
+            try {rollback();RollbackReturned=true;}
+            catch(Exception ex){RollbackError=ex;}
+            if(RollbackReturned)
+            {
+                try {verifyRestored();Restored=true;}
+                catch(Exception ex){VerifyError=ex;}
+            }
+        }
+    }
+}
+
+// Commit only after verified application; failures get one rollback attempt.
+public sealed class ClassCommitTrial
+{
+    public bool Applied, Committed, RollbackReturned, Restored;
+    public Exception ApplyError, CommitError, RollbackError, VerifyError;
+    public void Run(Action apply,Action commit,Action rollback,Action verifyRestored)
+    {
+        try {apply();Applied=true;} catch(Exception ex){ApplyError=ex;}
+        if(Applied) {try {commit();Committed=true;} catch(Exception ex){CommitError=ex;}}
+        if(Committed)return;
+        try {rollback();RollbackReturned=true;} catch(Exception ex){RollbackError=ex;}
+        if(RollbackReturned) {try {verifyRestored();Restored=true;} catch(Exception ex){VerifyError=ex;}}
     }
 }
 

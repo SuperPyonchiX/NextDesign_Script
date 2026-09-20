@@ -72,6 +72,39 @@ public static class ClassSyncTests
         var plain = ClassDocument.Parse("@startuml\nclass \"A\" as A\nclass \"B\" as B\n\nA --> \"0..*\" B : Children\nA --> \"0..*\" B : SubClasses\n\n@enduml\n");
         Check(Plan(plain, drawn).Changes.Count == 0 && Plan(drawn, plain).Changes.Count == 0, "arrow-only difference on paired lines: " + Describe(Plan(plain, drawn)));
 
+        // Text-update preflight: only member renames pass; everything else is a stop reason.
+        var renameGate = ClassTextPreflight.Check(baseline, Load(samples, "rename-attribute.puml"), rename);
+        Check(renameGate.Candidate && renameGate.Renames.Count == 1 && renameGate.Renames[0].OldText == "state" && renameGate.Renames[0].NewText == "status" && renameGate.Renames[0].Line == 7, "rename preflight: " + renameGate.Summary());
+        Check(baseline.Elements.Any(e => e.Id == renameGate.Renames[0].CurrentId && e.Text == "state"), "rename preflight identity");
+        var sameGate = ClassTextPreflight.Check(baseline, baseline, same);
+        Check(!sameGate.Candidate && sameGate.Reasons.Count == 1, "no-change preflight: " + sameGate.Summary());
+        foreach (var name in new[] { "change-type.puml", "add-class.puml", "delete-link.puml", "reorder-member.puml", "move-class.puml" })
+        {
+            var doc = Load(samples, name);
+            var gate = ClassTextPreflight.Check(baseline, doc, Plan(baseline, doc));
+            Check(!gate.Candidate && gate.Reasons.Count > 0 && gate.Renames.Count == 0, "preflight must stop for " + name + ": " + gate.Summary());
+        }
+        var mixed = Load(samples, "rename-attribute.puml");
+        mixed.Elements.Single(e => e.Kind == "link" && e.Text == "Uses").Text = "Depends";
+        var mixedGate = ClassTextPreflight.Check(baseline, mixed, Plan(baseline, mixed));
+        Check(!mixedGate.Candidate && mixedGate.Renames.Count == 1 && mixedGate.Reasons.Count == 1, "mixed plan stops as a whole: " + mixedGate.Summary());
+        var classRenameGate = ClassTextPreflight.Check(baseline, ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("\"制御部\"", "\"制御装置\"")), classRename);
+        Check(!classRenameGate.Candidate && classRenameGate.Reasons.Count == 1, "class rename is out of scope: " + classRenameGate.Summary());
+
+        // Trial state machines: apply failure still rolls back; commit failure rolls back once.
+        var order = new List<string>();
+        var rt = new ClassRollbackTrial();
+        rt.Run(() => { order.Add("apply"); throw new Exception("boom"); }, () => order.Add("rollback"), () => order.Add("verify"));
+        Check(!rt.Applied && rt.RollbackReturned && rt.Restored && string.Join(",", order.ToArray()) == "apply,rollback,verify", "rollback trial order");
+        order.Clear();
+        var ct = new ClassCommitTrial();
+        ct.Run(() => order.Add("apply"), () => { order.Add("commit"); throw new Exception("boom"); }, () => order.Add("rollback"), () => order.Add("verify"));
+        Check(ct.Applied && !ct.Committed && ct.RollbackReturned && ct.Restored && string.Join(",", order.ToArray()) == "apply,commit,rollback,verify", "commit trial order");
+        order.Clear();
+        ct = new ClassCommitTrial();
+        ct.Run(() => order.Add("apply"), () => order.Add("commit"), () => order.Add("rollback"), () => order.Add("verify"));
+        Check(ct.Committed && string.Join(",", order.ToArray()) == "apply,commit", "committed trial does not roll back");
+
         // Summary and reasons are counts and line numbers only.
         string summary = ClassAudit.Summary(added, 2);
         Check(summary.Contains("差分候補 3件") && summary.Contains("class") && !summary.Contains("Logger"), "summary text: " + summary);
