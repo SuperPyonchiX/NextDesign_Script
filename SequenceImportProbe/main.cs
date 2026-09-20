@@ -9,6 +9,7 @@ using System.Text.RegularExpressions;
 using NextDesign.Core;
 using NextDesign.Desktop;
 
+public void PreviewSequenceSync(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App); }
 public void CreateSequenceMap(ICommandContext context, ICommandParams parameters) { SequenceMappedUpdate.Run(context.App, true); }
 public void UpdateMappedSequence(ICommandContext context, ICommandParams parameters) { SequenceMappedUpdate.Run(context.App, false); }
 public void CreateMinimalSequence(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App); }
@@ -21,7 +22,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.7.5";
+    public const string Title = "シーケンス生成実験 / 0.8.0";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -555,11 +556,201 @@ public static class PumlRuntime
     }
 }
 
+// BEGIN GENERATED SequenceSyncRuntime.cs
+// Native reader for the semantic planner. It performs no project mutations.
+public sealed class DiagramSnapshot
+{
+    public SequenceDocument Document=new SequenceDocument{HasTitle=true};
+    public Dictionary<string,double> Y=new Dictionary<string,double>();
+    public Dictionary<string,string> ShapeIds=new Dictionary<string,string>();
+    public Dictionary<string,object> Geometry=new Dictionary<string,object>();
+    public List<string> Limitations=new List<string>();
+    public static DiagramSnapshot Read(ISequenceDiagram diagram)
+    {
+        var root=diagram.Model as IInteraction;
+        if(root==null)throw new InvalidOperationException("S210: シーケンス図を開いてください。");
+        var snapshot=new DiagramSnapshot();var doc=snapshot.Document;
+        doc.Elements.Add(new SequenceElement{Id=root.Id,Kind="interaction",Text=root.Name});
+        Action<ISequenceShape,string,string,double> add=(shape,kind,text,y)=>{
+            if(shape.Model==null || shape.Model.IsDeleted)throw new InvalidOperationException("S210: モデルのない図形があります。");
+            if(snapshot.ShapeIds.ContainsKey(shape.ModelId))throw new InvalidOperationException("S210: 同じモデルの図形が複数あります。");
+            doc.Elements.Add(new SequenceElement{Id=shape.ModelId,Kind=kind,Text=text??"",Parent=root.Id});
+            snapshot.ShapeIds.Add(shape.ModelId,shape.Id);snapshot.Y.Add(shape.ModelId,y);
+            var node=shape as ISequenceNodeShape;
+            if(node!=null)snapshot.Geometry[shape.ModelId]=PumlBuild.Obj("X",node.LocationX,"Y",node.LocationY,"Width",node.Width,"Height",node.Height);
+            var message=shape as IMessageShape;
+            if(message!=null)snapshot.Geometry[shape.ModelId]=PumlBuild.Obj("SourceY",message.SourceY,"TargetY",message.TargetY,"SelfloopBendsX",message.SelfloopBendsX);
+        };
+        foreach(var l in diagram.Lifelines.OrderBy(l=>l.LocationX).ThenBy(l=>l.Id,StringComparer.Ordinal))
+            add(l,"participant",l.Text,l.LocationX);
+        foreach(var f in diagram.Fragments)
+        {
+            add(f,"fragment","",f.LocationY);
+            var element=doc.Elements.Last();
+            string op=Convert.ToString(f.Model.GetField("Operator")).ToLowerInvariant();element.Attributes["operator"]=op;
+            if(op=="group")element.Text=f.Model.Name;
+            foreach(var operand in f.Operands.OrderBy(o=>o.Position))
+            {
+                add(operand,"operand",operand.Guard,f.LocationY+operand.Position);doc.Elements.Last().Parent=f.ModelId;
+            }
+        }
+        foreach(var e in diagram.ExecutionSpecifications)
+        {
+            add(e,"execution","",e.LocationY);
+            if(e.Lifeline==null)throw new InvalidOperationException("S210: 実行区間のライフラインがありません。");
+            doc.Elements.Last().Links["participant"]=new[]{e.Lifeline.ModelId};
+        }
+        foreach(var m in SequenceExportMatch.Order(diagram.Messages,m=>m.SourceY,m=>m.SendPort is ISequenceNodeShape?((ISequenceNodeShape)m.SendPort).LocationX:0,m=>m.Id))
+        {
+            add(m,"message",m.Text,m.SourceY);var e=doc.Elements.Last();var model=m.Model as IMessage;
+            if(model==null)throw new InvalidOperationException("S210: メッセージの型が不正です。");
+            e.Attributes["sort"]=model.Kind;
+            e.Links["sender"]=m.Sender==null?new string[0]:new[]{m.Sender.ModelId};
+            e.Links["receiver"]=m.Receiver==null?new string[0]:new[]{m.Receiver.ModelId};
+            if(m.SendPort is IExecutionSpecificationShape)e.Links["sendExecution"]=new[]{m.SendPort.ModelId};
+            if(m.ReceivePort is IExecutionSpecificationShape)e.Links["receiveExecution"]=new[]{m.ReceivePort.ModelId};
+        }
+        foreach(var n in diagram.Notes)
+        {
+            add(n,"note",n.Text,n.LocationY);var e=doc.Elements.Last();var targets=new List<string>();
+            foreach(var anchor in n.NoteAnchors)
+            {
+                var other=anchor.Source.Id==n.Id?anchor.Target:anchor.Source;
+                var l=other as ILifelineShape;
+                if(l!=null)targets.Add(l.ModelId);
+                else { e.Links["anchors"]=n.NoteAnchors.Select(a=>a.Source.Id==n.Id?a.Target.ModelId:a.Source.ModelId).Distinct().ToArray();snapshot.Limitations.Add("Noteの非ライフライン接続: "+n.ModelId); }
+            }
+            e.Links["targets"]=targets.Distinct().OrderBy(id=>snapshot.Y[id]).ToArray();
+            e.Attributes["position"]="over";
+            if(targets.Count==0) {e.Attributes["position"]="free";snapshot.Limitations.Add("自由配置Note（近傍ライフラインには結び付けない）: "+n.ModelId);}
+            else
+            {
+                var lines=diagram.Lifelines.Where(l=>targets.Contains(l.ModelId)).ToArray();
+                if(n.LocationX+n.Width<lines.Min(l=>l.LocationX))e.Attributes["position"]="left of";
+                else if(n.LocationX>lines.Max(l=>l.LocationX+l.Width))e.Attributes["position"]="right of";
+            }
+        }
+        foreach(var u in diagram.InteractionUses)
+        {
+            add(u,"ref",u.Text,u.LocationY);var e=doc.Elements.Last();
+            e.Links["targets"]=u.Lifelines.OrderBy(l=>l.LocationX).Select(l=>l.ModelId).ToArray();
+            var model=u.Model as IInteractionUse;
+            e.Attributes["reference"]=model==null || model.RefersTo==null?"":model.RefersTo.Id;
+        }
+        foreach(var d in diagram.Destructions)
+        {
+            add(d,"destroy","",d.LocationY);
+            doc.Elements.Last().Links["participant"]=new[]{d.Lifeline.ModelId};
+        }
+        var byId=doc.Elements.ToDictionary(e=>e.Id);
+        // Model ownership is not operand membership: use the actual structural relationships.
+        var relations=SequenceMappedUpdate.Tree(root).SelectMany(m=>m.GetRelationsWhere((r,f)=>true)).GroupBy(r=>r.Id).Select(g=>g.First()).ToArray();
+        foreach(var relation in relations)
+        {
+            if(!byId.ContainsKey(relation.Source.Id) || !byId.ContainsKey(relation.Target.Id))continue;
+            if(relation.Metaclass.Id==SequencePayload.Prefix+"NestedInteractionFragment" || relation.Metaclass.Id==SequencePayload.Prefix+"OperandTargetMessage")
+            {
+                var child=byId[relation.Target.Id];
+                if(child.Parent!=root.Id && child.Parent!=relation.Source.Id)throw new InvalidOperationException("S210: 複数の所属先があります: "+child.Id);
+                child.Parent=relation.Source.Id;
+            }
+        }
+        foreach(var operand in diagram.Fragments.SelectMany(f=>f.Operands))foreach(var message in operand.Messages)
+        {
+            var e=byId[message.ModelId];
+            if(e.Parent!=root.Id && e.Parent!=operand.ModelId)throw new InvalidOperationException("S210: SDKと関連の分岐所属が一致しません。");
+            e.Parent=operand.ModelId;
+        }
+        foreach(var e in diagram.ExecutionSpecifications)
+        {
+            var item=byId[e.ModelId];
+            var events=doc.Elements.Where(n=>n.Kind!="participant" && n.Kind!="interaction" && n.Kind!="execution").OrderBy(n=>snapshot.Y[n.Id]).ToArray();
+            var preceding=events.LastOrDefault(n=>snapshot.Y[n.Id]<e.LocationY);
+            var following=events.FirstOrDefault(n=>snapshot.Y[n.Id]>e.LocationY+e.Length);
+            item.Links["startAfter"]=preceding==null?new string[0]:new[]{preceding.Id};
+            item.Links["endBefore"]=following==null?new string[0]:new[]{following.Id};
+            item.Links["endContainer"]=new[]{root.Id};
+            var parent=diagram.ExecutionSpecifications.Where(p=>p.ModelId!=e.ModelId && p.Lifeline!=null && p.Lifeline.ModelId==e.Lifeline.ModelId
+                && p.LocationY<=e.LocationY && p.LocationY+p.Length>=e.LocationY+e.Length && p.LocationX<e.LocationX).OrderByDescending(p=>p.LocationX).FirstOrDefault();
+            if(parent!=null)item.Links["outer"]=new[]{parent.ModelId};
+        }
+        foreach(var group in doc.Elements.Where(e=>e.Parent!=null).GroupBy(e=>e.Parent))
+        {
+            int order=0;foreach(var e in group.OrderBy(e=>e.Kind=="participant"?0:1).ThenBy(e=>snapshot.Y[e.Id]).ThenBy(e=>e.Id,StringComparer.Ordinal))e.Order=order++;
+        }
+        var represented=new HashSet<string>(doc.Elements.Select(e=>e.Id));
+        foreach(var m in SequenceMappedUpdate.Tree(root).Where(m=>!represented.Contains(m.Id) && !(m is IFrame) && !(m is IMessageEnd)))
+            snapshot.Limitations.Add("共通構造に未収録のモデル: "+m.Id+" / "+m.Metaclass.Id);
+        // A read-only report deliberately exposes inference gaps before enabling writes.
+        if(diagram.ExecutionSpecifications.Any())snapshot.Limitations.Add("実行区間の境界・分岐跨ぎはSDK読取りとPlantUMLの比較を実機照合してください。");
+        doc.Validate();return snapshot;
+    }
+}
+
+public static class SequenceSyncRuntime
+{
+    static string QualifiedName(IModel model)
+    {
+        var parts=new List<string>();var visited=new HashSet<string>();
+        while(model!=null) {if(!visited.Add(model.Id))throw new InvalidOperationException("S210: モデルの所有関係が循環しています。");parts.Add(model.Name);model=model.Owner;}
+        parts.Reverse();return string.Join("::",parts);
+    }
+    public static void Preview(IApplication app)
+    {
+        var log=new StringBuilder();string report=null;
+        try
+        {
+            var diagram=app.Workspace.CurrentEditor as ISequenceDiagram;
+            if(diagram==null)throw new InvalidOperationException("S210: シーケンス図を開いてください。");
+            string path=app.Window.UI.ShowOpenFileDialog("図全体と比較するPlantUML","PlantUML (*.puml;*.plantuml)|*.puml;*.plantuml");
+            if(string.IsNullOrEmpty(path))return;
+            if(new FileInfo(path).Length>300000)throw new InvalidOperationException("S210: 入力は300KB以下にしてください。");
+            var desired=SequenceDocument.Parse(File.ReadAllText(path,new UTF8Encoding(false,true)));
+            var current=DiagramSnapshot.Read(diagram);
+            // Resolve only unambiguous references for this non-mutating audit command.
+            var project=app.Workspace.CurrentProject;
+            var interactions=SequenceMappedUpdate.Tree(project.DesignModel).OfType<IInteraction>()
+                .Select(m=>new SequenceReferenceCandidate{Id=m.Id,Name=m.Name,Path=QualifiedName(m)}).ToArray();
+            foreach(var e in desired.Elements.Where(e=>e.Kind=="ref"))
+            {
+                var matches=SequenceReferenceResolver.Find(e.Text,interactions);
+                e.Attributes["reference"]=matches.Length==1?matches[0].Id:"";
+                if(matches.Length!=1)current.Limitations.Add("ref参照先 "+e.Line+"行: "+matches.Length+"候補");
+            }
+            var plan=SyncPlan.Build(current.Document,desired,()=>Guid.NewGuid().ToString());
+            report="{\"version\":1,\"project\":"+SequencePayload.Q(project.Id)+",\"diagram\":"+SequencePayload.Q(diagram.Id)
+                +",\"current\":"+current.Document.ToJson()+",\"desired\":"+desired.ToJson()+",\"plan\":"+plan.ToJson()
+                +",\"expected\":"+plan.Expected.ToJson()+",\"limitations\":"+PumlBuild.Json(current.Limitations.ToArray())
+                +",\"shapes\":"+PumlBuild.Json(current.ShapeIds.ToDictionary(p=>p.Key,p=>(object)p.Value))
+                +",\"geometry\":"+PumlBuild.Json(current.Geometry)+"}";
+            foreach(var c in plan.Changes)log.AppendLine(c.Action+" "+c.Kind+" line="+c.Line+" id="+c.Id);
+            foreach(var warning in current.Limitations)log.AppendLine("要照合: "+warning);
+            var counts=plan.Changes.GroupBy(c=>c.Kind+" / "+c.Action).Select(g=>g.Key+": "+g.Count()+"件");
+            SequenceExperiment.Summary="図全体の差分候補（読取り検証・反映なし）\n"+(plan.IsEmpty?(current.Limitations.Count==0?"共通構造の差分候補なし":"差分候補なし・要照合項目あり"):string.Join("\n",counts))
+                +"\n再作成する要素: "+plan.Recreated+"件\n要照合項目: "+current.Limitations.Count+"件\n図・プロジェクト・対応表は変更していません。";
+            log.AppendLine("Scope: "+project.Id+" / "+diagram.ModelId+" / "+diagram.Id);
+        }
+        catch(Exception ex) {SequenceExperiment.Summary="図全体の読取り検証を完了できませんでした。\n"+ex.Message;log.AppendLine(ex.ToString());}
+        try
+        {
+            string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.SequenceSync","reports");
+            Directory.CreateDirectory(directory);
+            string stem=Path.Combine(directory,DateTime.Now.ToString("yyyyMMdd_HHmmss")+"_"+Guid.NewGuid().ToString("N").Substring(0,8));
+            File.WriteAllText(stem+".txt",log.ToString(),new UTF8Encoding(false));
+            if(report!=null)File.WriteAllText(stem+".json",report,new UTF8Encoding(false));
+            SequenceExperiment.Summary+="\n診断保存先: "+stem+".txt";
+        }
+        catch(Exception ex) {log.AppendLine("診断の保存失敗: "+ex.Message);SequenceExperiment.Summary+="\n診断ファイルを保存できませんでした。診断表示で確認してください。";}
+        SequenceExperiment.Details=log.ToString();SequenceExperiment.Show(app);
+    }
+}
+// END GENERATED SequenceSyncRuntime.cs
+
 // Pure JSON builder. Only newly generated entity IDs appear as relation endpoints.
 
 public static class SequenceMappedUpdate
 {
-    static IEnumerable<IModel> Tree(IModel root)
+    public static IEnumerable<IModel> Tree(IModel root)
     { yield return root; foreach(var child in root.GetChildren())foreach(var model in Tree(child))yield return model; }
     static string Name(IModel model,Dictionary<string,string> changes)
     { string name; return changes!=null && changes.TryGetValue(model.Id,out name)?name:model.Name; }
@@ -1810,3 +2001,311 @@ public static class SequenceActivationCleanup
         return executions.Where(id=>!used.Contains(id)).Distinct().OrderBy(id=>id,StringComparer.Ordinal).ToArray();
     }
 }
+
+// BEGIN GENERATED SequenceSync.cs
+// Pure semantic synchronization core. No SDK or filesystem dependencies.
+public sealed class SequenceElement
+{
+    public string Id, Kind, Parent, Text = "";
+    public int Order, Line;
+    public Dictionary<string,string> Attributes = new Dictionary<string,string>(StringComparer.Ordinal);
+    public Dictionary<string,string[]> Links = new Dictionary<string,string[]>(StringComparer.Ordinal);
+    public SequenceElement Copy()
+    {
+        return new SequenceElement { Id=Id,Kind=Kind,Parent=Parent,Text=Text,Order=Order,Line=Line,
+            Attributes=new Dictionary<string,string>(Attributes,StringComparer.Ordinal),
+            Links=Links.ToDictionary(p=>p.Key,p=>p.Value.ToArray(),StringComparer.Ordinal) };
+    }
+}
+
+public sealed class SequenceDocument
+{
+    public List<SequenceElement> Elements = new List<SequenceElement>();
+    public bool HasTitle;
+    public static readonly string[] Kinds = { "interaction","participant","message","execution",
+        "fragment","operand","note","ref","create","destroy" };
+    public void Validate()
+    {
+        if(Elements.Count>2000 || Elements.Any(e=>e==null || string.IsNullOrEmpty(e.Id) || !Kinds.Contains(e.Kind))
+            || Elements.Select(e=>e.Id).Distinct().Count()!=Elements.Count)
+            throw new InvalidOperationException("S201: 要素の型・ID・件数が不正です。");
+        var index=Elements.ToDictionary(e=>e.Id);
+        if(Elements.Count(e=>e.Kind=="interaction")!=1 || Elements.Any(e=>e.Kind=="interaction" ? e.Parent!=null : e.Parent==null || !index.ContainsKey(e.Parent)))
+            throw new InvalidOperationException("S201: 相互作用の所有構造が不正です。");
+        foreach(var e in Elements)
+        {
+            var path=new HashSet<string>();var at=e;
+            while(at!=null) { if(!path.Add(at.Id))throw new InvalidOperationException("S201: 所有構造が循環しています。");at=at.Parent==null?null:index[at.Parent]; }
+            if(e.Links.Values.SelectMany(v=>v).Any(id=>!index.ContainsKey(id)))
+                throw new InvalidOperationException("S201: 接続先が図に存在しません。");
+        }
+    }
+    public SequenceDocument Copy() { return new SequenceDocument{HasTitle=HasTitle,Elements=Elements.Select(e=>e.Copy()).ToList()}; }
+    public string ToJson()
+    {
+        return PumlBuild.Json(PumlBuild.Obj("HasTitle",HasTitle,"Elements",Elements.Select(e=>PumlBuild.Obj(
+            "Id",e.Id,"Kind",e.Kind,"Parent",e.Parent,"Text",e.Text,"Order",e.Order,"Line",e.Line,
+            "Attributes",e.Attributes.ToDictionary(p=>p.Key,p=>(object)p.Value),
+            "Links",e.Links.ToDictionary(p=>p.Key,p=>(object)p.Value))).ToArray()));
+    }
+    // IDs in this document are local parser keys, never Next Design model IDs.
+    public static SequenceDocument Parse(string input)
+    {
+        var parsed=PumlPlan.ParseForMapping(input);
+        var result=new SequenceDocument{HasTitle=Regex.IsMatch(input,@"(?m)^\s*title\s+")};
+        result.Elements.Add(new SequenceElement{Id="root",Kind="interaction",Text=parsed.Title});
+        var aliases=new Dictionary<string,string>();
+        for(int i=0;i<parsed.Aliases.Count;i++)
+        {
+            string id="p"+i;aliases.Add(parsed.Aliases[i],id);
+            result.Elements.Add(new SequenceElement{Id=id,Kind="participant",Parent="root",Order=i-1000,Text=parsed.Names[i]});
+        }
+        var active=new Dictionary<string,Stack<SequenceElement>>();int next=0;
+        Action<IEnumerable<PumlNode>,string> visit=null;
+        visit=(nodes,parent)=>{
+            int order=0;
+            foreach(var n in nodes)
+            {
+                if(n.Kind=="activate")
+                {
+                    var e=new SequenceElement{Id="e"+(next++),Kind="execution",Parent=parent,Order=order++,Line=n.Line};
+                    e.Links["participant"]=new[]{aliases[n.Left]};e.Attributes["endParent"]=parent;
+                    e.Attributes["start"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    result.Elements.Add(e);
+                    if(!active.ContainsKey(n.Left))active[n.Left]=new Stack<SequenceElement>();
+                    if(active[n.Left].Count>0)e.Links["outer"]=new[]{active[n.Left].Peek().Id};
+                    active[n.Left].Push(e);continue;
+                }
+                if(n.Kind=="deactivate")
+                {
+                    if(!active.ContainsKey(n.Left) || active[n.Left].Count==0)
+                        throw new InvalidOperationException("S202: "+n.Line+"行目のdeactivateに対応する開始がありません。");
+                    var e=active[n.Left].Pop();e.Attributes["endParent"]=parent;
+                    // Boundaries use neighbouring semantic elements below, not physical source lines.
+                    e.Attributes["end"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);continue;
+                }
+                var item=new SequenceElement{Id="e"+(next++),Kind=SequenceNameDiff.IsMessage(n)?"message":n.Kind,
+                    Parent=parent,Order=order++,Line=n.Line,Text=n.Text??""};
+                if(item.Kind=="message")
+                {
+                    item.Attributes["sort"]=n.Kind;
+                    item.Links["sender"]=n.Left=="["?new string[0]:new[]{aliases[n.Left]};
+                    item.Links["receiver"]=n.Right=="]"?new string[0]:new[]{aliases[n.Right]};
+                    foreach(var endpoint in new[]{new[]{"sendExecution",n.Left},new[]{"receiveExecution",n.Right}})
+                        if(active.ContainsKey(endpoint[1]) && active[endpoint[1]].Count>0)item.Links[endpoint[0]]=new[]{active[endpoint[1]].Peek().Id};
+                }
+                if(n.Kind=="fragment") {item.Attributes["operator"]=n.Operator;if(n.Operator!="group")item.Text="";}
+                if(n.Kind=="note" || n.Kind=="ref") { item.Links["targets"]=n.Targets.Select(t=>aliases[t]).ToArray();if(n.Kind=="note")item.Attributes["position"]=n.Operator; }
+                if(n.Kind=="destroy" || n.Kind=="create")item.Links["participant"]=new[]{aliases[n.Left]};
+                result.Elements.Add(item);visit(n.Children,item.Id);
+            }
+        };
+        visit(parsed.Nodes,"root");
+        foreach(var e in result.Elements.Where(e=>e.Kind=="execution"))
+        {
+            int start=int.Parse(e.Attributes["start"],System.Globalization.CultureInfo.InvariantCulture);
+            int end=e.Attributes.ContainsKey("end")?int.Parse(e.Attributes["end"],System.Globalization.CultureInfo.InvariantCulture):int.MaxValue;
+            var events=result.Elements.Where(n=>n.Kind!="participant" && n.Kind!="interaction" && n.Kind!="execution").OrderBy(n=>n.Line).ToArray();
+            var preceding=events.LastOrDefault(n=>n.Line<start);var following=events.FirstOrDefault(n=>n.Line>end);
+            e.Links["startAfter"]=preceding==null?new string[0]:new[]{preceding.Id};
+            e.Links["endBefore"]=following==null?new string[0]:new[]{following.Id};
+            string endParent=e.Attributes["endParent"];e.Links["endContainer"]=new[]{endParent};
+            e.Attributes.Clear();
+        }
+        result.Validate();return result;
+    }
+}
+
+public sealed class SequenceChange
+{
+    public string Action, Id, Kind;
+    public int Line;
+}
+
+public sealed class SyncPlan
+{
+    public List<SequenceChange> Changes=new List<SequenceChange>();
+    public SequenceDocument Expected;
+    public Dictionary<string,string> Identities=new Dictionary<string,string>();
+    public int Recreated;
+    public bool IsEmpty { get { return Changes.Count==0; } }
+    public string ToJson()
+    {
+        return PumlBuild.Json(PumlBuild.Obj("Recreated",Recreated,"Identities",Identities.ToDictionary(p=>p.Key,p=>(object)p.Value),
+            "Changes",Changes.Select(c=>PumlBuild.Obj("Action",c.Action,"Id",c.Id,"Kind",c.Kind,"Line",c.Line)).ToArray()));
+    }
+    static string Text(string value) { return (value??"").Replace("\r\n","\n").Replace('\r','\n'); }
+    static string Properties(SequenceElement e)
+    { return SequencePayload.Q(Text(e.Text))+string.Join("",e.Attributes.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>SequencePayload.Q(p.Key)+SequencePayload.Q(p.Value))); }
+    static string LinkKey(SequenceElement e,Dictionary<string,string> ids)
+    {
+        return string.Join("",e.Links.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>SequencePayload.Q(p.Key)+
+            string.Join("",p.Value.Select(id=>SequencePayload.Q(ids!=null && ids.ContainsKey(id)?ids[id]:id)))));
+    }
+    static bool Comparable(SequenceElement a,SequenceElement b,Dictionary<string,string> ids)
+    {
+        // Execution boundary links are resolved after messages have been matched.
+        if(a.Kind!=b.Kind)return false;
+        if(a.Kind=="message")
+            return new[]{"sender","receiver"}.All(k=>a.Links[k].Select(id=>ids.ContainsKey(id)?ids[id]:"?"+id).SequenceEqual(b.Links[k]));
+        if(a.Kind=="note" || a.Kind=="ref" || a.Kind=="execution" || a.Kind=="destroy" || a.Kind=="create")
+        {
+            string key=a.Kind=="note" || a.Kind=="ref"?"targets":"participant";
+            string[] left,right;
+            if(!a.Links.TryGetValue(key,out left) || !b.Links.TryGetValue(key,out right))return false;
+            return left.Select(id=>ids.ContainsKey(id)?ids[id]:"?"+id).SequenceEqual(right);
+        }
+        return true;
+    }
+    static Dictionary<string,string> Signatures(SequenceDocument doc)
+    {
+        var keys=new Dictionary<string,string>();
+        Func<SequenceElement,string> get=null;
+        get=e=>{
+            string key;if(keys.TryGetValue(e.Id,out key))return key;
+            key=e.Kind+Properties(e);
+            if(e.Kind=="fragment" || e.Kind=="operand")
+                key+="["+string.Join("",doc.Elements.Where(n=>n.Parent==e.Id).OrderBy(n=>n.Order).Select(n=>SequencePayload.Q(get(n))))+"]";
+            keys.Add(e.Id,key);return key;
+        };
+        foreach(var e in doc.Elements)get(e);return keys;
+    }
+    public static SyncPlan Build(SequenceDocument current,SequenceDocument desired,Func<string> newId)
+    {
+        current.Validate();desired.Validate();
+        var plan=new SyncPlan();var map=plan.Identities;var used=new HashSet<string>();
+        var old=current.Elements.ToDictionary(e=>e.Id);
+        var currentKeys=Signatures(current);var desiredKeys=Signatures(desired);
+        Action<SequenceElement,SequenceElement> bind=(a,b)=>{map.Add(a.Id,b.Id);used.Add(b.Id);};
+        bind(desired.Elements.Single(e=>e.Kind=="interaction"),current.Elements.Single(e=>e.Kind=="interaction"));
+        // First establish unique exact anchors. Repeat after parents become known.
+        bool progress=true;
+        while(progress)
+        {
+            progress=false;
+            foreach(var a in desired.Elements.Where(e=>!map.ContainsKey(e.Id)).ToArray())
+            {
+                if(a.Parent==null || !map.ContainsKey(a.Parent))continue;
+                var candidates=current.Elements.Where(b=>!used.Contains(b.Id) && b.Parent==map[a.Parent] && Comparable(a,b,map) && desiredKeys[a.Id]==currentKeys[b.Id]).ToArray();
+                int equivalent=desired.Elements.Count(b=>!map.ContainsKey(b.Id) && b.Parent==a.Parent && b.Kind==a.Kind && desiredKeys[b.Id]==desiredKeys[a.Id]);
+                if(candidates.Length==1 && equivalent==1) {bind(a,candidates[0]);progress=true;}
+            }
+        }
+        Action align=()=>{
+        // Match complete sibling sequences, including existing anchors, recursively.
+        bool alignProgress=true;
+        while(alignProgress)
+        {
+            int beforeCount=map.Count;
+            foreach(var parent in desired.Elements.Where(e=>map.ContainsKey(e.Id)).ToArray())
+            {
+                var a=desired.Elements.Where(e=>e.Parent==parent.Id).OrderBy(e=>e.Order).ToArray();
+                var b=current.Elements.Where(e=>e.Parent==map[parent.Id]).OrderBy(e=>e.Order).ToArray();
+                Func<int,int,bool> equal=(i,j)=>map.ContainsKey(a[i].Id)?map[a[i].Id]==b[j].Id:
+                    !used.Contains(b[j].Id) && Comparable(a[i],b[j],map) && desiredKeys[a[i].Id]==currentKeys[b[j].Id];
+                int[,] length=new int[a.Length+1,b.Length+1];
+                for(int i=a.Length-1;i>=0;i--)for(int j=b.Length-1;j>=0;j--)
+                    length[i,j]=equal(i,j)?1+length[i+1,j+1]:Math.Max(length[i+1,j],length[i,j+1]);
+                int x=0,y=0;
+                while(x<a.Length && y<b.Length)
+                {
+                    if(equal(x,y)) {if(!map.ContainsKey(a[x].Id))bind(a[x],b[y]);x++;y++;}
+                    else if(length[x+1,y]>length[x,y+1])x++;else y++;
+                }
+            }
+            alignProgress=map.Count>beforeCount;
+        }
+        };
+        align();
+        // Unique exact moves may cross containers; preserve IDs only when neither side is ambiguous.
+        foreach(var a in desired.Elements.Where(e=>!map.ContainsKey(e.Id)).ToArray())
+        {
+            var candidates=current.Elements.Where(b=>!used.Contains(b.Id) && Comparable(a,b,map) && desiredKeys[a.Id]==currentKeys[b.Id]).ToArray();
+            if(candidates.Length==1 && desired.Elements.Count(b=>!map.ContainsKey(b.Id) && b.Kind==a.Kind && desiredKeys[b.Id]==desiredKeys[a.Id])==1)bind(a,candidates[0]);
+        }
+        // A single unmatched element of a kind in a corresponding container is an attribute edit.
+        progress=true;
+        while(progress)
+        {
+            progress=false;
+            foreach(var a in desired.Elements.Where(e=>!map.ContainsKey(e.Id)).ToArray())
+            {
+                if(a.Parent==null || !map.ContainsKey(a.Parent))continue;
+                var candidates=current.Elements.Where(b=>!used.Contains(b.Id) && b.Parent==map[a.Parent] && b.Kind==a.Kind).ToArray();
+                if(candidates.Length==1 && desired.Elements.Count(b=>!map.ContainsKey(b.Id) && b.Parent==a.Parent && b.Kind==a.Kind)==1)
+                {bind(a,candidates[0]);progress=true;}
+            }
+        }
+        align();
+        foreach(var a in desired.Elements.Where(e=>!map.ContainsKey(e.Id)))
+        {
+            string id=newId();if(string.IsNullOrEmpty(id) || old.ContainsKey(id) || map.ContainsValue(id))throw new InvalidOperationException("S203: 新IDが重複しています。");
+            map.Add(a.Id,id);
+            if(current.Elements.Any(b=>!used.Contains(b.Id) && b.Kind==a.Kind))plan.Recreated++;
+        }
+        plan.Expected=desired.Copy();
+        foreach(var e in plan.Expected.Elements)
+        {
+            string inputId=e.Id;e.Id=map[inputId];e.Parent=e.Parent==null?null:map[e.Parent];
+            e.Links=e.Links.ToDictionary(p=>p.Key,p=>p.Value.Select(id=>map[id]).ToArray(),StringComparer.Ordinal);
+        }
+        foreach(var e in plan.Expected.Elements)
+        {
+            SequenceElement before;
+            if(!old.TryGetValue(e.Id,out before)) {plan.Changes.Add(new SequenceChange{Action="add",Id=e.Id,Kind=e.Kind,Line=e.Line});continue;}
+            if(e.Kind=="interaction" && !desired.HasTitle)e.Text=before.Text;
+            if(Properties(e)!=Properties(before) || LinkKey(e,null)!=LinkKey(before,null))plan.Changes.Add(new SequenceChange{Action="update",Id=e.Id,Kind=e.Kind,Line=e.Line});
+            // Absolute ordinal changes from insertions/deletions are not moves.
+            var retained=new HashSet<string>(map.Values.Where(old.ContainsKey));
+            var previous=plan.Expected.Elements.Where(n=>n.Parent==e.Parent && n.Order<e.Order).OrderBy(n=>n.Order)
+                .Select(n=>n.Id).Where(retained.Contains).ToArray();
+            var oldPrevious=current.Elements.Where(n=>n.Parent==before.Parent && n.Order<before.Order && retained.Contains(n.Id)).OrderBy(n=>n.Order).Select(n=>n.Id).ToArray();
+            if(e.Parent!=before.Parent || !previous.SequenceEqual(oldPrevious))plan.Changes.Add(new SequenceChange{Action="move",Id=e.Id,Kind=e.Kind,Line=e.Line});
+        }
+        foreach(var e in current.Elements.Where(e=>!map.ContainsValue(e.Id)))plan.Changes.Add(new SequenceChange{Action="delete",Id=e.Id,Kind=e.Kind});
+        plan.Expected.Validate();return plan;
+    }
+}
+
+// One dimensional insertion layout, used for both lane ordering and vertical event slots.
+// Containers and connectors are consumers of these slots; this class never infers ownership.
+public sealed class SequenceLayoutSlot
+{
+    public string Id;
+    public double Size;
+    public double? Existing;
+}
+public static class SequenceLocalLayout
+{
+    public static Dictionary<string,double> Arrange(IEnumerable<SequenceLayoutSlot> input,double start,double gap)
+    {
+        if(double.IsNaN(start) || double.IsInfinity(start) || double.IsNaN(gap) || double.IsInfinity(gap) || gap<0)
+            throw new ArgumentException("Invalid layout bounds");
+        var slots=input.ToArray();var result=new Dictionary<string,double>();double minimum=start;
+        foreach(var slot in slots)
+        {
+            if(string.IsNullOrEmpty(slot.Id) || double.IsNaN(slot.Size) || double.IsInfinity(slot.Size) || slot.Size<0
+                || (slot.Existing.HasValue && (double.IsNaN(slot.Existing.Value) || double.IsInfinity(slot.Existing.Value))))
+                throw new ArgumentException("Invalid layout slot");
+            double at=Math.Max(minimum,slot.Existing??minimum);result.Add(slot.Id,at);minimum=at+slot.Size+gap;
+            if(double.IsInfinity(minimum))throw new ArgumentException("Layout overflow");
+        }
+        return result;
+    }
+}
+
+public sealed class SequenceReferenceCandidate
+{
+    public string Id,Name,Path;
+}
+public static class SequenceReferenceResolver
+{
+    public static SequenceReferenceCandidate[] Find(string text,IEnumerable<SequenceReferenceCandidate> input)
+    {
+        var all=input.GroupBy(c=>c.Id).Select(g=>g.First()).ToArray();
+        var qualified=all.Where(c=>!string.IsNullOrEmpty(c.Path) && c.Path==text).ToArray();
+        return (qualified.Length>0?qualified:all.Where(c=>c.Name==text))
+            .OrderBy(c=>c.Path,StringComparer.Ordinal).ThenBy(c=>c.Id,StringComparer.Ordinal).ToArray();
+    }
+}
+// END GENERATED SequenceSync.cs
