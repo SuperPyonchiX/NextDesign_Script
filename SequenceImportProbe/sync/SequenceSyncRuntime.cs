@@ -310,6 +310,8 @@ public static class SequenceStructureTrial
     static void Verify(SequenceTrialState expected,SequenceTrialState actual,string phase,StringBuilder log)
     {
         string differences=expected.DifferenceCounts(actual);log.AppendLine(phase+": "+differences);
+        string relationDetails=expected.RelationDifferences(actual);
+        if(relationDetails.Length>0)log.AppendLine("\f関連の照合内訳 / "+phase+"\n"+relationDetails+"\f");
         if(expected.Signature()!=actual.Signature())throw new InvalidOperationException("S230: "+phase+"の照合が不一致です。"+differences);
     }
     static void Import(IProject project,string json,StringBuilder log)

@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.27";
+    public const string Title = "シーケンス生成実験 / 0.8.28";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -968,6 +968,8 @@ public static class SequenceStructureTrial
     static void Verify(SequenceTrialState expected,SequenceTrialState actual,string phase,StringBuilder log)
     {
         string differences=expected.DifferenceCounts(actual);log.AppendLine(phase+": "+differences);
+        string relationDetails=expected.RelationDifferences(actual);
+        if(relationDetails.Length>0)log.AppendLine("\f関連の照合内訳 / "+phase+"\n"+relationDetails+"\f");
         if(expected.Signature()!=actual.Signature())throw new InvalidOperationException("S230: "+phase+"の照合が不一致です。"+differences);
     }
     static void Import(IProject project,string json,StringBuilder log)
@@ -3141,6 +3143,24 @@ public sealed class SequenceTrialState
         return "モデル="+Differences(Models,actual.Models)+" 関連="+Differences(Relations.ToDictionary(p=>p.Key,p=>PumlBuild.Json(p.Value)),actual.Relations.ToDictionary(p=>p.Key,p=>PumlBuild.Json(p.Value)))
             +" 図形="+Differences(Shapes,actual.Shapes)+" 図形所属="+Differences(ShapeModels,actual.ShapeModels)
             +" 送受信="+Differences(Ports.ToDictionary(p=>p.Key,p=>PumlBuild.Json(p.Value)),actual.Ports.ToDictionary(p=>p.Key,p=>PumlBuild.Json(p.Value)));
+    }
+    public string RelationDifferences(SequenceTrialState actual)
+    {
+        var lines=new List<string>();
+        var fields=new[]{"SourceId","TargetId","SourceIndex","TargetIndex"};
+        var changed=Relations.Keys.Union(actual.Relations.Keys).OrderBy(id=>id,StringComparer.Ordinal)
+            .Where(id=>!Relations.ContainsKey(id) || !actual.Relations.ContainsKey(id) || !Relations[id].SequenceEqual(actual.Relations[id])).ToArray();
+        foreach(string id in changed.Take(12))
+        {
+            lines.Add("relation="+id);
+            if(!Relations.ContainsKey(id)){lines.Add("unexpected actual="+PumlBuild.Json(actual.Relations[id]));continue;}
+            if(!actual.Relations.ContainsKey(id)){lines.Add("missing actual; expected="+PumlBuild.Json(Relations[id]));continue;}
+            for(int n=0;n<4;n++)if(Relations[id][n]!=actual.Relations[id][n])
+                lines.Add(fields[n]+": expected="+Relations[id][n]+" actual="+actual.Relations[id][n]);
+            lines.Add("endpoints: "+actual.Relations[id][0]+" -> "+actual.Relations[id][1]);
+        }
+        if(changed.Length>12)lines.Add("additional changed relations="+(changed.Length-12));
+        return string.Join("\n",lines);
     }
     public SequenceTrialState Expected(SequenceStructurePreparation prepared,SyncPlan plan,bool delete)
     {

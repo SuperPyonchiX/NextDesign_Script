@@ -778,6 +778,24 @@ public sealed class SequenceTrialState
             +" 図形="+Differences(Shapes,actual.Shapes)+" 図形所属="+Differences(ShapeModels,actual.ShapeModels)
             +" 送受信="+Differences(Ports.ToDictionary(p=>p.Key,p=>PumlBuild.Json(p.Value)),actual.Ports.ToDictionary(p=>p.Key,p=>PumlBuild.Json(p.Value)));
     }
+    public string RelationDifferences(SequenceTrialState actual)
+    {
+        var lines=new List<string>();
+        var fields=new[]{"SourceId","TargetId","SourceIndex","TargetIndex"};
+        var changed=Relations.Keys.Union(actual.Relations.Keys).OrderBy(id=>id,StringComparer.Ordinal)
+            .Where(id=>!Relations.ContainsKey(id) || !actual.Relations.ContainsKey(id) || !Relations[id].SequenceEqual(actual.Relations[id])).ToArray();
+        foreach(string id in changed.Take(12))
+        {
+            lines.Add("relation="+id);
+            if(!Relations.ContainsKey(id)){lines.Add("unexpected actual="+PumlBuild.Json(actual.Relations[id]));continue;}
+            if(!actual.Relations.ContainsKey(id)){lines.Add("missing actual; expected="+PumlBuild.Json(Relations[id]));continue;}
+            for(int n=0;n<4;n++)if(Relations[id][n]!=actual.Relations[id][n])
+                lines.Add(fields[n]+": expected="+Relations[id][n]+" actual="+actual.Relations[id][n]);
+            lines.Add("endpoints: "+actual.Relations[id][0]+" -> "+actual.Relations[id][1]);
+        }
+        if(changed.Length>12)lines.Add("additional changed relations="+(changed.Length-12));
+        return string.Join("\n",lines);
+    }
     public SequenceTrialState Expected(SequenceStructurePreparation prepared,SyncPlan plan,bool delete)
     {
         var result=new SequenceTrialState{Models=new Dictionary<string,string>(Models),Shapes=new Dictionary<string,string>(Shapes),ShapeModels=new Dictionary<string,string>(ShapeModels),

@@ -62,6 +62,14 @@ public static class StructurePreparationTests
     }
     public static void Run()
     {
+        var expectedOrder=new SequenceTrialState();var actualOrder=new SequenceTrialState();
+        expectedOrder.Relations["r"]=new[]{"source","target","0","0"};actualOrder.Relations["r"]=new[]{"source","target","1","0"};
+        Require(expectedOrder.RelationDifferences(actualOrder).Contains("SourceIndex: expected=0 actual=1"),"relation order diagnostic missing");
+        Require(!expectedOrder.RelationDifferences(actualOrder).Contains("TargetIndex:"),"equal index reported");
+        Require(expectedOrder.Signature()!=actualOrder.Signature(),"order discrepancy was ignored");
+        actualOrder.Relations.Clear();Require(expectedOrder.RelationDifferences(actualOrder).Contains("missing actual"),"missing relation diagnostic");
+        actualOrder.Relations["new"]=new[]{"s","t","0","0"};Require(expectedOrder.RelationDifferences(actualOrder).Contains("unexpected actual"),"extra relation diagnostic");
+        Require(expectedOrder.RelationDifferences(expectedOrder)=="","equal relations reported");
         RollbackTrials();
         for(int failure=0;failure<4;failure++)
         {
