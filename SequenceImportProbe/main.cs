@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.24";
+    public const string Title = "シーケンス生成実験 / 0.8.25";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -3150,7 +3150,9 @@ public sealed class SequenceTrialState
         {
             string id=r["Id"].StringValue(),source=r["SourceId"].StringValue(),target=r["TargetId"].StringValue();
             if(!result.Relations.ContainsKey(id) || result.Relations[id][1]!=target || !result.Ports.ContainsKey(target))throw new InvalidOperationException("S230: 変更前の受信関連が一致しません。");
-            result.Relations[id]=new[]{source,target,r["SourceIndex"].Raw,r["TargetIndex"].Raw};
+            // The patch changes SourceId only. Export can omit indices; retain live SDK ordering.
+            var previous=result.Relations[id];
+            result.Relations[id]=new[]{source,target,previous[2],previous[3]};
             result.Ports[target][1]=source;
             result.Ports[target][3]=plan.Expected.Elements.Single(e=>e.Id==target).Links["receiver"].Single();
         }
