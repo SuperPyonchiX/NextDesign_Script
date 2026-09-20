@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.51";
+    public const string Title = "シーケンス生成実験 / 0.8.52";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -92,24 +92,37 @@ public static class SequenceExperiment
             var message = sample.Messages.Cast<IMessage>().FirstOrDefault(m => m.Kind == "sync"
                 && m.Sender != null && m.Receiver != null && m.Sender.Id != m.Receiver.Id
                 && m.SendPort is IExecutionSpecification && m.ReceivePort is IExecutionSpecification);
-            if (message == null || sample.Frame == null)
-                throw new InvalidOperationException("E104: 異なるライフライン間の同期メッセージがある図を開いてください。");
-            IModel[] sources = { sample, sample.Frame, message.Sender, message.Receiver,
-                (IModel)message.SendPort, (IModel)message.ReceivePort, message };
-            if (sources.Any(m => m.IsDeleted || m.IsProxy)) throw new InvalidOperationException("E105: 見本の一部が削除済み・未読込です。");
+            IClass[] sources;
+            if (message != null && sample.Frame != null)
+            {
+                IModel[] samples = { sample, sample.Frame, message.Sender, message.Receiver,
+                    (IModel)message.SendPort, (IModel)message.ReceivePort, message };
+                if (samples.Any(m => m.IsDeleted || m.IsProxy)) throw new InvalidOperationException("E105: 見本の一部が削除済み・未読込です。");
+                sources = samples.Select(m => m.Metaclass).ToArray();
+            }
+            else
+            {
+                // A diagram being built from nothing has no sample message. The view
+                // definition lists the classes this editor places, so read them there.
+                sources = PumlRuntime.BaseTypes(diagram);
+                detail.AppendLine("Base types from view definition: " + string.Join(", ", sources.Select(c => c.Id)));
+            }
             // Verify the standard relationship IDs against this profile before writing.
-            var relationIds = new HashSet<string>(sources.SelectMany(m => m.Metaclass.GetFields().Cast<IField>())
+            var relationIds = new HashSet<string>(sources.SelectMany(c => c.GetFields().Cast<IField>())
                 .Where(f => f.RelationshipClass != null).Select(f => f.RelationshipClass.Id));
             foreach (string id in SequencePayload.RelationTypes)
                 if (!relationIds.Contains(SequencePayload.Prefix + id))
                     throw new InvalidOperationException("E106: 標準の構造関連が見つかりません: " + id);
-            var sort = message.Metaclass.GetFields().Cast<IField>().FirstOrDefault(f => f.Name == "MessageSort");
+            var sort = sources[6].GetFields().Cast<IField>().FirstOrDefault(f => f.Name == "MessageSort");
             if (sort == null) throw new InvalidOperationException("E107: メッセージ種別フィールドが未対応です。");
-            var kindValue = message.GetField("MessageSort");
-            detail.AppendLine("MessageSort runtime type=" + (kindValue == null ? "null" : kindValue.GetType().FullName)
-                + "; value=" + (kindValue == null ? "null" : kindValue.ToString()));
-            if (kindValue == null || !string.Equals(kindValue.ToString(), "Sync", StringComparison.Ordinal))
-                throw new InvalidOperationException("E108: 同期メッセージの保存値が想定と異なります。");
+            if (message != null)
+            {
+                var kindValue = message.GetField("MessageSort");
+                detail.AppendLine("MessageSort runtime type=" + (kindValue == null ? "null" : kindValue.GetType().FullName)
+                    + "; value=" + (kindValue == null ? "null" : kindValue.ToString()));
+                if (kindValue == null || !string.Equals(kindValue.ToString(), "Sync", StringComparison.Ordinal))
+                    throw new InvalidOperationException("E108: 同期メッセージの保存値が想定と異なります。");
+            }
             string schema = "13.0";
             bool fromFile = false;
             // Read only the header; never change the project file. SQLite falls back to
@@ -121,7 +134,7 @@ public static class SequenceExperiment
                 if (match.Success) { schema = match.Groups[1].Value; fromFile = true; }
             }
             if(replaceExisting)replacement=SequenceReplacement.Capture(sample,diagram);
-            var payload = SequencePayload.Build(sources.Select(m => m.Metaclass.Id).ToArray(), diagram.EditorDefinition.Id, schema);
+            var payload = SequencePayload.Build(sources.Select(c => c.Id).ToArray(), diagram.EditorDefinition.Id, schema);
             if (plan != null)
             {
                 stage = "PlantUML生成データの構築";
@@ -536,20 +549,33 @@ public static class PumlRuntime
         throw new InvalidOperationException("E121: "+label+"の具体型を決められません。"
             +label+"がある図を開いて取り込むか、この種別名を開発側へ伝えてください。定義の種別: "+available);
     }
-    public static PumlProfile Profile(ISequenceDiagram diagram,IModel[] source,PumlPlan plan)
+    // The seven base classes, in the order the payload builder expects them.
+    public static IClass[] BaseTypes(ISequenceDiagram diagram)
+    {
+        var interaction=diagram.Model==null?null:diagram.Model.Metaclass;
+        if(interaction==null)throw new InvalidOperationException("E104: 図のモデル型を取得できません。");
+        var frame=Resolve(diagram,new[]{"Frame","InteractionFrame"},
+            diagram.Frame==null?new IModel[0]:new[]{diagram.Frame.Model},"枠");
+        var lifeline=Resolve(diagram,new[]{"Lifeline","Lifelines"},diagram.Lifelines.Select(l=>l.Model),"ライフライン");
+        var execution=Resolve(diagram,new[]{"ExecutionSpecification","ExecutionSpecifications","Execution"},
+            diagram.ExecutionSpecifications.Select(e=>e.Model),"実行区間");
+        var messageClass=Resolve(diagram,new[]{"Message","Messages"},diagram.Messages.Select(m=>m.Model),"メッセージ");
+        return new[]{interaction,frame,lifeline,lifeline,execution,execution,messageClass};
+    }
+    public static PumlProfile Profile(ISequenceDiagram diagram,IClass[] source,PumlPlan plan)
     {
         var p=new PumlProfile();
         string[] names={"Interaction","Frame","Lifeline","Lifeline","ExecutionSpecification","ExecutionSpecification","Message"};
-        for(int i=0;i<source.Length;i++)p.Types[names[i]]=source[i].Metaclass.Id;
+        for(int i=0;i<source.Length;i++)p.Types[names[i]]=source[i].Id;
         string[] keys={"Frame","Lifelines","ExecutionSpecifications","Messages","OwnedExecutionSpecification","SendMessage","ReceiveMessage"};
         for(int i=0;i<keys.Length;i++)p.Relations[keys[i]]=SequencePayload.Prefix+SequencePayload.RelationTypes[i];
-        p.Sync=Literal(source[6].Metaclass,"MessageSort","Sync");
-        if(plan.All().Any(n=>n.Kind=="async"))p.Async=Literal(source[6].Metaclass,"MessageSort","Async");
-        if(plan.All().Any(n=>n.Kind=="reply"))p.Reply=Literal(source[6].Metaclass,"MessageSort","Reply");
-        var classes=new List<IClass>(source.Select(m=>m.Metaclass));
+        p.Sync=Literal(source[6],"MessageSort","Sync");
+        if(plan.All().Any(n=>n.Kind=="async"))p.Async=Literal(source[6],"MessageSort","Async");
+        if(plan.All().Any(n=>n.Kind=="reply"))p.Reply=Literal(source[6],"MessageSort","Reply");
+        var classes=new List<IClass>(source);
         if(plan.All().Any(n=>n.Kind=="destroy"))
         {
-            var c=Child(p,source[0].Metaclass,"Destructions","Destructions","___Interaction_Destruction");
+            var c=Child(p,source[0],"Destructions","Destructions","___Interaction_Destruction");
             var definitions=diagram.EditorDefinition.Elements
                 .Where(e=>string.Equals(e.Type,"Destruction",StringComparison.OrdinalIgnoreCase) && e.ModelClass!=null)
                 .Select(e=>e.ModelClass).GroupBy(t=>t.Id).Select(g=>g.First()).ToArray();
@@ -561,13 +587,13 @@ public static class PumlRuntime
         }
         if(plan.All().Any(n=>n.Left=="[" || n.Right=="]"))
         {
-            Child(p,source[0].Metaclass,"MessageEnds","MessageEnds","___Interaction_MessageEnd");
+            Child(p,source[0],"MessageEnds","MessageEnds","___Interaction_MessageEnd");
             var c=Resolve(diagram,new[]{"MessageEnd","MessageEnds"},diagram.MessageEnds.Select(e=>e.Model),"メッセージ端");
             p.Types["MessageEnd"]=c.Id; classes.Add(c);
         }
         if(plan.All().Any(n=>n.Kind=="fragment"))
         {
-            Child(p,source[0].Metaclass,"Fragments","CombinedFragments","___Interaction_CombinedFragment");
+            Child(p,source[0],"Fragments","CombinedFragments","___Interaction_CombinedFragment");
             var c=Resolve(diagram,new[]{"CombinedFragment","Fragment","CombinedFragments"},
                 diagram.Fragments.Select(f=>f.Model),"複合フラグメント");
             p.Types["CombinedFragment"]=c.Id; classes.Add(c);
@@ -579,14 +605,14 @@ public static class PumlRuntime
         }
         if(plan.All().Any(n=>n.Kind=="ref"))
         {
-            Child(p,source[0].Metaclass,"InteractionUses","InteractionUses","___Interaction_InteractionUse");
+            Child(p,source[0],"InteractionUses","InteractionUses","___Interaction_InteractionUse");
             var c=Resolve(diagram,new[]{"InteractionUse","InteractionUses","Ref"},
                 diagram.InteractionUses.Select(f=>f.Model),"相互作用の利用");
             p.Types["InteractionUse"]=c.Id; classes.Add(c);
         }
         if(plan.All().Any(n=>n.Kind=="note"))
         {
-            Child(p,source[0].Metaclass,"Notes","Notes","___Interaction_InteractionNote");
+            Child(p,source[0],"Notes","Notes","___Interaction_InteractionNote");
             var c=Resolve(diagram,new[]{"InteractionNote","Note","Notes"},
                 diagram.Notes.Select(n=>n.Model),"Note");
             p.Types["InteractionNote"]=c.Id; classes.Add(c);
