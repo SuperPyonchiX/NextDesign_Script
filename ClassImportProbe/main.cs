@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.2.0";
+    public const string Version = "0.2.1";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -1445,6 +1445,14 @@ public sealed class ClassSyncPlan
         return e.Kind+"|"+e.Text+"|"+string.Join("|",e.Attributes.Where(p=>!Ignored.Contains(p.Key)).OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>p.Key+"="+p.Value));
     }
     static string Anchor(ClassElement e) { return e.Kind=="class"?e.Kind+"|"+e.Text+"|"+e.Attr("keyword"):KindKey(e)+"|"+e.Text; }
+    // Everything but the name: the rendered line with a placeholder name for members, the
+    // keyword for classes, the kind alone for packages.
+    static string Shape(ClassElement e)
+    {
+        if(IsMember(e)) { var copy=e.Copy();copy.Text="\u0001";return "member|"+ClassPumlWriter.Render(copy); }
+        if(e.Kind=="class")return "class|"+e.Attr("keyword")+"|"+e.Attr("stereotype");
+        return e.Kind;
+    }
     static string LinkKey(ClassElement e,Dictionary<string,string> map)
     {
         return string.Join("|",e.Links.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>p.Key+":"+string.Join(",",p.Value.Select(id=>map==null?id:map[id]))));
@@ -1524,17 +1532,24 @@ public sealed class ClassSyncPlan
             var candidates=current.Elements.Where(b=>!used.Contains(b.Id) && Properties(b)==props).ToArray();
             if(candidates.Length==1 && desired.Elements.Count(b=>!map.ContainsKey(b.Id) && Properties(b)==props)==1)bind(a,candidates[0]);
         }
-        // A single unmatched element of a kind under a mapped parent is a rename or edit.
-        progress=true;
-        while(progress)
+        // Renames: an unmatched element under a mapped parent binds to the one unmatched element
+        // there that looks the same apart from its name. Three keys, strict to loose: the rendered
+        // line without the name, the exact kind, then the member/class kind. Several renames in one
+        // class (an attribute and an operation, two attributes of different types) resolve this way.
+        foreach(var key in new Func<ClassElement,string>[]{Shape,e=>e.Kind,KindKey})
         {
-            progress=false;
-            foreach(var a in desired.Elements.Where(e=>structural(e) && !map.ContainsKey(e.Id)).ToArray())
+            progress=true;
+            while(progress)
             {
-                if(a.Parent==null || !map.ContainsKey(a.Parent))continue;
-                var candidates=current.Elements.Where(b=>!used.Contains(b.Id) && b.Parent==map[a.Parent] && KindKey(b)==KindKey(a)).ToArray();
-                if(candidates.Length==1 && desired.Elements.Count(b=>!map.ContainsKey(b.Id) && b.Parent==a.Parent && KindKey(b)==KindKey(a))==1)
-                {bind(a,candidates[0]);progress=true;}
+                progress=false;
+                foreach(var a in desired.Elements.Where(e=>structural(e) && !map.ContainsKey(e.Id)).ToArray())
+                {
+                    if(a.Parent==null || !map.ContainsKey(a.Parent))continue;
+                    string k=key(a);
+                    var candidates=current.Elements.Where(b=>!used.Contains(b.Id) && b.Parent==map[a.Parent] && key(b)==k).ToArray();
+                    if(candidates.Length==1 && desired.Elements.Count(b=>!map.ContainsKey(b.Id) && b.Parent==a.Parent && key(b)==k)==1)
+                    {bind(a,candidates[0]);progress=true;}
+                }
             }
         }
         align();

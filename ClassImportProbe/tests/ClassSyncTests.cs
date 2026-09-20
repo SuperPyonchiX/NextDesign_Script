@@ -72,6 +72,16 @@ public static class ClassSyncTests
         var plain = ClassDocument.Parse("@startuml\nclass \"A\" as A\nclass \"B\" as B\n\nA --> \"0..*\" B : Children\nA --> \"0..*\" B : SubClasses\n\n@enduml\n");
         Check(Plan(plain, drawn).Changes.Count == 0 && Plan(drawn, plain).Changes.Count == 0, "arrow-only difference on paired lines: " + Describe(Plan(plain, drawn)));
 
+        // Several renames in one class: an attribute and an operation (real-machine case), and
+        // two attributes of different types, each resolve to updates rather than add/delete.
+        var twoRenames = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("- state : int", "- state2 : int").Replace("+ start(mode : int)", "+ start2(mode : int)"));
+        var twoPlan = Plan(baseline, twoRenames);
+        Check(twoPlan.Changes.Count == 2 && twoPlan.Changes.All(c => c.Action == "update" && c.Detail == "name") && twoPlan.Changes.Count(c => c.Kind == "attribute") == 1 && twoPlan.Changes.Count(c => c.Kind == "operation") == 1, "attribute and operation renamed together: " + Describe(twoPlan));
+        var twoAttributes = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("- state : int", "- state2 : int").Replace("{static} count : int", "{static} count2 : int"));
+        var twoAttrPlan = Plan(baseline, twoAttributes);
+        Check(twoAttrPlan.Changes.Count == 2 && twoAttrPlan.Changes.All(c => c.Action == "update" && c.Kind == "attribute" && c.Detail == "name"), "two attributes renamed together: " + Describe(twoAttrPlan));
+        Check(ClassTextPreflight.Check(baseline, twoRenames, twoPlan).Renames.Count == 2, "two renames pass the preflight");
+
         // Text-update preflight: only member renames pass; everything else is a stop reason.
         var renameGate = ClassTextPreflight.Check(baseline, Load(samples, "rename-attribute.puml"), rename);
         Check(renameGate.Candidate && renameGate.Renames.Count == 1 && renameGate.Renames[0].OldText == "state" && renameGate.Renames[0].NewText == "status" && renameGate.Renames[0].Line == 7, "rename preflight: " + renameGate.Summary());
