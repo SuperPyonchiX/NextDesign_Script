@@ -754,6 +754,13 @@ public sealed class SequenceStructurePreparation
             Require(relations.Count(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage" && V(r,"TargetId")==id)==1,"受信接続が一意ではありません。");
             var copy=SequenceJson.Parse(link.ToJsonString());
             copy.Properties["SourceId"]=SequenceJson.Parse(SequencePayload.Q(newPort));
+            // The order belongs to the collection the relation is leaving, so carrying it
+            // over would ask for a position the destination may not have. Omit it and let
+            // the move append, which is what the product does.
+            copy.Properties.Remove("SourceIndex");
+            // The order belongs to the collection the relation is leaving, so carrying it
+            // over would ask for a position the destination may not have. Omit it and let
+            // the move append, which is what the product does.
             changed.Add(copy);changedIds.Add(V(link,"Id"));
         }
         foreach(string id in gate.DeleteExecutions)

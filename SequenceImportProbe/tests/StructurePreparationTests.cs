@@ -175,6 +175,16 @@ public static class StructurePreparationTests
         Require(SequenceJson.Parse(package.EditorAfterDeleteJson)["Editors"].Items.Single()["ExecutionSpecifications"].Items
             .Count(sh=>sh["ModelId"].StringValue()==bar)==1,"new bar was dropped from the deletion stage editor");
 
+        // The export carries the order the relation had where it was. Moving it to a bar
+        // that holds nothing must not ask for that position.
+        var occupiedSeed=Clone(raw);
+        var movedRelation=occupiedSeed["Relations"].Items.Single(r=>r["MetamodelId"].StringValue()==SequencePayload.Prefix+"ReceiveMessage");
+        movedRelation.Properties["SourceIndex"]=SequenceJson.Parse("3");
+        var occupiedPackage=SequenceStructurePreparation.Build(occupiedSeed.ToJsonString(),editorId,current,plan);
+        var moved=SequenceJson.Parse(occupiedPackage.ReconnectJson)["Relations"].Items
+            .Single(r=>r["Id"].StringValue()==movedRelation["Id"].StringValue());
+        Require(moved["SourceIndex"]==null,"stale order from the source collection was sent");
+
         var state=new SequenceTrialState();
         foreach(var e in raw["Entities"].Items)state.Models[e["Id"].StringValue()]=e.ToJsonString();
         foreach(var r in raw["Relations"].Items)
@@ -335,7 +345,10 @@ public static class StructurePreparationTests
         Reject(()=>unscheduled.Expected(deletionOnly,plan,true),"deleting referenced port accepted");
         var reconnect=SequenceJson.Parse(package.ReconnectJson);var changed=reconnect["Relations"].Items.Single();
         var expected=Clone(receiver);Set(expected,"SourceId",replacement);
-        Require(changed.ToJsonString()==expected.ToJsonString(),"relation identity, order or unknown data changed");
+        // The order of the collection being left is dropped so the move appends.
+        Require(changed["SourceIndex"]==null,"stale source order carried to the destination");
+        expected.Properties.Remove("SourceIndex");
+        Require(changed.ToJsonString()==expected.ToJsonString(),"relation identity, target order or unknown data changed");
         Require(reconnect["Entities"].Items.Count==0 && reconnect["Editors"].Items.Single().ToJsonString()==editor.ToJsonString(),"reconnect altered models or editor");
         Require(reconnect["SchemaVersion"].StringValue()=="11.1" && reconnect["TopElementId"].StringValue()==ids[0],"patch targets wrong root/schema");
         var deleted=Clone(editor);deleted["ExecutionSpecifications"].Items.RemoveAt(1);
