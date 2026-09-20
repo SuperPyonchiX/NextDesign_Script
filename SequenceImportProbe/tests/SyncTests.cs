@@ -141,6 +141,9 @@ public static class SyncTests
         Require(barsPlan.Changes.Count(c=>c.Kind=="execution" && c.Action=="update")==2,"boundary differences hidden");
         var unused=Doc("activate A\ndeactivate A");Ids(unused);
         Require(Plan(unused,Doc("activate A\ndeactivate A")).IsEmpty,"unique empty bar no-op recreated");
+        var positionsOnly=triggered.Copy();Ids(positionsOnly);var reorderedBars=positionsOnly.Copy();
+        foreach(var bar in reorderedBars.Elements.Where(e=>e.Kind=="execution"))bar.Order+=100;
+        Require(Plan(positionsOnly,reorderedBars).IsEmpty,"interval storage order shifted unrelated message ordering");
         Console.WriteLine("PASS: all-kind semantic plans, mixed changes, ID retention, block edits, ambiguity, moves, source trivia and idempotence");
     }
 }

@@ -292,10 +292,10 @@ public sealed class SyncPlan
             if(Properties(e)!=Properties(before) || LinkKey(e,null)!=LinkKey(before,null))plan.Changes.Add(new SequenceChange{Action="update",Id=e.Id,Kind=e.Kind,Line=e.Line});
             // Absolute ordinal changes from insertions/deletions are not moves.
             var retained=new HashSet<string>(map.Values.Where(old.ContainsKey));
-            var previous=plan.Expected.Elements.Where(n=>n.Parent==e.Parent && n.Order<e.Order).OrderBy(n=>n.Order)
+            var previous=plan.Expected.Elements.Where(n=>n.Kind!="execution" && n.Parent==e.Parent && n.Order<e.Order).OrderBy(n=>n.Order)
                 .Select(n=>n.Id).Where(retained.Contains).ToArray();
-            var oldPrevious=current.Elements.Where(n=>n.Parent==before.Parent && n.Order<before.Order && retained.Contains(n.Id)).OrderBy(n=>n.Order).Select(n=>n.Id).ToArray();
-            if(e.Parent!=before.Parent || !previous.SequenceEqual(oldPrevious))plan.Changes.Add(new SequenceChange{Action="move",Id=e.Id,Kind=e.Kind,Line=e.Line});
+            var oldPrevious=current.Elements.Where(n=>n.Kind!="execution" && n.Parent==before.Parent && n.Order<before.Order && retained.Contains(n.Id)).OrderBy(n=>n.Order).Select(n=>n.Id).ToArray();
+            if(e.Parent!=before.Parent || (e.Kind!="execution" && !previous.SequenceEqual(oldPrevious)))plan.Changes.Add(new SequenceChange{Action="move",Id=e.Id,Kind=e.Kind,Line=e.Line});
         }
         foreach(var e in current.Elements.Where(e=>!map.ContainsValue(e.Id)))plan.Changes.Add(new SequenceChange{Action="delete",Id=e.Id,Kind=e.Kind});
         plan.Expected.Validate();return plan;
@@ -435,7 +435,8 @@ public static class SequenceAudit
             if(e.Parent!=b.Parent)hit("所属先の相違");
             if(new[]{"sender","receiver"}.Any(k=>!EqualLinks(e,b,k)))hit("メッセージの送受信先");
             if(new[]{"sendExecution","receiveExecution"}.Any(k=>!EqualLinks(e,b,k)))hit("メッセージの接続実行区間");
-            if(new[]{"startAfter","endBefore","endContainer","outer"}.Any(k=>!EqualLinks(e,b,k)))hit("実行区間の境界・入れ子");
+            foreach(var boundary in new[]{"startAfter","endBefore","endContainer","outer"})
+                if(!EqualLinks(e,b,boundary))hit(boundary=="startAfter"?"実行区間: 開始位置":boundary=="endBefore"?"実行区間: 終了位置":boundary=="endContainer"?"実行区間: 終了分岐":"実行区間: 外側区間");
             if(!EqualLinks(e,b,"participant"))hit("実行区間・生成破棄の参加者");
             if(new[]{"targets","anchors"}.Any(k=>!EqualLinks(e,b,k)))hit("Note・refの接続先");
             foreach(var key in e.Attributes.Keys.Union(b.Attributes.Keys))

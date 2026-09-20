@@ -22,7 +22,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.5";
+    public const string Title = "シーケンス生成実験 / 0.8.6";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -675,17 +675,37 @@ public sealed class DiagramSnapshot
         memberships.AddRange(SequenceRegion.Nesting(operandRegions,fragmentRegions));
         SequenceMembership.Resolve(doc,memberships,line=>log.AppendLine(line));
 
+        Func<double,double,string> containerAt=(x,y)=>{
+            var candidates=operandRegions.Where(r=>x>=r.X && x<=r.X+r.Width && y>=r.Y && y<r.Y+r.Height-1.0).ToArray();
+            var nearest=candidates.Where(r=>!candidates.Any(inner=>inner.Id!=r.Id && SequenceRegion.Contains(r,inner))).ToArray();
+            if(nearest.Length>1) {snapshot.Limitations.Add("実行区間境界の所属候補が複数");return root.Id;}
+            return nearest.Length==1?nearest[0].Id:root.Id;
+        };
         foreach(var e in diagram.ExecutionSpecifications)
         {
             var item=byId[e.ModelId];
             var events=doc.Elements.Where(n=>n.Kind!="participant" && n.Kind!="interaction" && n.Kind!="execution").OrderBy(n=>snapshot.Y[n.Id]).ToArray();
-            var preceding=events.LastOrDefault(n=>snapshot.Y[n.Id]<e.LocationY);
-            var following=events.FirstOrDefault(n=>snapshot.Y[n.Id]>e.LocationY+e.Length);
+            // The exporter snaps interval ends to neighbouring messages within ten pixels.
+            Func<string,double,SequenceElement> endpoint=(role,y)=>{
+                var candidates=doc.Elements.Where(n=>n.Kind=="message" && n.Links.ContainsKey(role) && n.Links[role].Contains(e.ModelId))
+                    .Where(n=>Math.Abs(snapshot.Y[n.Id]-y)<=10.0).OrderBy(n=>Math.Abs(snapshot.Y[n.Id]-y)).ToArray();
+                if(candidates.Length>1 && Math.Abs(Math.Abs(snapshot.Y[candidates[0].Id]-y)-Math.Abs(snapshot.Y[candidates[1].Id]-y))<0.00001)return null;
+                return candidates.FirstOrDefault();
+            };
+            var trigger=endpoint("receiveExecution",e.LocationY);var origin=trigger==null?endpoint("sendExecution",e.LocationY):null;
+            double start=trigger!=null?snapshot.Y[trigger.Id]:origin!=null?snapshot.Y[origin.Id]:e.LocationY;
+            var closer=endpoint("sendExecution",e.LocationY+e.Length);
+            double end=closer==null?e.LocationY+e.Length:snapshot.Y[closer.Id];
+            var preceding=trigger??events.LastOrDefault(n=>snapshot.Y[n.Id]<start);
+            var following=events.FirstOrDefault(n=>snapshot.Y[n.Id]>end);
+            item.Parent=trigger!=null?trigger.Parent:origin!=null?origin.Parent:containerAt(e.LocationX,start);
             item.Links["startAfter"]=preceding==null?new string[0]:new[]{preceding.Id};
             item.Links["endBefore"]=following==null?new string[0]:new[]{following.Id};
-            item.Links["endContainer"]=new[]{root.Id};
+            item.Links["endContainer"]=new[]{closer!=null?closer.Parent:containerAt(e.LocationX,end)};
             var parent=diagram.ExecutionSpecifications.Where(p=>p.ModelId!=e.ModelId && p.Lifeline!=null && p.Lifeline.ModelId==e.Lifeline.ModelId
-                && p.LocationY<=e.LocationY && p.LocationY+p.Length>=e.LocationY+e.Length && p.LocationX<e.LocationX).OrderByDescending(p=>p.LocationX).FirstOrDefault();
+                && p.LocationY<=e.LocationY+1.0 && p.LocationY+p.Length>=e.LocationY+e.Length-1.0
+                && (Math.Abs(p.LocationY-e.LocationY)>1.0 || Math.Abs(p.Length-e.Length)>1.0 || p.LocationX<e.LocationX))
+                .OrderBy(p=>p.Length).ThenByDescending(p=>p.LocationX).FirstOrDefault();
             if(parent!=null)item.Links["outer"]=new[]{parent.ModelId};
         }
         foreach(var group in doc.Elements.Where(e=>e.Parent!=null).GroupBy(e=>e.Parent))
@@ -2311,10 +2331,10 @@ public sealed class SyncPlan
             if(Properties(e)!=Properties(before) || LinkKey(e,null)!=LinkKey(before,null))plan.Changes.Add(new SequenceChange{Action="update",Id=e.Id,Kind=e.Kind,Line=e.Line});
             // Absolute ordinal changes from insertions/deletions are not moves.
             var retained=new HashSet<string>(map.Values.Where(old.ContainsKey));
-            var previous=plan.Expected.Elements.Where(n=>n.Parent==e.Parent && n.Order<e.Order).OrderBy(n=>n.Order)
+            var previous=plan.Expected.Elements.Where(n=>n.Kind!="execution" && n.Parent==e.Parent && n.Order<e.Order).OrderBy(n=>n.Order)
                 .Select(n=>n.Id).Where(retained.Contains).ToArray();
-            var oldPrevious=current.Elements.Where(n=>n.Parent==before.Parent && n.Order<before.Order && retained.Contains(n.Id)).OrderBy(n=>n.Order).Select(n=>n.Id).ToArray();
-            if(e.Parent!=before.Parent || !previous.SequenceEqual(oldPrevious))plan.Changes.Add(new SequenceChange{Action="move",Id=e.Id,Kind=e.Kind,Line=e.Line});
+            var oldPrevious=current.Elements.Where(n=>n.Kind!="execution" && n.Parent==before.Parent && n.Order<before.Order && retained.Contains(n.Id)).OrderBy(n=>n.Order).Select(n=>n.Id).ToArray();
+            if(e.Parent!=before.Parent || (e.Kind!="execution" && !previous.SequenceEqual(oldPrevious)))plan.Changes.Add(new SequenceChange{Action="move",Id=e.Id,Kind=e.Kind,Line=e.Line});
         }
         foreach(var e in current.Elements.Where(e=>!map.ContainsValue(e.Id)))plan.Changes.Add(new SequenceChange{Action="delete",Id=e.Id,Kind=e.Kind});
         plan.Expected.Validate();return plan;
@@ -2454,7 +2474,8 @@ public static class SequenceAudit
             if(e.Parent!=b.Parent)hit("所属先の相違");
             if(new[]{"sender","receiver"}.Any(k=>!EqualLinks(e,b,k)))hit("メッセージの送受信先");
             if(new[]{"sendExecution","receiveExecution"}.Any(k=>!EqualLinks(e,b,k)))hit("メッセージの接続実行区間");
-            if(new[]{"startAfter","endBefore","endContainer","outer"}.Any(k=>!EqualLinks(e,b,k)))hit("実行区間の境界・入れ子");
+            foreach(var boundary in new[]{"startAfter","endBefore","endContainer","outer"})
+                if(!EqualLinks(e,b,boundary))hit(boundary=="startAfter"?"実行区間: 開始位置":boundary=="endBefore"?"実行区間: 終了位置":boundary=="endContainer"?"実行区間: 終了分岐":"実行区間: 外側区間");
             if(!EqualLinks(e,b,"participant"))hit("実行区間・生成破棄の参加者");
             if(new[]{"targets","anchors"}.Any(k=>!EqualLinks(e,b,k)))hit("Note・refの接続先");
             foreach(var key in e.Attributes.Keys.Union(b.Attributes.Keys))
