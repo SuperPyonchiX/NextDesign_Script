@@ -178,6 +178,13 @@
         var editedNote=Doc("note over A\n  heading\n      detail\n\n  next\nend note");
         Require(SequenceNotePolicy.Build(sourceNote,editedNote,()=>"new-note").Changes.Any(c=>c.Kind=="note" && c.Action=="update"),"relative whitespace edit hidden");
         Require(SequenceNotePolicy.Build(sourceNote,Doc("note over A\n  heading\n    detail\n  next\nend note"),()=>"new-note").Changes.Any(c=>c.Kind=="note" && c.Action=="update"),"paragraph deletion hidden");
+        var containers=Doc("alt private-one\nA -> B : x\nend\nopt private-two\nA -> B : y\nend");Ids(containers);
+        foreach(var f in containers.Elements.Where(e=>e.Kind=="fragment"))f.Attributes["operator"]="private-operator";
+        var containerInput=Doc("alt private-one\nA -> B : x\nend\nopt private-two\nA -> B : y\nend");
+        var containerPlan=Plan(containers,containerInput);
+        string containerAudit=SequenceAudit.Reasons(containers,containerInput,containerPlan);
+        Require(containerAudit.Contains("図側候補=") && containerAudit.Contains("演算子=その他"),"unmatched container diagnostics missing");
+        Require(!containerAudit.Contains("private-one") && !containerAudit.Contains("private-two") && !containerAudit.Contains("private-operator"),"container diagnostics disclosed private text");
         Console.WriteLine("PASS: all-kind semantic plans, mixed changes, ID retention, block edits, ambiguity, moves, source trivia and idempotence");
     }
 }

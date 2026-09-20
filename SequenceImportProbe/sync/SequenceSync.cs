@@ -1,4 +1,4 @@
-// Pure semantic synchronization core. No SDK or filesystem dependencies.
+﻿// Pure semantic synchronization core. No SDK or filesystem dependencies.
 public sealed class SequenceElement
 {
     public string Id, Kind, Parent, Text = "";
@@ -463,6 +463,11 @@ public static class SequenceAudit
         lines.Add("本文・モデルID・パスはこの画面には表示しません。");
         return string.Join("\n",lines)+"\f"+Residuals(current,desired,plan);
     }
+    static string SafeOperator(SequenceElement e)
+    {
+        string value;if(!e.Attributes.TryGetValue("operator",out value))return "-";
+        return new[]{"alt","opt","loop","par","break","critical","group"}.Contains(value)?value:"その他";
+    }
     static string Residuals(SequenceDocument current,SequenceDocument desired,SyncPlan plan)
     {
         var before=current.Elements.ToDictionary(e=>e.Id);var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
@@ -488,6 +493,17 @@ public static class SequenceAudit
             rows.Add("L"+a.Line+" "+a.Kind+" 未対応: 同種="+candidates.Length+" 空白正規化本文一致="+text.Length+" 接続先一致="+text.Count(b=>EqualLinks(a,b,"targets")));
             foreach(var b in text.Take(2))rows.Add("  接続数 図/入力="+(b.Links.ContainsKey("targets")?b.Links["targets"].Length:0)+"/"+(a.Links.ContainsKey("targets")?a.Links["targets"].Length:0)+" 所属一致="+(a.Parent==b.Parent));
         }
+        // Show upstream container mismatches before diagnosing their dependent links.
+        foreach(var a in plan.Expected.Elements.Where(e=>(e.Kind=="fragment" || e.Kind=="operand") && !before.ContainsKey(e.Id)))
+        {
+            var candidates=current.Elements.Where(b=>b.Kind==a.Kind && !after.ContainsKey(b.Id)).ToArray();
+            rows.Add("L"+a.Line+" "+token(a.Id)+" 未対応 所属="+token(a.Parent)+" 子="+after.Values.Count(e=>e.Parent==a.Id)+" 演算子="+SafeOperator(a));
+            rows.Add("  図側候補="+candidates.Length+" 本文一致="+candidates.Count(b=>Fold(b.Text)==Fold(a.Text))+" 所属一致="+candidates.Count(b=>b.Parent==a.Parent));
+            foreach(var b in candidates.Take(4))
+                rows.Add("  "+token(b.Id)+" 所属="+token(b.Parent)+" 子="+before.Values.Count(e=>e.Parent==b.Id)+" 演算子="+SafeOperator(b)+" 本文一致="+(Fold(b.Text)==Fold(a.Text)));
+            if(candidates.Length>4)rows.Add("  残り候補="+(candidates.Length-4));
+        }
+        rows=rows.Distinct().ToList();
         if(rows.Count==1)rows.Add("所属・境界・未対応Note/refの残差なし");
         // Each page remains photographable even with a large diagram.
         return string.Join("\f",Enumerable.Range(0,(rows.Count+13)/14).Select(i=>string.Join("\n",rows.Skip(i*14).Take(14))));
