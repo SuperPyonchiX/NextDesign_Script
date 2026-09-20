@@ -370,12 +370,14 @@ public static class SequenceStructureTrial
         if(reconnectCommit && !retain)throw new InvalidOperationException("S231: 確定モードが不正です。");
         int touched=prepared.DeleteIds.Length+prepared.AddedExecutions.Length
             +prepared.AddedParticipants.Length+prepared.DeleteParticipantIds.Length
-            +prepared.DeleteMessageIds.Length+prepared.AddedMessages.Length+reconnectCount;
+            +prepared.DeleteMessageIds.Length+prepared.AddedMessages.Length
+            +prepared.DeleteFrameIds.Length+reconnectCount;
         Func<SequenceChange,bool> supported=c=>
             (c.Action=="delete" && c.Kind=="execution")
             || (reconnectCommit && c.Action=="update" && c.Kind=="message")
             || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message"))
-            || (reconnectCommit && c.Action=="delete" && (c.Kind=="participant" || c.Kind=="message"));
+            || (reconnectCommit && c.Action=="delete"
+                && (c.Kind=="participant" || c.Kind=="message" || c.Kind=="fragment" || c.Kind=="operand"));
         if(retain && (touched==0 || (!reconnectCommit && touched!=prepared.DeleteIds.Length)
             || plan.Changes.Any(c=>!supported(c))))
             throw new InvalidOperationException("S231: 確定モードの対象外の差分があります。");
@@ -385,7 +387,7 @@ public static class SequenceStructureTrial
             .Concat(prepared.AddedParticipants.Select(a=>a.ShapeId))
             .Concat(prepared.AddedMessages.Select(a=>a.ShapeId)).ToArray();
         var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
-            .Concat(prepared.DeleteMessageIds).ToArray();
+            .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).ToArray();
         var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
         var expectedReconnect=before.Expected(prepared,plan,false);
         var expectedFinal=before.Expected(prepared,plan,true);
@@ -493,7 +495,8 @@ public static class SequenceStructureTrial
             +" / 実行区間追加 "+prepared.AddedExecutions.Length+"件"
             +" / 参加者追加 "+prepared.AddedParticipants.Length+"件 / 参加者削除 "+prepared.DeleteParticipantIds.Length+"件"
             +" / メッセージ削除 "+prepared.DeleteMessageIds.Length+"件"
-            +" / メッセージ追加 "+prepared.AddedMessages.Length+"件";
+            +" / メッセージ追加 "+prepared.AddedMessages.Length+"件"
+            +" / フラグメント関連の削除 "+prepared.DeleteFrameIds.Length+"件";
         log.AppendLine(summary);
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
         catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}

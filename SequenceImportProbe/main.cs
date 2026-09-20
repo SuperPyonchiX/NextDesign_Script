@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.46";
+    public const string Title = "シーケンス生成実験 / 0.8.47";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -1028,12 +1028,14 @@ public static class SequenceStructureTrial
         if(reconnectCommit && !retain)throw new InvalidOperationException("S231: 確定モードが不正です。");
         int touched=prepared.DeleteIds.Length+prepared.AddedExecutions.Length
             +prepared.AddedParticipants.Length+prepared.DeleteParticipantIds.Length
-            +prepared.DeleteMessageIds.Length+prepared.AddedMessages.Length+reconnectCount;
+            +prepared.DeleteMessageIds.Length+prepared.AddedMessages.Length
+            +prepared.DeleteFrameIds.Length+reconnectCount;
         Func<SequenceChange,bool> supported=c=>
             (c.Action=="delete" && c.Kind=="execution")
             || (reconnectCommit && c.Action=="update" && c.Kind=="message")
             || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message"))
-            || (reconnectCommit && c.Action=="delete" && (c.Kind=="participant" || c.Kind=="message"));
+            || (reconnectCommit && c.Action=="delete"
+                && (c.Kind=="participant" || c.Kind=="message" || c.Kind=="fragment" || c.Kind=="operand"));
         if(retain && (touched==0 || (!reconnectCommit && touched!=prepared.DeleteIds.Length)
             || plan.Changes.Any(c=>!supported(c))))
             throw new InvalidOperationException("S231: 確定モードの対象外の差分があります。");
@@ -1043,7 +1045,7 @@ public static class SequenceStructureTrial
             .Concat(prepared.AddedParticipants.Select(a=>a.ShapeId))
             .Concat(prepared.AddedMessages.Select(a=>a.ShapeId)).ToArray();
         var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
-            .Concat(prepared.DeleteMessageIds).ToArray();
+            .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).ToArray();
         var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
         var expectedReconnect=before.Expected(prepared,plan,false);
         var expectedFinal=before.Expected(prepared,plan,true);
@@ -1151,7 +1153,8 @@ public static class SequenceStructureTrial
             +" / 実行区間追加 "+prepared.AddedExecutions.Length+"件"
             +" / 参加者追加 "+prepared.AddedParticipants.Length+"件 / 参加者削除 "+prepared.DeleteParticipantIds.Length+"件"
             +" / メッセージ削除 "+prepared.DeleteMessageIds.Length+"件"
-            +" / メッセージ追加 "+prepared.AddedMessages.Length+"件";
+            +" / メッセージ追加 "+prepared.AddedMessages.Length+"件"
+            +" / フラグメント関連の削除 "+prepared.DeleteFrameIds.Length+"件";
         log.AppendLine(summary);
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
         catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}
@@ -3058,8 +3061,11 @@ public sealed class SequenceStructurePreflight
     public List<string> DeleteParticipants=new List<string>();
     public List<string> DeleteMessages=new List<string>();
     public List<string> AddMessages=new List<string>();
+    public List<string> DeleteFragments=new List<string>();
+    public List<string> DeleteOperands=new List<string>();
     public int Targets { get { return ReconnectMessages.Count+DeleteExecutions.Count+AddExecutions.Count
-        +AddParticipants.Count+DeleteParticipants.Count+DeleteMessages.Count+AddMessages.Count; } }
+        +AddParticipants.Count+DeleteParticipants.Count+DeleteMessages.Count+AddMessages.Count
+        +DeleteFragments.Count+DeleteOperands.Count; } }
     public bool Candidate { get { return Reasons.Count==0 && Targets>0; } }
     // The deletion-only mode stays exactly as the product confirmed it. The other mode
     // covers a receiver change together with deletions, additions, or both.
@@ -3070,6 +3076,27 @@ public sealed class SequenceStructurePreflight
         if(!reconnect)return DeleteExecutions.Count==Targets;
         // The general button takes everything the deletion-only one cannot.
         return Targets>DeleteExecutions.Count;
+    }
+    // A fragment goes only as a whole: its operands and everything inside them have to
+    // be leaving in the same plan, so nothing is left without a place to live.
+    static string FragmentReason(SequenceDocument current,SyncPlan plan,string id)
+    {
+        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        var inside=new List<SequenceElement>();
+        var pending=new List<string>{id};
+        for(int i=0;i<pending.Count;i++)
+        {
+            if(pending.Count>500)return "フラグメントの入れ子が深すぎます。";
+            foreach(var child in current.Elements.Where(e=>e.Parent==pending[i]))
+            {inside.Add(child);pending.Add(child.Id);}
+        }
+        foreach(var child in inside)
+        {
+            if(after.ContainsKey(child.Id))return "フラグメントの中に残す要素があります。中身ごと消える場合だけ対象です。";
+            if(child.Kind!="operand" && child.Kind!="message")
+                return "フラグメントの中に"+child.Kind+"があるため対象外です。オペランドとメッセージだけを扱います。";
+        }
+        return null;
     }
     static bool Referenced(SyncPlan plan,string id)
     {
@@ -3211,6 +3238,19 @@ public sealed class SequenceStructurePreflight
                 else result.DeleteParticipants.Add(change.Id);
                 continue;
             }
+            if(change.Action=="delete" && change.Kind=="fragment" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
+            {
+                string why=FragmentReason(current,plan,change.Id);
+                if(why!=null)result.Reasons.Add("L"+change.Line+" "+why);else result.DeleteFragments.Add(change.Id);
+                continue;
+            }
+            if(change.Action=="delete" && change.Kind=="operand" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
+            {
+                string owner=before[change.Id].Parent;
+                if(owner==null || after.ContainsKey(owner))result.Reasons.Add("L"+change.Line+" オペランド単独の削除は対象外です。フラグメントごと消える場合だけ扱います。");
+                else result.DeleteOperands.Add(change.Id);
+                continue;
+            }
             if(change.Action=="delete" && change.Kind=="message" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
             {
                 if(Referenced(plan,change.Id))result.Reasons.Add("L"+change.Line+" メッセージへの参照が残るため削除できません。");
@@ -3251,6 +3291,7 @@ public sealed class SequenceStructurePreflight
             +" / 実行区間追加候補: "+AddExecutions.Count
             +" / 参加者追加候補: "+AddParticipants.Count+" / 参加者削除候補: "+DeleteParticipants.Count
             +" / メッセージ削除候補: "+DeleteMessages.Count+" / メッセージ追加候補: "+AddMessages.Count
+            +" / フラグメント削除候補: "+DeleteFragments.Count+" / オペランド削除候補: "+DeleteOperands.Count
             +"\n"+(Reasons.Count>0?"全体を停止: "+Reasons.Count+"件の未対応条件":Candidate?"限定範囲の候補あり。既存図での適用・保持検証は未実施です。":"対象の変更なし")
             +"\n"+string.Join("\n",Reasons.Distinct());
     }
@@ -3258,7 +3299,8 @@ public sealed class SequenceStructurePreflight
     { return PumlBuild.Json(PumlBuild.Obj("Candidate",Candidate,"ReconnectMessages",ReconnectMessages.ToArray(),"DeleteExecutions",DeleteExecutions.ToArray(),
         "AddExecutions",AddExecutions.ToArray(),"AddParticipants",AddParticipants.ToArray(),
         "DeleteParticipants",DeleteParticipants.ToArray(),"DeleteMessages",DeleteMessages.ToArray(),
-        "AddMessages",AddMessages.ToArray(),
+        "AddMessages",AddMessages.ToArray(),"DeleteFragments",DeleteFragments.ToArray(),
+        "DeleteOperands",DeleteOperands.ToArray(),
         "Reasons",Reasons.ToArray())); }
 }
 
@@ -3296,6 +3338,7 @@ public sealed class SequenceStructurePreparation
     public SequenceAddedMessage[] AddedMessages=new SequenceAddedMessage[0];
     public string[] DeleteParticipantIds=new string[0];
     public string[] DeleteMessageIds=new string[0];
+    public string[] DeleteFrameIds=new string[0];
     static string V(SequenceJson n,string key) { return SequenceEditorDocument.Value(n,key); }
     static SequenceJson[] Array(SequenceJson n,string key)
     {
@@ -3524,6 +3567,15 @@ public sealed class SequenceStructurePreparation
                 ShapeId=laneShapeId,TemplateShapeId=V(rightmost,"Id"),RelationId=relationId,
                 TemplateRelationId=V(ownerLink,"Id"),X=Number(x)});
         }
+        foreach(var pair in gate.DeleteFragments.Select(f=>new[]{f,"___Interaction_CombinedFragment","CombinedFragment"})
+            .Concat(gate.DeleteOperands.Select(o=>new[]{o,"___CombinedFragment_InteractionOperand","InteractionOperand"})))
+        {
+            Require(byId.ContainsKey(pair[0]) && V(byId[pair[0]],"EntityType")==pair[2],"削除対象が退避データ内の"+pair[2]+"ではありません。");
+            foreach(var relation in relations.Where(r=>V(r,"SourceId")==pair[0] || V(r,"TargetId")==pair[0]))
+                Require(V(relation,"TargetId")==pair[0] && V(relation,"MetamodelId")==SequencePayload.Prefix+pair[1],
+                    "削除する"+pair[2]+"に未対応の関連が残っています。");
+            Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==pair[0])==1,"削除する"+pair[2]+"の図形を一意に取得できません。");
+        }
         foreach(string id in gate.DeleteMessages)
         {
             Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="Message","削除対象が退避データ内のメッセージではありません。");
@@ -3566,10 +3618,12 @@ public sealed class SequenceStructurePreparation
         }
         return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),ReconnectCount=changed.Count,
             EditorAfterDeleteJson=Deleted(editor,newShapes,newLaneShapes,newMessageShapes,gate.DeleteExecutions,
-                gate.DeleteParticipants.Concat(gate.DeleteMessages).ToList()),
+                gate.DeleteParticipants.Concat(gate.DeleteMessages)
+                    .Concat(gate.DeleteFragments).Concat(gate.DeleteOperands).ToList()),
             DeleteIds=gate.DeleteExecutions.ToArray(),
             AddedExecutions=additions.ToArray(),AddedParticipants=lanes.ToArray(),AddedMessages=wires.ToArray(),
             DeleteParticipantIds=gate.DeleteParticipants.ToArray(),DeleteMessageIds=gate.DeleteMessages.ToArray(),
+            DeleteFrameIds=gate.DeleteFragments.Concat(gate.DeleteOperands).ToArray(),
             ReceiveRelationIds=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage").Select(r=>V(r,"Id")).ToArray()};
     }
     static string Number(double value)
@@ -3636,11 +3690,10 @@ public sealed class SequenceStructurePreparation
         var json=SequenceJson.Parse(editor.ImportJson());
         var view=json["Editors"].Items.Single();
         var gone=new HashSet<string>(removed.Concat(removedLanes));
-        foreach(string collection in new[]{"Messages","ExecutionSpecifications","Lifelines"})
+        foreach(var property in view.Properties)
         {
-            var array=view[collection];
-            if(array==null)continue;
-            if(array.Items==null)throw new InvalidOperationException("S220: 削除後の図形配列の形式が不正です: "+collection);
+            var array=property.Value;
+            if(array==null || array.Items==null)continue;
             for(int i=array.Items.Count-1;i>=0;i--)
                 if(gone.Contains(SequenceEditorDocument.Value(array.Items[i],"ModelId")))array.Items.RemoveAt(i);
         }
@@ -3914,7 +3967,8 @@ public sealed class SequenceTrialState
         }
         if(delete)
         {
-            var removed=new HashSet<string>(prepared.DeleteIds.Concat(prepared.DeleteParticipantIds).Concat(prepared.DeleteMessageIds));
+            var removed=new HashSet<string>(prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
+                .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds));
             foreach(string id in removed)result.Models.Remove(id);
             foreach(string id in prepared.DeleteMessageIds)result.Ports.Remove(id);
             // Measured on the product: deleting a model closes the gap it leaves in the

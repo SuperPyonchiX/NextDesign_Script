@@ -138,6 +138,32 @@ public static class PayloadTest {
    if(SyncPlan.Build(addBackPlan.Expected,batchAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("message addition semantic plan is not idempotent");
 
+   // An alt block with one message inside, removed as a whole.
+   var fragmentBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
+   var fragmentPlan=SyncPlan.Build(fragmentBefore,batchAfter,()=>Guid.NewGuid().ToString());
+   var fragmentGate=SequenceStructurePreflight.Check(fragmentBefore,fragmentPlan);
+   if(!fragmentGate.Candidate || fragmentGate.DeleteFragments.Count!=1 || fragmentGate.DeleteOperands.Count!=1
+       || fragmentGate.DeleteMessages.Count!=1 || fragmentGate.Targets!=3)
+       throw new Exception("fragment sample must remove one fragment, its operand and the message inside: "
+           +fragmentPlan.ToJson()+fragmentGate.ToJson());
+   if(!fragmentGate.CanCommit(true) || fragmentGate.CanCommit(false))
+       throw new Exception("fragment removal did not reach exactly the receiver-change commit mode");
+   if(SyncPlan.Build(fragmentPlan.Expected,batchAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
+       throw new Exception("fragment semantic plan is not idempotent");
+
+   // Dropping the frame but keeping the message inside leaves it nowhere to live.
+   var frame=fragmentBefore.Elements.Single(e=>e.Kind=="fragment");
+   var operand=fragmentBefore.Elements.Single(e=>e.Parent==frame.Id);
+   var kept=fragmentBefore.Copy();
+   kept.Elements.RemoveAll(e=>e.Id==frame.Id || e.Id==operand.Id);
+   foreach(var e in kept.Elements)if(e.Parent==operand.Id)e.Parent=fragmentBefore.Elements.Single(x=>x.Kind=="interaction").Id;
+   var keptPlan=new SyncPlan{Expected=kept};
+   keptPlan.Changes.Add(new SequenceChange{Action="delete",Kind="fragment",Id=frame.Id});
+   keptPlan.Changes.Add(new SequenceChange{Action="delete",Kind="operand",Id=operand.Id});
+   var keptGate=SequenceStructurePreflight.Check(fragmentBefore,keptPlan);
+   if(keptGate.DeleteFragments.Count!=0 || !keptGate.Reasons.Any(r=>r.Contains("中に残す要素")))
+       throw new Exception("a fragment whose contents stay was accepted: "+keptGate.ToJson());
+
    int commits=0, cancels=0;
    var success = new SequenceCompletion();
    success.Commit(delegate { commits++; });
