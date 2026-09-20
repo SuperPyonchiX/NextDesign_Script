@@ -26,6 +26,7 @@ public static class PayloadTest {
  public static int Main(string[] args) { try {
    PumlTests.Run(args[0],args[1]);
    MappingTests.Run(args[0]);
+   EditorTests.Run();
    int commits=0, cancels=0;
    var success = new SequenceCompletion();
    success.Commit(delegate { commits++; });
@@ -57,7 +58,7 @@ public static class PayloadTest {
 }
 '''
     pure_file = work / 'Pure.cs'
-    pure_file.write_text('using System; using System.Collections.Generic; using System.Linq; using System.IO; using System.Text; using System.Text.RegularExpressions;\n' + pure + runner + (root/'tests/PumlTests.cs').read_text(encoding='utf-8-sig') + (root/'tests/MappingTests.cs').read_text(encoding='utf-8'), encoding='utf-8-sig')
+    pure_file.write_text('using System; using System.Collections.Generic; using System.Linq; using System.IO; using System.Text; using System.Text.RegularExpressions;\n' + pure + runner + (root/'tests/PumlTests.cs').read_text(encoding='utf-8-sig') + (root/'tests/MappingTests.cs').read_text(encoding='utf-8') + (root/'tests/EditorTests.cs').read_text(encoding='utf-8-sig'), encoding='utf-8-sig')
     compiler = Path(os.environ['WINDIR']) / 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
     exe = work / 'Tests.exe'
     subprocess.run([str(compiler), '/nologo', '/warnaserror+', '/out:' + str(exe), str(pure_file)], check=True)

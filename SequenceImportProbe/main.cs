@@ -21,7 +21,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.6.8";
+    public const string Title = "シーケンス生成実験 / 0.7.0";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -564,27 +564,31 @@ public static class SequenceMappedUpdate
     static string Name(IModel model,Dictionary<string,string> changes)
     { string name; return changes!=null && changes.TryGetValue(model.Id,out name)?name:model.Name; }
     static string Number(double value) { return value.ToString("R",System.Globalization.CultureInfo.InvariantCulture); }
-    static string Signature(IInteraction root,ISequenceDiagram diagram,Dictionary<string,string> changes=null)
+    static string Signature(IInteraction root,ISequenceDiagram diagram,Dictionary<string,string> changes=null,HashSet<string> removed=null)
     {
         var rows=new List<string>();
-        var owned=Tree(root).ToArray();var ownedIds=new HashSet<string>(owned.Select(m=>m.Id));
+        removed=removed??new HashSet<string>();
+        var owned=Tree(root).Where(m=>!removed.Contains(m.Id)).ToArray();var ownedIds=new HashSet<string>(owned.Select(m=>m.Id));
         foreach(var model in owned.OrderBy(m=>m.Id))
         {
             rows.Add(PumlBuild.Json(PumlBuild.Obj("id",model.Id,"class",model.Metaclass.Id,"name",Name(model,changes),"owner",model.Owner==null?null:model.Owner.Id)));
-            foreach(var r in model.GetRelationsWhere((r,f)=>true).OrderBy(r=>r.Id))
+            foreach(var r in model.GetRelationsWhere((r,f)=>true).Where(r=>!removed.Contains(r.Source.Id) && !removed.Contains(r.Target.Id)).OrderBy(r=>r.Id))
             {
                 rows.Add(r.Id+":"+r.Source.Id+":"+r.Target.Id);
                 foreach(var endpoint in new[]{r.Source,r.Target}.Where(m=>!ownedIds.Contains(m.Id)))
                     rows.Add(PumlBuild.Json(PumlBuild.Obj("external",endpoint.Id,"class",endpoint.Metaclass.Id,"name",endpoint.Name,"deleted",endpoint.IsDeleted)));
             }
         }
-        foreach(var shape in diagram.Shapes.OrderBy(s=>s.Id))
+        foreach(var shape in diagram.Shapes.Where(s=>!removed.Contains(s.ModelId)).OrderBy(s=>s.Id))
         {
             rows.Add("shape:"+shape.Id+":"+shape.ModelId);
+            var visual=shape as IShape;
+            if(visual!=null && visual.Style!=null)
+                rows.Add(PumlBuild.Json(PumlBuild.Obj("styleOf",shape.Id,"back",visual.Style.BackColor,"fore",visual.Style.ForeColor,"border",visual.Style.BorderColor,"quick",visual.Style.QuickStyle,"thickness",visual.Style.BorderThickness,"line",visual.Style.BorderStyle)));
             var node=shape as ISequenceNodeShape;
             if(node!=null)rows.Add("bounds:"+Number(node.LocationX)+":"+Number(node.LocationY)+":"+Number(node.Width)+":"+Number(node.Height));
         }
-        foreach(var m in diagram.Messages.OrderBy(m=>m.Id))
+        foreach(var m in diagram.Messages.Where(m=>!removed.Contains(m.ModelId)).OrderBy(m=>m.Id))
         {
             var model=m.Model as IMessage;
             if(model==null)throw new InvalidOperationException("E160: メッセージのモデルを取得できません。");
@@ -673,7 +677,7 @@ public static class SequenceMappedUpdate
         var extraMessages=SequenceExportMatch.Unmapped(root.Messages.Select(m=>m.Id).Concat(diagram.Messages.Select(m=>m.Model.Id)),ids);
         var extraLines=SequenceExportMatch.Unmapped(root.Lifelines.Select(m=>m.Id).Concat(diagram.Lifelines.Select(m=>m.Model.Id)),lines.Values);
         coverage="\n本文の差分を検出: "+renamed+"件（対応表作成では変更しません）\n対応表に含まれない図側の要素: 参加者 "+extraLines.Length+"件 / メッセージ "+extraMessages.Length+"件";
-        if(extraLines.Length>0 || extraMessages.Length>0)coverage+="\nこの作成操作では削除しません。構造差分の同期は未実装です。";
+        if(extraLines.Length>0 || extraMessages.Length>0)coverage+="\nこの作成操作では削除しません。「メッセージを差分更新」で余剰メッセージを削除できます。参加者の削除は未対応です。";
         detail.AppendLine("Unmapped lifelines="+string.Join(",",extraLines));
         detail.AppendLine("Unmapped messages="+string.Join(",",extraMessages));
         return new SequenceMapFile{Project=project.Id,Root=root.Id,Editor=diagram.Id,Source=source,Fingerprint=before,MessageIds=ids.ToArray()};
@@ -687,10 +691,11 @@ public static class SequenceMappedUpdate
     {
         IUndoTransaction transaction=null; var completion=new SequenceCompletion(); bool committed=false,prepared=false,rollbackRestored=false;
         string pending=null,original=null; IInteraction root=null; ISequenceDiagram diagram=null;
+        IProject project=null;SequenceEditorDocument originalEditor=null;
         var detail=new StringBuilder();
         try
         {
-            var project=app.Workspace.CurrentProject;
+            project=app.Workspace.CurrentProject;
             diagram=app.Workspace.CurrentEditor as ISequenceDiagram;root=diagram==null?null:diagram.Model as IInteraction;
             if(project==null || root==null || root.IsDeleted || root.IsProxy)throw new InvalidOperationException("E160: 更新対象のシーケンス図を開いてください。");
             original=Signature(root,diagram);
@@ -717,7 +722,9 @@ public static class SequenceMappedUpdate
                 if(map.Project!=project.Id || map.Root!=root.Id || map.Editor!=diagram.Id)throw new InvalidOperationException("E166: 対応表が別のプロジェクトまたは図のものです。");
                 // The saved fingerprint is historical. Normal diagram edits do not invalidate the map.
                 detail.AppendLine("Diagram changed since baseline="+(map.Fingerprint!=original));
-                var requested=SequenceNameDiff.Targets(map.Source,source);
+                var plan=SequenceMessagePlan.Build(map.Source,source);
+                var requested=plan.Targets;
+                var retainedIds=plan.Retained.Select(i=>map.MessageIds[i]).ToArray();
                 var before=SequenceNameDiff.Messages(PumlPlan.ParseForMapping(map.Source));
                 if(before.Length!=map.MessageIds.Length)throw new InvalidOperationException("E168: 対応表の件数が不正です。");
                 var currentNames=new Dictionary<int,string>();
@@ -733,30 +740,48 @@ public static class SequenceMappedUpdate
                 }
                 var merge=SequenceNameMerge.Resolve(requested,currentNames);
                 var edits=merge.Writes;
-                var unmapped=SequenceExportMatch.Unmapped(root.Messages.Select(m=>m.Id).Concat(diagram.Messages.Select(m=>m.Model.Id)),map.MessageIds);
-                string coverage="\n対応表に含まれない図側メッセージ: "+unmapped.Length+"件（この操作では削除しません）";
+                var unmapped=SequenceExportMatch.Unmapped(root.Messages.Select(m=>m.Id).Concat(diagram.Messages.Select(m=>m.Model.Id)),retainedIds);
+                string coverage="\nPlantUMLにないメッセージの削除: "+unmapped.Length+"件";
                 detail.AppendLine("Unmapped messages="+string.Join(",",unmapped));
                 detail.AppendLine("Name merge: requested="+requested.Count+", writes="+edits.Count+", PlantUML priority="+merge.Conflicts+", already matched="+merge.AlreadyMatched);
-                if(edits.Count==0 && SequenceNameDiff.Analyze(map.Source,source).Count==0)
+                if(edits.Count==0 && unmapped.Length==0 && plan.Retained.Length==map.MessageIds.Length && requested.All(e=>e.Before==e.After))
                 {
-                    SequenceExperiment.Summary="対応付け済みメッセージの本文差分なし。更新APIは呼び出していません。"+coverage+"\n構造差分の同期は未実装です。\n図・PlantUML・対応表は変更していません。";
+                    SequenceExperiment.Summary="対応付け済みメッセージの本文差分なし。更新APIは呼び出していません。"+coverage+"\n追加・移動・実行区間等の同期は未対応です。\n図・PlantUML・対応表は変更していません。";
                     detail.AppendLine("No-op; no transaction or model write.");
                 }
                 else
                 {
                     var names=edits.ToDictionary(e=>map.MessageIds[e.Index],e=>e.After);
+                    var removed=new HashSet<string>(unmapped);
+                    var deletionModels=unmapped.Select(id=>project.GetModelById(id) as IMessage).ToArray();
+                    if(deletionModels.Any(m=>m==null || m.IsDeleted || !m.IsEditable || m.Interaction==null || m.Interaction.Id!=root.Id || m.GetChildren().Any()))
+                        throw new InvalidOperationException("E181: 削除対象のメッセージが編集不可・別図所属・子要素ありのいずれかです。");
+                    if(root.GetEditors().OfType<ISequenceDiagram>().Where(d=>d.Id!=diagram.Id).Any(d=>d.Messages.Any(m=>removed.Contains(m.ModelId))))
+                        throw new InvalidOperationException("E181: 削除対象が別のシーケンス図にも表示されています。この版は複数図の同時削除に未対応です。");
                     foreach(var id in names.Keys)if(!project.GetModelById(id).IsEditable)throw new InvalidOperationException("E169: 更新対象のメッセージを編集できません。");
-                    string preview=string.Join("\n",edits.Take(15).Select(e=>e.Line+"行目: "+e.Before+" → "+e.After));
-                    if(edits.Count>15)preview+="\nほか "+(edits.Count-15)+"件";
-                    if(edits.Count>0 && !app.Window.UI.ShowConfirmDialog("コピーしたプロジェクトで実行してください。\n図「"+root.Name+"」のメッセージ本文を"+edits.Count+"件、PlantUMLに合わせます。\n"+preview+"\n図側の本文変更を反映し直す対象: "+merge.Conflicts+"件\n本文以外のID・関連・配置は変更しません。この操作は構造差分を同期しません。自動保存はしません。実行しますか？",SequenceExperiment.Title))throw new OperationCanceledException();
+                    // Relations incident to deleted messages may disappear; their other endpoint models must survive.
+                    var external=deletionModels.SelectMany(m=>m.GetRelationsWhere((r,f)=>true)).SelectMany(r=>new[]{r.Source,r.Target})
+                        .Where(m=>!removed.Contains(m.Id)).GroupBy(m=>m.Id).Select(g=>g.First()).ToDictionary(m=>m.Id,m=>m.Metaclass.Id+":"+m.Name);
+                    SequenceEditorDocument editorBefore=null,editorAfter=null;
+                    if(unmapped.Length>0)
+                    {
+                        editorBefore=SequenceEditorCapture.Read(project,root,diagram,detail);originalEditor=editorBefore;
+                        editorAfter=editorBefore.Without(unmapped);
+                    }
+                    string preview=string.Join("\n",edits.Take(10).Select(e=>e.Line+"行目: "+e.Before+" → "+e.After));
+                    preview+="\n"+string.Join("\n",deletionModels.Take(10).Select(m=>"削除: "+m.Name));
+                    if(!app.Window.UI.ShowConfirmDialog("図「"+root.Name+"」をPlantUMLに合わせます。\n本文更新: "+edits.Count+"件 / メッセージ削除: "+unmapped.Length+"件\n"+preview+"\n削除対象につながる関連も削除します。残す要素のID・配置・表示設定を照合します。プロジェクトは自動保存しません。実行しますか？",SequenceExperiment.Title))throw new OperationCanceledException();
                     CheckContext(app,project,root,diagram,original);
                     if(SequenceMapFile.Read(path).Serialize()!=map.Serialize())throw new InvalidOperationException("E175: 確認中に対応表が変更されました。");
-                    string expected=Signature(root,diagram,names);
+                    if(editorBefore!=null && SequenceEditorCapture.Read(project,root,diagram,detail).Fingerprint()!=editorBefore.Fingerprint())
+                        throw new InvalidOperationException("E164: 確認中に図の表示設定が変更されました。");
+                    CheckContext(app,project,root,diagram,original);
+                    string expected=Signature(root,diagram,names,removed);
                     pending=path+".pending";
-                    var next=new SequenceMapFile{Project=map.Project,Root=map.Root,Editor=map.Editor,Source=source,Fingerprint=expected,MessageIds=map.MessageIds};
+                    var next=new SequenceMapFile{Project=map.Project,Root=map.Root,Editor=map.Editor,Source=source,Fingerprint=expected,MessageIds=retainedIds};
                     SequenceMapFile.WriteNew(pending,next);prepared=true;
                     detail.AppendLine("Prepared map: "+pending);
-                    if(edits.Count>0)
+                    if(edits.Count>0 || unmapped.Length>0)
                     {
                         transaction=project.BeginUndoTransaction(false);
                         if(transaction==null)throw new InvalidOperationException("E174: トランザクションを開始できませんでした。");
@@ -767,8 +792,31 @@ public static class SequenceMappedUpdate
                         project.GetModelById(id).SetField("Name",edit.After);
                         detail.AppendLine("Name updated: "+id);
                     }
+                    if(unmapped.Length>0)
+                    {
+                        using(project.SuspendModelVerification())foreach(var message in deletionModels)message.Delete();
+                        foreach(string id in unmapped)
+                        {
+                            var model=project.GetModelById(id);
+                            if((model!=null && !model.IsDeleted) || root.Messages.Any(m=>m.Id==id))throw new InvalidOperationException("E182: 削除対象のモデルが残っています。");
+                        }
+                        var result=project.ImportUnitFromJson(editorAfter.ImportJson(),null,null);
+                        if(result==null)throw new InvalidOperationException("E182: 削除後の図形反映結果がnullです。");
+                        detail.AppendLine("Deletion editor import state="+result.State);
+                        foreach(var error in result.Errors)detail.AppendLine(error.Kind+": "+error.Message);
+                        if(result.State!="success" || result.Errors.Any(e=>e.Kind!=UnitImportErrorKind.Info))throw new InvalidOperationException("E182: 削除後の図形反映に失敗しました。");
+                    }
                     var fresh=root.GetEditors().OfType<ISequenceDiagram>().Single(d=>d.Id==diagram.Id);
-                    if(Signature(root,fresh)!=expected)throw new InvalidOperationException("E170: 本文更新後のID・関連・配置・内容が一致しません。");
+                    if(editorAfter!=null && SequenceEditorCapture.Read(project,root,fresh,detail).Fingerprint()!=editorAfter.Fingerprint())
+                        throw new InvalidOperationException("E183: 削除後の図形・配置・表示設定が期待値と一致しません。");
+                    foreach(var pair in external)
+                    {
+                        var model=project.GetModelById(pair.Key);
+                        if(model==null || model.IsDeleted)throw new InvalidOperationException("E183: 削除対象の関連先モデルが失われました。");
+                        string expectedEndpoint=names.ContainsKey(pair.Key)?model.Metaclass.Id+":"+names[pair.Key]:pair.Value;
+                        if(model.Metaclass.Id+":"+model.Name!=expectedEndpoint)throw new InvalidOperationException("E183: 削除対象の関連先モデルが変化しました。");
+                    }
+                    if(Signature(root,fresh)!=expected)throw new InvalidOperationException("E170: 更新後のID・関連・配置・内容が一致しません。");
                     foreach(var edit in edits)if(project.GetModelById(map.MessageIds[edit.Index]).Name!=edit.After)throw new InvalidOperationException("E170: 本文の読戻しが一致しません。");
                     foreach(var target in requested)
                     {
@@ -779,20 +827,25 @@ public static class SequenceMappedUpdate
                     if(SequenceMapFile.Read(path).Serialize()!=map.Serialize())throw new InvalidOperationException("E175: 更新中に対応表が変更されました。");
                     if(transaction!=null)completion.Commit(delegate{transaction.Commit();});committed=true;
                     File.Replace(pending,path,path+".bak");pending=null;
-                    SequenceExperiment.Summary="メッセージ本文の差分更新: "+edits.Count+"件\n図側の本文変更をPlantUMLに合わせた対象: "+merge.Conflicts+"件 / 本文一致: "+merge.AlreadyMatched+"件\nID・関連・配置の保持照合: 一致"+coverage+"\n構造差分の同期: 未実装\n対応表: 更新済み（前回分は .bak）\nプロジェクト保存: していません\n保存後のGit差分・Undo/Redo・再読込は別途確認してください。";
+                    SequenceExperiment.Summary="メッセージ本文の差分更新: "+edits.Count+"件\n図側の本文変更をPlantUMLに合わせた対象: "+merge.Conflicts+"件 / 本文一致: "+merge.AlreadyMatched+"件\nID・関連・配置の保持照合: 一致"+coverage+"\n追加・移動・実行区間等の同期: 未対応\n対応表: 更新済み（前回分は .bak）\nプロジェクト保存: していません\n保存後のGit差分・Undo/Redo・再読込は別途確認してください。";
                 }
             }
         }
-        catch(OperationCanceledException){SequenceExperiment.Summary="キャンセルしました。モデル更新は行っていません。";}
         catch(Exception ex)
         {
             detail.AppendLine(ex.ToString());
             if(transaction!=null && !committed)
             {
-                try { completion.Cancel(delegate{transaction.Rollback();});rollbackRestored=Signature(root,diagram)==original;detail.AppendLine("Rollback returned; snapshot restored="+rollbackRestored); }
+                try {
+                    completion.Cancel(delegate{transaction.Rollback();});
+                    var restored=root.GetEditors().OfType<ISequenceDiagram>().Single(d=>d.Id==diagram.Id);
+                    rollbackRestored=Signature(root,restored)==original;
+                    if(originalEditor!=null)rollbackRestored=rollbackRestored && SequenceEditorCapture.Read(project,root,restored,detail).Fingerprint()==originalEditor.Fingerprint();
+                    detail.AppendLine("Rollback returned; snapshot restored="+rollbackRestored);
+                }
                 catch(Exception failure){detail.AppendLine("Rollback failure: "+failure);}
             }
-            SequenceExperiment.Summary=(committed?"本文更新は確定しましたが、対応表の更新に失敗しました。\n残っている .pending を対応表として選択できます。\n":"差分更新を完了できませんでした。\n")+ex.Message+(transaction!=null && !committed && !rollbackRestored?"\n取消・復元を確認できませんでした。保存せずコピーを開き直してください。":"")+"\n詳細は診断表示で確認してください。";
+            SequenceExperiment.Summary=(committed?"図の更新は確定しましたが、対応表の更新に失敗しました。\n残っている .pending を対応表として選択できます。\n":"差分更新を完了できませんでした。\n")+ex.Message+(transaction!=null && !committed && !rollbackRestored?"\n取消・復元を確認できませんでした。保存せずコピーを開き直してください。":"")+"\n詳細は診断表示で確認してください。";
         }
         finally
         {
@@ -802,6 +855,54 @@ public static class SequenceMappedUpdate
             SequenceExperiment.Details=detail.ToString();
         }
         SequenceExperiment.Show(app);
+    }
+}
+
+public static class SequenceEditorCapture
+{
+    static double Number(SequenceJson node,string key)
+    { return node[key]==null?0:double.Parse(node[key].Raw,System.Globalization.CultureInfo.InvariantCulture); }
+    static void Equal(double actual,double serialized)
+    { if(Math.Abs(actual-serialized)>0.0000001)throw new InvalidOperationException("E180: 現在の図とエクスポートの配置が一致しません。削除は行いません。"); }
+    public static SequenceEditorDocument Read(IProject project,IInteraction root,ISequenceDiagram diagram,StringBuilder log)
+    {
+        // Never read the previously saved unit: it may omit current unsaved edits.
+        // Export to a fresh local temporary file through the public SDK instead.
+        string directory=Path.Combine(Path.GetTempPath(),"SequenceEditor-"+Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string path=Path.Combine(directory,"snapshot.nmdl");
+        try
+        {
+            if(root.ModelUnit==null)throw new InvalidOperationException("E180: 図のモデルユニットを取得できません。");
+            log.AppendLine("Editor snapshot export: unit type="+root.ModelUnit.Type);
+            project.UnitManager.ExportModelUnit(root.ModelUnit,path);
+            if(!File.Exists(path) || new FileInfo(path).Length>100000000)throw new InvalidOperationException("E180: 図のエクスポートを取得できないか100MBを超えています。");
+            var snapshot=SequenceEditorDocument.Read(File.ReadAllText(path,new UTF8Encoding(false,true)),root.Id,diagram.Id);
+            var shapes=snapshot.Shapes().ToDictionary(n=>SequenceEditorDocument.Value(n,"Id"));
+            if(!new HashSet<string>(diagram.Shapes.Select(n=>n.Id+":"+n.ModelId)).SetEquals(shapes.Values.Select(n=>SequenceEditorDocument.Value(n,"Id")+":"+SequenceEditorDocument.Value(n,"ModelId"))))
+                throw new InvalidOperationException("E180: 現在の図とエクスポートの図形IDが一致しません。");
+            foreach(var message in diagram.Messages)
+            {
+                var shape=shapes[message.Id];Equal(message.SourceY,Number(shape,"SourceY"));Equal(message.TargetY,Number(shape,"TargetY"));Equal(message.SelfloopBendsX,Number(shape,"SelfloopBendsX"));
+            }
+            // Compare documented persisted geometry as well as identities before using the snapshot.
+            foreach(var node in diagram.Shapes.OfType<ISequenceNodeShape>())
+            {
+                var shape=shapes[node.Id];
+                if(shape["X"]!=null)Equal(node.LocationX,Number(shape,"X"));
+                if(shape["Y"]!=null)Equal(node.LocationY,Number(shape,"Y"));
+                if(shape["Width"]!=null)Equal(node.Width,Number(shape,"Width"));
+                if(shape["Height"]!=null)Equal(node.Height,Number(shape,"Height"));
+            }
+            log.AppendLine("Editor snapshot: live identities and geometry verified, shapes="+shapes.Count);
+            return snapshot;
+        }
+        finally
+        {
+            // Only this invocation's known file; never recursively remove an export directory.
+            try { if(File.Exists(path))File.Delete(path);if(!Directory.EnumerateFileSystemEntries(directory).Any())Directory.Delete(directory);else log.AppendLine("Additional export files remain in: "+directory); }
+            catch(Exception ex){log.AppendLine("Temporary export cleanup failed: "+ex.Message);}
+        }
     }
 }
 
@@ -1375,6 +1476,43 @@ public class SequenceNameMerge
         return result;
     }
 }
+public class SequenceMessagePlan
+{
+    public List<SequenceNameEdit> Targets = new List<SequenceNameEdit>();
+    public int[] Retained;
+    // Non-message boundaries (including branch/activity boundaries) must remain identical.
+    static string Layout(PumlPlan plan, List<string> keys)
+    {
+        var tokens=new List<string>();
+        Action<IEnumerable<PumlNode>> walk=null;
+        walk=nodes=>{foreach(var n in nodes){
+            if(SequenceNameDiff.IsMessage(n))
+                keys.Add(tokens.Count+":"+SequenceExportMatch.Key(n.Kind,n.Left,n.Right));
+            else {
+                tokens.Add(PumlBuild.Json(PumlBuild.Obj("kind",n.Kind,"text",n.Text,"left",n.Left,"right",n.Right,"operator",n.Operator,"targets",n.Targets)));
+                walk(n.Children);tokens.Add("end");
+            }
+        }};
+        walk(plan.Nodes);
+        return PumlBuild.Json(PumlBuild.Obj("title",plan.Title,"aliases",plan.Aliases,"names",plan.Names,"tokens",tokens));
+    }
+    public static SequenceMessagePlan Build(string previous,string next)
+    {
+        var a=PumlPlan.ParseForMapping(previous);var b=PumlPlan.ParseForMapping(next);
+        var ak=new List<string>();var bk=new List<string>();
+        if(Layout(a,ak)!=Layout(b,bk))throw new InvalidOperationException("E171: メッセージ本文・削除以外の構造変更は未対応です。参加者・実行区間・分岐・Note等は維持してください。");
+        var old=SequenceNameDiff.Messages(a);var desired=SequenceNameDiff.Messages(b);
+        var indices=SequenceExportMatch.Align(bk.ToArray(),desired.Select(n=>n.Text).ToArray(),ak.ToArray(),old.Select(n=>n.Text).ToArray());
+        if(indices.Any(i=>i<0))throw new InvalidOperationException("E171: メッセージ追加・送受信先・種別・所属変更は未対応です。");
+        // Exact matching text elsewhere on the same route can indicate a move, not a rename.
+        for(int i=0;i<indices.Length;i++)
+            if(SequenceExportMatch.Text(old[indices[i]].Text)!=SequenceExportMatch.Text(desired[i].Text)
+                && old.Where((n,j)=>j!=indices[i] && ak[j]==bk[i]).Any(n=>SequenceExportMatch.Text(n.Text)==SequenceExportMatch.Text(desired[i].Text)))
+                throw new InvalidOperationException("E172: メッセージ移動と本文変更が混在しているため、この版では反映できません。");
+        return new SequenceMessagePlan { Retained=indices, Targets=desired.Select((n,i)=>new SequenceNameEdit{Index=indices[i],Line=n.Line,Before=old[indices[i]].Text,After=n.Text}).ToList() };
+    }
+}
+
 public static class SequenceNameDiff
 {
     public static List<SequenceNameEdit> Targets(string previous,string next)
@@ -1452,4 +1590,167 @@ public class SequenceMapFile
         }
         finally{if(File.Exists(temp))File.Delete(temp);}
     }
+}
+
+// Small lossless JSON tree: scalar spelling and unknown properties are preserved.
+// No runtime JSON library reference is required by the Next Design script host.
+public class SequenceJson
+{
+    public Dictionary<string,SequenceJson> Properties;
+    public List<SequenceJson> Items;
+    public string Raw;
+    public SequenceJson this[string key] { get { SequenceJson value;return Properties!=null && Properties.TryGetValue(key,out value)?value:null; } }
+    public string StringValue()
+    {
+        if(Raw==null || !Raw.StartsWith("\"",StringComparison.Ordinal))throw new InvalidOperationException("E180: JSON文字列が必要です。");
+        var b=new StringBuilder();
+        for(int i=1;i<Raw.Length-1;i++)
+        {
+            char c=Raw[i];if(c!='\\'){b.Append(c);continue;}
+            c=Raw[++i];
+            switch(c) {
+                case '"':b.Append('"');break;case '\\':b.Append('\\');break;case '/':b.Append('/');break;
+                case 'b':b.Append('\b');break;case 'f':b.Append('\f');break;case 'n':b.Append('\n');break;case 'r':b.Append('\r');break;case 't':b.Append('\t');break;
+                case 'u':b.Append((char)int.Parse(Raw.Substring(i+1,4),System.Globalization.NumberStyles.HexNumber,System.Globalization.CultureInfo.InvariantCulture));i+=4;break;
+                default:throw new InvalidOperationException("E180: JSONエスケープが不正です。");
+            }
+        }
+        return b.ToString();
+    }
+    public string ToJsonString()
+    {
+        if(Properties!=null)return "{"+string.Join(",",Properties.Select(p=>SequencePayload.Q(p.Key)+":"+p.Value.ToJsonString()))+"}";
+        if(Items!=null)return "["+string.Join(",",Items.Select(n=>n.ToJsonString()))+"]";
+        return Raw;
+    }
+    public static SequenceJson Parse(string text)
+    {
+        var reader=new Reader{Text=text};var result=reader.Read(0);reader.Space();
+        if(reader.At!=text.Length)throw new InvalidOperationException("E180: JSONの末尾が不正です。");return result;
+    }
+    class Reader
+    {
+        public string Text;public int At;
+        public void Space(){while(At<Text.Length && (Text[At]==' ' || Text[At]=='\t' || Text[At]=='\r' || Text[At]=='\n'))At++;}
+        bool Take(char c){Space();if(At<Text.Length && Text[At]==c){At++;return true;}return false;}
+        void Need(char c){if(!Take(c))throw new InvalidOperationException("E180: JSONの区切りが不正です。");}
+        string Quoted()
+        {
+            Space();int start=At;Need('"');
+            while(At<Text.Length)
+            {
+                char c=Text[At++];if(c=='"')return Text.Substring(start,At-start);
+                if(c<32)break;
+                if(c=='\\')
+                {
+                    if(At>=Text.Length)break;c=Text[At++];
+                    if(c=='u') { if(At+4>Text.Length || !Regex.IsMatch(Text.Substring(At,4),"^[0-9a-fA-F]{4}$"))break;At+=4; }
+                    else if("\"\\/bfnrt".IndexOf(c)<0)break;
+                }
+            }
+            throw new InvalidOperationException("E180: JSON文字列が不正です。");
+        }
+        public SequenceJson Read(int depth)
+        {
+            if(depth>128)throw new InvalidOperationException("E180: JSONの入れ子が深すぎます。");
+            Space();if(At>=Text.Length)throw new InvalidOperationException("E180: JSONが途中で終了しています。");
+            if(Text[At]=='"')return new SequenceJson{Raw=Quoted()};
+            if(Take('{')) {
+                var result=new SequenceJson{Properties=new Dictionary<string,SequenceJson>(StringComparer.Ordinal)};
+                if(Take('}'))return result;
+                do { string key=new SequenceJson{Raw=Quoted()}.StringValue();Need(':');
+                    if(result.Properties.ContainsKey(key))throw new InvalidOperationException("E180: JSONの属性名が重複しています。");
+                    result.Properties.Add(key,Read(depth+1));if(Take('}'))return result;Need(',');
+                }while(true);
+            }
+            if(Take('[')) {
+                var result=new SequenceJson{Items=new List<SequenceJson>()};if(Take(']'))return result;
+                do { result.Items.Add(Read(depth+1));if(Take(']'))return result;Need(','); }while(true);
+            }
+            int begin=At;
+            while(At<Text.Length && Text[At]!=',' && Text[At]!=']' && Text[At]!='}' && !char.IsWhiteSpace(Text[At]))At++;
+            string raw=Text.Substring(begin,At-begin);
+            if(raw!="true" && raw!="false" && raw!="null" && !Regex.IsMatch(raw,@"^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$"))
+                throw new InvalidOperationException("E180: JSONの値が不正です。");
+            return new SequenceJson{Raw=raw};
+        }
+    }
+}
+
+// Retains every serialized editor property, including properties unknown to this extension.
+// The parser uses only the script host's existing framework references.
+public class SequenceEditorDocument
+{
+    public SequenceJson Editor;
+    public string Schema;
+    public static string Value(SequenceJson node,string key)
+    { return node[key]==null?null:node[key].StringValue(); }
+    public static SequenceEditorDocument Read(string json,string root,string editor)
+    {
+        var document=SequenceJson.Parse(json);
+        if(document==null || document.Properties==null)throw new InvalidOperationException("E180: 図のエクスポートがJSONオブジェクトではありません。");
+        var editors=document["Editors"];
+        if(editors==null || editors.Items==null)throw new InvalidOperationException("E180: エクスポートにEditorsがありません。");
+        var found=editors.Items.Where(e=>e!=null && Value(e,"Id")==editor && Value(e,"ModelId")==root).ToArray();
+        if(found.Length!=1 || Value(found[0],"ViewType")!="SequenceDiagram")throw new InvalidOperationException("E180: 現在のシーケンス図をエクスポートから一意に取得できません。");
+        string schema=Value(document,"SchemaVersion");
+        if(!Regex.IsMatch(schema??"",@"^[0-9]+\.[0-9]+$"))throw new InvalidOperationException("E180: エクスポートのSchemaVersionが不正です。");
+        var result=new SequenceEditorDocument{Schema=schema,Editor=SequenceJson.Parse(found[0].ToJsonString())};
+        result.Messages();result.Shapes();return result;
+    }
+    public SequenceJson[] Messages()
+    {
+        var messages=Editor["Messages"];
+        // Native serializers may omit an empty collection after the last deletion.
+        // Capture still verifies the complete live shape set, so lost nonempty data is rejected.
+        if(messages==null){messages=new SequenceJson{Items=new List<SequenceJson>()};Editor.Properties.Add("Messages",messages);}
+        if(messages.Items==null)throw new InvalidOperationException("E180: メッセージ図形の配列がありません。");
+        var result=messages.Items.ToArray();
+        if(result.Any(n=>n==null || n.Properties==null || string.IsNullOrEmpty(Value(n,"Id")) || string.IsNullOrEmpty(Value(n,"ModelId")))
+            || result.Select(n=>Value(n,"Id")).Distinct().Count()!=result.Length)
+            throw new InvalidOperationException("E180: メッセージ図形の識別子が不正です。");
+        return result;
+    }
+    public SequenceJson[] Shapes()
+    {
+        var shapes=new List<SequenceJson>();
+        foreach(var property in Editor.Properties)
+        {
+            var array=property.Value;
+            var items=array==null || array.Items==null?new[]{property.Value}:array.Items.ToArray();
+            foreach(var n in items)
+            {
+                var o=n;
+                if(o!=null && o.Properties!=null && o["Id"]!=null && o["ModelId"]!=null)shapes.Add(o);
+            }
+        }
+        if(shapes.Select(n=>Value(n,"Id")).Distinct().Count()!=shapes.Count)throw new InvalidOperationException("E180: 図形IDが重複しています。");
+        return shapes.ToArray();
+    }
+    public SequenceEditorDocument Without(IEnumerable<string> deleted)
+    {
+        var ids=new HashSet<string>(deleted);
+        var copy=new SequenceEditorDocument{Schema=Schema,Editor=SequenceJson.Parse(Editor.ToJsonString())};
+        var messages=copy.Editor["Messages"];
+        for(int i=messages.Items.Count-1;i>=0;i--)if(ids.Contains(Value(messages.Items[i],"ModelId")))messages.Items.RemoveAt(i);
+        return copy;
+    }
+    public string ImportJson()
+    {
+        return "{\"Type\":\"Model\",\"SchemaVersion\":"+SequencePayload.Q(Schema)+",\"TopElementId\":"+SequencePayload.Q(Value(Editor,"ModelId"))
+            +",\"Entities\":[],\"Relations\":[],\"Editors\":["+Editor.ToJsonString()+"]}";
+    }
+    static string Canonical(SequenceJson node)
+    {
+        if(node==null)return "null";
+        var obj=node;
+        if(obj!=null && obj.Properties!=null)return "{"+string.Join(",",obj.Properties.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>SequencePayload.Q(p.Key)+":"+Canonical(p.Value)))+"}";
+        var array=node;
+        if(array!=null && array.Items!=null)return "["+string.Join(",",array.Items.Select(Canonical))+"]";
+        string raw=node.ToJsonString();decimal number;
+        if(raw.StartsWith("\"",StringComparison.Ordinal))return SequencePayload.Q(node.StringValue());
+        if(decimal.TryParse(raw,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out number))return number.ToString("G29",System.Globalization.CultureInfo.InvariantCulture);
+        return raw;
+    }
+    public string Fingerprint() { return SequenceMapFile.Hash(Canonical(Editor)); }
 }

@@ -19,6 +19,27 @@ public static class MappingTests
             var deleteMap=SequenceExportMatch.Align(route,baseline,Enumerable.Repeat("same-route",withoutBlock.Length).ToArray(),withoutBlock);
             Require(deleteMap.SequenceEqual(Enumerable.Range(0,20).Select(i=>i<5?i:i<5+blockSize?-1:i-blockSize)),"contiguous deletion shifts unchanged messages: "+blockSize);
         }
+        Func<string[],string> deletionInput=labels=>"@startuml\nparticipant A\nparticipant B\n"+string.Join("\n",labels.Select(t=>"A -> B : "+t))+"\n@enduml";
+        foreach(int count in new[]{1,5,10,20})
+        {
+            int start=count==20?0:5;
+            var reduced=baseline.Take(start).Concat(baseline.Skip(start+count)).ToArray();
+            var deletion=SequenceMessagePlan.Build(deletionInput(baseline),deletionInput(reduced));
+            Require(deletion.Retained.SequenceEqual(Enumerable.Range(0,20).Where(i=>i<start || i>=start+count)),"deletion plan shifts retained identities");
+            Require(deletion.Targets.All(e=>e.Before==e.After),"deletion plan renames unchanged messages");
+            var mapAfter=new SequenceMapFile{Project="p",Root="r",Editor="e",Fingerprint="f",Source=deletionInput(reduced),MessageIds=deletion.Retained.Select(i=>"id"+i).ToArray()};
+            Require(SequenceMapFile.Parse(mapAfter.Serialize()).MessageIds.SequenceEqual(mapAfter.MessageIds),"deleted map cannot round trip");
+            Require(SequenceMessagePlan.Build(mapAfter.Source,mapAfter.Source).Retained.SequenceEqual(Enumerable.Range(0,reduced.Length)),"second deletion run is not no-op");
+        }
+        var deletionRename=baseline.Take(5).Concat(baseline.Skip(10)).ToArray();deletionRename[7]="changed";
+        var dr=SequenceMessagePlan.Build(deletionInput(baseline),deletionInput(deletionRename));
+        Require(dr.Targets.Count(e=>e.Before!=e.After)==1 && dr.Targets[7].Index==12,"delete plus rename loses unchanged suffix");
+        Reject(()=>SequenceMessagePlan.Build(deletionInput(new[]{"a"}),deletionInput(new[]{"a","b"})),"addition silently accepted");
+        Reject(()=>SequenceMessagePlan.Build(deletionInput(new[]{"a","b"}),deletionInput(new[]{"b","a"})),"reorder misinterpreted as rename");
+        Reject(()=>SequenceMessagePlan.Build(deletionInput(new[]{"a"}),deletionInput(new[]{"a"}).Replace("A -> B","B -> A")),"endpoint change accepted");
+        string branch="@startuml\nparticipant A\nparticipant B\nalt one\nA -> B : same\nelse two\nA -> B : same\nend\n@enduml";
+        Require(SequenceMessagePlan.Build(branch,branch.Replace("alt one\nA -> B : same","alt one")).Retained.SequenceEqual(new[]{1}),"cross-branch duplicate steals retained ID");
+        Reject(()=>SequenceMessagePlan.Build(branch,branch.Replace("else two","else changed")),"branch semantic change accepted");
         var inserted=baseline.Take(5).Concat(new[]{"added1","added2","added3"}).Concat(baseline.Skip(5)).ToArray();
         var afterInsert=SequenceExportMatch.Align(route,baseline,Enumerable.Repeat("same-route",inserted.Length).ToArray(),inserted);
         Require(afterInsert.SequenceEqual(Enumerable.Range(0,20).Select(i=>i<5?i:i+3)),"block insertion misidentifies unchanged suffix");
