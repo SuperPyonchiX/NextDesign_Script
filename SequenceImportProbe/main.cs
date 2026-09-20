@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.47";
+    public const string Title = "シーケンス生成実験 / 0.8.48";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -3154,6 +3154,24 @@ public sealed class SequenceStructurePreflight
     }
     static string[] Link(SequenceElement e,string role)
     { string[] ids;return e.Links.TryGetValue(role,out ids)?ids:new string[0]; }
+    // startAfter and endBefore name the neighbouring events; they have no model field of
+    // their own. When they differ only because those neighbours are being deleted, the
+    // execution itself is unchanged and nothing has to be written.
+    static bool AnchorsOnly(SequenceElement old,SequenceElement next,Dictionary<string,SequenceElement> after)
+    {
+        Func<SequenceElement,string> bare=e=>{
+            var copy=e.Copy();copy.Links.Remove("startAfter");copy.Links.Remove("endBefore");copy.Line=0;copy.Order=0;
+            return new SequenceDocument{Elements=new List<SequenceElement>{copy}}.ToJson();
+        };
+        if(bare(old)!=bare(next))return false;
+        foreach(string role in new[]{"startAfter","endBefore"})
+        {
+            var was=Link(old,role);var now=Link(next,role);
+            if(was.SequenceEqual(now))continue;
+            if(was.Any(id=>after.ContainsKey(id)))return false;
+        }
+        return true;
+    }
     static string Comparable(SequenceElement e)
     {
         var copy=e.Copy();copy.Links.Remove("receiveExecution");copy.Line=0;copy.Order=0;
@@ -3266,6 +3284,12 @@ public sealed class SequenceStructurePreflight
                     result.Reasons.Add(row+"実行区間への参照が残るため削除できません。");
                 else result.DeleteExecutions.Add(change.Id);
                 continue;
+            }
+            if(change.Action=="update" && change.Kind=="execution"
+                && before.TryGetValue(change.Id,out old) && after.TryGetValue(change.Id,out next))
+            {
+                if(AnchorsOnly(old,next,after))continue;
+                result.Reasons.Add(row+"実行区間の境界以外の変更は今回の構造更新対象外です。");continue;
             }
             if(change.Action!="update" || change.Kind!="message" || !before.TryGetValue(change.Id,out old) || !after.TryGetValue(change.Id,out next))
             { result.Reasons.Add(row+change.Kind+" "+change.Action+"は今回の構造更新対象外です。");continue; }

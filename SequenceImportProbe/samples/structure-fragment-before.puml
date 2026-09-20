@@ -5,11 +5,10 @@ activate B
 activate A
 A -> B : first()
 B --> A : firstDone()
-alt ready
-A -> B : guarded()
-end
 A -> B : second()
 B --> A : secondDone()
 deactivate B
 deactivate A
+alt ready
+end
 @enduml
