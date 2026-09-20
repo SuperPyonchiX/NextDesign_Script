@@ -535,6 +535,63 @@ public static class PumlRuntime
     // so read the concrete type from there instead of falling back to the abstract one.
     static IClass Resolve(ISequenceDiagram diagram,string[] definitionTypes,IEnumerable<IModel> observed,string label)
     { return Resolve(diagram,definitionTypes,observed,null,label); }
+    // Whatever route found a type, remember it against this view definition so a project
+    // that has no example of its own can still be filled in later.
+    static string LearnedPath(ISequenceDiagram diagram)
+    {
+        string id=diagram==null || diagram.EditorDefinition==null?null:diagram.EditorDefinition.Id;
+        if(string.IsNullOrEmpty(id) || id.IndexOfAny(Path.GetInvalidFileNameChars())>=0)return null;
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "NextDesign.SequenceSync","types",id+".txt");
+    }
+    static Dictionary<string,string> Learned(ISequenceDiagram diagram)
+    {
+        var result=new Dictionary<string,string>(StringComparer.Ordinal);
+        string path=LearnedPath(diagram);
+        try
+        {
+            if(path==null || !File.Exists(path))return result;
+            foreach(string line in File.ReadAllLines(path,new UTF8Encoding(false)))
+            {
+                int split=line.IndexOf('\t');
+                if(split>0)result[line.Substring(0,split)]=line.Substring(split+1);
+            }
+        }
+        catch(Exception){}
+        return result;
+    }
+    static void Learn(ISequenceDiagram diagram,string label,IClass type)
+    {
+        string path=LearnedPath(diagram);
+        if(path==null || type==null)return;
+        try
+        {
+            var known=Learned(diagram);
+            if(known.ContainsKey(label) && known[label]==type.Id)return;
+            known[label]=type.Id;
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            File.WriteAllLines(path,known.Select(pair=>pair.Key+"\t"+pair.Value),new UTF8Encoding(false));
+        }
+        catch(Exception){}
+    }
+    // A remembered id is only used when it still names a concrete class that really
+    // derives from the declared one, checked against the metamodel this diagram uses.
+    static IClass Remembered(ISequenceDiagram diagram,IClass anchor,IClass declared,string label)
+    {
+        string id;
+        if(anchor==null || declared==null || !Learned(diagram).TryGetValue(label,out id) || string.IsNullOrEmpty(id))return null;
+        var root=anchor.Owner;
+        for(int guard=0;root!=null && root.Parent!=null && guard<256;guard++)root=root.Parent;
+        if(root==null)return null;
+        var pending=new List<IPackage>{root};
+        for(int i=0;i<pending.Count && i<4096;i++)
+        {
+            foreach(var k in pending[i].OwnedClasses.Cast<IClass>())
+                if(k.Id==id)return !k.IsAbstract && Inherits(k,declared)?k:null;
+            foreach(var sub in pending[i].SubPackages.Cast<IPackage>())pending.Add(sub);
+        }
+        return null;
+    }
     static bool Inherits(IClass candidate,IClass ancestor)
     {
         var seen=new HashSet<string>();var pending=new List<IClass>{candidate};
@@ -561,6 +618,25 @@ public static class PumlRuntime
             if(types.Count>1)break;
         }
         return types.Count==1?types[0]:null;
+    }
+    // AllClasses covers the profile, but these classes live in the system metamodel that
+    // ships with the product. Walk out from a class already resolved in that metamodel
+    // to its root package and search the tree it belongs to.
+    static IClass Sibling(IClass anchor,IClass declared)
+    {
+        if(anchor==null || declared==null)return null;
+        var root=anchor.Owner;
+        for(int guard=0;root!=null && root.Parent!=null && guard<256;guard++)root=root.Parent;
+        if(root==null)return null;
+        var found=new List<IClass>();var pending=new List<IPackage>{root};
+        for(int i=0;i<pending.Count && i<4096;i++)
+        {
+            foreach(var k in pending[i].OwnedClasses.Cast<IClass>())
+                if(!k.IsAbstract && k.Id!=declared.Id && Inherits(k,declared) && !found.Any(x=>x.Id==k.Id))found.Add(k);
+            foreach(var sub in pending[i].SubPackages.Cast<IPackage>())pending.Add(sub);
+            if(found.Count>1)break;
+        }
+        return found.Count==1?found[0]:null;
     }
     // Last resort for a kind the view definition does not list and whose owning field is
     // declared abstract: the profile itself holds exactly one concrete subclass.
@@ -638,8 +714,10 @@ public static class PumlRuntime
         {
             var declaredEnd=Child(p,source[0],"MessageEnds","MessageEnds","___Interaction_MessageEnd");
             var c=Resolve(diagram,new[]{"MessageEnd","MessageEnds"},diagram.MessageEnds.Select(e=>e.Model),declaredEnd!=null && declaredEnd.IsAbstract
-                    ?(Anywhere(project,declaredEnd) ?? Descend(project,declaredEnd,"メッセージ端"))
+                    ?(Anywhere(project,declaredEnd) ?? Sibling(source[0],declaredEnd)
+                        ?? Remembered(diagram,source[0],declaredEnd,"メッセージ端") ?? Descend(project,declaredEnd,"メッセージ端"))
                     :declaredEnd,"メッセージ端");
+            Learn(diagram,"メッセージ端",c);
             p.Types["MessageEnd"]=c.Id; classes.Add(c);
         }
         if(plan.All().Any(n=>n.Kind=="fragment"))
@@ -647,15 +725,19 @@ public static class PumlRuntime
             var declaredFragment=Child(p,source[0],"Fragments","CombinedFragments","___Interaction_CombinedFragment");
             var c=Resolve(diagram,new[]{"CombinedFragment","Fragment","CombinedFragments"},
                 diagram.Fragments.Select(f=>f.Model),declaredFragment!=null && declaredFragment.IsAbstract
-                    ?(Anywhere(project,declaredFragment) ?? Descend(project,declaredFragment,"複合フラグメント"))
+                    ?(Anywhere(project,declaredFragment) ?? Sibling(source[0],declaredFragment)
+                        ?? Remembered(diagram,source[0],declaredFragment,"複合フラグメント") ?? Descend(project,declaredFragment,"複合フラグメント"))
                     :declaredFragment,"複合フラグメント");
+            Learn(diagram,"複合フラグメント",c);
             p.Types["CombinedFragment"]=c.Id; classes.Add(c);
             var declaredOperand=Child(p,c,"Operands","Operands","___CombinedFragment_InteractionOperand");
             var operand=Resolve(diagram,new[]{"InteractionOperand","Operand","Operands"},
                 diagram.Fragments.Where(f=>f.Model.Metaclass.Id==c.Id).SelectMany(f=>f.Operands).Select(o=>o.Model),
                 declaredOperand!=null && declaredOperand.IsAbstract
-                    ?(Anywhere(project,declaredOperand) ?? Descend(project,declaredOperand,"分岐"))
+                    ?(Anywhere(project,declaredOperand) ?? Sibling(c,declaredOperand)
+                        ?? Remembered(diagram,c,declaredOperand,"分岐") ?? Descend(project,declaredOperand,"分岐"))
                     :declaredOperand,"分岐");
+            Learn(diagram,"分岐",operand);
             p.Types["InteractionOperand"]=operand.Id; classes.Add(operand);
             foreach(var op in plan.All().Where(n=>n.Kind=="fragment").Select(n=>n.Operator).Distinct())p.Operators[op]=Literal(c,"Operator",op);
         }
@@ -664,8 +746,10 @@ public static class PumlRuntime
             var declaredUse=Child(p,source[0],"InteractionUses","InteractionUses","___Interaction_InteractionUse");
             var c=Resolve(diagram,new[]{"InteractionUse","InteractionUses","Ref"},
                 diagram.InteractionUses.Select(f=>f.Model),declaredUse!=null && declaredUse.IsAbstract
-                    ?(Anywhere(project,declaredUse) ?? Descend(project,declaredUse,"相互作用の利用"))
+                    ?(Anywhere(project,declaredUse) ?? Sibling(source[0],declaredUse)
+                        ?? Remembered(diagram,source[0],declaredUse,"相互作用の利用") ?? Descend(project,declaredUse,"相互作用の利用"))
                     :declaredUse,"相互作用の利用");
+            Learn(diagram,"相互作用の利用",c);
             p.Types["InteractionUse"]=c.Id; classes.Add(c);
         }
         if(plan.All().Any(n=>n.Kind=="note"))
@@ -673,8 +757,10 @@ public static class PumlRuntime
             var declaredNote=Child(p,source[0],"Notes","Notes","___Interaction_InteractionNote");
             var c=Resolve(diagram,new[]{"InteractionNote","Note","Notes"},
                 diagram.Notes.Select(n=>n.Model),declaredNote!=null && declaredNote.IsAbstract
-                    ?(Anywhere(project,declaredNote) ?? Descend(project,declaredNote,"Note"))
+                    ?(Anywhere(project,declaredNote) ?? Sibling(source[0],declaredNote)
+                        ?? Remembered(diagram,source[0],declaredNote,"Note") ?? Descend(project,declaredNote,"Note"))
                     :declaredNote,"Note");
+            Learn(diagram,"Note",c);
             p.Types["InteractionNote"]=c.Id; classes.Add(c);
             var f=Field(c,"Body") ?? Field(c,"Text") ?? Field(c,"Name");
             if(f==null)throw new InvalidOperationException("E121: Note本文フィールドを取得できません。");
