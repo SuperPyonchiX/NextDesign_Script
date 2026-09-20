@@ -21,7 +21,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.6.7";
+    public const string Title = "シーケンス生成実験 / 0.6.8";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -608,13 +608,6 @@ public static class SequenceMappedUpdate
         if(new FileInfo(path).Length>300000)throw new InvalidOperationException("E160: PlantUMLは300KB以下にしてください。");
         return path;
     }
-    static bool Matches(IMessageShape shape,PumlNode node,Dictionary<string,string> lines)
-    {
-        var model=shape.Model as IMessage;
-        return SequenceExportMatch.Message(model==null?null:model.Kind,shape.Text,
-            shape.Sender==null?null:shape.Sender.Model.Id,shape.Receiver==null?null:shape.Receiver.Model.Id,
-            node.Kind,node.Text,node.Left=="["?null:lines[node.Left],node.Right=="]"?null:lines[node.Right]);
-    }
     static double MessageX(IMessageShape message)
     {
         var send=message.SendPort as ISequenceNodeShape;
@@ -657,29 +650,29 @@ public static class SequenceMappedUpdate
             detail.AppendLine("Participant selected="+chosen);
             lines.Add(plan.Aliases[i],chosen);
         }
-        var ids=new List<string>();
-        foreach(var node in nodes)
+        var ordered=SequenceExportMatch.Order(diagram.Messages,m=>m.SourceY,m=>MessageX(m),m=>m.Id).ToArray();
+        var inputKeys=nodes.Select(n=>SequenceExportMatch.Key(n.Kind,n.Left=="["?null:lines[n.Left],n.Right=="]"?null:lines[n.Right])).ToArray();
+        var diagramKeys=ordered.Select(m=>SequenceExportMatch.Key((m.Model as IMessage)==null?null:((IMessage)m.Model).Kind,m.Sender==null?null:m.Sender.Model.Id,m.Receiver==null?null:m.Receiver.Model.Id)).ToArray();
+        var correspondence=SequenceExportMatch.Align(inputKeys,nodes.Select(n=>n.Text).ToArray(),diagramKeys,ordered.Select(m=>m.Text).ToArray());
+        var ids=new List<string>();int renamed=0;
+        for(int index=0;index<nodes.Length;index++)
         {
-            var candidates=SequenceExportMatch.Order(diagram.Messages.Where(m=>!ids.Contains(m.Model.Id) && Matches(m,node,lines)),m=>m.SourceY,m=>MessageX(m),m=>m.Id).ToArray();
-            if(candidates.Length==0)
+            var node=nodes[index];int match=correspondence[index];
+            if(match<0)
             {
                 detail.AppendLine("Unmatched message line="+node.Line+", kind="+node.Kind+", left="+node.Left+", right="+node.Right+", text="+PumlBuild.Json(node.Text));
-                foreach(var shape in diagram.Messages.OrderBy(m=>m.SourceY))
-                {
-                    var model=shape.Model as IMessage;
-                    detail.AppendLine("Message id="+shape.Model.Id+", used="+ids.Contains(shape.Model.Id)+", kind="+(model==null?null:model.Kind)+", name="+PumlBuild.Json(shape.Model.Name)+", text="+PumlBuild.Json(shape.Text)+", sender="+(shape.Sender==null?"[":shape.Sender.Model.Id)+", receiver="+(shape.Receiver==null?"]":shape.Receiver.Model.Id));
-                }
-                throw new InvalidOperationException("E163: 基準PlantUMLの"+node.Line+"行目に対応するメッセージがありません: "+node.Text);
+                throw new InvalidOperationException("E163: "+node.Line+"行目の送受信先・種別・並びに対応する図側メッセージがありません。図側の欠落または構造変更の可能性があります。本文の違いだけでは停止しません。");
             }
-            // The user requested automatic confirmation of the first matching occurrence.
-            // Use exactly the export message order, including deterministic equal-Y ties.
-            string id=candidates[0].Model.Id;
-            detail.AppendLine("Message auto-bound line="+node.Line+", candidates="+candidates.Length+", model="+id+", shape="+candidates[0].Id+", y="+Number(candidates[0].SourceY));
+            var shape=ordered[match];string id=shape.Model.Id;
+            if(ids.Contains(id))throw new InvalidOperationException("E168: 同じメッセージモデルを複数の入力行へ対応付けできません。");
+            bool different=SequenceExportMatch.Text(node.Text)!=SequenceExportMatch.Text(shape.Text);
+            if(different)renamed++;
+            detail.AppendLine("Message auto-bound line="+node.Line+", model="+id+", shape="+shape.Id+", text difference="+different+", input="+PumlBuild.Json(node.Text)+", diagram="+PumlBuild.Json(shape.Text));
             ids.Add(id);
         }
         var extraMessages=SequenceExportMatch.Unmapped(root.Messages.Select(m=>m.Id).Concat(diagram.Messages.Select(m=>m.Model.Id)),ids);
         var extraLines=SequenceExportMatch.Unmapped(root.Lifelines.Select(m=>m.Id).Concat(diagram.Lifelines.Select(m=>m.Model.Id)),lines.Values);
-        coverage="\n対応表に含まれない図側の要素: 参加者 "+extraLines.Length+"件 / メッセージ "+extraMessages.Length+"件";
+        coverage="\n本文の差分を検出: "+renamed+"件（対応表作成では変更しません）\n対応表に含まれない図側の要素: 参加者 "+extraLines.Length+"件 / メッセージ "+extraMessages.Length+"件";
         if(extraLines.Length>0 || extraMessages.Length>0)coverage+="\nこの作成操作では削除しません。構造差分の同期は未実装です。";
         detail.AppendLine("Unmapped lifelines="+string.Join(",",extraLines));
         detail.AppendLine("Unmapped messages="+string.Join(",",extraMessages));
@@ -1310,6 +1303,31 @@ public class SequenceNameEdit
 }
 public static class SequenceExportMatch
 {
+    public static string Key(string kind,string sender,string receiver)
+    { return PumlBuild.Json(new[]{Kind(kind),sender,receiver}); }
+    public static int[] Align(string[] inputKeys,string[] inputText,string[] diagramKeys,string[] diagramText)
+    {
+        if(inputKeys.Length!=inputText.Length || diagramKeys.Length!=diagramText.Length)throw new ArgumentException("Message sequence lengths differ");
+        int n=inputKeys.Length,m=diagramKeys.Length;
+        var cost=new int[n+1,m+1];
+        for(int i=n;i>=0;i--)for(int j=m;j>=0;j--)
+        {
+            if(i==n){cost[i,j]=(m-j)*2;continue;}
+            if(j==m){cost[i,j]=(n-i)*2;continue;}
+            int best=Math.Min(2+cost[i+1,j],2+cost[i,j+1]);
+            if(inputKeys[i]==diagramKeys[j])best=Math.Min(best,(Text(inputText[i])==Text(diagramText[j])?0:1)+cost[i+1,j+1]);
+            cost[i,j]=best;
+        }
+        var result=Enumerable.Repeat(-1,n).ToArray();int a=0,b=0;
+        while(a<n && b<m)
+        {
+            // Prefer the earliest occurrence on ties; no model can be used twice.
+            if(inputKeys[a]==diagramKeys[b] && cost[a,b]==(Text(inputText[a])==Text(diagramText[b])?0:1)+cost[a+1,b+1])
+            {result[a++]=b++;continue;}
+            if(cost[a,b]==2+cost[a,b+1])b++;else a++;
+        }
+        return result;
+    }
     public static string[] Unmapped(IEnumerable<string> existing,IEnumerable<string> mapped)
     { return existing.Except(mapped,StringComparer.Ordinal).OrderBy(id=>id,StringComparer.Ordinal).ToArray(); }
     public static IEnumerable<T> Order<T>(IEnumerable<T> messages,Func<T,double> y,Func<T,double> x,Func<T,string> id)

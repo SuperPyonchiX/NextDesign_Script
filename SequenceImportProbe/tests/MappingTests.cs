@@ -6,6 +6,11 @@ public static class MappingTests
     { bool rejected=false;try{action();}catch(InvalidOperationException){rejected=true;}Require(rejected,text); }
     public static void Run(string directory)
     {
+        Require(SequenceExportMatch.Align(new[]{"k"},new[]{"old"},new[]{"k"},new[]{"renamed"}).SequenceEqual(new[]{0}),"rename treated as absent");
+        Require(SequenceExportMatch.Align(new[]{"k","anchor","k"},new[]{"repeat","middle","repeat"},new[]{"k","anchor","k"},new[]{"renamed","middle","repeat"}).SequenceEqual(new[]{0,1,2}),"rename stolen by later exact match");
+        Require(SequenceExportMatch.Align(new[]{"k","k"},new[]{"first","second"},new[]{"k","k","k"},new[]{"extra","first","second"}).SequenceEqual(new[]{1,2}),"diagram insertion shifts existing identities");
+        Require(SequenceExportMatch.Align(new[]{"k","k"},new[]{"same","same"},new[]{"k","k"},new[]{"same","same"}).SequenceEqual(new[]{0,1}),"duplicate occurrence order changed");
+        Require(SequenceExportMatch.Align(new[]{"left","right"},new[]{"same","same"},new[]{"right"},new[]{"same"}).SequenceEqual(new[]{-1,0}),"different route incorrectly paired");
         Require(SequenceExportMatch.Unmapped(new[]{"a","b","extra","extra"},new[]{"a","b"}).SequenceEqual(new[]{"extra"}),"diagram-only model/shape counted twice or ignored");
         Require(SequenceExportMatch.Unmapped(new[]{"b","a"},new[]{"a","b"}).Length==0,"equal coverage reports extras");
         string crossBranch="@startuml\nparticipant A\nparticipant B\nactivate A\nalt done\nA -> B : finish\ndeactivate A\nelse wait\nA -> B : wait\nend\n@enduml";
