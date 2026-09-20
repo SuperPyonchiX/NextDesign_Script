@@ -75,6 +75,19 @@ public static class PayloadTest {
    if(SyncPlan.Build(nontailPlan.Expected,nontailAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("non-tail semantic plan is not idempotent");
 
+   // first() already receives on B's outer bar, so second() moves onto a collection
+   // that is not empty. The target of the move is the same as in the batch sample.
+   var occupiedBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-occupied-before.puml")));
+   var occupiedPlan=SyncPlan.Build(occupiedBefore,batchAfter,()=>Guid.NewGuid().ToString());
+   var occupiedGate=SequenceStructurePreflight.Check(occupiedBefore,occupiedPlan);
+   if(!occupiedGate.CanCommit(true) || occupiedPlan.Changes.Count!=2 || occupiedGate.ReconnectMessages.Count!=1 || occupiedGate.DeleteExecutions.Count!=1)
+       throw new Exception("occupied sample must contain one reconnect and one deletion: "+occupiedPlan.ToJson()+occupiedGate.ToJson());
+   var occupiedTarget=occupiedPlan.Expected.Elements.Single(e=>e.Id==occupiedGate.ReconnectMessages[0]).Links["receiveExecution"].Single();
+   if(occupiedBefore.Elements.Count(e=>e.Kind=="message" && e.Links.ContainsKey("receiveExecution") && e.Links["receiveExecution"].Contains(occupiedTarget))==0)
+       throw new Exception("occupied sample destination has no existing receiver");
+   if(SyncPlan.Build(occupiedPlan.Expected,batchAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
+       throw new Exception("occupied semantic plan is not idempotent");
+
    int commits=0, cancels=0;
    var success = new SequenceCompletion();
    success.Commit(delegate { commits++; });
