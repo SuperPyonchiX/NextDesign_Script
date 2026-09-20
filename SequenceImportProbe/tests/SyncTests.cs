@@ -194,6 +194,14 @@
         Require(!siblingPlan.Changes.Any(c=>(c.Kind=="fragment" || c.Kind=="operand") && (c.Action=="add" || c.Action=="delete")),"sibling alt child edit recreated containers");
         Require(siblingPlan.Changes.Any(c=>c.Kind=="ref" && c.Action=="move") && siblingPlan.Changes.Any(c=>c.Kind=="message" && c.Action=="update"),"container matching hid real child edits");
         Require(Plan(siblingOld,Doc(siblingBlocks)).IsEmpty,"sibling alt no-op changed");
+        var portOld=Doc("activate A\nactivate B\nA -> B : hidden-label\ndeactivate B\ndeactivate A\nref over A : hidden-ref");Ids(portOld);
+        var portNew=portOld.Copy();
+        portOld.Elements.Single(e=>e.Kind=="ref").Attributes["reference"]="secret-target";
+        portNew.Elements.Single(e=>e.Kind=="ref").Attributes["reference"]="";
+        portNew.Elements.Single(e=>e.Kind=="message").Links.Remove("receiveExecution");
+        string portReport=SequenceAudit.Reasons(portOld,portNew,Plan(portOld,portNew));
+        Require(portReport.Contains("receiveExecution") && portReport.Contains("入力=未解決"),"port and reference diagnostics missing");
+        Require(!portReport.Contains("secret-target") && !portReport.Contains("hidden-label") && !portReport.Contains("hidden-ref"),"residual details disclosed source data");
         Console.WriteLine("PASS: all-kind semantic plans, mixed changes, ID retention, block edits, ambiguity, moves, source trivia and idempotence");
     }
 }

@@ -22,7 +22,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.13";
+    public const string Title = "シーケンス生成実験 / 0.8.14";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -2552,11 +2552,19 @@ public static class SequenceAudit
         foreach(var e in current.Elements.Concat(plan.Expected.Elements))if(!tokens.ContainsKey(e.Id))tokens[e.Id]=e.Kind+"#"+(++serial);
         Func<string,string> token=id=>tokens.ContainsKey(id)?tokens[id]:"?";
         var rows=new List<string>{"残差の内訳（#番号は今回だけの匿名番号）"};
+        rows.Add("差分操作: "+plan.Changes.Count+"件");
+        foreach(var change in plan.Changes)
+            rows.Add("L"+change.Line+" "+token(change.Id)+" "+change.Action);
         foreach(var c in plan.Changes.Where(c=>c.Action=="update" || c.Action=="move"))
         {
             var a=after[c.Id];var b=before[c.Id];
             if(a.Parent!=b.Parent)rows.Add("L"+c.Line+" "+a.Kind+" 所属: "+token(b.Parent)+" → "+token(a.Parent));
-            if(c.Action=="update")foreach(var role in new[]{"startAfter","endBefore","endContainer","outer"})
+            if(c.Action=="update" && a.Kind=="ref")
+            {
+                string x,y;b.Attributes.TryGetValue("reference",out x);a.Attributes.TryGetValue("reference",out y);
+                if(x!=y)rows.Add("L"+c.Line+" ref参照先 図="+(string.IsNullOrEmpty(x)?"なし":"あり")+" 入力="+(string.IsNullOrEmpty(y)?"未解決":"解決済み")+" 一致=False");
+            }
+            if(c.Action=="update")foreach(var role in new[]{"sendExecution","receiveExecution","startAfter","endBefore","endContainer","outer"})
             {
                 if(EqualLinks(a,b,role))continue;
                 string[] x,y;b.Links.TryGetValue(role,out x);a.Links.TryGetValue(role,out y);
@@ -2581,7 +2589,7 @@ public static class SequenceAudit
             if(candidates.Length>4)rows.Add("  残り候補="+(candidates.Length-4));
         }
         rows=rows.Distinct().ToList();
-        if(rows.Count==1)rows.Add("所属・境界・未対応Note/refの残差なし");
+        if(plan.Changes.Count==0)rows.Add("所属・境界・未対応Note/refの残差なし");
         // Each page remains photographable even with a large diagram.
         return string.Join("\f",Enumerable.Range(0,(rows.Count+13)/14).Select(i=>string.Join("\n",rows.Skip(i*14).Take(14))));
     }
