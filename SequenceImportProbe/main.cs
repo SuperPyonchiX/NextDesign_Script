@@ -21,7 +21,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.6.2";
+    public const string Title = "シーケンス生成実験 / 0.6.3";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -614,7 +614,7 @@ public static class SequenceMappedUpdate
             && (node.Left=="["?m.Sender==null && m.SendPortType=="MessageEnd":m.Sender!=null && m.Sender.Id==lines[node.Left])
             && (node.Right=="]"?m.Receiver==null && m.IsLost:m.Receiver!=null && m.Receiver.Id==lines[node.Right]);
     }
-    static SequenceMapFile Bind(IApplication app,IProject project,IInteraction root,ISequenceDiagram diagram,string source,string before)
+    static SequenceMapFile Bind(IApplication app,IProject project,IInteraction root,ISequenceDiagram diagram,string source,string before,StringBuilder detail)
     {
         var plan=PumlPlan.Parse(source); var nodes=SequenceNameDiff.Messages(plan);
         if(nodes.Length!=root.Messages.Count() || nodes.Length!=diagram.Messages.Count() || plan.Aliases.Count!=root.Lifelines.Count())
@@ -622,9 +622,32 @@ public static class SequenceMappedUpdate
         var lines=new Dictionary<string,string>();
         for(int i=0;i<plan.Aliases.Count;i++)
         {
-            var candidates=diagram.Lifelines.Where(l=>l.Model.Name==plan.Names[i] || l.Text==plan.Names[i]).Select(l=>l.Model.Id).Distinct().ToArray();
-            if(candidates.Length!=1 || lines.Values.Contains(candidates[0]))throw new InvalidOperationException("E162: 参加者を一意に対応付けできません: "+plan.Names[i]);
-            lines.Add(plan.Aliases[i],candidates[0]);
+            var available=diagram.Lifelines.Where(l=>l.Model!=null && !lines.Values.Contains(l.Model.Id))
+                .GroupBy(l=>l.Model.Id).Select(g=>g.First()).OrderBy(l=>l.LocationX).ToArray();
+            var exact=available.Where(l=>l.Model.Name==plan.Names[i] || l.Text==plan.Names[i]).ToArray();
+            var candidates=exact.Length>0?exact:available.Where(l=>SequenceParticipantMatch.Equivalent(l.Model.Name,plan.Names[i]) || SequenceParticipantMatch.Equivalent(l.Text,plan.Names[i])).ToArray();
+            detail.AppendLine("Participant alias="+plan.Aliases[i]+", input="+PumlBuild.Json(plan.Names[i])+", exact="+exact.Length+", normalized="+(exact.Length==0?candidates.Length:0));
+            string chosen=null;
+            if(candidates.Length==1)chosen=candidates[0].Model.Id;
+            else
+            {
+                // No guessing by declaration order, short class name, or substring.
+                // Offer unmatched lifelines when labels are entirely different.
+                var choices=candidates.Concat(available.Where(l=>!candidates.Any(c=>c.Model.Id==l.Model.Id))).ToArray();
+                foreach(var candidate in choices)
+                {
+                    string context=string.Join("\n",diagram.Messages.Where(m=>{
+                        var message=m.Model as IMessage;
+                        return message!=null && ((message.Sender!=null && message.Sender.Id==candidate.Model.Id) || (message.Receiver!=null && message.Receiver.Id==candidate.Model.Id));
+                    }).OrderBy(m=>m.SourceY).Take(4).Select(m=>m.Model.Name));
+                    detail.AppendLine("Participant candidate id="+candidate.Model.Id+", name="+PumlBuild.Json(candidate.Model.Name)+", text="+PumlBuild.Json(candidate.Text));
+                    if(app.Window.UI.ShowConfirmDialog("参加者の対応先を選んでください。\nPlantUML: "+plan.Names[i]+"\n別名: "+plan.Aliases[i]+"\n図の表示: "+candidate.Text+"\nモデル名: "+candidate.Model.Name+"\n図内X位置: "+Number(candidate.LocationX)+"\n接続メッセージ例:\n"+context+"\nこの参加者に対応付けますか？「いいえ」で次の候補。全候補を断るとキャンセルします。",SequenceExperiment.Title))
+                    { chosen=candidate.Model.Id;break; }
+                }
+                if(chosen==null)throw new OperationCanceledException();
+            }
+            detail.AppendLine("Participant selected="+chosen);
+            lines.Add(plan.Aliases[i],chosen);
         }
         var ids=new List<string>();
         foreach(var node in nodes)
@@ -669,7 +692,7 @@ public static class SequenceMappedUpdate
             PumlPlan.Parse(source);
             if(initialize)
             {
-                var map=Bind(app,project,root,diagram,source,original);
+                var map=Bind(app,project,root,diagram,source,original,detail);
                 string path=app.Window.UI.ShowSaveFileDialog("対応表の保存先（既存ファイルは上書きしません）","対応表 (*.ndmap.xml)|*.ndmap.xml",Path.ChangeExtension(input,"ndmap.xml"));
                 if(string.IsNullOrEmpty(path))throw new OperationCanceledException();
                 CheckContext(app,project,root,diagram,original);
@@ -1249,6 +1272,18 @@ public class SequenceNameEdit
 {
     public int Index,Line;
     public string Before,After;
+}
+public static class SequenceParticipantMatch
+{
+    public static string Normalize(string value)
+    {
+        if(value==null)return null;
+        // Preserve words, case and colon count. Never equate ':' with '::'.
+        string folded=Regex.Replace(value.Replace("\\n","\n").Replace("\\r","\r"),@"\s+"," ").Trim();
+        return Regex.Replace(folded,@"\s*(:+)\s*","$1");
+    }
+    public static bool Equivalent(string left,string right)
+    { return !string.IsNullOrEmpty(left) && !string.IsNullOrEmpty(right) && Normalize(left)==Normalize(right); }
 }
 public class SequenceNameMerge
 {

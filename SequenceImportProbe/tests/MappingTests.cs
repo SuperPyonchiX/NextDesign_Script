@@ -6,6 +6,13 @@ public static class MappingTests
     { bool rejected=false;try{action();}catch(InvalidOperationException){rejected=true;}Require(rejected,text); }
     public static void Run(string directory)
     {
+        Require(SequenceParticipantMatch.Equivalent("Service:: Worker","Service::\nWorker"),"linebreak label mismatch");
+        Require(SequenceParticipantMatch.Equivalent("Service : Worker","Service:Worker"),"colon spacing mismatch");
+        Require(SequenceParticipantMatch.Equivalent(" Service::\\nWorker ","Service:: Worker"),"escaped linebreak mismatch");
+        Require(!SequenceParticipantMatch.Equivalent("Service:Worker","Service::Worker"),"colon count collapsed");
+        Require(!SequenceParticipantMatch.Equivalent("First Worker","FirstWorker"),"distinct words collapsed");
+        Require(!SequenceParticipantMatch.Equivalent("ServiceA::Worker","ServiceB::Worker"),"class suffix caused false match");
+        Require(!SequenceParticipantMatch.Equivalent(null,"Worker"),"null matches participant");
         string input="@startuml\ntitle Sample\nparticipant A\nparticipant B\nA -> B : first()\nB --> A : result\n@enduml";
         Require(SequenceNameDiff.Analyze(input,input).Count==0,"identical input is not no-op");
         Require(SequenceNameDiff.Analyze(input,input.Replace("title Sample","' commentary\ntitle Sample")).Count==0,"comment causes model edit");
