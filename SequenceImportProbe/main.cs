@@ -21,7 +21,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.7.4";
+    public const string Title = "シーケンス生成実験 / 0.7.5";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -664,7 +664,7 @@ public static class SequenceMappedUpdate
             if(match<0)
             {
                 detail.AppendLine("Unmatched message line="+node.Line+", kind="+node.Kind+", left="+node.Left+", right="+node.Right+", text="+PumlBuild.Json(node.Text));
-                throw new InvalidOperationException("E163: "+node.Line+"行目の送受信先・種別・並びに対応する図側メッセージがありません。図側の欠落または構造変更の可能性があります。本文の違いだけでは停止しません。");
+                ids.Add("");continue; // Preserve the input position as an explicit unmatched row.
             }
             var shape=ordered[match];string id=shape.Model.Id;
             if(ids.Contains(id))throw new InvalidOperationException("E168: 同じメッセージモデルを複数の入力行へ対応付けできません。");
@@ -675,7 +675,7 @@ public static class SequenceMappedUpdate
         }
         var extraMessages=SequenceExportMatch.Unmapped(root.Messages.Select(m=>m.Id).Concat(diagram.Messages.Select(m=>m.Model.Id)),ids);
         var extraLines=SequenceExportMatch.Unmapped(root.Lifelines.Select(m=>m.Id).Concat(diagram.Lifelines.Select(m=>m.Model.Id)),lines.Values);
-        coverage="\n本文の差分を検出: "+renamed+"件（対応表作成では変更しません）\n対応表に含まれない図側の要素: 参加者 "+extraLines.Length+"件 / メッセージ "+extraMessages.Length+"件";
+        coverage="\nPlantUML側だけの行（図側に対応先なし）: "+ids.Count(string.IsNullOrEmpty)+"件\n対象行: "+string.Join(", ",nodes.Where((n,i)=>string.IsNullOrEmpty(ids[i])).Select(n=>n.Line.ToString()))+"\n本文の差分を検出: "+renamed+"件（対応表作成では変更しません）\n対応表に含まれない図側の要素: 参加者 "+extraLines.Length+"件 / メッセージ "+extraMessages.Length+"件";
         if(extraLines.Length>0 || extraMessages.Length>0)coverage+="\nこの作成操作では削除しません。「メッセージを差分更新」で余剰メッセージを削除できます。参加者の削除は未対応です。";
         detail.AppendLine("Unmapped lifelines="+string.Join(",",extraLines));
         detail.AppendLine("Unmapped messages="+string.Join(",",extraMessages));
@@ -710,7 +710,7 @@ public static class SequenceMappedUpdate
                 CheckContext(app,project,root,diagram,original);
                 if(string.Equals(Path.GetFullPath(path),Path.GetFullPath(input),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("E165: PlantUMLと別の保存先を指定してください。");
                 SequenceMapFile.WriteNew(path,map);
-                SequenceExperiment.Summary="対応表を作成しました。\n対応付け済みメッセージ: "+map.MessageIds.Length+"件"+coverage+"\n図とPlantUMLは変更していません。\n保存先: "+path;
+                SequenceExperiment.Summary="対応表を作成しました。\n対応付け済みメッセージ: "+map.MessageIds.Count(id=>!string.IsNullOrEmpty(id))+"件"+coverage+"\n図とPlantUMLは変更していません。\n保存先: "+path;
                 detail.AppendLine("Mapping initialized; no model writes. "+path);
             }
             else
@@ -722,6 +722,8 @@ public static class SequenceMappedUpdate
                 // The saved fingerprint is historical. Normal diagram edits do not invalidate the map.
                 detail.AppendLine("Diagram changed since baseline="+(map.Fingerprint!=original));
                 var plan=SequenceMessagePlan.Build(map.Source,source);
+                var missingLines=map.MissingLines(plan);
+                if(missingLines.Length>0)throw new InvalidOperationException("E182: 図側にないメッセージの復元が必要です: "+missingLines.Length+"件（PlantUML行: "+string.Join(", ",missingLines)+"）。対応表には差分を記録済みですが、この版では復元を実装していません。図は変更していません。");
                 var requested=plan.Targets;
                 var retainedIds=plan.Retained.Select(i=>map.MessageIds[i]).ToArray();
                 var before=SequenceNameDiff.Messages(PumlPlan.ParseForMapping(map.Source));
@@ -1582,22 +1584,24 @@ public class SequenceMapFile
 {
     public string Project,Root,Editor,Source,Fingerprint;
     public string[] MessageIds;
+    public int[] MissingLines(SequenceMessagePlan plan)
+    { return plan.Targets.Where(t=>string.IsNullOrEmpty(MessageIds[t.Index])).Select(t=>t.Line).ToArray(); }
     public static string Hash(string text)
     { using(var sha=System.Security.Cryptography.SHA256.Create())return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(text))).Replace("-","").ToLowerInvariant(); }
     void Validate()
     {
-        if(new[]{Project,Root,Editor,Fingerprint}.Any(string.IsNullOrEmpty) || Source==null || MessageIds==null || MessageIds.Any(string.IsNullOrEmpty) || MessageIds.Distinct().Count()!=MessageIds.Length)
+        if(new[]{Project,Root,Editor,Fingerprint}.Any(string.IsNullOrEmpty) || Source==null || MessageIds==null || MessageIds.Any(id=>id==null) || MessageIds.Where(id=>id.Length>0).Distinct().Count()!=MessageIds.Count(id=>id.Length>0))
             throw new InvalidOperationException("E173: 対応表の必須項目またはIDが不正です。");
         if(Encoding.UTF8.GetByteCount(Source)>300000 || SequenceNameDiff.Messages(PumlPlan.ParseForMapping(Source)).Length!=MessageIds.Length)throw new InvalidOperationException("E173: 対応表の入力・件数が不正です。");
     }
     public string Serialize()
     {
         Validate();var doc=new System.Xml.XmlDocument();doc.XmlResolver=null;
-        var root=doc.CreateElement("SequenceMap");doc.AppendChild(root);root.SetAttribute("version","1");
+        var root=doc.CreateElement("SequenceMap");doc.AppendChild(root);root.SetAttribute("version",MessageIds.Any(id=>id.Length==0)?"2":"1");
         string[] names={"Project","Root","Editor","Source","Fingerprint"};string[] values={Project,Root,Editor,Source,Fingerprint};
         for(int i=0;i<names.Length;i++){var element=doc.CreateElement(names[i]);element.InnerText=values[i];root.AppendChild(element);}
         var ids=doc.CreateElement("MessageIds");root.AppendChild(ids);
-        foreach(string id in MessageIds){var element=doc.CreateElement("Id");element.InnerText=id;ids.AppendChild(element);}
+        foreach(string id in MessageIds){var element=doc.CreateElement("Id");element.InnerText=id;if(id.Length==0)element.SetAttribute("state","missing");ids.AppendChild(element);}
         root.SetAttribute("sha256",Hash(root.InnerXml));return doc.OuterXml;
     }
     public static SequenceMapFile Parse(string xml)
@@ -1606,9 +1610,12 @@ public class SequenceMapFile
         var doc=new System.Xml.XmlDocument();doc.XmlResolver=null;doc.PreserveWhitespace=true;
         using(var reader=System.Xml.XmlReader.Create(new StringReader(xml),settings))doc.Load(reader);
         var root=doc.DocumentElement;
-        if(root==null || root.Name!="SequenceMap" || root.GetAttribute("version")!="1" || root.GetAttribute("sha256")!=Hash(root.InnerXml))throw new InvalidOperationException("E173: 対応表の形式または整合性が不正です。");
+        if(root==null || root.Name!="SequenceMap" || (root.GetAttribute("version")!="1" && root.GetAttribute("version")!="2") || root.GetAttribute("sha256")!=Hash(root.InnerXml))throw new InvalidOperationException("E173: 対応表の形式または整合性が不正です。");
         Func<string,string> value=name=>{var nodes=root.SelectNodes(name);if(nodes.Count!=1)throw new InvalidOperationException("E173: 対応表の項目が不正です: "+name);return nodes[0].InnerText;};
         var map=new SequenceMapFile{Project=value("Project"),Root=value("Root"),Editor=value("Editor"),Source=value("Source"),Fingerprint=value("Fingerprint"),MessageIds=root.SelectNodes("MessageIds/Id").Cast<System.Xml.XmlNode>().Select(n=>n.InnerText).ToArray()};
+        var entries=root.SelectNodes("MessageIds/Id").Cast<System.Xml.XmlElement>().ToArray();
+        if(entries.Any(n=>n.InnerText.Length==0 ? root.GetAttribute("version")!="2" || n.GetAttribute("state")!="missing" : n.HasAttribute("state")))
+            throw new InvalidOperationException("E173: 対応表の未対応行の形式が不正です。");
         map.Validate();return map;
     }
     public static SequenceMapFile Read(string path)

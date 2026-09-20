@@ -31,6 +31,25 @@ public static class MappingTests
             Require(SequenceMapFile.Parse(mapAfter.Serialize()).MessageIds.SequenceEqual(mapAfter.MessageIds),"deleted map cannot round trip");
             Require(SequenceMessagePlan.Build(mapAfter.Source,mapAfter.Source).Retained.SequenceEqual(Enumerable.Range(0,reduced.Length)),"second deletion run is not no-op");
         }
+        // Missing diagram messages remain explicit gaps in the map, including consecutive deletions.
+        foreach(int count in new[]{1,5,10,20})
+        {
+            int start=count==20?0:5;
+            var diagramRemaining=baseline.Take(start).Concat(baseline.Skip(start+count)).ToArray();
+            var aligned=SequenceExportMatch.Align(route,baseline,Enumerable.Repeat("same-route",diagramRemaining.Length).ToArray(),diagramRemaining);
+            var partial=new SequenceMapFile{Project="p",Root="r",Editor="e",Fingerprint="f",Source=deletionInput(baseline),MessageIds=aligned.Select(i=>i<0?"":"id"+i).ToArray()};
+            var restored=SequenceMapFile.Parse(partial.Serialize());
+            Require(restored.MessageIds.SequenceEqual(partial.MessageIds),"missing rows lost positions in persisted map");
+            Require(restored.MissingLines(SequenceMessagePlan.Build(restored.Source,restored.Source)).Length==count,"missing restoration requests not detected");
+            Require(restored.MissingLines(SequenceMessagePlan.Build(restored.Source,deletionInput(diagramRemaining))).Length==0,"removed input still requests restoration");
+            var doc=new System.Xml.XmlDocument();doc.LoadXml(partial.Serialize());
+            doc.DocumentElement.SetAttribute("version","1");doc.DocumentElement.SetAttribute("sha256",SequenceMapFile.Hash(doc.DocumentElement.InnerXml));
+            Reject(()=>SequenceMapFile.Parse(doc.OuterXml),"v1 accepted missing IDs");
+            doc.DocumentElement.SetAttribute("version","2");
+            ((System.Xml.XmlElement)doc.SelectSingleNode("SequenceMap/MessageIds/Id[@state='missing']")).RemoveAttribute("state");
+            doc.DocumentElement.SetAttribute("sha256",SequenceMapFile.Hash(doc.DocumentElement.InnerXml));
+            Reject(()=>SequenceMapFile.Parse(doc.OuterXml),"unmarked empty ID accepted");
+        }
         var deletionRename=baseline.Take(5).Concat(baseline.Skip(10)).ToArray();deletionRename[7]="changed";
         var dr=SequenceMessagePlan.Build(deletionInput(baseline),deletionInput(deletionRename));
         Require(dr.Targets.Count(e=>e.Before!=e.After)==1 && dr.Targets[7].Index==12,"delete plus rename loses unchanged suffix");
