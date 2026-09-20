@@ -24,15 +24,28 @@ public sealed class DiagramSnapshot
         };
         foreach(var l in diagram.Lifelines.OrderBy(l=>l.LocationX).ThenBy(l=>l.Id,StringComparer.Ordinal))
             add(l,"participant",l.Text,l.LocationX);
+        var fragmentRegions=new List<SequenceRegion>();var operandRegions=new List<SequenceRegion>();
         foreach(var f in diagram.Fragments)
         {
             add(f,"fragment","",f.LocationY);
             var element=doc.Elements.Last();
             string op=Convert.ToString(f.Model.GetField("Operator")).ToLowerInvariant();element.Attributes["operator"]=op;
             if(op=="group")element.Text=f.Model.Name;
-            foreach(var operand in f.Operands.OrderBy(o=>o.Position))
+            fragmentRegions.Add(new SequenceRegion{Id=f.ModelId,X=f.LocationX,Y=f.LocationY,Width=f.Width,Height=f.Height});
+            var operands=f.Operands.OrderBy(o=>o.Position).ToArray();
+            // Match the exporter convention; the SDK documents Position as an absolute Y.
+            bool absolute=operands.All(o=>o.Position>=f.LocationY-0.00001 && o.Position<=f.LocationY+f.Height+0.00001);
+            var positions=operands.Select(o=>absolute?(double)o.Position:f.LocationY+o.Position).ToArray();
+            log.AppendLine("Fragment bounds: id="+f.ModelId+" x="+f.LocationX+" y="+f.LocationY+" width="+f.Width+" height="+f.Height+" operandPosition="+(absolute?"absolute":"relative"));
+            if(!absolute)snapshot.Limitations.Add("オペランドPositionを相対座標として解釈（出力側と同じ規則）: "+f.ModelId);
+            for(int i=0;i<operands.Length;i++)
             {
-                add(operand,"operand",operand.Guard,f.LocationY+operand.Position);doc.Elements.Last().Parent=f.ModelId;
+                var operand=operands[i];double top=positions[i],bottom=i+1<positions.Length?positions[i+1]:f.LocationY+f.Height;
+                add(operand,"operand",operand.Guard,top);doc.Elements.Last().Parent=f.ModelId;
+                log.AppendLine("Operand bounds: id="+operand.ModelId+" fragment="+f.ModelId+" top="+top+" bottom="+bottom+" rawPosition="+operand.Position);
+                if(top<f.LocationY-0.00001 || bottom>f.LocationY+f.Height+0.00001 || bottom<=top)
+                    throw new InvalidOperationException("S210: オペランドの境界が不正です: "+operand.ModelId);
+                operandRegions.Add(new SequenceRegion{Id=operand.ModelId,Fragment=f.ModelId,X=f.LocationX,Y=top,Width=f.Width,Height=bottom-top});
             }
         }
         foreach(var e in diagram.ExecutionSpecifications)
@@ -100,6 +113,7 @@ public sealed class DiagramSnapshot
         {
             memberships.Add(new SequenceMembership{Child=message.ModelId,Parent=operand.ModelId,Evidence="SDK operand.Messages"});
         }
+        memberships.AddRange(SequenceRegion.Nesting(operandRegions,fragmentRegions));
         SequenceMembership.Resolve(doc,memberships,line=>log.AppendLine(line));
 
         foreach(var e in diagram.ExecutionSpecifications)

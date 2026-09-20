@@ -339,3 +339,25 @@ public sealed class SequenceMembership
         foreach(var pair in resolved)index[pair.Key].Parent=pair.Value;
     }
 }
+
+// Geometric containment supplements SDK membership (which includes ancestor operands).
+public sealed class SequenceRegion
+{
+    public string Id, Fragment;
+    public double X,Y,Width,Height;
+    public static bool Contains(SequenceRegion outer,SequenceRegion inner)
+    {
+        const double eps=0.00001;
+        if(new[]{outer.X,outer.Y,outer.Width,outer.Height,inner.X,inner.Y,inner.Width,inner.Height}
+            .Any(v=>double.IsNaN(v)||double.IsInfinity(v)) || outer.Width<=0 || outer.Height<=0 || inner.Width<=0 || inner.Height<=0)return false;
+        return outer.X<=inner.X+eps && outer.Y<=inner.Y+eps
+            && outer.X+outer.Width>=inner.X+inner.Width-eps && outer.Y+outer.Height>=inner.Y+inner.Height-eps
+            && (outer.Width>inner.Width+eps || outer.Height>inner.Height+eps);
+    }
+    public static IEnumerable<SequenceMembership> Nesting(IEnumerable<SequenceRegion> operands,IEnumerable<SequenceRegion> fragments)
+    {
+        foreach(var fragment in fragments)foreach(var operand in operands)
+            if(operand.Fragment!=fragment.Id && Contains(operand,fragment))
+                yield return new SequenceMembership{Child=fragment.Id,Parent=operand.Id,Evidence="diagram rectangle containment"};
+    }
+}

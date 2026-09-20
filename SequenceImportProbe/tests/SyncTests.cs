@@ -101,6 +101,20 @@ public static class SyncTests
         Require(failed && logs.Any(l=>l.Contains("conflict")),"unrelated operands silently selected or evidence lost");
         failed=false;try {SequenceMembership.Resolve(membership,new[]{new SequenceMembership{Child=outer,Parent=inner,Evidence="cycle"}},line=>{});}
         catch(InvalidOperationException){failed=true;}Require(failed,"membership cycle accepted");
+        var regionOuter=new SequenceRegion{Id="outer-branch",Fragment="outer-frame",X=0,Y=100,Width=400,Height=300};
+        var regionInner=new SequenceRegion{Id="inner-frame",X=20,Y=140,Width=350,Height=150};
+        Require(SequenceRegion.Nesting(new[]{regionOuter},new[]{regionInner}).Single().Parent=="outer-branch","geometry did not supplement missing nesting relation");
+        Require(!SequenceRegion.Contains(regionOuter,new SequenceRegion{X=20,Y=390,Width=350,Height=150}),"crossing branch boundary treated as containment");
+        Require(!SequenceRegion.Contains(regionOuter,new SequenceRegion{X=0,Y=100,Width=400,Height=300}),"identical bounds arbitrarily nested");
+        Require(!SequenceRegion.Contains(regionOuter,new SequenceRegion{X=double.NaN,Y=140,Width=350,Height=150}),"invalid geometry accepted");
+        var missingNesting=membership.Copy();
+        var innerFrame=missingNesting.Elements.Single(e=>e.Id==inner).Parent;
+        missingNesting.Elements.Single(e=>e.Id==innerFrame).Parent="root";
+        missingNesting.Elements.Single(e=>e.Id==member.Id).Parent="root";
+        var nesting=SequenceRegion.Nesting(new[]{new SequenceRegion{Id=outer,Fragment="unused",X=0,Y=100,Width=400,Height=300}},
+            new[]{new SequenceRegion{Id=innerFrame,X=20,Y=140,Width=350,Height=150}});
+        SequenceMembership.Resolve(missingNesting,evidence.Concat(nesting),line=>{});
+        missingNesting.Validate();Require(missingNesting.Elements.Single(e=>e.Id==member.Id).Parent==inner,"ancestor SDK membership unresolved without model nesting relation");
         Console.WriteLine("PASS: all-kind semantic plans, mixed changes, ID retention, block edits, ambiguity, moves, source trivia and idempotence");
     }
 }
