@@ -9,6 +9,16 @@ public static class MappingTests
         // All messages use the same route: position alone cannot identify them.
         var baseline=Enumerable.Range(0,20).Select(i=>"operation"+i).ToArray();
         var route=Enumerable.Repeat("same-route",baseline.Length).ToArray();
+        foreach(int blockSize in new[]{5,10})
+        {
+            var block=Enumerable.Range(0,blockSize).Select(i=>"added"+i).ToArray();
+            var withBlock=baseline.Take(5).Concat(block).Concat(baseline.Skip(5)).ToArray();
+            var insertMap=SequenceExportMatch.Align(route,baseline,Enumerable.Repeat("same-route",withBlock.Length).ToArray(),withBlock);
+            Require(insertMap.SequenceEqual(Enumerable.Range(0,20).Select(i=>i<5?i:i+blockSize)),"contiguous insertion shifts unchanged messages: "+blockSize);
+            var withoutBlock=baseline.Take(5).Concat(baseline.Skip(5+blockSize)).ToArray();
+            var deleteMap=SequenceExportMatch.Align(route,baseline,Enumerable.Repeat("same-route",withoutBlock.Length).ToArray(),withoutBlock);
+            Require(deleteMap.SequenceEqual(Enumerable.Range(0,20).Select(i=>i<5?i:i<5+blockSize?-1:i-blockSize)),"contiguous deletion shifts unchanged messages: "+blockSize);
+        }
         var inserted=baseline.Take(5).Concat(new[]{"added1","added2","added3"}).Concat(baseline.Skip(5)).ToArray();
         var afterInsert=SequenceExportMatch.Align(route,baseline,Enumerable.Repeat("same-route",inserted.Length).ToArray(),inserted);
         Require(afterInsert.SequenceEqual(Enumerable.Range(0,20).Select(i=>i<5?i:i+3)),"block insertion misidentifies unchanged suffix");
