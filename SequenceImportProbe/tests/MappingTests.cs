@@ -6,6 +6,8 @@ public static class MappingTests
     { bool rejected=false;try{action();}catch(InvalidOperationException){rejected=true;}Require(rejected,text); }
     public static void Run(string directory)
     {
+        Require(SequenceExportMatch.Unmapped(new[]{"a","b","extra","extra"},new[]{"a","b"}).SequenceEqual(new[]{"extra"}),"diagram-only model/shape counted twice or ignored");
+        Require(SequenceExportMatch.Unmapped(new[]{"b","a"},new[]{"a","b"}).Length==0,"equal coverage reports extras");
         string crossBranch="@startuml\nparticipant A\nparticipant B\nactivate A\nalt done\nA -> B : finish\ndeactivate A\nelse wait\nA -> B : wait\nend\n@enduml";
         Reject(()=>PumlPlan.Parse(crossBranch),"generation lifecycle restriction lost");
         var mapped=PumlPlan.ParseForMapping(crossBranch);

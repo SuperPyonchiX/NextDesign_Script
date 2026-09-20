@@ -21,7 +21,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.6.6";
+    public const string Title = "シーケンス生成実験 / 0.6.7";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -622,11 +622,11 @@ public static class SequenceMappedUpdate
         var receive=message.ReceivePort as ISequenceNodeShape;
         return receive==null?0:receive.LocationX;
     }
-    static SequenceMapFile Bind(IApplication app,IProject project,IInteraction root,ISequenceDiagram diagram,string source,string before,StringBuilder detail)
+    static SequenceMapFile Bind(IApplication app,IProject project,IInteraction root,ISequenceDiagram diagram,string source,string before,StringBuilder detail,out string coverage)
     {
         var plan=PumlPlan.ParseForMapping(source); var nodes=SequenceNameDiff.Messages(plan);
-        if(nodes.Length!=root.Messages.Count() || nodes.Length!=diagram.Messages.Count() || plan.Aliases.Count!=root.Lifelines.Count())
-            throw new InvalidOperationException("E161: 基準PlantUMLと現在の図で参加者・メッセージ数が一致しません。更新前のPlantUMLを指定してください。");
+        coverage="";
+        detail.AppendLine("Binding counts: input participants="+plan.Aliases.Count+", model participants="+root.Lifelines.Count()+", shape participants="+diagram.Lifelines.Count()+", input messages="+nodes.Length+", model messages="+root.Messages.Count()+", shape messages="+diagram.Messages.Count());
         var lines=new Dictionary<string,string>();
         for(int i=0;i<plan.Aliases.Count;i++)
         {
@@ -677,6 +677,12 @@ public static class SequenceMappedUpdate
             detail.AppendLine("Message auto-bound line="+node.Line+", candidates="+candidates.Length+", model="+id+", shape="+candidates[0].Id+", y="+Number(candidates[0].SourceY));
             ids.Add(id);
         }
+        var extraMessages=SequenceExportMatch.Unmapped(root.Messages.Select(m=>m.Id).Concat(diagram.Messages.Select(m=>m.Model.Id)),ids);
+        var extraLines=SequenceExportMatch.Unmapped(root.Lifelines.Select(m=>m.Id).Concat(diagram.Lifelines.Select(m=>m.Model.Id)),lines.Values);
+        coverage="\n対応表に含まれない図側の要素: 参加者 "+extraLines.Length+"件 / メッセージ "+extraMessages.Length+"件";
+        if(extraLines.Length>0 || extraMessages.Length>0)coverage+="\nこの作成操作では削除しません。構造差分の同期は未実装です。";
+        detail.AppendLine("Unmapped lifelines="+string.Join(",",extraLines));
+        detail.AppendLine("Unmapped messages="+string.Join(",",extraMessages));
         return new SequenceMapFile{Project=project.Id,Root=root.Id,Editor=diagram.Id,Source=source,Fingerprint=before,MessageIds=ids.ToArray()};
     }
     static void CheckContext(IApplication app,IProject project,IInteraction root,ISequenceDiagram diagram,string signature)
@@ -700,13 +706,14 @@ public static class SequenceMappedUpdate
             PumlPlan.ParseForMapping(source);
             if(initialize)
             {
-                var map=Bind(app,project,root,diagram,source,original,detail);
+                string coverage;
+                var map=Bind(app,project,root,diagram,source,original,detail,out coverage);
                 string path=app.Window.UI.ShowSaveFileDialog("対応表の保存先（既存ファイルは上書きしません）","対応表 (*.ndmap.xml)|*.ndmap.xml",Path.ChangeExtension(input,"ndmap.xml"));
                 if(string.IsNullOrEmpty(path))throw new OperationCanceledException();
                 CheckContext(app,project,root,diagram,original);
                 if(string.Equals(Path.GetFullPath(path),Path.GetFullPath(input),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("E165: PlantUMLと別の保存先を指定してください。");
                 SequenceMapFile.WriteNew(path,map);
-                SequenceExperiment.Summary="対応表を作成しました。\nメッセージ: "+map.MessageIds.Length+"件\n図とPlantUMLは変更していません。\n保存先: "+path;
+                SequenceExperiment.Summary="対応表を作成しました。\n対応付け済みメッセージ: "+map.MessageIds.Length+"件"+coverage+"\n図とPlantUMLは変更していません。\n保存先: "+path;
                 detail.AppendLine("Mapping initialized; no model writes. "+path);
             }
             else
@@ -733,10 +740,13 @@ public static class SequenceMappedUpdate
                 }
                 var merge=SequenceNameMerge.Resolve(requested,currentNames);
                 var edits=merge.Writes;
+                var unmapped=SequenceExportMatch.Unmapped(root.Messages.Select(m=>m.Id).Concat(diagram.Messages.Select(m=>m.Model.Id)),map.MessageIds);
+                string coverage="\n対応表に含まれない図側メッセージ: "+unmapped.Length+"件（この操作では削除しません）";
+                detail.AppendLine("Unmapped messages="+string.Join(",",unmapped));
                 detail.AppendLine("Name merge: requested="+requested.Count+", writes="+edits.Count+", PlantUML priority="+merge.Conflicts+", already matched="+merge.AlreadyMatched);
                 if(edits.Count==0 && SequenceNameDiff.Analyze(map.Source,source).Count==0)
                 {
-                    SequenceExperiment.Summary="対応付け済みメッセージの本文差分なし。更新APIは呼び出していません。\n構造差分の同期は未実装です。\n図・PlantUML・対応表は変更していません。";
+                    SequenceExperiment.Summary="対応付け済みメッセージの本文差分なし。更新APIは呼び出していません。"+coverage+"\n構造差分の同期は未実装です。\n図・PlantUML・対応表は変更していません。";
                     detail.AppendLine("No-op; no transaction or model write.");
                 }
                 else
@@ -776,7 +786,7 @@ public static class SequenceMappedUpdate
                     if(SequenceMapFile.Read(path).Serialize()!=map.Serialize())throw new InvalidOperationException("E175: 更新中に対応表が変更されました。");
                     if(transaction!=null)completion.Commit(delegate{transaction.Commit();});committed=true;
                     File.Replace(pending,path,path+".bak");pending=null;
-                    SequenceExperiment.Summary="メッセージ本文の差分更新: "+edits.Count+"件\n図側の本文変更をPlantUMLに合わせた対象: "+merge.Conflicts+"件 / 本文一致: "+merge.AlreadyMatched+"件\nID・関連・配置の保持照合: 一致\n構造差分の同期: 未実装\n対応表: 更新済み（前回分は .bak）\nプロジェクト保存: していません\n保存後のGit差分・Undo/Redo・再読込は別途確認してください。";
+                    SequenceExperiment.Summary="メッセージ本文の差分更新: "+edits.Count+"件\n図側の本文変更をPlantUMLに合わせた対象: "+merge.Conflicts+"件 / 本文一致: "+merge.AlreadyMatched+"件\nID・関連・配置の保持照合: 一致"+coverage+"\n構造差分の同期: 未実装\n対応表: 更新済み（前回分は .bak）\nプロジェクト保存: していません\n保存後のGit差分・Undo/Redo・再読込は別途確認してください。";
                 }
             }
         }
@@ -1300,6 +1310,8 @@ public class SequenceNameEdit
 }
 public static class SequenceExportMatch
 {
+    public static string[] Unmapped(IEnumerable<string> existing,IEnumerable<string> mapped)
+    { return existing.Except(mapped,StringComparer.Ordinal).OrderBy(id=>id,StringComparer.Ordinal).ToArray(); }
     public static IEnumerable<T> Order<T>(IEnumerable<T> messages,Func<T,double> y,Func<T,double> x,Func<T,string> id)
     { return messages.OrderBy(y).ThenBy(x).ThenBy(id,StringComparer.Ordinal); }
     // Same whitespace policy as PlantUmlTool.PlantUmlText.Normalize.
