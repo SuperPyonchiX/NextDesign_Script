@@ -21,7 +21,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.6.5";
+    public const string Title = "シーケンス生成実験 / 0.6.6";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -624,7 +624,7 @@ public static class SequenceMappedUpdate
     }
     static SequenceMapFile Bind(IApplication app,IProject project,IInteraction root,ISequenceDiagram diagram,string source,string before,StringBuilder detail)
     {
-        var plan=PumlPlan.Parse(source); var nodes=SequenceNameDiff.Messages(plan);
+        var plan=PumlPlan.ParseForMapping(source); var nodes=SequenceNameDiff.Messages(plan);
         if(nodes.Length!=root.Messages.Count() || nodes.Length!=diagram.Messages.Count() || plan.Aliases.Count!=root.Lifelines.Count())
             throw new InvalidOperationException("E161: 基準PlantUMLと現在の図で参加者・メッセージ数が一致しません。更新前のPlantUMLを指定してください。");
         var lines=new Dictionary<string,string>();
@@ -697,7 +697,7 @@ public static class SequenceMappedUpdate
             original=Signature(root,diagram);
             string input=ReadInput(app,initialize?"現在の図に対応する更新前のPlantUML":"更新後のPlantUML");
             string source=File.ReadAllText(input,new UTF8Encoding(false,true));
-            PumlPlan.Parse(source);
+            PumlPlan.ParseForMapping(source);
             if(initialize)
             {
                 var map=Bind(app,project,root,diagram,source,original,detail);
@@ -718,7 +718,7 @@ public static class SequenceMappedUpdate
                 // The saved fingerprint is historical. Normal diagram edits do not invalidate the map.
                 detail.AppendLine("Diagram changed since baseline="+(map.Fingerprint!=original));
                 var requested=SequenceNameDiff.Targets(map.Source,source);
-                var before=SequenceNameDiff.Messages(PumlPlan.Parse(map.Source));
+                var before=SequenceNameDiff.Messages(PumlPlan.ParseForMapping(map.Source));
                 if(before.Length!=map.MessageIds.Length)throw new InvalidOperationException("E168: 対応表の件数が不正です。");
                 var currentNames=new Dictionary<int,string>();
                 foreach(var edit in requested)
@@ -898,7 +898,9 @@ public class PumlPlan
         if (Aliases.Count > 50) throw Error(line, "ライフラインは50本までです。");
     }
     public static InvalidOperationException Error(int line, string message) { return new InvalidOperationException("E120: " + line + "行目: " + message); }
-    public static PumlPlan Parse(string input)
+    public static PumlPlan Parse(string input) { return Parse(input,true); }
+    public static PumlPlan ParseForMapping(string input) { return Parse(input,false); }
+    static PumlPlan Parse(string input,bool forGeneration)
     {
         if (input == null || input.Length > 300000) throw Error(1, "入力サイズが上限を超えています。");
         var p = new PumlPlan(); var lists = new Stack<List<PumlNode>>(); lists.Push(p.Nodes);
@@ -970,8 +972,14 @@ public class PumlPlan
         if (!started || !ended) throw Error(1,"@startumlと@endumlが必要です。");
         if (p.Aliases.Count<1 || p.All().Count()>500) throw Error(1,"参加者は1本以上、要素は500件以下にしてください。");
         foreach (var n in p.All()) foreach (var target in n.Targets) if (!p.Aliases.Contains(target)) throw Error(n.Line,"note/refの参加者が未定義です。");
-        p.ValidateDestroyed(p.Nodes,new Dictionary<string,int>());
-        ValidateActivities(p.Nodes,new Dictionary<string,int>());
+        // Mapping reads an existing diagram; it does not build execution intervals.
+        // Preserve every activity node for structural comparison instead of applying
+        // the generator's branch-local lifecycle restrictions or rewriting the input.
+        if(forGeneration)
+        {
+            p.ValidateDestroyed(p.Nodes,new Dictionary<string,int>());
+            ValidateActivities(p.Nodes,new Dictionary<string,int>());
+        }
         return p;
     }
     void ValidateDestroyed(List<PumlNode> nodes,Dictionary<string,int> destroyed)
@@ -1342,7 +1350,7 @@ public static class SequenceNameDiff
     public static List<SequenceNameEdit> Targets(string previous,string next)
     {
         Analyze(previous,next); // Retain the current name-only scope validation.
-        var old=Messages(PumlPlan.Parse(previous));var desired=Messages(PumlPlan.Parse(next));
+        var old=Messages(PumlPlan.ParseForMapping(previous));var desired=Messages(PumlPlan.ParseForMapping(next));
         return desired.Select((n,i)=>new SequenceNameEdit{Index=i,Line=n.Line,Before=old[i].Text,After=n.Text}).ToList();
     }
     public static bool IsMessage(PumlNode n) { return n.Kind=="sync" || n.Kind=="async" || n.Kind=="reply"; }
@@ -1353,7 +1361,7 @@ public static class SequenceNameDiff
     { return PumlBuild.Json(PumlBuild.Obj("title",p.Title,"aliases",p.Aliases,"names",p.Names,"nodes",p.Nodes.Select(Node).ToArray())); }
     public static List<SequenceNameEdit> Analyze(string previous,string next)
     {
-        var a=PumlPlan.Parse(previous);var b=PumlPlan.Parse(next);
+        var a=PumlPlan.ParseForMapping(previous);var b=PumlPlan.ParseForMapping(next);
         if(Structure(a)!=Structure(b))throw new InvalidOperationException("E171: この版はメッセージ本文の変更だけに対応します。参加者・送受信先・種別・追加削除・順序・条件・Note等の変更は反映しません。");
         var old=Messages(a);var current=Messages(b);var edits=new List<SequenceNameEdit>();
         for(int i=0;i<old.Length;i++)
@@ -1377,7 +1385,7 @@ public class SequenceMapFile
     {
         if(new[]{Project,Root,Editor,Fingerprint}.Any(string.IsNullOrEmpty) || Source==null || MessageIds==null || MessageIds.Any(string.IsNullOrEmpty) || MessageIds.Distinct().Count()!=MessageIds.Length)
             throw new InvalidOperationException("E173: 対応表の必須項目またはIDが不正です。");
-        if(Encoding.UTF8.GetByteCount(Source)>300000 || SequenceNameDiff.Messages(PumlPlan.Parse(Source)).Length!=MessageIds.Length)throw new InvalidOperationException("E173: 対応表の入力・件数が不正です。");
+        if(Encoding.UTF8.GetByteCount(Source)>300000 || SequenceNameDiff.Messages(PumlPlan.ParseForMapping(Source)).Length!=MessageIds.Length)throw new InvalidOperationException("E173: 対応表の入力・件数が不正です。");
     }
     public string Serialize()
     {

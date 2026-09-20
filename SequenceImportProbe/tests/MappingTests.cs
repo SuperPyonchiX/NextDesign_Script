@@ -6,6 +6,18 @@ public static class MappingTests
     { bool rejected=false;try{action();}catch(InvalidOperationException){rejected=true;}Require(rejected,text); }
     public static void Run(string directory)
     {
+        string crossBranch="@startuml\nparticipant A\nparticipant B\nactivate A\nalt done\nA -> B : finish\ndeactivate A\nelse wait\nA -> B : wait\nend\n@enduml";
+        Reject(()=>PumlPlan.Parse(crossBranch),"generation lifecycle restriction lost");
+        var mapped=PumlPlan.ParseForMapping(crossBranch);
+        Require(mapped.All().Count(n=>n.Kind=="activate" || n.Kind=="deactivate")==2,"mapping discarded cross-branch activities");
+        Require(SequenceNameDiff.Targets(crossBranch,crossBranch).Count==2,"cross-branch no-op comparison rejected");
+        Require(SequenceNameDiff.Analyze(crossBranch,crossBranch.Replace("finish","finished")).Count==1,"cross-branch text update rejected");
+        Reject(()=>SequenceNameDiff.Analyze(crossBranch,crossBranch.Replace("deactivate A\n","")),"mapping silently ignores structural activity change");
+        var crossMap=new SequenceMapFile{Project="p",Root="r",Editor="e",Source=crossBranch,Fingerprint="f",MessageIds=new[]{"m1","m2"}};
+        Require(SequenceMapFile.Parse(crossMap.Serialize()).Source==crossBranch,"cross-branch mapping cannot round-trip");
+        Require(PumlPlan.ParseForMapping("@startuml\nA -> B : stop\ndestroy B\nactivate B\ndeactivate B\n@enduml").All().Count(n=>n.Kind=="activate" || n.Kind=="deactivate")==2,"mapping rewrites exported destruction activities");
+        Reject(()=>PumlPlan.ParseForMapping(crossBranch.Replace("end\n@enduml","@enduml")),"mapping accepts unclosed fragment");
+        Reject(()=>PumlPlan.ParseForMapping(crossBranch.Replace("A -> B : finish","!include unknown.puml")),"mapping accepts unsupported syntax");
         var repeatedShapes=new[]{
             new{Id="c",Model="third",Y=20.0,X=10.0},
             new{Id="b",Model="second",Y=10.0,X=20.0},
