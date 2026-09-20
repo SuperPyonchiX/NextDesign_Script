@@ -197,6 +197,11 @@ public static class SequenceSyncRuntime
             }
             var plan=SequenceNotePolicy.Build(current.Document,desired,()=>Guid.NewGuid().ToString());
             var preflight=SequenceStructurePreflight.Check(current.Document,plan);
+            // The snapshot goes through ExportModelUnit, which refuses to run while the
+            // project has unsaved changes. Say so before any work instead of letting the
+            // export throw halfway. This command never saves for you.
+            if(prepare && project.HasUnsavedChanges())
+                throw new InvalidOperationException("S220: 未保存の変更があります。プロジェクトを保存してから実行してください。この操作は自動保存しません。");
             if(retain && !preflight.CanCommit(reconnectCommit))
                 throw new InvalidOperationException(reconnectCommit
                     ?"S231: 確定できるのは受信接続変更・実行区間の追加削除・参加者の追加削除だけです。他の差分は「差分を検証」で確認してください。"
