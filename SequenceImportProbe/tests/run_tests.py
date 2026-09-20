@@ -87,7 +87,8 @@ public static class PayloadTest {
     assert structure['SchemaVersion']=='11.1'
     reconnect=json.loads((work/'structure-reconnect.json').read_text(encoding='utf-8-sig'))
     expected_link=next(r.copy() for r in seed['Relations'] if r['MetamodelId'].endswith('.ReceiveMessage'))
-    expected_link['SourceId']=seed_ids[3]
+    expected_link['SourceId']=seed_ids[4]
+    assert next(e for e in seed['Entities'] if e['Id']==expected_link['SourceId'])['EntityType']=='ExecutionSpecification'
     assert reconnect['Entities']==[] and reconnect['Relations']==[expected_link]
     assert reconnect['Editors']==seed['Editors']
     assert reconnect['SchemaVersion']==seed['SchemaVersion'] and reconnect['TopElementId']==seed['TopElementId']

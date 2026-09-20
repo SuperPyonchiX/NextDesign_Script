@@ -23,7 +23,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.18";
+    public const string Title = "シーケンス生成実験 / 0.8.19";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -131,7 +131,7 @@ public static class SequenceExperiment
             stage = "生成データの記録";
             Write(Path.Combine(directory, "input.json"), payload.Json);
             Write(Path.Combine(directory, "before.txt"), detail.ToString()+(replacement==null?"":"\n更新前の構造:\n"+replacement.Before));
-            if (!app.Window.UI.ShowConfirmDialog(structureProbe ? "一時図で受信先をライフラインへ変更し、受信実行区間を削除・再作成して接続を戻します。\n各段階を照合し、最後に一時図を取り消します。続けますか？" : replaceExisting ? "現在の図「"+sample.Name+"」を「"+payload.Name+"」へ更新します。\n"+plan.Summary()+"\n旧子要素: "+(replacement.AllIds.Length-2)+"件を置換します。\n図IDは維持し、子要素IDは変わります。続けますか？" : updateProbe ? "同じIDへの再取り込みを一時図で検証します。\nprobe()をupdatedProbe()へ変更したデータを再取り込みし、取消後に一時モデルが消えたことを確認します。\n続けますか？" : "新しい図「" + payload.Name + "」を追加します。\n" + (plan == null ? "A → B : probe()\nライフライン2本・同期メッセージ1本" : plan.Summary()) + "\n入力データの記録: 済み\n続けますか？", Title))
+            if (!app.Window.UI.ShowConfirmDialog(structureProbe ? "一時図で受信先を送信側の実行区間へ変更し、受信実行区間を削除・再作成して接続を戻します。\n各段階を照合し、最後に一時図を取り消します。続けますか？" : replaceExisting ? "現在の図「"+sample.Name+"」を「"+payload.Name+"」へ更新します。\n"+plan.Summary()+"\n旧子要素: "+(replacement.AllIds.Length-2)+"件を置換します。\n図IDは維持し、子要素IDは変わります。続けますか？" : updateProbe ? "同じIDへの再取り込みを一時図で検証します。\nprobe()をupdatedProbe()へ変更したデータを再取り込みし、取消後に一時モデルが消えたことを確認します。\n続けますか？" : "新しい図「" + payload.Name + "」を追加します。\n" + (plan == null ? "A → B : probe()\nライフライン2本・同期メッセージ1本" : plan.Summary()) + "\n入力データの記録: 済み\n続けますか？", Title))
             { Summary = "キャンセル / インポートAPI呼出: なし"; Show(app); return; }
             var current = app.Workspace.CurrentProject;
             if (current == null || current.Id != projectId || !string.Equals(current.Path, projectPath, StringComparison.OrdinalIgnoreCase))
@@ -315,10 +315,10 @@ public static class SequenceStructureProbe
         string linkId=link.Id;
         if(message.ReceivePort==null || ((IModel)message.ReceivePort).Id!=receiver.Id || message.SendPort==null || ((IModel)message.SendPort).Id!=seed.Ids[4])
             throw new InvalidOperationException("E160: 検証開始時のポートが一致しません。");
-        stage("受信先をライフラインへ変更");
+        stage("受信先を既存実行区間へ変更");
         Import(project,SequenceStructureInput.ReconnectReceiver(seed,linkId),directory,"structure-reconnect.json",log,report);
-        CheckPorts(project,seed,seed.Ids[3]);
-        log.AppendLine("receiver reconnected to lifeline: verified");
+        CheckPorts(project,seed,seed.Ids[4],seed.Ids[2]);
+        log.AppendLine("receiver reconnected to sender execution: verified");
         stage("受信実行区間を削除");
         using(project.SuspendModelVerification()){receiver.Delete();}
         string editor=SequenceStructureInput.WithoutReceiver(seed,schema);
@@ -329,13 +329,13 @@ public static class SequenceStructureProbe
         var expectedShapes=shapes.Where(x=>!x.EndsWith(":"+seed.Ids[5],StringComparison.Ordinal)).ToArray();
         if((removed!=null && !removed.IsDeleted) || root.GetChildren().OfType<IExecutionSpecification>().Count()!=1 || !expectedShapes.SequenceEqual(view.Shapes.Select(sh=>sh.Id+":"+sh.ModelId).OrderBy(x=>x)))
             throw new InvalidOperationException("E161: 受信実行区間の削除または残す図形の保持が不一致です。");
-        CheckPorts(project,seed,seed.Ids[3]);
+        CheckPorts(project,seed,seed.Ids[4],seed.Ids[2]);
         for(int i=0;i<seed.Ids.Length;i++)if(i!=5 && project.GetModelById(seed.Ids[i]).Name!=names[i])
             throw new InvalidOperationException("E162: 残すモデルの名前が変化しました。");
         log.AppendLine("receiver execution deletion and retained shape IDs: verified");
         stage("同じIDで実行区間を再作成・再接続");
         Import(project,SequenceUpdateProbe.Payload(seed.Json),directory,"structure-restore.json",log,report);
-        CheckPorts(project,seed,seed.Ids[5]);
+        CheckPorts(project,seed,seed.Ids[5],seed.Ids[3]);
         root=(IInteraction)project.GetModelById(seed.Ids[0]);
         view=root.GetEditors().OfType<ISequenceDiagram>().Single(d=>d.Id==editorId);
         if(root.GetChildren().OfType<IExecutionSpecification>().Count()!=2 || !shapes.SequenceEqual(view.Shapes.Select(sh=>sh.Id+":"+sh.ModelId).OrderBy(x=>x)))
@@ -350,11 +350,11 @@ public static class SequenceStructureProbe
             throw new InvalidOperationException("E165: 受信関連IDが変化しました。");
         log.AppendLine("execution recreation, ports, model/relationship/shape identities: verified");
     }
-    static void CheckPorts(IProject project,SequencePayload seed,string receivePort)
+    static void CheckPorts(IProject project,SequencePayload seed,string receivePort,string receiverLifeline)
     {
         var root=(IInteraction)project.GetModelById(seed.Ids[0]);
         var message=project.GetModelById(seed.Ids[6]) as IMessage;
-        if(message==null || root.Messages.Count()!=1 || root.Lifelines.Count()!=2 || message.Kind!="sync" || message.Sender==null || message.Sender.Id!=seed.Ids[2] || message.Receiver==null || message.Receiver.Id!=seed.Ids[3]
+        if(message==null || root.Messages.Count()!=1 || root.Lifelines.Count()!=2 || message.Kind!="sync" || message.Sender==null || message.Sender.Id!=seed.Ids[2] || message.Receiver==null || message.Receiver.Id!=receiverLifeline
             || message.SendPort==null || ((IModel)message.SendPort).Id!=seed.Ids[4] || message.ReceivePort==null || ((IModel)message.ReceivePort).Id!=receivePort)
             throw new InvalidOperationException("E166: メッセージのID・種類・送受信先が不一致です。");
     }
@@ -1757,7 +1757,7 @@ public static class SequenceStructureInput
         var link=document["Relations"].Items.Single(r=>r["Id"].StringValue()==relationId
             && r["MetamodelId"].StringValue()==SequencePayload.Prefix+"ReceiveMessage"
             && r["SourceId"].StringValue()==seed.Ids[5] && r["TargetId"].StringValue()==seed.Ids[6]);
-        link.Properties["SourceId"]=SequenceJson.Parse(SequencePayload.Q(seed.Ids[3]));
+        link.Properties["SourceId"]=SequenceJson.Parse(SequencePayload.Q(seed.Ids[4]));
         document["Entities"].Items.Clear();
         document["Relations"].Items.Clear();
         document["Relations"].Items.Add(link);
