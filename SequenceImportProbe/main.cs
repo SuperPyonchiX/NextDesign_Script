@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.39";
+    public const string Title = "シーケンス生成実験 / 0.8.40";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -1073,20 +1073,17 @@ public static class SequenceStructureTrial
             string cycle="";
             if(completion.Committed)
             {
-                // Undo and redo the committed change here so the result is checked the same
-                // way every other stage is, by reading the model back.
+                // This command runs inside the host's own transaction, so ours is nested and
+                // its content only reaches the undo stack after the handler returns. Both
+                // CanUndo answers are false here by design, not by failure.
                 stage="Undo";
-                // The ribbon's undo is the workspace one; the project-level stack reported
-                // nothing to undo right after the commit.
                 log.AppendLine("undo availability: project="+project.CanUndo+" workspace="+app.Workspace.CanUndo());
-                if(!app.Workspace.CanUndo())cycle="\nUndo: 実行できません";
-                else
+                if(app.Workspace.CanUndo())
                 {
                     app.Workspace.Undo();Refresh(app,log);
                     bool undone=Matches(delegate {Verify(before,Rounded(project,rootId,fresh,newShapes),"Undo後",log);},log);
                     stage="Redo";
                     bool available=app.Workspace.CanRedo(),redone=false;
-                    log.AppendLine("redo availability: project="+project.CanRedo+" workspace="+available);
                     if(available)
                     {
                         app.Workspace.Redo();Refresh(app,log);
@@ -1095,6 +1092,7 @@ public static class SequenceStructureTrial
                     cycle="\nUndo照合: "+(undone?"一致":"不一致")+" / Redo照合: "+(redone?"一致":available?"不一致":"実行できません");
                     if(!undone || !redone)cycle+="\n保存せずコピーを開き直してください。";
                 }
+                else cycle="\nUndo/Redo: このコマンドの実行中は履歴へ積まれないため自動確認できません。手で1回ずつ確認してください。";
             }
             summary="ケース: "+caseId+" / "+(completion.Committed?"構造更新・SDK照合・変更確定: 成功":"停止段階: "+stage)
                 +cycle
