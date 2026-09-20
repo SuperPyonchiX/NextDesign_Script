@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.56";
+    public const string Title = "シーケンス生成実験 / 0.8.57";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -138,7 +138,11 @@ public static class SequenceExperiment
             if (plan != null)
             {
                 stage = "PlantUML生成データの構築";
-                payload = PumlBuild.Build(plan, PumlRuntime.Profile(diagram, sources, plan, project), diagram.EditorDefinition.Id, schema, replacement==null?null:replacement.Identity);
+                var profile = PumlRuntime.Profile(diagram, sources, plan, project);
+                // Metaclass ids are fixed per profile, so one run is enough to pin them.
+                detail.AppendLine("Resolved types (label / id / full name):");
+                foreach (string row in profile.Resolved) detail.AppendLine("  " + row);
+                payload = PumlBuild.Build(plan, profile, diagram.EditorDefinition.Id, schema, replacement==null?null:replacement.Identity);
                 Write(Path.Combine(directory, "source.puml"), pumlText);
             }
             rootId = payload.Ids[0];
@@ -535,6 +539,33 @@ public static class PumlRuntime
     // so read the concrete type from there instead of falling back to the abstract one.
     static IClass Resolve(ISequenceDiagram diagram,string[] definitionTypes,IEnumerable<IModel> observed,string label)
     { return Resolve(diagram,definitionTypes,observed,null,label); }
+    // Known concrete type ids, filled in once they have been read off a real profile.
+    // Metaclass ids are fixed, so a value here removes the need for any sample at all.
+    // Format: label, then the id. Leave a label out until its id is actually known.
+    static readonly string[] Pinned = {
+        // "分岐", "00000000-0000-0000-0000-000000000000",
+    };
+    static IClass Pin(IClass anchor,IClass declared,string label)
+    {
+        for(int i=0;i+1<Pinned.Length;i+=2)
+            if(Pinned[i]==label)return ById(anchor,declared,Pinned[i+1]);
+        return null;
+    }
+    static IClass ById(IClass anchor,IClass declared,string id)
+    {
+        if(anchor==null || declared==null || string.IsNullOrEmpty(id))return null;
+        var root=anchor.Owner;
+        for(int guard=0;root!=null && root.Parent!=null && guard<256;guard++)root=root.Parent;
+        if(root==null)return null;
+        var pending=new List<IPackage>{root};
+        for(int i=0;i<pending.Count && i<4096;i++)
+        {
+            foreach(var k in pending[i].OwnedClasses.Cast<IClass>())
+                if(k.Id==id)return !k.IsAbstract && Inherits(k,declared)?k:null;
+            foreach(var sub in pending[i].SubPackages.Cast<IPackage>())pending.Add(sub);
+        }
+        return null;
+    }
     // Whatever route found a type, remember it against this view definition so a project
     // that has no example of its own can still be filled in later.
     static string LearnedPath(ISequenceDiagram diagram)
@@ -579,18 +610,8 @@ public static class PumlRuntime
     static IClass Remembered(ISequenceDiagram diagram,IClass anchor,IClass declared,string label)
     {
         string id;
-        if(anchor==null || declared==null || !Learned(diagram).TryGetValue(label,out id) || string.IsNullOrEmpty(id))return null;
-        var root=anchor.Owner;
-        for(int guard=0;root!=null && root.Parent!=null && guard<256;guard++)root=root.Parent;
-        if(root==null)return null;
-        var pending=new List<IPackage>{root};
-        for(int i=0;i<pending.Count && i<4096;i++)
-        {
-            foreach(var k in pending[i].OwnedClasses.Cast<IClass>())
-                if(k.Id==id)return !k.IsAbstract && Inherits(k,declared)?k:null;
-            foreach(var sub in pending[i].SubPackages.Cast<IPackage>())pending.Add(sub);
-        }
-        return null;
+        if(!Learned(diagram).TryGetValue(label,out id))return null;
+        return ById(anchor,declared,id);
     }
     static bool Inherits(IClass candidate,IClass ancestor)
     {
@@ -690,6 +711,11 @@ public static class PumlRuntime
     public static PumlProfile Profile(ISequenceDiagram diagram,IClass[] source,PumlPlan plan,IProject project)
     {
         var p=new PumlProfile();
+        p.Resolved.Add("相互作用\t"+source[0].Id);
+        p.Resolved.Add("枠\t"+source[1].Id);
+        p.Resolved.Add("ライフライン\t"+source[2].Id);
+        p.Resolved.Add("実行区間\t"+source[4].Id);
+        p.Resolved.Add("メッセージ\t"+source[6].Id);
         string[] names={"Interaction","Frame","Lifeline","Lifeline","ExecutionSpecification","ExecutionSpecification","Message"};
         for(int i=0;i<source.Length;i++)p.Types[names[i]]=source[i].Id;
         string[] keys={"Frame","Lifelines","ExecutionSpecifications","Messages","OwnedExecutionSpecification","SendMessage","ReceiveMessage"};
@@ -715,9 +741,9 @@ public static class PumlRuntime
             var declaredEnd=Child(p,source[0],"MessageEnds","MessageEnds","___Interaction_MessageEnd");
             var c=Resolve(diagram,new[]{"MessageEnd","MessageEnds"},diagram.MessageEnds.Select(e=>e.Model),declaredEnd!=null && declaredEnd.IsAbstract
                     ?(Anywhere(project,declaredEnd) ?? Sibling(source[0],declaredEnd)
-                        ?? Remembered(diagram,source[0],declaredEnd,"メッセージ端") ?? Descend(project,declaredEnd,"メッセージ端"))
+                        ?? Pin(source[0],declaredEnd,"メッセージ端") ?? Remembered(diagram,source[0],declaredEnd,"メッセージ端") ?? Descend(project,declaredEnd,"メッセージ端"))
                     :declaredEnd,"メッセージ端");
-            Learn(diagram,"メッセージ端",c);
+            Learn(diagram,"メッセージ端",c); p.Resolved.Add("メッセージ端\t"+c.Id+"\t"+c.FullName);
             p.Types["MessageEnd"]=c.Id; classes.Add(c);
         }
         if(plan.All().Any(n=>n.Kind=="fragment"))
@@ -726,18 +752,18 @@ public static class PumlRuntime
             var c=Resolve(diagram,new[]{"CombinedFragment","Fragment","CombinedFragments"},
                 diagram.Fragments.Select(f=>f.Model),declaredFragment!=null && declaredFragment.IsAbstract
                     ?(Anywhere(project,declaredFragment) ?? Sibling(source[0],declaredFragment)
-                        ?? Remembered(diagram,source[0],declaredFragment,"複合フラグメント") ?? Descend(project,declaredFragment,"複合フラグメント"))
+                        ?? Pin(source[0],declaredFragment,"複合フラグメント") ?? Remembered(diagram,source[0],declaredFragment,"複合フラグメント") ?? Descend(project,declaredFragment,"複合フラグメント"))
                     :declaredFragment,"複合フラグメント");
-            Learn(diagram,"複合フラグメント",c);
+            Learn(diagram,"複合フラグメント",c); p.Resolved.Add("複合フラグメント\t"+c.Id+"\t"+c.FullName);
             p.Types["CombinedFragment"]=c.Id; classes.Add(c);
             var declaredOperand=Child(p,c,"Operands","Operands","___CombinedFragment_InteractionOperand");
             var operand=Resolve(diagram,new[]{"InteractionOperand","Operand","Operands"},
                 diagram.Fragments.Where(f=>f.Model.Metaclass.Id==c.Id).SelectMany(f=>f.Operands).Select(o=>o.Model),
                 declaredOperand!=null && declaredOperand.IsAbstract
                     ?(Anywhere(project,declaredOperand) ?? Sibling(c,declaredOperand)
-                        ?? Remembered(diagram,c,declaredOperand,"分岐") ?? Descend(project,declaredOperand,"分岐"))
+                        ?? Pin(c,declaredOperand,"分岐") ?? Remembered(diagram,c,declaredOperand,"分岐") ?? Descend(project,declaredOperand,"分岐"))
                     :declaredOperand,"分岐");
-            Learn(diagram,"分岐",operand);
+            Learn(diagram,"分岐",operand); p.Resolved.Add("分岐\t"+operand.Id+"\t"+operand.FullName);
             p.Types["InteractionOperand"]=operand.Id; classes.Add(operand);
             foreach(var op in plan.All().Where(n=>n.Kind=="fragment").Select(n=>n.Operator).Distinct())p.Operators[op]=Literal(c,"Operator",op);
         }
@@ -747,9 +773,9 @@ public static class PumlRuntime
             var c=Resolve(diagram,new[]{"InteractionUse","InteractionUses","Ref"},
                 diagram.InteractionUses.Select(f=>f.Model),declaredUse!=null && declaredUse.IsAbstract
                     ?(Anywhere(project,declaredUse) ?? Sibling(source[0],declaredUse)
-                        ?? Remembered(diagram,source[0],declaredUse,"相互作用の利用") ?? Descend(project,declaredUse,"相互作用の利用"))
+                        ?? Pin(source[0],declaredUse,"相互作用の利用") ?? Remembered(diagram,source[0],declaredUse,"相互作用の利用") ?? Descend(project,declaredUse,"相互作用の利用"))
                     :declaredUse,"相互作用の利用");
-            Learn(diagram,"相互作用の利用",c);
+            Learn(diagram,"相互作用の利用",c); p.Resolved.Add("相互作用の利用\t"+c.Id+"\t"+c.FullName);
             p.Types["InteractionUse"]=c.Id; classes.Add(c);
         }
         if(plan.All().Any(n=>n.Kind=="note"))
@@ -758,9 +784,9 @@ public static class PumlRuntime
             var c=Resolve(diagram,new[]{"InteractionNote","Note","Notes"},
                 diagram.Notes.Select(n=>n.Model),declaredNote!=null && declaredNote.IsAbstract
                     ?(Anywhere(project,declaredNote) ?? Sibling(source[0],declaredNote)
-                        ?? Remembered(diagram,source[0],declaredNote,"Note") ?? Descend(project,declaredNote,"Note"))
+                        ?? Pin(source[0],declaredNote,"Note") ?? Remembered(diagram,source[0],declaredNote,"Note") ?? Descend(project,declaredNote,"Note"))
                     :declaredNote,"Note");
-            Learn(diagram,"Note",c);
+            Learn(diagram,"Note",c); p.Resolved.Add("Note\t"+c.Id+"\t"+c.FullName);
             p.Types["InteractionNote"]=c.Id; classes.Add(c);
             var f=Field(c,"Body") ?? Field(c,"Text") ?? Field(c,"Name");
             if(f==null)throw new InvalidOperationException("E121: Note本文フィールドを取得できません。");
@@ -2005,6 +2031,8 @@ public class PumlProfile
     public Dictionary<string,string> Relations = new Dictionary<string,string>();
     public Dictionary<string,string> Operators = new Dictionary<string,string>();
     public string NoteField = "Body", NoteStorage = "String", Sync="Sync", Async="Async", Reply="Reply";
+    // Label, id and full name of every concrete type this run settled on.
+    public List<string> Resolved = new List<string>();
 }
 public class PumlBuild
 {
