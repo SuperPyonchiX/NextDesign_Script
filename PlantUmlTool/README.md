@@ -1,6 +1,6 @@
 # PlantUmlTool — Next Design × PlantUML 連携
 
-2.1.2ではアンカーのないシーケンスNoteを`note across`で出力する。近傍ライフラインを接続先として補わない。標準構文の図全体にまたがる注記として表示し、任意座標は出力しない。接続のあるNoteは既存処理を維持する。SequenceImportProbe 0.8.9で検証する場合は両拡張を更新し、再出力したファイルを使用する。実機描画は未確認。[PlantUML公式構文](https://plantuml.com/sequence-diagram)を参照。
+2.1.3では2.1.2の自由Note出力変更を取り消し、従来の近傍ライフラインを使う`note over`表示へ戻した。処理の近くに注記を表示する見た目を優先する。SequenceImportProbe 0.8.10はこの対象指定を表示位置として扱い、Next Designのアンカー追加指示にはしない。両拡張を更新して再起動する。2.1.2で作成したファイルは再出力する。
 
 
 2.1.1 では、シーケンス図の破棄後に余分な `activate` / `deactivate` を出力する不具合を修正。破棄メッセージと破棄点の両方に適用する。3拡張の共通回帰テストは `python Tools/Test-SequenceExport.py`。Next Designでの再出力・描画は実機確認待ち。

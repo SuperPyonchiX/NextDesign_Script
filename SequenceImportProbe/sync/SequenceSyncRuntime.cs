@@ -194,7 +194,7 @@ public static class SequenceSyncRuntime
                 e.Attributes["reference"]=matches.Length==1?matches[0].Id:"";
                 if(matches.Length!=1)current.Limitations.Add("ref参照先 "+e.Line+"行: "+matches.Length+"候補");
             }
-            var plan=SyncPlan.Build(current.Document,desired,()=>Guid.NewGuid().ToString());
+            var plan=SequenceNotePolicy.Build(current.Document,desired,()=>Guid.NewGuid().ToString());
             report="{\"version\":1,\"project\":"+SequencePayload.Q(project.Id)+",\"diagram\":"+SequencePayload.Q(diagram.Id)
                 +",\"current\":"+current.Document.ToJson()+",\"desired\":"+desired.ToJson()+",\"plan\":"+plan.ToJson()
                 +",\"expected\":"+plan.Expected.ToJson()+",\"limitations\":"+PumlBuild.Json(current.Limitations.ToArray())

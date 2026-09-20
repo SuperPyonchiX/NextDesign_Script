@@ -95,13 +95,13 @@ static class PlantUmlText { public static string Normalize(string s) {return s.T
 class Test {
     List<string> lines=new List<string>();List<int> _stack=new List<int>();
     void Line(string s) {lines.Add(s);} void LineAt(int depth,string s) {lines.Add(s);}
-    ILifelineShape AnchoredLifelineOf(INoteShape n) {return new ILifelineShape();}
+    ILifelineShape AnchoredLifelineOf(INoteShape n) {return n.NoteAnchors.Count==0?null:new ILifelineShape();}
     string AliasOf(ILifelineShape l) {return "A";}
-    string NearestAlias(double x) {throw new Exception("free Note must not infer an anchor");}
+    string NearestAlias(double x) {return "Near";}
     // PRODUCTION
     public static void Main() {
         var t=new Test();t.OnNote(new INoteShape{Text="line1\r\nline2"});
-        if(!t.lines.SequenceEqual(new[]{"note across","line1","line2","end note"}))throw new Exception("free Note output");
+        if(!t.lines.SequenceEqual(new[]{"note over Near","line1","line2","end note"}))throw new Exception("free Note output");
         t=new Test();var linked=new INoteShape{Text="linked"};linked.NoteAnchors.Add(new INoteAnchorShape());t.OnNote(linked);
         if(!t.lines.SequenceEqual(new[]{"note over A","linked","end note"}))throw new Exception("linked Note changed");
         Console.WriteLine("PASS: production free and anchored Note output");

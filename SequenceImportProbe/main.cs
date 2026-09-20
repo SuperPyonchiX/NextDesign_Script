@@ -22,7 +22,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.9";
+    public const string Title = "シーケンス生成実験 / 0.8.10";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -753,7 +753,7 @@ public static class SequenceSyncRuntime
                 e.Attributes["reference"]=matches.Length==1?matches[0].Id:"";
                 if(matches.Length!=1)current.Limitations.Add("ref参照先 "+e.Line+"行: "+matches.Length+"候補");
             }
-            var plan=SyncPlan.Build(current.Document,desired,()=>Guid.NewGuid().ToString());
+            var plan=SequenceNotePolicy.Build(current.Document,desired,()=>Guid.NewGuid().ToString());
             report="{\"version\":1,\"project\":"+SequencePayload.Q(project.Id)+",\"diagram\":"+SequencePayload.Q(diagram.Id)
                 +",\"current\":"+current.Document.ToJson()+",\"desired\":"+desired.ToJson()+",\"plan\":"+plan.ToJson()
                 +",\"expected\":"+plan.Expected.ToJson()+",\"limitations\":"+PumlBuild.Json(current.Limitations.ToArray())
@@ -2504,7 +2504,7 @@ public static class SequenceAudit
         var normalized=current.Copy();var input=desired.Copy();
         foreach(var e in normalized.Elements.Concat(input.Elements).Where(e=>e.Kind=="participant"))e.Text=Fold(e.Text);
         int serial=0;var occupied=new HashSet<string>(current.Elements.Select(e=>e.Id));
-        var simulated=SyncPlan.Build(normalized,input,()=>{string id;do{id="audit-"+(serial++);}while(!occupied.Add(id));return id;});
+        var simulated=SequenceNotePolicy.Build(normalized,input,()=>{string id;do{id="audit-"+(serial++);}while(!occupied.Add(id));return id;});
         lines.Add("参加者の改行・空白を揃えた比較実験（反映なし）");
         lines.Add("参加者 追加+削除: "+plan.Changes.Count(c=>c.Kind=="participant" && (c.Action=="add" || c.Action=="delete"))+" → "+simulated.Changes.Count(c=>c.Kind=="participant" && (c.Action=="add" || c.Action=="delete")));
         lines.Add("全種類 再作成候補: "+plan.Recreated+" → "+simulated.Recreated);
@@ -2551,5 +2551,28 @@ public static class SequenceLabels
 {
     // Exporter folds whitespace in participant labels and the diagram title.
     public static string Fold(string value) { return Regex.Replace(value??"",@"\s+"," ").Trim(); }
+}
+
+// PlantUML note placement does not instruct creation/deletion of Next Design anchors.
+public static class SequenceNotePolicy
+{
+    public static SyncPlan Build(SequenceDocument current,SequenceDocument desired,Func<string> newId)
+    {
+        var before=current.Copy();var input=desired.Copy();
+        foreach(var e in before.Elements.Concat(input.Elements).Where(e=>e.Kind=="note"))
+        {
+            e.Links["targets"]=new string[0];e.Links.Remove("anchors");e.Attributes["position"]="free";
+        }
+        var plan=SyncPlan.Build(before,input,newId);
+        var originals=current.Elements.Where(e=>e.Kind=="note").ToDictionary(e=>e.Id);
+        foreach(var e in plan.Expected.Elements.Where(e=>e.Kind=="note"))
+        {
+            SequenceElement original;if(!originals.TryGetValue(e.Id,out original))continue;
+            foreach(var role in new[]{"targets","anchors"})
+            {string[] values;if(original.Links.TryGetValue(role,out values))e.Links[role]=values.ToArray();else e.Links.Remove(role);}
+            string position;if(original.Attributes.TryGetValue("position",out position))e.Attributes["position"]=position;else e.Attributes.Remove("position");
+        }
+        plan.Expected.Validate();return plan;
+    }
 }
 // END GENERATED SequenceSync.cs

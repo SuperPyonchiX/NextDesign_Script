@@ -158,6 +158,14 @@ public static class SyncTests
         Require(across.Elements.Single(e=>e.Kind=="note").Links["targets"].Length==0,"across invented participant anchor");
         Require(Plan(freeNote,across).IsEmpty,"free note export roundtrip changed connection or position");
         Require(Doc("note across : remark").Elements.Single(e=>e.Kind=="note").Text=="remark","inline across note parse");
+        var placementOnly=SequenceNotePolicy.Build(freeNote,Doc("opt scope\nnote over A : remark\nend"),()=>"note-policy-new");
+        Require(placementOnly.IsEmpty,"note placement created an anchor change");
+        Require(placementOnly.Expected.Elements.Single(e=>e.Kind=="note").Links["targets"].Length==0,"free note acquired anchor");
+        var linkedNote=Doc("note over A : linked");Ids(linkedNote);
+        var renamedNote=SequenceNotePolicy.Build(linkedNote,Doc("note over B : renamed"),()=>"new-note");
+        Require(renamedNote.Changes.Any(c=>c.Kind=="note" && c.Action=="update"),"note text edit hidden");
+        Require(renamedNote.Expected.Elements.Single(e=>e.Kind=="note").Links["targets"].SequenceEqual(linkedNote.Elements.Single(e=>e.Kind=="note").Links["targets"]),"existing anchor replaced by placement hint");
+        Require(SequenceNotePolicy.Build(Doc(""),Doc("note over B : added"),()=>"new-note").Expected.Elements.Single(e=>e.Kind=="note").Links["targets"].Length==0,"new note acquired anchor");
         Console.WriteLine("PASS: all-kind semantic plans, mixed changes, ID retention, block edits, ambiguity, moves, source trivia and idempotence");
     }
 }

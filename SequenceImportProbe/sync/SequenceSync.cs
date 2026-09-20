@@ -451,7 +451,7 @@ public static class SequenceAudit
         var normalized=current.Copy();var input=desired.Copy();
         foreach(var e in normalized.Elements.Concat(input.Elements).Where(e=>e.Kind=="participant"))e.Text=Fold(e.Text);
         int serial=0;var occupied=new HashSet<string>(current.Elements.Select(e=>e.Id));
-        var simulated=SyncPlan.Build(normalized,input,()=>{string id;do{id="audit-"+(serial++);}while(!occupied.Add(id));return id;});
+        var simulated=SequenceNotePolicy.Build(normalized,input,()=>{string id;do{id="audit-"+(serial++);}while(!occupied.Add(id));return id;});
         lines.Add("参加者の改行・空白を揃えた比較実験（反映なし）");
         lines.Add("参加者 追加+削除: "+plan.Changes.Count(c=>c.Kind=="participant" && (c.Action=="add" || c.Action=="delete"))+" → "+simulated.Changes.Count(c=>c.Kind=="participant" && (c.Action=="add" || c.Action=="delete")));
         lines.Add("全種類 再作成候補: "+plan.Recreated+" → "+simulated.Recreated);
@@ -498,4 +498,27 @@ public static class SequenceLabels
 {
     // Exporter folds whitespace in participant labels and the diagram title.
     public static string Fold(string value) { return Regex.Replace(value??"",@"\s+"," ").Trim(); }
+}
+
+// PlantUML note placement does not instruct creation/deletion of Next Design anchors.
+public static class SequenceNotePolicy
+{
+    public static SyncPlan Build(SequenceDocument current,SequenceDocument desired,Func<string> newId)
+    {
+        var before=current.Copy();var input=desired.Copy();
+        foreach(var e in before.Elements.Concat(input.Elements).Where(e=>e.Kind=="note"))
+        {
+            e.Links["targets"]=new string[0];e.Links.Remove("anchors");e.Attributes["position"]="free";
+        }
+        var plan=SyncPlan.Build(before,input,newId);
+        var originals=current.Elements.Where(e=>e.Kind=="note").ToDictionary(e=>e.Id);
+        foreach(var e in plan.Expected.Elements.Where(e=>e.Kind=="note"))
+        {
+            SequenceElement original;if(!originals.TryGetValue(e.Id,out original))continue;
+            foreach(var role in new[]{"targets","anchors"})
+            {string[] values;if(original.Links.TryGetValue(role,out values))e.Links[role]=values.ToArray();else e.Links.Remove(role);}
+            string position;if(original.Attributes.TryGetValue("position",out position))e.Attributes["position"]=position;else e.Attributes.Remove("position");
+        }
+        plan.Expected.Validate();return plan;
+    }
 }
