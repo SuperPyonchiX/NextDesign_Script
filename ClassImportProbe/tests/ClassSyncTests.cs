@@ -47,6 +47,25 @@ public static class ClassSyncTests
         var classRename = Plan(baseline, ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("\"制御部\"", "\"制御装置\"")));
         Check(classRename.Changes.Count == 1 && classRename.Changes[0].Action == "update" && classRename.Changes[0].Kind == "class" && classRename.Changes[0].Detail == "name", "class rename: " + Describe(classRename));
 
+        // A member whose name holds parentheses reads as an operation from text; the model side
+        // says attribute. The rendered line is identical, so it is not a difference.
+        var fromText = ClassDocument.Parse("@startuml\nclass \"A\" as A {\n  + 温度(℃) : float\n  + g() : int\n}\n@enduml\n");
+        var fromModel = ClassDocument.Parse("@startuml\nclass \"A\" as A {\n  + t : float\n  + g() : int\n}\n@enduml\n");
+        var t = fromModel.Elements.Single(e => e.Kind == "attribute");
+        t.Text = "温度(℃)";
+        Check(fromText.Elements.Single(e => e.Kind == "operation" && e.Text == "温度").Attr("parameters") == "℃", "text side reads an operation");
+        var kinds = Plan(fromModel, fromText);
+        Check(kinds.Changes.Count == 0, "kind-only difference: " + Describe(kinds));
+        t.Attributes["type"] = "double";
+        var kindsAndType = Plan(fromModel, fromText);
+        Check(kindsAndType.Changes.Count == 1 && kindsAndType.Changes[0].Action == "update", "kind and text difference: " + Describe(kindsAndType));
+
+        // Anonymous fields print the same line twice; equal counts pair up, unequal counts differ by the surplus.
+        var twice = "@startuml\nclass \"A\" as A\nclass \"B\" as B\n\nA --> B\nA --> B\n\n@enduml\n";
+        Check(Plan(ClassDocument.Parse(twice), ClassDocument.Parse(twice)).Changes.Count == 0, "identical anonymous lines");
+        var once = Plan(ClassDocument.Parse(twice), ClassDocument.Parse(twice.Replace("A --> B\nA --> B", "A --> B")));
+        Check(once.Changes.Count == 1 && once.Changes[0].Action == "delete" && once.Changes[0].Kind == "link", "surplus anonymous line: " + Describe(once));
+
         // Summary and reasons are counts and line numbers only.
         string summary = ClassAudit.Summary(added, 2);
         Check(summary.Contains("差分候補 3件") && summary.Contains("class") && !summary.Contains("Logger"), "summary text: " + summary);

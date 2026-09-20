@@ -29,7 +29,7 @@ public sealed class ClassDiagramSnapshot
     public List<string> Limitations=new List<string>();
     public Dictionary<string,string> ModelIds=new Dictionary<string,string>(StringComparer.Ordinal);
     public Dictionary<string,double[]> Geometry=new Dictionary<string,double[]>(StringComparer.Ordinal);
-    class NodeInfo { public IModel Model; public INode Node; public ClassElement Element; }
+    class NodeInfo { public IModel Model; public INode Node; public ClassElement Element; public NodeInfo Parent; public List<NodeInfo> Children=new List<NodeInfo>(); }
     ClassSyncOptions o;ClassDocument doc;int order;
     Dictionary<string,NodeInfo> byModelId=new Dictionary<string,NodeInfo>(StringComparer.Ordinal);
     HashSet<string> usedAlias=new HashSet<string>(StringComparer.Ordinal);
@@ -83,10 +83,20 @@ public sealed class ClassDiagramSnapshot
         {
             NodeInfo parent=null;var owner=info.Model.Owner;int guard=0;
             while(owner!=null && guard++<32) { if(byModelId.TryGetValue(owner.Id,out parent))break;owner=owner.Owner; }
-            if(parent!=null)info.Element.Parent=parent.Element.Id;
-            else info.Element.Parent=PackageOf(info.Model);
-            doc.Elements.Add(info.Element);
+            if(parent!=null) { info.Parent=parent;parent.Children.Add(info); }
         }
+        // The exporter walks roots in position order and each root's children right after it.
+        // A class-like node cannot contain a class in PlantUML, so its children are written at
+        // the same depth inside the nearest container (package/component node) or package block.
+        // The document takes that flattened shape so text and diagram agree on ownership.
+        Action<NodeInfo,string> place=null;
+        place=(info,container)=>{
+            info.Element.Parent=container;info.Element.Order=order++;
+            doc.Elements.Add(info.Element);
+            string inner=ClassDocument.IsContainerKeyword(info.Element.Attr("keyword"))?info.Element.Id:container;
+            foreach(var child in info.Children)place(child,inner);
+        };
+        foreach(var root in infos.Where(i=>i.Parent==null))place(root,PackageOf(root.Model));
         foreach(var info in infos)
             if(!ClassDocument.IsContainerKeyword(info.Element.Attr("keyword")))CollectMembers(info);
         if(infos.Count==0)Limitations.Add("図上にモデルと対応するノードがありません。");

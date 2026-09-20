@@ -49,6 +49,11 @@ public static class ClassPumlTests
         Check(links[1].Text == "items" && links[1].Attr("arrow") == "-->" && links[1].Attr("toMultiplicity") == "0..*" && links[1].Link("from") == links[0].Link("to"), "two-way second");
         Check(links[2].Text == "Children" && links[3].Text == "Children" && links[2].Attr("arrow") == "o--" && links[3].Attr("toMultiplicity") == "1", "same-label two-way");
 
+        var anonymousFirst = ClassDocument.Parse("@startuml\nclass \"A\" as A\nclass \"B\" as B\nA \"0..*\" -- \"0..*\" B : / Parent\n@enduml\n");
+        var pair = anonymousFirst.Elements.Where(e => e.Kind == "link").OrderBy(e => e.Order).ToList();
+        Check(pair.Count == 2 && pair[0].Text == "" && pair[1].Text == "Parent" && pair[1].Link("from") == pair[0].Link("to"), "anonymous first label");
+        Check(ClassPumlWriter.Write(anonymousFirst).Contains("A \"0..*\" -- \"0..*\" B :  / Parent"), "anonymous first label written back as the exporter does");
+
         var nested = ClassDocument.Parse(Load(samples, "package-nested.puml"));
         var packages = nested.Elements.Where(e => e.Kind == "package").ToList();
         Check(packages.Count == 3 && packages.Count(p => p.Text == "P") == 1, "packages merged by name");

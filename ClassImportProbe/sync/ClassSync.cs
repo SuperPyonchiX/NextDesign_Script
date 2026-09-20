@@ -454,11 +454,14 @@ public sealed class ClassPumlParser
         if(!aliases.TryGetValue(p.From,out from))throw Error(p.Line,"未宣言の別名です: "+p.From);
         if(!aliases.TryGetValue(p.To,out to))throw Error(p.Line,"未宣言の別名です: "+p.To);
         bool generalization=p.Arrow=="--|>" || p.Arrow=="..|>" || p.Arrow=="<|--" || p.Arrow=="<|..";
+        // The exporter joins labels as "a / b"; when the first direction is an anonymous field the
+        // line reads ": / b" after trimming, which still means two directions.
         int split=p.Label.IndexOf(" / ",StringComparison.Ordinal);
-        bool twoWay=!generalization && (split>=0 || p.FromMult.Length>0);
+        bool emptyFirst=split<0 && p.Label.StartsWith("/ ",StringComparison.Ordinal);
+        bool twoWay=!generalization && (split>=0 || emptyFirst || p.FromMult.Length>0);
         if(!twoWay) { Add(p.Line,from,to,p.Arrow,p.Label,p.ToMult);return; }
-        string first=split>=0?p.Label.Substring(0,split).Trim():p.Label;
-        string second=split>=0?p.Label.Substring(split+3).Trim():p.Label;
+        string first=emptyFirst?"":split>=0?p.Label.Substring(0,split).Trim():p.Label;
+        string second=emptyFirst?p.Label.Substring(2).Trim():split>=0?p.Label.Substring(split+3).Trim():p.Label;
         Add(p.Line,from,to,Directed(p.Arrow),first,p.ToMult);
         Add(p.Line,to,from,Directed(p.Arrow),second,p.FromMult);
     }
@@ -611,11 +614,17 @@ public sealed class ClassSyncPlan
             "Identities",Identities.ToDictionary(p=>p.Key,p=>(object)p.Value),"Expected",Expected==null?null:(object)Expected.ToJson()));
     }
     static readonly string[] Ignored = { "alias", "field", "arrow" };
+    // A member whose name contains parentheses reads as an operation from text although the
+    // model calls it an attribute. The rendered line is what PlantUML carries, so members are
+    // compared by that line and attribute/operation/literal are one kind for matching.
+    static bool IsMember(ClassElement e) { return ClassDocument.MemberKinds.Contains(e.Kind); }
+    static string KindKey(ClassElement e) { return IsMember(e)?"member":e.Kind; }
     static string Properties(ClassElement e)
     {
+        if(IsMember(e))return "member|"+ClassPumlWriter.Render(e);
         return e.Kind+"|"+e.Text+"|"+string.Join("|",e.Attributes.Where(p=>!Ignored.Contains(p.Key)).OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>p.Key+"="+p.Value));
     }
-    static string Anchor(ClassElement e) { return e.Kind=="class"?e.Kind+"|"+e.Text+"|"+e.Attr("keyword"):e.Kind+"|"+e.Text; }
+    static string Anchor(ClassElement e) { return e.Kind=="class"?e.Kind+"|"+e.Text+"|"+e.Attr("keyword"):KindKey(e)+"|"+e.Text; }
     static string LinkKey(ClassElement e,Dictionary<string,string> map)
     {
         return string.Join("|",e.Links.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>p.Key+":"+string.Join(",",p.Value.Select(id=>map==null?id:map[id]))));
@@ -623,7 +632,9 @@ public sealed class ClassSyncPlan
     static string Differences(ClassElement before,ClassElement after)
     {
         var keys=new List<string>();
+        if(IsMember(before) && IsMember(after) && ClassPumlWriter.Render(before)==ClassPumlWriter.Render(after))return "";
         if(before.Text!=after.Text)keys.Add("name");
+        if(before.Kind!=after.Kind)keys.Add("kind");
         foreach(var key in before.Attributes.Keys.Union(after.Attributes.Keys).Where(k=>!Ignored.Contains(k)).OrderBy(k=>k,StringComparer.Ordinal))
             if(before.Attr(key)!=after.Attr(key))keys.Add(key);
         if(LinkKey(before,null)!=LinkKey(after,null))keys.Add("ends");
@@ -690,23 +701,28 @@ public sealed class ClassSyncPlan
             foreach(var a in desired.Elements.Where(e=>structural(e) && !map.ContainsKey(e.Id)).ToArray())
             {
                 if(a.Parent==null || !map.ContainsKey(a.Parent))continue;
-                var candidates=current.Elements.Where(b=>!used.Contains(b.Id) && b.Parent==map[a.Parent] && b.Kind==a.Kind).ToArray();
-                if(candidates.Length==1 && desired.Elements.Count(b=>!map.ContainsKey(b.Id) && b.Parent==a.Parent && b.Kind==a.Kind)==1)
+                var candidates=current.Elements.Where(b=>!used.Contains(b.Id) && b.Parent==map[a.Parent] && KindKey(b)==KindKey(a)).ToArray();
+                if(candidates.Length==1 && desired.Elements.Count(b=>!map.ContainsKey(b.Id) && b.Parent==a.Parent && KindKey(b)==KindKey(a))==1)
                 {bind(a,candidates[0]);progress=true;}
             }
         }
         align();
-        // Links: exact endpoints, arrow and label first; then endpoints only when both sides are unique.
+        // Links: exact endpoints, arrow and label first; then endpoints only. Lines that are
+        // indistinguishable in text (anonymous fields print the same line twice) pair up in
+        // order when both sides have the same count, since no observable difference exists.
         Func<ClassElement,bool> resolvable=e=>e.Links.Values.SelectMany(v=>v).All(map.ContainsKey);
         foreach(bool exact in new[]{true,false})
         {
-            foreach(var a in desired.Elements.Where(e=>e.Kind=="link" && !map.ContainsKey(e.Id) && resolvable(e)).ToArray())
+            foreach(var a in desired.Elements.Where(e=>e.Kind=="link" && !map.ContainsKey(e.Id) && resolvable(e)).OrderBy(e=>e.Order).ToArray())
             {
+                if(map.ContainsKey(a.Id))continue;
                 string key=LinkKey(a,map);
                 Func<ClassElement,bool> same=b=>b.Kind=="link" && !used.Contains(b.Id) && LinkKey(b,null)==key && (!exact || (b.Attr("arrow")==a.Attr("arrow") && b.Text==a.Text));
-                var candidates=current.Elements.Where(same).ToArray();
-                int inputs=desired.Elements.Count(b=>b.Kind=="link" && !map.ContainsKey(b.Id) && resolvable(b) && LinkKey(b,map)==key && (!exact || (b.Attr("arrow")==a.Attr("arrow") && b.Text==a.Text)));
-                if(candidates.Length==1 && inputs==1)bind(a,candidates[0]);
+                var candidates=current.Elements.Where(same).OrderBy(b=>b.Order).ToArray();
+                var inputs=desired.Elements.Where(b=>b.Kind=="link" && !map.ContainsKey(b.Id) && resolvable(b) && LinkKey(b,map)==key && (!exact || (b.Attr("arrow")==a.Attr("arrow") && b.Text==a.Text))).OrderBy(b=>b.Order).ToArray();
+                if(candidates.Length==0)continue;
+                int pairs=Math.Min(candidates.Length,inputs.Length);
+                if(exact || (candidates.Length==1 && inputs.Length==1))for(int i=0;i<pairs;i++)bind(inputs[i],candidates[i]);
             }
         }
         foreach(var a in desired.Elements.Where(e=>!map.ContainsKey(e.Id)))
