@@ -621,27 +621,91 @@ public static class ClassSyncRuntime
         if(after.ToJson()!=originalJson)throw new InvalidOperationException("C230: 取消後: 図が処理前の状態に戻っていません。");
         log.AppendLine("restored: SDK read-back equals the pre-trial state");
     }
-    // 0.2.0 text update: only member renames, one SetField("Name") per rename, verified by
-    // read-back and by re-reading the whole diagram. Trial always rolls back; commit keeps
-    // the change only after the same verification succeeds.
+    // One resolved edit: the member model plus, for a type change, the old and new type models.
+    class ResolvedEdit { public IModel Model; public ClassMemberEdit Edit; public IModel OldType, NewType; public string VisibilityValue; }
+    static IEnumerable<IModel> Tree(IModel root)
+    {
+        var stack=new Stack<IModel>();stack.Push(root);
+        while(stack.Count>0)
+        {
+            var m=stack.Pop();if(m==null || m.IsDeleted)continue;
+            yield return m;
+            IEnumerable<IModel> children;
+            try { children=m.GetChildren().Cast<IModel>().ToList(); } catch(Exception) { continue; }
+            foreach(var c in children)stack.Push(c);
+        }
+    }
+    static bool IsA(IModel m,string className)
+    {
+        var cls=m.Metaclass;if(cls==null)return false;
+        if(cls.Name==className)return true;
+        try { return cls.GetAllSuperClasses().Cast<IClass>().Any(c=>c.Name==className); } catch(Exception) { return false; }
+    }
+    static IField FieldOf(IModel m,string name) { return m.Metaclass.GetFields().Cast<IField>().FirstOrDefault(f=>f.Name==name); }
+    // Text update: member name, visibility and (attributes) type. A type is a reference to an
+    // existing type model, resolved by name before anything is written; nothing is created.
+    // Trial always rolls back; commit keeps the change only after the same verification succeeds.
     static string RunTextUpdate(IApplication app,IProject project,IEditor editor,ClassDiagramSnapshot snapshot,ClassDocument desired,ClassTextPreflight preflight,bool retain,StringBuilder log)
     {
         string editorId=editor.Id;string originalJson=snapshot.Document.ToJson();
-        var targets=new List<KeyValuePair<IModel,ClassRename>>();
-        foreach(var rename in preflight.Renames)
+        var options=new ClassSyncOptions();
+        var targets=new List<ResolvedEdit>();
+        List<IModel> everything=null;
+        foreach(var edit in preflight.Edits)
         {
             string modelId;
-            if(!snapshot.ModelIds.TryGetValue(rename.CurrentId,out modelId))throw new InvalidOperationException("C220: 更新対象のモデルIDを特定できません。");
+            if(!snapshot.ModelIds.TryGetValue(edit.CurrentId,out modelId))throw new InvalidOperationException("C220: 更新対象のモデルIDを特定できません。");
             var model=project.GetModelById(modelId);
             if(model==null || model.IsDeleted || model.IsProxy || !model.IsEditable)throw new InvalidOperationException("C220: 更新対象に編集不可のモデルがあります。");
             string live=ClassText.Inline(ClassText.Normalize(model.Name));
-            if(live!=rename.OldText)throw new InvalidOperationException("C220: 更新対象の現在の名前が読取りと一致しません。");
-            var nameField=model.Metaclass.GetFields().Cast<IField>().FirstOrDefault(f=>f.Name=="Name");
-            if(nameField==null || nameField.IsReference || nameField.Type!="String")throw new InvalidOperationException("C220: Name が文字列フィールドではありません。");
-            log.AppendLine("rename target: model="+modelId+" class="+model.ClassName+" '"+rename.OldText+"' -> '"+rename.NewText+"'");
-            targets.Add(new KeyValuePair<IModel,ClassRename>(model,rename));
+            if(live!=edit.OldText)throw new InvalidOperationException("C220: 更新対象の現在の名前が読取りと一致しません。");
+            var resolved=new ResolvedEdit{Model=model,Edit=edit};
+            if(edit.NameChanged)
+            {
+                var nameField=FieldOf(model,"Name");
+                if(nameField==null || nameField.IsReference || nameField.Type!="String")throw new InvalidOperationException("C220: Name が文字列フィールドではありません。");
+            }
+            if(edit.VisibilityChanged)
+            {
+                var field=options.VisibilityFieldNames.Select(n=>FieldOf(model,n)).FirstOrDefault(f=>f!=null && !f.IsReference);
+                if(field==null)throw new InvalidOperationException("C220: 可視性のフィールドが見つかりません。");
+                string current=ClassDiagramSnapshot.TextOf(model,new List<string>{field.Name});string symbol;
+                if(!options.VisibilityMap.TryGetValue(current,out symbol) || symbol!=edit.OldVisibility)throw new InvalidOperationException("C220: 可視性の現在値 '"+current+"' が読取りと一致しません。");
+                if(!options.VisibilityValues.TryGetValue(edit.NewVisibility,out resolved.VisibilityValue))throw new InvalidOperationException("C220: 可視性の記号 '"+edit.NewVisibility+"' に対応する値がありません。");
+                log.AppendLine("visibility field="+field.Name+" type="+field.Type+" current='"+current+"' -> '"+resolved.VisibilityValue+"'");
+            }
+            if(edit.TypeChanged)
+            {
+                var field=options.TypeFieldNames.Select(n=>FieldOf(model,n)).FirstOrDefault(f=>f!=null && f.IsReference);
+                if(field==null)throw new InvalidOperationException("C220: 型の参照フィールドが見つかりません。");
+                var currentTargets=model.GetFieldValues(field.Name).Cast<object>().OfType<IModel>().ToList();
+                if(currentTargets.Count>1)throw new InvalidOperationException("C220: 型の参照が複数あります。");
+                resolved.OldType=currentTargets.FirstOrDefault();
+                string currentName=resolved.OldType==null?"":ClassText.Inline(ClassText.Normalize(resolved.OldType.Name));
+                if(currentName!=edit.OldType)throw new InvalidOperationException("C220: 型の現在値 '"+currentName+"' が読取りと一致しません。");
+                if(everything==null)everything=Tree(project.DesignModel).ToList();
+                var candidates=everything.Where(m=>!m.IsProxy && IsA(m,field.Type) && ClassText.Inline(ClassText.Normalize(m.Name))==edit.NewType).ToList();
+                if(candidates.Count>1)
+                {
+                    // Prefer a type owned by the member's own class, then by any ancestor of it.
+                    var owners=new List<string>();var at=model.Owner;int guard=0;
+                    while(at!=null && guard++<32) { owners.Add(at.Id);at=at.Owner; }
+                    foreach(string ownerId in owners)
+                    {
+                        var near=candidates.Where(m=>{var o=m.Owner;int g=0;while(o!=null && g++<32){if(o.Id==ownerId)return true;o=o.Owner;}return false;}).ToList();
+                        if(near.Count>0) { candidates=near;break; }
+                    }
+                }
+                if(candidates.Count==0)throw new InvalidOperationException("C220: 型 '"+edit.NewType+"' に一致する "+field.Type+" 系のモデルがありません。型モデルの新規作成は扱いません。");
+                if(candidates.Count>1)throw new InvalidOperationException("C220: 型 '"+edit.NewType+"' に一致するモデルが "+candidates.Count+" 件あり、一意に決まりません。");
+                resolved.NewType=candidates[0];
+                log.AppendLine("type field="+field.Name+" ("+field.Type+") old="+(resolved.OldType==null?"(none)":resolved.OldType.Id+" "+resolved.OldType.ClassName)+" new="+resolved.NewType.Id+" "+resolved.NewType.ClassName+" owner="+(resolved.NewType.Owner==null?"":resolved.NewType.Owner.Name));
+            }
+            log.AppendLine("edit target: model="+modelId+" class="+model.ClassName+" "+edit.Describe());
+            targets.Add(resolved);
         }
-        string confirmation=(retain?"コピーのプロジェクトで実行してください。\n属性・操作の名前 "+targets.Count+"件を更新し、読戻しが一致したときだけ確定します。":"コピーのプロジェクトで実行してください。\n属性・操作の名前 "+targets.Count+"件を更新し、読戻しを照合した後に必ず取り消します。")
+        string summary="名前 "+preflight.NameCount+" / 可視性 "+preflight.VisibilityCount+" / 型 "+preflight.TypeCount;
+        string confirmation=(retain?"コピーのプロジェクトで実行してください。\n属性・操作 "+targets.Count+"件（"+summary+"）を更新し、読戻しが一致したときだけ確定します。":"コピーのプロジェクトで実行してください。\n属性・操作 "+targets.Count+"件（"+summary+"）を更新し、読戻しを照合した後に必ず取り消します。")
             +"\n自動保存はしません。Undo/Redo と保存再読込は手動で確認してください。";
         if(!app.Window.UI.ShowConfirmDialog(confirmation,ClassExperiment.Title))return "本文更新: 中止（確認で取消）";
         if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=editorId
@@ -650,14 +714,35 @@ public static class ClassSyncRuntime
         string stage="開始前";
         var transaction=project.BeginUndoTransaction(false);
         Action apply=delegate {
-            stage="名前の更新";
-            foreach(var pair in targets)
+            foreach(var t in targets)
             {
-                pair.Key.SetField("Name",pair.Value.NewText);
-                string readBack=pair.Key.GetFieldString("Name");
-                if(readBack!=pair.Value.NewText)throw new InvalidOperationException("C230: SetField 後の読戻しが一致しません: '"+readBack+"'");
+                var model=t.Model;var edit=t.Edit;
+                if(edit.NameChanged)
+                {
+                    stage="名前の更新";
+                    model.SetField("Name",edit.NewText);
+                    string readBack=model.GetFieldString("Name");
+                    if(readBack!=edit.NewText)throw new InvalidOperationException("C230: SetField(Name) 後の読戻しが一致しません: '"+readBack+"'");
+                }
+                if(edit.VisibilityChanged)
+                {
+                    stage="可視性の更新";
+                    var field=options.VisibilityFieldNames.Select(n=>FieldOf(model,n)).First(f=>f!=null && !f.IsReference);
+                    model.SetField(field.Name,t.VisibilityValue);
+                    string readBack=ClassDiagramSnapshot.TextOf(model,new List<string>{field.Name});string symbol;
+                    if(!options.VisibilityMap.TryGetValue(readBack,out symbol) || symbol!=edit.NewVisibility)throw new InvalidOperationException("C230: 可視性の読戻しが一致しません: '"+readBack+"'");
+                }
+                if(edit.TypeChanged)
+                {
+                    stage="型の更新";
+                    var field=options.TypeFieldNames.Select(n=>FieldOf(model,n)).First(f=>f!=null && f.IsReference);
+                    if(t.OldType!=null)model.UnRelate(field.Name,t.OldType);
+                    model.Relate(field.Name,t.NewType);
+                    var after=model.GetFieldValues(field.Name).Cast<object>().OfType<IModel>().ToList();
+                    if(after.Count!=1 || after[0].Id!=t.NewType.Id)throw new InvalidOperationException("C230: 型の読戻しが一致しません（"+after.Count+"件）。");
+                }
             }
-            log.AppendLine("SetField(Name) x"+targets.Count+": read-back matched");
+            log.AppendLine("applied "+targets.Count+" member edits: read-back matched");
             stage="更新後の照合";
             VerifyAgainst(app,editorId,desired,"更新後",log);
         };

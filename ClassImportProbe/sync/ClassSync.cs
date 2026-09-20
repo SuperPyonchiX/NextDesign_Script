@@ -306,6 +306,12 @@ public sealed class ClassSyncOptions
         { "protected", "#" }, { "限定公開", "#" }, { "#", "#" },
         { "package", "~" }, { "internal", "~" }, { "パッケージ", "~" }, { "~", "~" },
     };
+    // Symbol -> stored value when writing visibility back. Public/Private were observed on the
+    // real profile; Protected/Package are the UML names and are unverified.
+    public Dictionary<string,string> VisibilityValues = new Dictionary<string,string>(StringComparer.Ordinal)
+    {
+        { "+", "Public" }, { "-", "Private" }, { "#", "Protected" }, { "~", "Package" },
+    };
     public List<string> TypeFieldNames = new List<string> { "Type", "DataType", "AttributeType", "PropertyType", "型", "データ型", "属性型" };
     public List<string> ReturnTypeFieldNames = new List<string> { "ReturnType", "Return", "ResultType", "戻り値", "戻り値型", "返り値" };
     public List<string> MultiplicityFieldNames = new List<string> { "Multiplicity", "Cardinality", "多重度" };
@@ -805,16 +811,36 @@ public sealed class ClassSyncPlan
     }
 }
 
-// One member rename the text-update step may write: the current element, its old and new name.
-public sealed class ClassRename { public string CurrentId, Kind, OldText, NewText; public int Line; }
+// One member edit the text-update step may write: name, visibility and (attributes only) the
+// type, each as an old/new pair. Empty flags mean the value is unchanged.
+public sealed class ClassMemberEdit
+{
+    public string CurrentId, Kind, OldText, NewText, OldVisibility, NewVisibility, OldType, NewType;
+    public int Line;
+    public bool NameChanged, VisibilityChanged, TypeChanged;
+    public string Describe()
+    {
+        var parts=new List<string>();
+        if(NameChanged)parts.Add("name '"+OldText+"'->'"+NewText+"'");
+        if(VisibilityChanged)parts.Add("visibility '"+OldVisibility+"'->'"+NewVisibility+"'");
+        if(TypeChanged)parts.Add("type '"+OldType+"'->'"+NewType+"'");
+        return Kind+" "+string.Join(", ",parts.ToArray());
+    }
+}
 
-// Preflight for 0.2.0: accept a plan only when every change is a member rename. Any other
-// change is a stop reason, so nothing is written for a plan the step cannot fully apply.
+// Preflight for the text-update step: accept a plan only when every change is a member update
+// limited to name, visibility and (attributes) type. Any other change is a stop reason, so
+// nothing is written for a plan the step cannot fully apply.
 public sealed class ClassTextPreflight
 {
-    public List<ClassRename> Renames = new List<ClassRename>();
+    public List<ClassMemberEdit> Edits = new List<ClassMemberEdit>();
     public List<string> Reasons = new List<string>();
-    public bool Candidate { get { return Reasons.Count==0 && Renames.Count>0; } }
+    public bool Candidate { get { return Reasons.Count==0 && Edits.Count>0; } }
+    public int NameCount { get { return Edits.Count(e=>e.NameChanged); } }
+    public int VisibilityCount { get { return Edits.Count(e=>e.VisibilityChanged); } }
+    public int TypeCount { get { return Edits.Count(e=>e.TypeChanged); } }
+    static readonly string[] AttributeKeys = { "name", "visibility", "type" };
+    static readonly string[] OperationKeys = { "name", "visibility" };
     public static ClassTextPreflight Check(ClassDocument current,ClassDocument desired,ClassSyncPlan plan)
     {
         var result=new ClassTextPreflight();
@@ -824,12 +850,23 @@ public sealed class ClassTextPreflight
         {
             string where=c.Line>0?" 入力"+c.Line+"行":"";
             if(c.Action!="update") { result.Reasons.Add(c.Action+" "+c.Kind+where+": 本文更新では扱えません"); continue; }
-            if(!ClassDocument.MemberKinds.Contains(c.Kind)) { result.Reasons.Add("update "+c.Kind+where+": 属性・操作以外の更新は扱えません"); continue; }
-            if(c.Detail!="name") { result.Reasons.Add("update "+c.Kind+where+" ["+c.Detail+"]: 名前以外の変更は扱えません"); continue; }
+            if(c.Kind!="attribute" && c.Kind!="operation") { result.Reasons.Add("update "+c.Kind+where+": 属性・操作以外の更新は扱えません"); continue; }
             ClassElement before,after;
             if(!old.TryGetValue(c.Id,out before) || !target.TryGetValue(c.Id,out after)) { result.Reasons.Add("update "+c.Kind+where+": 対応する要素を特定できません"); continue; }
-            if(after.Text.Length==0 || after.Text.Contains("\\n") || before.Text.Contains("\\n")) { result.Reasons.Add("update "+c.Kind+where+": 空または改行を含む名前は扱えません"); continue; }
-            result.Renames.Add(new ClassRename{CurrentId=c.Id,Kind=c.Kind,OldText=before.Text,NewText=after.Text,Line=c.Line});
+            var allowed=c.Kind=="attribute"?AttributeKeys:OperationKeys;
+            var keys=c.Detail.Split(new[]{','},StringSplitOptions.RemoveEmptyEntries);
+            var unsupported=keys.Where(k=>!allowed.Contains(k)).ToArray();
+            if(unsupported.Length>0) { result.Reasons.Add("update "+c.Kind+where+" ["+c.Detail+"]: "+string.Join(",",unsupported)+" の変更は扱えません"); continue; }
+            var edit=new ClassMemberEdit{CurrentId=c.Id,Kind=c.Kind,Line=c.Line,OldText=before.Text,NewText=after.Text,
+                OldVisibility=before.Attr("visibility"),NewVisibility=after.Attr("visibility"),OldType=before.Attr("type"),NewType=after.Attr("type"),
+                NameChanged=keys.Contains("name"),VisibilityChanged=keys.Contains("visibility"),TypeChanged=keys.Contains("type")};
+            string problem=null;
+            if(edit.NameChanged && (edit.NewText.Length==0 || edit.NewText.Contains("\\n") || edit.OldText.Contains("\\n")))problem="空または改行を含む名前は扱えません";
+            else if(edit.VisibilityChanged && edit.NewVisibility.Length==0)problem="可視性の記号を消す変更は扱えません";
+            else if(edit.TypeChanged && edit.NewType.Length==0)problem="型を空にする変更は扱えません";
+            else if(edit.TypeChanged && edit.NewType.Contains(", "))problem="複数の型を持つ属性は扱えません";
+            if(problem!=null) { result.Reasons.Add("update "+c.Kind+where+" ["+c.Detail+"]: "+problem); continue; }
+            result.Edits.Add(edit);
         }
         if(plan.Changes.Count==0)result.Reasons.Add("差分候補がありません");
         return result;
@@ -838,7 +875,7 @@ public sealed class ClassTextPreflight
     {
         var sb=new StringBuilder();
         sb.Append("本文更新の事前判定: ").Append(Candidate?"候補あり":"停止").Append('\n');
-        sb.Append("改名 ").Append(Renames.Count).Append("件 / 停止理由 ").Append(Reasons.Count).Append("件\n");
+        sb.Append("対象 ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append("） / 停止理由 ").Append(Reasons.Count).Append("件\n");
         foreach(var r in Reasons)sb.Append("  ").Append(r).Append('\n');
         return sb.ToString().TrimEnd();
     }

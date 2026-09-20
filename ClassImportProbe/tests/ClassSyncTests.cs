@@ -80,24 +80,41 @@ public static class ClassSyncTests
         var twoAttributes = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("- state : int", "- state2 : int").Replace("{static} count : int", "{static} count2 : int"));
         var twoAttrPlan = Plan(baseline, twoAttributes);
         Check(twoAttrPlan.Changes.Count == 2 && twoAttrPlan.Changes.All(c => c.Action == "update" && c.Kind == "attribute" && c.Detail == "name"), "two attributes renamed together: " + Describe(twoAttrPlan));
-        Check(ClassTextPreflight.Check(baseline, twoRenames, twoPlan).Renames.Count == 2, "two renames pass the preflight");
+        Check(ClassTextPreflight.Check(baseline, twoRenames, twoPlan).Edits.Count == 2, "two renames pass the preflight");
 
         // Text-update preflight: only member renames pass; everything else is a stop reason.
         var renameGate = ClassTextPreflight.Check(baseline, Load(samples, "rename-attribute.puml"), rename);
-        Check(renameGate.Candidate && renameGate.Renames.Count == 1 && renameGate.Renames[0].OldText == "state" && renameGate.Renames[0].NewText == "status" && renameGate.Renames[0].Line == 7, "rename preflight: " + renameGate.Summary());
-        Check(baseline.Elements.Any(e => e.Id == renameGate.Renames[0].CurrentId && e.Text == "state"), "rename preflight identity");
+        Check(renameGate.Candidate && renameGate.Edits.Count == 1 && renameGate.Edits[0].NameChanged && !renameGate.Edits[0].TypeChanged && renameGate.Edits[0].OldText == "state" && renameGate.Edits[0].NewText == "status" && renameGate.Edits[0].Line == 7, "rename preflight: " + renameGate.Summary());
+        Check(baseline.Elements.Any(e => e.Id == renameGate.Edits[0].CurrentId && e.Text == "state"), "rename preflight identity");
         var sameGate = ClassTextPreflight.Check(baseline, baseline, same);
         Check(!sameGate.Candidate && sameGate.Reasons.Count == 1, "no-change preflight: " + sameGate.Summary());
-        foreach (var name in new[] { "change-type.puml", "add-class.puml", "delete-link.puml", "reorder-member.puml", "move-class.puml" })
+        foreach (var name in new[] { "add-class.puml", "delete-link.puml", "reorder-member.puml", "move-class.puml" })
         {
             var doc = Load(samples, name);
             var gate = ClassTextPreflight.Check(baseline, doc, Plan(baseline, doc));
-            Check(!gate.Candidate && gate.Reasons.Count > 0 && gate.Renames.Count == 0, "preflight must stop for " + name + ": " + gate.Summary());
+            Check(!gate.Candidate && gate.Reasons.Count > 0 && gate.Edits.Count == 0, "preflight must stop for " + name + ": " + gate.Summary());
         }
+        var typeGate = ClassTextPreflight.Check(baseline, Load(samples, "change-type.puml"), type);
+        Check(typeGate.Candidate && typeGate.Edits.Count == 1 && typeGate.Edits[0].TypeChanged && !typeGate.Edits[0].NameChanged && typeGate.Edits[0].OldType == "int" && typeGate.Edits[0].NewType == "long", "type preflight: " + typeGate.Summary());
+        var visibility = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("- state : int", "+ state : int").Replace("# stop()", "- stop()"));
+        var visibilityGate = ClassTextPreflight.Check(baseline, visibility, Plan(baseline, visibility));
+        Check(visibilityGate.Candidate && visibilityGate.Edits.Count == 2 && visibilityGate.Edits.All(e => e.VisibilityChanged && !e.NameChanged) && visibilityGate.VisibilityCount == 2, "visibility preflight: " + visibilityGate.Summary());
+        var both = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("- state : int", "+ state2 : long"));
+        var bothGate = ClassTextPreflight.Check(baseline, both, Plan(baseline, both));
+        Check(bothGate.Candidate && bothGate.Edits.Count == 1 && bothGate.Edits[0].NameChanged && bothGate.Edits[0].VisibilityChanged && bothGate.Edits[0].TypeChanged, "name, visibility and type together: " + bothGate.Summary());
+        var defaultValue = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("[0..1] = 0", "[0..1] = 1"));
+        var defaultGate = ClassTextPreflight.Check(baseline, defaultValue, Plan(baseline, defaultValue));
+        Check(!defaultGate.Candidate && defaultGate.Reasons.Count == 1 && defaultGate.Reasons[0].Contains("default"), "default value is out of scope: " + defaultGate.Summary());
+        var returnType = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("start(mode : int) : bool", "start(mode : int) : int"));
+        var returnGate = ClassTextPreflight.Check(baseline, returnType, Plan(baseline, returnType));
+        Check(!returnGate.Candidate && returnGate.Reasons.Count == 1 && returnGate.Reasons[0].Contains("returnType"), "operation return type is out of scope: " + returnGate.Summary());
+        var noSymbol = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    - state : int", "    state : int"));
+        var noSymbolGate = ClassTextPreflight.Check(baseline, noSymbol, Plan(baseline, noSymbol));
+        Check(!noSymbolGate.Candidate && noSymbolGate.Reasons.Count == 1, "removing the visibility symbol stops: " + noSymbolGate.Summary());
         var mixed = Load(samples, "rename-attribute.puml");
         mixed.Elements.Single(e => e.Kind == "link" && e.Text == "Uses").Text = "Depends";
         var mixedGate = ClassTextPreflight.Check(baseline, mixed, Plan(baseline, mixed));
-        Check(!mixedGate.Candidate && mixedGate.Renames.Count == 1 && mixedGate.Reasons.Count == 1, "mixed plan stops as a whole: " + mixedGate.Summary());
+        Check(!mixedGate.Candidate && mixedGate.Edits.Count == 1 && mixedGate.Reasons.Count == 1, "mixed plan stops as a whole: " + mixedGate.Summary());
         var classRenameGate = ClassTextPreflight.Check(baseline, ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("\"制御部\"", "\"制御装置\"")), classRename);
         Check(!classRenameGate.Candidate && classRenameGate.Reasons.Count == 1, "class rename is out of scope: " + classRenameGate.Summary());
 
