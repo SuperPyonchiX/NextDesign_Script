@@ -349,12 +349,13 @@ public static class SequenceStructureTrial
         int reconnectCount=prepared.ReconnectCount;
         if(reconnectCommit && !retain)throw new InvalidOperationException("S231: 確定モードが不正です。");
         int touched=prepared.DeleteIds.Length+prepared.AddedExecutions.Length
-            +prepared.AddedParticipants.Length+prepared.DeleteParticipantIds.Length+reconnectCount;
+            +prepared.AddedParticipants.Length+prepared.DeleteParticipantIds.Length
+            +prepared.DeleteMessageIds.Length+reconnectCount;
         Func<SequenceChange,bool> supported=c=>
             (c.Action=="delete" && c.Kind=="execution")
             || (reconnectCommit && c.Action=="update" && c.Kind=="message")
             || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant"))
-            || (reconnectCommit && c.Action=="delete" && c.Kind=="participant");
+            || (reconnectCommit && c.Action=="delete" && (c.Kind=="participant" || c.Kind=="message"));
         if(retain && (touched==0 || (!reconnectCommit && touched!=prepared.DeleteIds.Length)
             || plan.Changes.Any(c=>!supported(c))))
             throw new InvalidOperationException("S231: 確定モードの対象外の差分があります。");
@@ -362,7 +363,8 @@ public static class SequenceStructureTrial
         var root=diagram.Model as IInteraction;
         var newShapes=prepared.AddedExecutions.Select(a=>a.ShapeId)
             .Concat(prepared.AddedParticipants.Select(a=>a.ShapeId)).ToArray();
-        var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds).ToArray();
+        var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
+            .Concat(prepared.DeleteMessageIds).ToArray();
         var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
         var expectedReconnect=before.Expected(prepared,plan,false);
         var expectedFinal=before.Expected(prepared,plan,true);
@@ -466,7 +468,8 @@ public static class SequenceStructureTrial
         }
         summary+="\n今回の対象: 受信接続変更 "+reconnectCount+"件 / 実行区間削除 "+prepared.DeleteIds.Length+"件"
             +" / 実行区間追加 "+prepared.AddedExecutions.Length+"件"
-            +" / 参加者追加 "+prepared.AddedParticipants.Length+"件 / 参加者削除 "+prepared.DeleteParticipantIds.Length+"件";
+            +" / 参加者追加 "+prepared.AddedParticipants.Length+"件 / 参加者削除 "+prepared.DeleteParticipantIds.Length+"件"
+            +" / メッセージ削除 "+prepared.DeleteMessageIds.Length+"件";
         log.AppendLine(summary);
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
         catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}

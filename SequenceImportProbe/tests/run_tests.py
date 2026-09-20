@@ -117,6 +117,17 @@ public static class PayloadTest {
    if(!dropGate.CanCommit(true) || dropGate.CanCommit(false))
        throw new Exception("participant removal did not reach exactly the receiver-change commit mode");
 
+   // The batch diagram without its last reply.
+   var messageAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-message-after.puml")));
+   var messagePlan=SyncPlan.Build(batchAfter,messageAfter,()=>Guid.NewGuid().ToString());
+   var messageGate=SequenceStructurePreflight.Check(batchAfter,messagePlan);
+   if(!messageGate.Candidate || messagePlan.Changes.Count!=1 || messageGate.DeleteMessages.Count!=1 || messageGate.Targets!=1)
+       throw new Exception("message sample must delete exactly one message: "+messagePlan.ToJson()+messageGate.ToJson());
+   if(!messageGate.CanCommit(true) || messageGate.CanCommit(false))
+       throw new Exception("message removal did not reach exactly the receiver-change commit mode");
+   if(SyncPlan.Build(messagePlan.Expected,messageAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
+       throw new Exception("message semantic plan is not idempotent");
+
    int commits=0, cancels=0;
    var success = new SequenceCompletion();
    success.Commit(delegate { commits++; });

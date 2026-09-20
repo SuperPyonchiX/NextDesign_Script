@@ -587,8 +587,9 @@ public sealed class SequenceStructurePreflight
     public List<string> AddExecutions=new List<string>();
     public List<string> AddParticipants=new List<string>();
     public List<string> DeleteParticipants=new List<string>();
+    public List<string> DeleteMessages=new List<string>();
     public int Targets { get { return ReconnectMessages.Count+DeleteExecutions.Count+AddExecutions.Count
-        +AddParticipants.Count+DeleteParticipants.Count; } }
+        +AddParticipants.Count+DeleteParticipants.Count+DeleteMessages.Count; } }
     public bool Candidate { get { return Reasons.Count==0 && Targets>0; } }
     // The deletion-only mode stays exactly as the product confirmed it. The other mode
     // covers a receiver change together with deletions, additions, or both.
@@ -694,6 +695,12 @@ public sealed class SequenceStructurePreflight
                 else result.DeleteParticipants.Add(change.Id);
                 continue;
             }
+            if(change.Action=="delete" && change.Kind=="message" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
+            {
+                if(Referenced(plan,change.Id))result.Reasons.Add("L"+change.Line+" メッセージへの参照が残るため削除できません。");
+                else result.DeleteMessages.Add(change.Id);
+                continue;
+            }
             string row="L"+change.Line+" ";
             SequenceElement old,next;
             if(change.Action=="delete" && change.Kind=="execution" && before.TryGetValue(change.Id,out old) && !after.ContainsKey(change.Id))
@@ -727,13 +734,15 @@ public sealed class SequenceStructurePreflight
         return "構造更新の事前判定（図への反映なし）\n受信接続変更候補: "+ReconnectMessages.Count+" / 実行区間削除候補: "+DeleteExecutions.Count
             +" / 実行区間追加候補: "+AddExecutions.Count
             +" / 参加者追加候補: "+AddParticipants.Count+" / 参加者削除候補: "+DeleteParticipants.Count
+            +" / メッセージ削除候補: "+DeleteMessages.Count
             +"\n"+(Reasons.Count>0?"全体を停止: "+Reasons.Count+"件の未対応条件":Candidate?"限定範囲の候補あり。既存図での適用・保持検証は未実施です。":"対象の変更なし")
             +"\n"+string.Join("\n",Reasons.Distinct());
     }
     public string ToJson()
     { return PumlBuild.Json(PumlBuild.Obj("Candidate",Candidate,"ReconnectMessages",ReconnectMessages.ToArray(),"DeleteExecutions",DeleteExecutions.ToArray(),
         "AddExecutions",AddExecutions.ToArray(),"AddParticipants",AddParticipants.ToArray(),
-        "DeleteParticipants",DeleteParticipants.ToArray(),"Reasons",Reasons.ToArray())); }
+        "DeleteParticipants",DeleteParticipants.ToArray(),"DeleteMessages",DeleteMessages.ToArray(),
+        "Reasons",Reasons.ToArray())); }
 }
 
 // One added execution, described so the expected state can be computed without
@@ -761,6 +770,7 @@ public sealed class SequenceStructurePreparation
     public SequenceAddedExecution[] AddedExecutions=new SequenceAddedExecution[0];
     public SequenceAddedParticipant[] AddedParticipants=new SequenceAddedParticipant[0];
     public string[] DeleteParticipantIds=new string[0];
+    public string[] DeleteMessageIds=new string[0];
     static string V(SequenceJson n,string key) { return SequenceEditorDocument.Value(n,key); }
     static SequenceJson[] Array(SequenceJson n,string key)
     {
@@ -924,6 +934,16 @@ public sealed class SequenceStructurePreparation
                 ShapeId=laneShapeId,TemplateShapeId=V(rightmost,"Id"),RelationId=relationId,
                 TemplateRelationId=V(ownerLink,"Id"),X=Number(x)});
         }
+        foreach(string id in gate.DeleteMessages)
+        {
+            Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="Message","削除対象が退避データ内のメッセージではありません。");
+            var allowed=new[]{"___Interaction_Message","SendMessage","ReceiveMessage"};
+            foreach(var relation in relations.Where(r=>V(r,"SourceId")==id || V(r,"TargetId")==id))
+                Require(V(relation,"TargetId")==id
+                    && allowed.Any(kind=>V(relation,"MetamodelId")==SequencePayload.Prefix+kind),
+                    "削除するメッセージに未対応の関連が残っています。");
+            Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==id)==1,"削除するメッセージの図形を一意に取得できません。");
+        }
         foreach(string id in gate.DeleteParticipants)
         {
             Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="Lifeline","削除対象が退避データ内の参加者ではありません。");
@@ -949,10 +969,11 @@ public sealed class SequenceStructurePreparation
             laneArray.Items.AddRange(newLaneShapes);
         }
         return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),ReconnectCount=changed.Count,
-            EditorAfterDeleteJson=Deleted(editor,newShapes,newLaneShapes,gate.DeleteExecutions,gate.DeleteParticipants),
+            EditorAfterDeleteJson=Deleted(editor,newShapes,newLaneShapes,gate.DeleteExecutions,
+                gate.DeleteParticipants.Concat(gate.DeleteMessages).ToList()),
             DeleteIds=gate.DeleteExecutions.ToArray(),
             AddedExecutions=additions.ToArray(),AddedParticipants=lanes.ToArray(),
-            DeleteParticipantIds=gate.DeleteParticipants.ToArray(),
+            DeleteParticipantIds=gate.DeleteParticipants.ToArray(),DeleteMessageIds=gate.DeleteMessages.ToArray(),
             ReceiveRelationIds=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage").Select(r=>V(r,"Id")).ToArray()};
     }
     static string Number(double value)
@@ -1269,8 +1290,9 @@ public sealed class SequenceTrialState
         }
         if(delete)
         {
-            var removed=new HashSet<string>(prepared.DeleteIds.Concat(prepared.DeleteParticipantIds));
+            var removed=new HashSet<string>(prepared.DeleteIds.Concat(prepared.DeleteParticipantIds).Concat(prepared.DeleteMessageIds));
             foreach(string id in removed)result.Models.Remove(id);
+            foreach(string id in prepared.DeleteMessageIds)result.Ports.Remove(id);
             // Measured on the product: deleting a model closes the gap it leaves in the
             // source/field collection that held it. Relations in other fields keep their index.
             foreach(string id in result.Relations.Where(p=>removed.Contains(p.Value[0]) || removed.Contains(p.Value[1])).Select(p=>p.Key).ToArray())

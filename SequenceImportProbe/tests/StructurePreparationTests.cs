@@ -279,8 +279,67 @@ public static class StructurePreparationTests
         Require(drifted.Shapes[added.ShapeId]==expected.Shapes[added.ShapeId],"lane drift was not reconciled or the timeline length was lost");
         Require(expected.Shapes[added.ShapeId].EndsWith("300"),"timeline length dropped by rounding");
     }
+    // Removing a message takes its model, its three endpoint relations and its shape,
+    // and leaves every other coordinate alone.
+    static void DeletedMessage()
+    {
+        var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
+        var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
+        string editorId=raw["Editors"].Items.Single()["Id"].StringValue();
+        var current=new SequenceDocument();
+        current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
+        current.Elements.Add(new SequenceElement{Id=ids[2],Kind="participant",Parent=ids[0]});
+        current.Elements.Add(new SequenceElement{Id=ids[3],Kind="participant",Parent=ids[0]});
+        foreach(string id in new[]{ids[4],ids[5]})
+        {var e=new SequenceElement{Id=id,Kind="execution",Parent=ids[0]};e.Links["participant"]=new[]{id==ids[4]?ids[2]:ids[3]};current.Elements.Add(e);}
+        var msg=new SequenceElement{Id=ids[6],Kind="message",Parent=ids[0],Text="probe()"};
+        msg.Links["sender"]=new[]{ids[2]};msg.Links["receiver"]=new[]{ids[3]};
+        msg.Links["sendExecution"]=new[]{ids[4]};msg.Links["receiveExecution"]=new[]{ids[5]};current.Elements.Add(msg);
+
+        var desired=current.Copy();desired.Elements.RemoveAll(e=>e.Id==ids[6]);
+        var plan=new SyncPlan{Expected=desired};
+        plan.Changes.Add(new SequenceChange{Action="delete",Kind="message",Id=ids[6],Line=4});
+
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate && gate.DeleteMessages.SequenceEqual(new[]{ids[6]}),"message deletion was not a candidate");
+        Require(gate.CanCommit(true) && !gate.CanCommit(false),"commit modes accepted the wrong scope for a message");
+
+        var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan);
+        Require(package.DeleteMessageIds.SequenceEqual(new[]{ids[6]}),"message was not prepared for deletion");
+        Require(SequenceJson.Parse(package.ReconnectJson)["Relations"].Items.Count==0,"an unrelated patch was built");
+        var remaining=SequenceJson.Parse(package.EditorAfterDeleteJson)["Editors"].Items.Single();
+        Require(remaining["Messages"].Items.Count==0,"message shape was kept");
+        Require(remaining["ExecutionSpecifications"].Items.Count==2 && remaining["Lifelines"].Items.Count==2,"unrelated shapes were dropped");
+
+        var state=new SequenceTrialState();
+        foreach(var e in raw["Entities"].Items)state.Models[e["Id"].StringValue()]=e.ToJsonString();
+        foreach(var r in raw["Relations"].Items)
+        {
+            string id=r["Id"].StringValue();
+            state.Relations[id]=new[]{r["SourceId"].StringValue(),r["TargetId"].StringValue(),r["SourceIndex"].Raw,r["TargetIndex"].Raw};
+            state.RelationFields[id]=r["MetamodelId"].StringValue();
+        }
+        foreach(var sh in SequenceEditorDocument.Read(raw.ToJsonString(),ids[0],editorId).Shapes())
+        {string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        state.Ports[ids[6]]=new[]{ids[4],ids[5],ids[2],ids[3],"sync"};
+        string before=state.Signature();
+        var final=state.Expected(package,plan,true);
+        Require(!final.Models.ContainsKey(ids[6]) && !final.Ports.ContainsKey(ids[6]),"message model or port survived");
+        Require(!final.ShapeModels.Values.Contains(ids[6]),"message shape survived");
+        Require(final.Relations.Values.All(r=>r[0]!=ids[6] && r[1]!=ids[6]),"a relation still points at the message");
+        Require(final.Models.ContainsKey(ids[4]) && final.Models.ContainsKey(ids[5]),"the executions it used were removed");
+        Require(state.Signature()==before,"expected state mutated the snapshot");
+
+        var anchored=current.Copy();
+        anchored.Elements.Single(e=>e.Id==ids[4]).Links["endBefore"]=new[]{ids[6]};
+        var stillUsed=anchored.Copy();
+        var anchoredPlan=new SyncPlan{Expected=stillUsed};
+        anchoredPlan.Changes.Add(new SequenceChange{Action="delete",Kind="message",Id=ids[6],Line=4});
+        Require(SequenceStructurePreflight.Check(anchored,anchoredPlan).DeleteMessages.Count==0,"a message still used as a boundary was accepted");
+    }
     public static void Run()
     {
+        DeletedMessage();
         AddedParticipant();
         AddedExecution();
         var ordered=new SequenceTrialState();
