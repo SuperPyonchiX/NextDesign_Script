@@ -361,3 +361,62 @@ public sealed class SequenceRegion
                 yield return new SequenceMembership{Child=fragment.Id,Parent=operand.Id,Evidence="diagram rectangle containment"};
     }
 }
+
+// Screenshot report: fixed vocabulary and counts only; never include design labels or IDs.
+public static class SequenceAudit
+{
+    static string Fold(string text) { return System.Text.RegularExpressions.Regex.Replace(text??"",@"\s+"," ").Trim(); }
+    static bool EqualLinks(SequenceElement a,SequenceElement b,string role)
+    {
+        string[] x,y;if(!a.Links.TryGetValue(role,out x))x=new string[0];if(!b.Links.TryGetValue(role,out y))y=new string[0];
+        return x.SequenceEqual(y);
+    }
+    public static string Summary(SyncPlan plan,int limitations)
+    {
+        var lines=new List<string>{"読取り完了・差分候補（図への反映なし）","種類: 追加 / 削除 / 更新 / 移動"};
+        foreach(string kind in SequenceDocument.Kinds)
+        {
+            var changes=plan.Changes.Where(c=>c.Kind==kind).ToArray();if(changes.Length==0)continue;
+            lines.Add(kind+": "+string.Join(" / ",new[]{"add","delete","update","move"}.Select(a=>changes.Count(c=>c.Action==a).ToString())));
+        }
+        if(plan.IsEmpty)lines.Add("差分候補: 0件");
+        lines.Add("再作成候補: "+plan.Recreated+" / 要照合: "+limitations);
+        lines.Add("未編集で出力した入力の期待値: すべて0件");
+        lines.Add("この画面と「診断表示」を撮影してください。");return string.Join("\n",lines);
+    }
+    public static string Reasons(SequenceDocument current,SequenceDocument desired,SyncPlan plan)
+    {
+        var counts=new Dictionary<string,int>();Action<string> hit=k=>{if(!counts.ContainsKey(k))counts[k]=0;counts[k]++;};
+        var old=current.Elements.ToDictionary(e=>e.Id);
+        foreach(var e in plan.Expected.Elements.Where(e=>old.ContainsKey(e.Id)))
+        {
+            var b=old[e.Id];
+            if(e.Text!=b.Text)hit(Fold(e.Text)==Fold(b.Text)?"本文: 改行・空白のみ":"本文: 空白以外も相違");
+            if(e.Parent!=b.Parent)hit("所属先の相違");
+            if(new[]{"sender","receiver"}.Any(k=>!EqualLinks(e,b,k)))hit("メッセージの送受信先");
+            if(new[]{"sendExecution","receiveExecution"}.Any(k=>!EqualLinks(e,b,k)))hit("メッセージの接続実行区間");
+            if(new[]{"startAfter","endBefore","endContainer","outer"}.Any(k=>!EqualLinks(e,b,k)))hit("実行区間の境界・入れ子");
+            if(!EqualLinks(e,b,"participant"))hit("実行区間・生成破棄の参加者");
+            if(new[]{"targets","anchors"}.Any(k=>!EqualLinks(e,b,k)))hit("Note・refの接続先");
+            foreach(var key in e.Attributes.Keys.Union(b.Attributes.Keys))
+            {
+                string aValue,bValue;e.Attributes.TryGetValue(key,out aValue);b.Attributes.TryGetValue(key,out bValue);
+                if(aValue!=bValue)hit(key=="sort"?"メッセージ種別":key=="operator"?"フラグメント種別":key=="reference"?"ref参照先":key=="position"?"Note配置指定":"その他属性");
+            }
+        }
+        var lines=new List<string>{"差分理由（対応付けできた要素・重複計上あり）"};
+        lines.AddRange(counts.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>p.Key+": "+p.Value));
+        if(counts.Count==0)lines.Add("対応付け済み要素の属性・接続差: 0件");
+        var normalized=current.Copy();var input=desired.Copy();
+        foreach(var e in normalized.Elements.Concat(input.Elements).Where(e=>e.Kind=="participant"))e.Text=Fold(e.Text);
+        int serial=0;var occupied=new HashSet<string>(current.Elements.Select(e=>e.Id));
+        var simulated=SyncPlan.Build(normalized,input,()=>{string id;do{id="audit-"+(serial++);}while(!occupied.Add(id));return id;});
+        lines.Add("参加者の改行・空白を揃えた比較実験（反映なし）");
+        lines.Add("参加者 追加+削除: "+plan.Changes.Count(c=>c.Kind=="participant" && (c.Action=="add" || c.Action=="delete"))+" → "+simulated.Changes.Count(c=>c.Kind=="participant" && (c.Action=="add" || c.Action=="delete")));
+        lines.Add("全種類 再作成候補: "+plan.Recreated+" → "+simulated.Recreated);
+        lines.Add("全種類 差分操作数: "+plan.Changes.Count+" → "+simulated.Changes.Count);
+        lines.Add("数の減少は表記差の影響。残差の原因は別途照合。");
+        lines.Add("本文・モデルID・パスはこの画面には表示しません。");
+        return string.Join("\n",lines);
+    }
+}

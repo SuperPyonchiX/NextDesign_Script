@@ -115,6 +115,14 @@ public static class SyncTests
             new[]{new SequenceRegion{Id=innerFrame,X=20,Y=140,Width=350,Height=150}});
         SequenceMembership.Resolve(missingNesting,evidence.Concat(nesting),line=>{});
         missingNesting.Validate();Require(missingNesting.Elements.Single(e=>e.Id==member.Id).Parent==inner,"ancestor SDK membership unresolved without model nesting relation");
+        var privateDoc=Doc("A -> B : private-design-label");Ids(privateDoc);
+        privateDoc.Elements.Single(e=>e.Kind=="participant" && e.Text=="A").Text=" A\n";
+        var auditPlan=Plan(privateDoc,Doc("A -> B : private-design-label"));
+        var audit=SequenceAudit.Reasons(privateDoc,Doc("A -> B : private-design-label"),auditPlan);
+        Require(!audit.Contains("private-design-label") && !audit.Contains("old-"),"screenshot exposes design text or identifiers");
+        Require(audit.Contains("参加者 追加+削除") && audit.Contains("差分操作数"),"normalization experiment missing");
+        Require(SequenceAudit.Summary(auditPlan,3).Split('\n').Length<=16,"summary exceeds screenshot row budget");
+        Require(privateDoc.Elements.Single(e=>e.Kind=="participant" && e.Text.Contains("A")).Text==" A\n","diagnostic mutated current document");
         Console.WriteLine("PASS: all-kind semantic plans, mixed changes, ID retention, block edits, ambiguity, moves, source trivia and idempotence");
     }
 }

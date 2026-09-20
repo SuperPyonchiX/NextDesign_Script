@@ -152,7 +152,7 @@ public static class SequenceSyncRuntime
     }
     public static void Preview(IApplication app)
     {
-        var log=new StringBuilder();string report=null;
+        var log=new StringBuilder();string report=null;string screenshot=null;
         try
         {
             var diagram=app.Workspace.CurrentEditor as ISequenceDiagram;
@@ -180,9 +180,9 @@ public static class SequenceSyncRuntime
                 +",\"geometry\":"+PumlBuild.Json(current.Geometry)+"}";
             foreach(var c in plan.Changes)log.AppendLine(c.Action+" "+c.Kind+" line="+c.Line+" id="+c.Id);
             foreach(var warning in current.Limitations)log.AppendLine("要照合: "+warning);
-            var counts=plan.Changes.GroupBy(c=>c.Kind+" / "+c.Action).Select(g=>g.Key+": "+g.Count()+"件");
-            SequenceExperiment.Summary="図全体の差分候補（読取り検証・反映なし）\n"+(plan.IsEmpty?(current.Limitations.Count==0?"共通構造の差分候補なし":"差分候補なし・要照合項目あり"):string.Join("\n",counts))
-                +"\n再作成する要素: "+plan.Recreated+"件\n要照合項目: "+current.Limitations.Count+"件\n図・プロジェクト・対応表は変更していません。";
+            screenshot=SequenceAudit.Reasons(current.Document,desired,plan);
+            log.AppendLine(screenshot);
+            SequenceExperiment.Summary=SequenceAudit.Summary(plan,current.Limitations.Count);
             log.AppendLine("Scope: "+project.Id+" / "+diagram.ModelId+" / "+diagram.Id);
         }
         catch(Exception ex) {SequenceExperiment.Summary="図全体の読取り検証を完了できませんでした。\n"+ex.Message;log.AppendLine(ex.ToString());}
@@ -193,9 +193,9 @@ public static class SequenceSyncRuntime
             string stem=Path.Combine(directory,DateTime.Now.ToString("yyyyMMdd_HHmmss")+"_"+Guid.NewGuid().ToString("N").Substring(0,8));
             File.WriteAllText(stem+".txt",log.ToString(),new UTF8Encoding(false));
             if(report!=null)File.WriteAllText(stem+".json",report,new UTF8Encoding(false));
-            SequenceExperiment.Summary+="\n診断保存先: "+stem+".txt";
+            if(screenshot==null)SequenceExperiment.Summary+="\n診断保存先: "+stem+".txt";
         }
         catch(Exception ex) {log.AppendLine("診断の保存失敗: "+ex.Message);SequenceExperiment.Summary+="\n診断ファイルを保存できませんでした。診断表示で確認してください。";}
-        SequenceExperiment.Details=log.ToString();SequenceExperiment.Show(app);
+        SequenceExperiment.Details=screenshot??log.ToString();SequenceExperiment.Show(app);
     }
 }
