@@ -51,8 +51,9 @@
         string unchanged=before.ToJson()+plan.Expected.ToJson()+plan.ToJson();
         var gate=SequenceStructurePreflight.Check(before,plan);
         Require(gate.AddExecutions.SequenceEqual(new[]{added[0].Id}),"added receive bar was not accepted: "+plan.ToJson()+gate.ToJson());
-        Require(!gate.Candidate && gate.Reasons.Any(r=>r.Contains("書込みは未実装")),"unimplemented addition was treated as applicable");
-        Require(!gate.CanCommit(true) && !gate.CanCommit(false),"addition reached a commit mode");
+        Require(gate.Candidate && gate.Reasons.Count==0,"added receive bar was not a candidate");
+        Require(gate.ReconnectMessages.Count==1,"the message pointing at the new bar was not accepted");
+        Require(!gate.CanCommit(true) && !gate.CanCommit(false),"addition reached a commit mode before the product confirmed it");
         Require(unchanged==before.ToJson()+plan.Expected.ToJson()+plan.ToJson(),"preflight changed diff");
 
         Func<Action<SequenceElement>,SequenceStructurePreflight> probe=mutate=>{

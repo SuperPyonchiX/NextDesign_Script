@@ -88,6 +88,17 @@ public static class PayloadTest {
    if(SyncPlan.Build(occupiedPlan.Expected,batchAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("occupied semantic plan is not idempotent");
 
+   // The occupied pair read backwards: the input asks for the inner bar the diagram
+   // no longer has, while first() keeps the outer bar anchored.
+   var addPlan=SyncPlan.Build(batchAfter,occupiedBefore,()=>Guid.NewGuid().ToString());
+   var addGate=SequenceStructurePreflight.Check(batchAfter,addPlan);
+   if(!addGate.Candidate || addPlan.Changes.Count!=2 || addGate.AddExecutions.Count!=1 || addGate.ReconnectMessages.Count!=1 || addGate.DeleteExecutions.Count!=0)
+       throw new Exception("addition sample must contain one added execution and one reconnect: "+addPlan.ToJson()+addGate.ToJson());
+   if(addGate.CanCommit(true) || addGate.CanCommit(false))
+       throw new Exception("addition reached a commit mode before the product confirmed it");
+   if(SyncPlan.Build(addPlan.Expected,occupiedBefore,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
+       throw new Exception("addition semantic plan is not idempotent");
+
    int commits=0, cancels=0;
    var success = new SequenceCompletion();
    success.Commit(delegate { commits++; });

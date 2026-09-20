@@ -123,8 +123,83 @@ public static class StructurePreparationTests
     { return state.Relations.Where(p=>p.Value[1]==message).Select(p=>p.Value[0]).DefaultIfEmpty("").First(); }
     static string Patch(params object[] relations)
     { return PumlBuild.Json(PumlBuild.Obj("Relations",relations)); }
+    // A receive bar the diagram does not have: the payload clones an existing bar of the
+    // same participant, and the expected state predicts its order and geometry.
+    static void AddedExecution()
+    {
+        var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
+        var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
+        string editorId=raw["Editors"].Items.Single()["Id"].StringValue();
+        var current=new SequenceDocument();
+        current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
+        current.Elements.Add(new SequenceElement{Id=ids[2],Kind="participant",Parent=ids[0]});
+        current.Elements.Add(new SequenceElement{Id=ids[3],Kind="participant",Parent=ids[0]});
+        foreach(string id in new[]{ids[4],ids[5]})
+        {var e=new SequenceElement{Id=id,Kind="execution",Parent=ids[0]};e.Links["participant"]=new[]{id==ids[4]?ids[2]:ids[3]};current.Elements.Add(e);}
+        var msg=new SequenceElement{Id=ids[6],Kind="message",Parent=ids[0],Text="probe()"};
+        msg.Links["sender"]=new[]{ids[2]};msg.Links["receiver"]=new[]{ids[3]};
+        msg.Links["sendExecution"]=new[]{ids[4]};msg.Links["receiveExecution"]=new[]{ids[5]};current.Elements.Add(msg);
+
+        string bar="added-bar";
+        var desired=current.Copy();
+        var extra=new SequenceElement{Id=bar,Kind="execution",Parent=ids[0]};
+        extra.Links["participant"]=new[]{ids[3]};extra.Links["outer"]=new[]{ids[5]};extra.Links["endContainer"]=new[]{ids[0]};
+        desired.Elements.Add(extra);
+        desired.Elements.Single(e=>e.Id==ids[6]).Links["receiveExecution"]=new[]{bar};
+        var plan=new SyncPlan{Expected=desired};
+        plan.Changes.Add(new SequenceChange{Action="add",Kind="execution",Id=bar,Line=5});
+        plan.Changes.Add(new SequenceChange{Action="update",Kind="message",Id=ids[6],Line=4});
+
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate && gate.AddExecutions.SequenceEqual(new[]{bar}) && gate.ReconnectMessages.SequenceEqual(new[]{ids[6]}),
+            "added bar with a reconnect was not a candidate");
+        Require(!gate.CanCommit(true) && !gate.CanCommit(false),"addition reached a commit mode");
+
+        var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan);
+        Require(package.AddedExecutions.Length==1,"addition was not prepared");
+        var add=package.AddedExecutions[0];
+        var patch=SequenceJson.Parse(package.ReconnectJson);
+        Require(patch["Entities"].Items.Count==1 && patch["Entities"].Items[0]["Id"].StringValue()==bar,"new model missing from the payload");
+        Require(patch["Entities"].Items[0]["MetamodelId"].StringValue()=="execB","new model did not clone the sample type");
+        Require(patch["Relations"].Items.Count==3,"owning relations or the reconnection missing");
+        foreach(string id in add.RelationIds)
+        {
+            var relation=patch["Relations"].Items.Single(r=>r["Id"].StringValue()==id);
+            Require(relation["TargetId"].StringValue()==bar,"owning relation does not point at the new bar");
+            Require(relation["SourceIndex"]==null && relation["TargetIndex"]==null,"owning relation pinned an order");
+        }
+        var bars=patch["Editors"].Items.Single()["ExecutionSpecifications"].Items;
+        var created=bars.Single(sh=>sh["ModelId"].StringValue()==bar);
+        Require(bars.Count==3 && created["X"].Raw=="278" && created["Y"].Raw=="80" && created["Length"].Raw=="80" && created["Height"].Raw=="80",
+            "new bar geometry does not follow the generator rule");
+        Require(SequenceJson.Parse(package.EditorAfterDeleteJson)["Editors"].Items.Single()["ExecutionSpecifications"].Items
+            .Count(sh=>sh["ModelId"].StringValue()==bar)==1,"new bar was dropped from the deletion stage editor");
+
+        var state=new SequenceTrialState();
+        foreach(var e in raw["Entities"].Items)state.Models[e["Id"].StringValue()]=e.ToJsonString();
+        foreach(var r in raw["Relations"].Items)
+        {
+            string id=r["Id"].StringValue();
+            state.Relations[id]=new[]{r["SourceId"].StringValue(),r["TargetId"].StringValue(),r["SourceIndex"].Raw,r["TargetIndex"].Raw};
+            state.RelationFields[id]=r["MetamodelId"].StringValue();
+        }
+        foreach(var sh in SequenceEditorDocument.Read(raw.ToJsonString(),ids[0],editorId).Shapes())
+        {string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        state.Shapes[add.TemplateShapeId]=PumlBuild.Json(new[]{"270","80","16","80","80"});
+        state.Ports[ids[6]]=new[]{ids[4],ids[5],ids[2],ids[3],"sync"};
+        string before=state.Signature();
+        var expected=state.Expected(package,plan,false);
+        Require(expected.Models.ContainsKey(bar) && expected.Models[bar]==PumlBuild.Json(new[]{"execB","",ids[0],"False"}),"new model not in the expected state");
+        Require(expected.Relations[add.RelationIds[0]].SequenceEqual(new[]{ids[0],bar,"2","0"}),"interaction owning order not appended");
+        Require(expected.Relations[add.RelationIds[1]].SequenceEqual(new[]{ids[3],bar,"1","0"}),"participant owning order not appended");
+        Require(expected.Shapes[add.ShapeId]==PumlBuild.Json(new[]{"278","80","16","80","80"}),"new bar shape not predicted");
+        Require(expected.ShapeModels[add.ShapeId]==bar,"new shape owner missing");
+        Require(expected.Ports[ids[6]][1]==bar,"receive port not moved onto the new bar");
+        Require(state.Signature()==before,"expected state mutated the snapshot");
+    }
     public static void Run()
     {
+        AddedExecution();
         var ordered=new SequenceTrialState();
         ordered.Relations["r1"]=new[]{"old1","m1","0","0"};ordered.Relations["r2"]=new[]{"old2","m2","0","0"};
         ordered.Ports["m1"]=new[]{"send","old1","A","B","sync"};ordered.Ports["m2"]=new[]{"send","old2","A","B","sync"};
@@ -174,6 +249,18 @@ public static class StructurePreparationTests
             "post-delete order report incorrect");
         Require(owned.Relations["own-c"][2]=="2" && owned.Relations.ContainsKey("own-b") && owned.RelationFields.ContainsKey("own-b"),
             "deletion report mutated the snapshot");
+        var expectedShapes=new SequenceTrialState();var actualShapes=new SequenceTrialState();
+        expectedShapes.Shapes["s1"]="[10,20,16,40,40]";expectedShapes.ShapeModels["s1"]="exec";
+        actualShapes.Shapes["s1"]="[10,24,16,40,40]";actualShapes.ShapeModels["s1"]="exec";
+        Require(expectedShapes.ShapeDifferences(actualShapes).Contains("値: expected=[10,20,16,40,40] actual=[10,24,16,40,40]"),"shape value diagnostic missing");
+        Require(!expectedShapes.ShapeDifferences(actualShapes).Contains("所属:"),"equal owner reported");
+        actualShapes.Shapes["s1"]=expectedShapes.Shapes["s1"];actualShapes.ShapeModels["s1"]="other";
+        Require(expectedShapes.ShapeDifferences(actualShapes).Contains("所属: expected=exec actual=other"),"shape owner diagnostic missing");
+        Require(expectedShapes.ShapeDifferences(expectedShapes)=="","equal shapes reported");
+        actualShapes.Shapes.Clear();actualShapes.ShapeModels.Clear();
+        Require(expectedShapes.ShapeDifferences(actualShapes).Contains("missing actual"),"missing shape diagnostic");
+        actualShapes.Shapes["s2"]="[0,0,0,0,0]";
+        Require(expectedShapes.ShapeDifferences(actualShapes).Contains("unexpected actual"),"extra shape diagnostic");
         var expectedOrder=new SequenceTrialState();var actualOrder=new SequenceTrialState();
         expectedOrder.Relations["r"]=new[]{"source","target","0","0"};actualOrder.Relations["r"]=new[]{"source","target","1","0"};
         Require(expectedOrder.RelationDifferences(actualOrder).Contains("SourceIndex: expected=0 actual=1"),"relation order diagnostic missing");

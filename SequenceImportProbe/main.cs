@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.33";
+    public const string Title = "シーケンス生成実験 / 0.8.34";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -972,6 +972,8 @@ public static class SequenceStructureTrial
         string differences=expected.DifferenceCounts(actual);log.AppendLine(phase+": "+differences);
         string relationDetails=expected.RelationDifferences(actual);
         if(relationDetails.Length>0)log.AppendLine("\f関連の照合内訳 / "+phase+"\n"+relationDetails+"\f");
+        string shapeDetails=expected.ShapeDifferences(actual);
+        if(shapeDetails.Length>0)log.AppendLine("\f図形の照合内訳 / "+phase+"\n"+shapeDetails+"\f");
         if(expected.Signature()!=actual.Signature())throw new InvalidOperationException("S230: "+phase+"の照合が不一致です。"+differences);
     }
     static void Import(IProject project,string json,StringBuilder log)
@@ -1018,7 +1020,8 @@ public static class SequenceStructureTrial
         var transaction=project.BeginUndoTransaction(false);
         if(transaction==null)throw new InvalidOperationException("S230: トランザクションを開始できません。");
         Action apply=delegate {
-            stage="受信接続の変更";Import(project,prepared.ReconnectJson,log);
+            stage=prepared.AddedExecutions.Length>0?"実行区間の追加と受信接続の変更":"受信接続の変更";
+            Import(project,prepared.ReconnectJson,log);
             Verify(expectedReconnect,Read((IInteraction)project.GetModelById(rootId),fresh()),"接続変更後",log);
             log.AppendLine("receiver reconnection count: "+SequenceJson.Parse(prepared.ReconnectJson)["Relations"].Items.Count+"; SDK state verified");
             stage="不要実行区間の削除";
@@ -1056,7 +1059,8 @@ public static class SequenceStructureTrial
                 +"\n変更の確定・プロジェクト保存: していません\nスタイルの適用後読戻し・保存再読込: 未検証"
                 +(trial.Restored?"":"\n保存せずコピーを開き直してください。")+"\nこの結果と診断表示を撮影してください。";
         }
-        summary+="\n今回の対象: 受信接続変更 "+reconnectCount+"件 / 実行区間削除 "+prepared.DeleteIds.Length+"件";
+        summary+="\n今回の対象: 受信接続変更 "+reconnectCount+"件 / 実行区間削除 "+prepared.DeleteIds.Length+"件"
+            +" / 実行区間追加 "+prepared.AddedExecutions.Length+"件";
         log.AppendLine(summary);
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
         catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}
@@ -2959,9 +2963,9 @@ public sealed class SequenceStructurePreflight
     public List<string> ReconnectMessages=new List<string>();
     public List<string> DeleteExecutions=new List<string>();
     public List<string> AddExecutions=new List<string>();
-    public bool Candidate { get { return Reasons.Count==0 && (ReconnectMessages.Count+DeleteExecutions.Count)>0; } }
+    public bool Candidate { get { return Reasons.Count==0 && (ReconnectMessages.Count+DeleteExecutions.Count+AddExecutions.Count)>0; } }
     public bool CanCommit(bool reconnect)
-    { return Candidate && DeleteExecutions.Count>0 && (reconnect?ReconnectMessages.Count>0:ReconnectMessages.Count==0); }
+    { return Candidate && AddExecutions.Count==0 && DeleteExecutions.Count>0 && (reconnect?ReconnectMessages.Count>0:ReconnectMessages.Count==0); }
     static string[] Link(SequenceElement e,string role)
     { string[] ids;return e.Links.TryGetValue(role,out ids)?ids:new string[0]; }
     static string Comparable(SequenceElement e)
@@ -3019,8 +3023,6 @@ public sealed class SequenceStructurePreflight
             string why=AddReason(current,plan,added);
             if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
             result.AddExecutions.Add(change.Id);
-            // Acceptance is settled here; building and applying the new model is not.
-            result.Reasons.Add("L"+change.Line+" 実行区間の追加は受理条件を満たしますが、書込みは未実装です。");
         }
         foreach(var change in plan.Changes)
         {
@@ -3065,12 +3067,23 @@ public sealed class SequenceStructurePreflight
         "AddExecutions",AddExecutions.ToArray(),"Reasons",Reasons.ToArray())); }
 }
 
+// One added execution, described so the expected state can be computed without
+// reading the export again. Template ids point at an existing execution of the same
+// participant; the live SDK values of those templates supply the bar width and the
+// endpoint fields that the export does not name.
+public sealed class SequenceAddedExecution
+{
+    public string ModelId, Metaclass, Name, OwnerId, ShapeId, TemplateShapeId, Geometry;
+    public string[] RelationIds=new string[0], RelationSources=new string[0], TemplateRelationIds=new string[0];
+}
+
 // Prepared files are diagnostic artifacts; they are never imported by this command.
 public sealed class SequenceStructurePreparation
 {
     public string ReconnectJson, EditorAfterDeleteJson;
     public string[] DeleteIds;
     public string[] ReceiveRelationIds=new string[0];
+    public SequenceAddedExecution[] AddedExecutions=new SequenceAddedExecution[0];
     static string V(SequenceJson n,string key) { return SequenceEditorDocument.Value(n,key); }
     static SequenceJson[] Array(SequenceJson n,string key)
     {
@@ -3112,7 +3125,9 @@ public sealed class SequenceStructurePreparation
             Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="Message","変更対象のメッセージが退避データにありません。");
             find("___Interaction_Message",root,id);
             string oldPort=a.Links["receiveExecution"].Single(),newPort=b.Links["receiveExecution"].Single();
-            checkPort(oldPort,a.Links["receiver"].Single());checkPort(newPort,b.Links["receiver"].Single());
+            checkPort(oldPort,a.Links["receiver"].Single());
+            // A bar this plan adds is not in the export yet; the preflight vouched for it.
+            if(!gate.AddExecutions.Contains(newPort))checkPort(newPort,b.Links["receiver"].Single());
             var link=find("ReceiveMessage",oldPort,id);
             Require(relations.Count(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage" && V(r,"TargetId")==id)==1,"受信接続が一意ではありません。");
             var copy=SequenceJson.Parse(link.ToJsonString());
@@ -3135,11 +3150,136 @@ public sealed class SequenceStructurePreparation
         foreach(string id in affected)Require(shapes.Count(sh=>V(sh,"ModelId")==id)==1,"変更対象の図形を一意に取得できません。");
         foreach(var other in Array(source,"Editors").Where(e=>V(e,"Id")!=editorId))
             Require(!Mentions(other,affected),"変更対象を別のエディタも参照しています。");
+        var additions=new List<SequenceAddedExecution>();
+        var newEntities=new List<SequenceJson>();
+        var newRelations=new List<SequenceJson>();
+        var newShapes=new List<SequenceJson>();
+        foreach(string id in gate.AddExecutions)
+        {
+            var wanted=after[id];
+            string participant=wanted.Links["participant"].Single();
+            var owned=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"OwnedExecutionSpecification" && V(r,"SourceId")==participant).ToArray();
+            Require(owned.Length>0,"追加先の参加者に既存の実行区間がないため、新しい区間を組み立てられません。");
+            string template=V(owned[0],"TargetId");
+            Require(byId.ContainsKey(template) && V(byId[template],"EntityType")=="ExecutionSpecification","実行区間の見本を取得できません。");
+            var ownerLink=find("___Interaction_ExecutionSpecification",root,template);
+            var entity=SequenceJson.Parse(byId[template].ToJsonString());
+            entity.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(id));
+            newEntities.Add(entity);
+            var relationIds=new List<string>();var relationSources=new List<string>();var templateIds=new List<string>();
+            foreach(var origin in new[]{ownerLink,owned[0]})
+            {
+                var copy=SequenceJson.Parse(origin.ToJsonString());
+                string relationId=Guid.NewGuid().ToString();
+                copy.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(relationId));
+                copy.Properties["TargetId"]=SequenceJson.Parse(SequencePayload.Q(id));
+                // Omitted order appends, which is what a new bar needs at both ends.
+                copy.Properties.Remove("SourceIndex");copy.Properties.Remove("TargetIndex");
+                newRelations.Add(copy);
+                relationIds.Add(relationId);relationSources.Add(V(origin,"SourceId"));templateIds.Add(V(origin,"Id"));
+            }
+            var shapes2=editor.Shapes();
+            var templateShapes=shapes2.Where(sh=>V(sh,"ModelId")==template).ToArray();
+            Require(templateShapes.Length==1,"実行区間の見本図形を一意に取得できません。");
+            var laneShapes=shapes2.Where(sh=>V(sh,"ModelId")==participant).ToArray();
+            Require(laneShapes.Length==1,"参加者の図形を一意に取得できません。");
+            string shapeId=Guid.NewGuid().ToString();
+            var shape=SequenceJson.Parse(templateShapes[0].ToJsonString());
+            shape.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(shapeId));
+            shape.Properties["ModelId"]=SequenceJson.Parse(SequencePayload.Q(id));
+            var geometry=Geometry(wanted,after,editor,laneShapes[0],templateShapes[0]);
+            foreach(var pair in geometry)
+            {
+                Require(shape[pair.Key]!=null,"実行区間の図形に"+pair.Key+"がありません。");
+                shape.Properties[pair.Key]=SequenceJson.Parse(Number(pair.Value));
+            }
+            newShapes.Add(shape);
+            additions.Add(new SequenceAddedExecution{ModelId=id,Metaclass=V(entity,"MetamodelId"),Name=V(entity,"Name")??"",
+                OwnerId=root,ShapeId=shapeId,TemplateShapeId=V(templateShapes[0],"Id"),
+                Geometry=PumlBuild.Json(new[]{Number(geometry["X"]),Number(geometry["Y"]),Number(geometry["Length"])}),
+                RelationIds=relationIds.ToArray(),RelationSources=relationSources.ToArray(),TemplateRelationIds=templateIds.ToArray()});
+        }
         var patch=SequenceJson.Parse(editor.ImportJson());
+        patch["Entities"].Items.AddRange(newEntities);
+        patch["Relations"].Items.AddRange(newRelations);
         patch["Relations"].Items.AddRange(changed);
+        if(newShapes.Count>0)
+        {
+            var bars=patch["Editors"].Items.Single()["ExecutionSpecifications"];
+            Require(bars!=null && bars.Items!=null,"エディタに実行区間の図形配列がありません。");
+            bars.Items.AddRange(newShapes);
+        }
         return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),
-            EditorAfterDeleteJson=editor.Without(gate.DeleteExecutions).ImportJson(),DeleteIds=gate.DeleteExecutions.ToArray(),
+            EditorAfterDeleteJson=Deleted(editor,newShapes,gate.DeleteExecutions),DeleteIds=gate.DeleteExecutions.ToArray(),
+            AddedExecutions=additions.ToArray(),
             ReceiveRelationIds=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage").Select(r=>V(r,"Id")).ToArray()};
+    }
+    static string Number(double value)
+    { return value.ToString("R",System.Globalization.CultureInfo.InvariantCulture); }
+    static double Read(SequenceJson node,string key)
+    {
+        if(node==null || node[key]==null)throw new InvalidOperationException("S220: 図形に"+key+"がありません。");
+        double value;
+        if(!double.TryParse(node[key].Raw,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out value))
+            throw new InvalidOperationException("S220: 図形の"+key+"が数値ではありません。");
+        return value;
+    }
+    // The generator places a bar at the lane centre and steps 8px right per nesting
+    // level. Reuse that rule so an added bar lands where a generated one would.
+    static Dictionary<string,double> Geometry(SequenceElement wanted,Dictionary<string,SequenceElement> after,
+        SequenceEditorDocument editor,SequenceJson lane,SequenceJson templateShape)
+    {
+        int depth=0;
+        for(var at=wanted;;depth++)
+        {
+            var outer=at.Links.ContainsKey("outer")?at.Links["outer"]:new string[0];
+            if(outer.Length==0)break;
+            if(depth>32 || !after.ContainsKey(outer[0]))throw new InvalidOperationException("S220: 入れ子の階層を解決できません。");
+            at=after[outer[0]];
+        }
+        var shapes=editor.Shapes();
+        Func<string,SequenceJson> shapeOf=id=>{
+            var found=shapes.Where(sh=>SequenceEditorDocument.Value(sh,"ModelId")==id).ToArray();
+            return found.Length==1?found[0]:null;
+        };
+        var receivers=after.Values.Where(e=>e.Kind=="message" && e.Links.ContainsKey("receiveExecution")
+            && e.Links["receiveExecution"].Contains(wanted.Id)).ToArray();
+        if(receivers.Length==0)throw new InvalidOperationException("S220: 追加する実行区間の開始位置を決められません。");
+        double top=double.MaxValue;
+        foreach(var message in receivers)
+        {
+            var shape=shapeOf(message.Id);
+            if(shape==null)throw new InvalidOperationException("S220: 受信メッセージの図形を取得できません。");
+            top=Math.Min(top,Read(shape,"TargetY"));
+        }
+        double bottom=top+Read(templateShape,"Length");
+        var following=wanted.Links.ContainsKey("endBefore")?wanted.Links["endBefore"]:new string[0];
+        if(following.Length==1)
+        {
+            var shape=shapeOf(following[0]);
+            if(shape!=null && shape["SourceY"]!=null)bottom=Read(shape,"SourceY")-16;
+        }
+        else if(wanted.Links.ContainsKey("outer") && wanted.Links["outer"].Length==1)
+        {
+            var shape=shapeOf(wanted.Links["outer"][0]);
+            if(shape!=null)bottom=Read(shape,"Y")+Read(shape,"Length");
+        }
+        double length=Math.Max(40,bottom-top);
+        var result=new Dictionary<string,double>();
+        result["X"]=Read(lane,"X")+Read(lane,"Width")/2+8*depth;
+        result["Y"]=top;result["Length"]=length;result["Height"]=length;
+        return result;
+    }
+    static string Deleted(SequenceEditorDocument editor,List<SequenceJson> addedShapes,List<string> removed)
+    {
+        var json=SequenceJson.Parse(editor.Without(removed).ImportJson());
+        if(addedShapes.Count>0)
+        {
+            var bars=json["Editors"].Items.Single()["ExecutionSpecifications"];
+            if(bars==null || bars.Items==null)throw new InvalidOperationException("S220: 削除後のエディタに実行区間の図形配列がありません。");
+            bars.Items.AddRange(addedShapes.Select(sh=>SequenceJson.Parse(sh.ToJsonString())));
+        }
+        return json.ToJsonString();
     }
     static bool Mentions(SequenceJson node,HashSet<string> ids)
     {
@@ -3257,15 +3397,57 @@ public sealed class SequenceTrialState
         }
         return string.Join("\n",lines);
     }
+    public string ShapeDifferences(SequenceTrialState actual)
+    {
+        var lines=new List<string>();
+        var changed=Shapes.Keys.Union(actual.Shapes.Keys).OrderBy(id=>id,StringComparer.Ordinal)
+            .Where(id=>!Shapes.ContainsKey(id) || !actual.Shapes.ContainsKey(id) || Shapes[id]!=actual.Shapes[id]
+                || Model(id)!=actual.Model(id)).ToArray();
+        foreach(string id in changed.Take(12))
+        {
+            lines.Add("shape="+id);
+            if(!Shapes.ContainsKey(id)){lines.Add("unexpected actual="+actual.Shapes[id]+" model="+actual.Model(id));continue;}
+            if(!actual.Shapes.ContainsKey(id)){lines.Add("missing actual; expected="+Shapes[id]+" model="+Model(id));continue;}
+            if(Shapes[id]!=actual.Shapes[id])lines.Add("値: expected="+Shapes[id]+" actual="+actual.Shapes[id]);
+            if(Model(id)!=actual.Model(id))lines.Add("所属: expected="+Model(id)+" actual="+actual.Model(id));
+        }
+        if(changed.Length>12)lines.Add("additional changed shapes="+(changed.Length-12));
+        return string.Join("\n",lines);
+    }
+    public string Model(string shape)
+    { string value;return ShapeModels.TryGetValue(shape,out value)?value:""; }
     public SequenceTrialState Expected(SequenceStructurePreparation prepared,SyncPlan plan,bool delete)
     {
         var result=new SequenceTrialState{Models=new Dictionary<string,string>(Models),Shapes=new Dictionary<string,string>(Shapes),ShapeModels=new Dictionary<string,string>(ShapeModels),
             Relations=Relations.ToDictionary(p=>p.Key,p=>p.Value.ToArray()),Ports=Ports.ToDictionary(p=>p.Key,p=>p.Value.ToArray()),
             RelationFields=new Dictionary<string,string>(RelationFields)};
+        foreach(var add in prepared.AddedExecutions)
+        {
+            result.Models[add.ModelId]=PumlBuild.Json(new[]{add.Metaclass,add.Name,add.OwnerId,"False"});
+            for(int i=0;i<add.RelationIds.Length;i++)
+            {
+                string field=result.Field(add.TemplateRelationIds[i]),origin=add.RelationSources[i];
+                if(field.Length==0)throw new InvalidOperationException("S230: 追加する関連の種別情報が不足しています。");
+                int index=result.Relations.Count(pair=>pair.Value[0]==origin && result.Field(pair.Key)==field);
+                result.Relations[add.RelationIds[i]]=new[]{origin,add.ModelId,
+                    index.ToString(System.Globalization.CultureInfo.InvariantCulture),"0"};
+                result.RelationFields[add.RelationIds[i]]=field;
+            }
+            string sample;
+            if(!result.Shapes.TryGetValue(add.TemplateShapeId,out sample))throw new InvalidOperationException("S230: 実行区間の見本図形がありません。");
+            var measured=SequenceJson.Parse(sample);var wanted=SequenceJson.Parse(add.Geometry);
+            if(measured.Items==null || measured.Items.Count!=5 || wanted.Items==null || wanted.Items.Count!=3)
+                throw new InvalidOperationException("S230: 実行区間の図形の項目数が想定と違います。");
+            // Width is not serialized for a bar, so take the one the product already uses.
+            result.Shapes[add.ShapeId]=PumlBuild.Json(new[]{wanted.Items[0].StringValue(),wanted.Items[1].StringValue(),
+                measured.Items[2].StringValue(),wanted.Items[2].StringValue(),wanted.Items[2].StringValue()});
+            result.ShapeModels[add.ShapeId]=add.ModelId;
+        }
         var patch=SequenceJson.Parse(prepared.ReconnectJson);
         foreach(var r in patch["Relations"].Items)
         {
             string id=r["Id"].StringValue(),source=r["SourceId"].StringValue(),target=r["TargetId"].StringValue();
+            if(prepared.AddedExecutions.Any(a=>a.RelationIds.Contains(id)))continue;
             if(!result.Relations.ContainsKey(id) || result.Relations[id][1]!=target || !result.Ports.ContainsKey(target))throw new InvalidOperationException("S230: 変更前の受信関連が一致しません。");
             // SourceIndex belongs to the source endpoint collection, not to the relationship identity.
             // Omitted indices append on import. An explicit index inserts at that position.

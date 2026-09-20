@@ -314,6 +314,8 @@ public static class SequenceStructureTrial
         string differences=expected.DifferenceCounts(actual);log.AppendLine(phase+": "+differences);
         string relationDetails=expected.RelationDifferences(actual);
         if(relationDetails.Length>0)log.AppendLine("\f関連の照合内訳 / "+phase+"\n"+relationDetails+"\f");
+        string shapeDetails=expected.ShapeDifferences(actual);
+        if(shapeDetails.Length>0)log.AppendLine("\f図形の照合内訳 / "+phase+"\n"+shapeDetails+"\f");
         if(expected.Signature()!=actual.Signature())throw new InvalidOperationException("S230: "+phase+"の照合が不一致です。"+differences);
     }
     static void Import(IProject project,string json,StringBuilder log)
@@ -360,7 +362,8 @@ public static class SequenceStructureTrial
         var transaction=project.BeginUndoTransaction(false);
         if(transaction==null)throw new InvalidOperationException("S230: トランザクションを開始できません。");
         Action apply=delegate {
-            stage="受信接続の変更";Import(project,prepared.ReconnectJson,log);
+            stage=prepared.AddedExecutions.Length>0?"実行区間の追加と受信接続の変更":"受信接続の変更";
+            Import(project,prepared.ReconnectJson,log);
             Verify(expectedReconnect,Read((IInteraction)project.GetModelById(rootId),fresh()),"接続変更後",log);
             log.AppendLine("receiver reconnection count: "+SequenceJson.Parse(prepared.ReconnectJson)["Relations"].Items.Count+"; SDK state verified");
             stage="不要実行区間の削除";
@@ -398,7 +401,8 @@ public static class SequenceStructureTrial
                 +"\n変更の確定・プロジェクト保存: していません\nスタイルの適用後読戻し・保存再読込: 未検証"
                 +(trial.Restored?"":"\n保存せずコピーを開き直してください。")+"\nこの結果と診断表示を撮影してください。";
         }
-        summary+="\n今回の対象: 受信接続変更 "+reconnectCount+"件 / 実行区間削除 "+prepared.DeleteIds.Length+"件";
+        summary+="\n今回の対象: 受信接続変更 "+reconnectCount+"件 / 実行区間削除 "+prepared.DeleteIds.Length+"件"
+            +" / 実行区間追加 "+prepared.AddedExecutions.Length+"件";
         log.AppendLine(summary);
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
         catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}
