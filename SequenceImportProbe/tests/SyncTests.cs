@@ -148,6 +148,12 @@ public static class SyncTests
         refLabels.Elements.Single(e=>e.Kind=="ref").Text="Service\nName";
         Require(Plan(refLabels,Doc("ref over A : Service Name")).IsEmpty,"exported ref whitespace caused recreation");
         Require(!audit.Contains("private-design-label") && !audit.Contains("old-"),"residual diagnostic contains confidential values");
+        var annotationScope=Doc("opt left\nref over A,B : Shared\nend\nopt right\nref over A,B : Shared\nend");Ids(annotationScope);
+        Require(Plan(annotationScope,Doc("opt left\nref over A,B : Shared\nend\nopt right\nref over A,B : Shared\nend")).IsEmpty,"same-label refs in different operands recreated");
+        var freeNote=Doc("opt scope\nnote over A : remark\nend");Ids(freeNote);
+        var freeNode=freeNote.Elements.Single(e=>e.Kind=="note");freeNode.Links["targets"]=new string[0];freeNode.Attributes["position"]="free";
+        var noteProjection=Plan(freeNote,Doc("opt scope\nnote over A : remark\nend"));
+        Require(noteProjection.Changes.Any(c=>c.Kind=="note" && c.Action=="update") && !noteProjection.Changes.Any(c=>c.Kind=="note" && (c.Action=="add" || c.Action=="delete")),"unique note projection replaced identity or hid semantic difference");
         Console.WriteLine("PASS: all-kind semantic plans, mixed changes, ID retention, block edits, ambiguity, moves, source trivia and idempotence");
     }
 }

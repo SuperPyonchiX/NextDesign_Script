@@ -24,7 +24,7 @@ public sealed class DiagramSnapshot
         };
         foreach(var l in diagram.Lifelines.OrderBy(l=>l.LocationX).ThenBy(l=>l.Id,StringComparer.Ordinal))
             add(l,"participant",l.Text,l.LocationX);
-        var fragmentRegions=new List<SequenceRegion>();var operandRegions=new List<SequenceRegion>();
+        var fragmentRegions=new List<SequenceRegion>();var operandRegions=new List<SequenceRegion>();var annotationRegions=new List<SequenceRegion>();
         foreach(var f in diagram.Fragments)
         {
             add(f,"fragment","",f.LocationY);
@@ -41,7 +41,7 @@ public sealed class DiagramSnapshot
             for(int i=0;i<operands.Length;i++)
             {
                 var operand=operands[i];double top=positions[i],bottom=i+1<positions.Length?positions[i+1]:f.LocationY+f.Height;
-                add(operand,"operand",i>0 && string.Equals(SequenceLabels.Fold(operand.Guard),"else",StringComparison.OrdinalIgnoreCase)?"":operand.Guard,top);doc.Elements.Last().Parent=f.ModelId;
+                add(operand,"operand",i>0 && string.Equals(SequenceLabels.Fold(operand.Guard),"else",StringComparison.OrdinalIgnoreCase)?"":operand.Guard,i==0?f.LocationY:top);doc.Elements.Last().Parent=f.ModelId;
                 log.AppendLine("Operand bounds: id="+operand.ModelId+" fragment="+f.ModelId+" top="+top+" bottom="+bottom+" rawPosition="+operand.Position);
                 if(top<f.LocationY-0.00001 || bottom>f.LocationY+f.Height+0.00001 || bottom<=top)
                     throw new InvalidOperationException("S210: オペランドの境界が不正です: "+operand.ModelId);
@@ -67,6 +67,7 @@ public sealed class DiagramSnapshot
         foreach(var n in diagram.Notes)
         {
             add(n,"note",n.Text,n.LocationY);var e=doc.Elements.Last();var targets=new List<string>();
+            annotationRegions.Add(new SequenceRegion{Id=n.ModelId,X=n.LocationX,Y=n.LocationY,Width=n.Width,Height=n.Height});
             foreach(var anchor in n.NoteAnchors)
             {
                 var other=anchor.Source.Id==n.Id?anchor.Target:anchor.Source;
@@ -87,6 +88,7 @@ public sealed class DiagramSnapshot
         foreach(var u in diagram.InteractionUses)
         {
             add(u,"ref",u.Text,u.LocationY);var e=doc.Elements.Last();
+            annotationRegions.Add(new SequenceRegion{Id=u.ModelId,X=u.LocationX,Y=u.LocationY,Width=u.Width,Height=u.Height});
             e.Links["targets"]=u.Lifelines.OrderBy(l=>l.LocationX).Select(l=>l.ModelId).ToArray();
             var model=u.Model as IInteractionUse;
             e.Attributes["reference"]=model==null || model.RefersTo==null?"":model.RefersTo.Id;
@@ -113,7 +115,7 @@ public sealed class DiagramSnapshot
         {
             memberships.Add(new SequenceMembership{Child=message.ModelId,Parent=operand.ModelId,Evidence="SDK operand.Messages"});
         }
-        memberships.AddRange(SequenceRegion.Nesting(operandRegions,fragmentRegions));
+        memberships.AddRange(SequenceRegion.Nesting(operandRegions,fragmentRegions.Concat(annotationRegions)));
         SequenceMembership.Resolve(doc,memberships,line=>log.AppendLine(line));
 
         Func<double,double,string> containerAt=(x,y)=>{
