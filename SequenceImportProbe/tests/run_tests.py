@@ -60,6 +60,21 @@ public static class PayloadTest {
    if(SyncPlan.Build(batchPlan.Expected,batchAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("batch semantic plan is not idempotent");
 
+   // Same before diagram as the batch sample; only the first inner bar goes away,
+   // so the deleted execution is not last in its owner collections.
+   var nontailAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-nontail-after.puml")));
+   var nontailPlan=SyncPlan.Build(batchBefore,nontailAfter,()=>Guid.NewGuid().ToString());
+   var nontailGate=SequenceStructurePreflight.Check(batchBefore,nontailPlan);
+   if(!nontailGate.CanCommit(true) || nontailPlan.Changes.Count!=2 || nontailGate.ReconnectMessages.Count!=1 || nontailGate.DeleteExecutions.Count!=1)
+       throw new Exception("non-tail sample must contain one reconnect and one deletion: "+nontailPlan.ToJson()+nontailGate.ToJson());
+   // The batch sample deletes both inner bars; this one deletes only the earlier of
+   // the two, so a later sibling of the same participant survives. Whether the product
+   // then compacts that sibling's index is what the run has to show.
+   if(batchGate.DeleteExecutions.Count!=2 || nontailGate.DeleteExecutions[0]!=batchGate.DeleteExecutions[0])
+       throw new Exception("non-tail sample does not delete the earlier inner execution");
+   if(SyncPlan.Build(nontailPlan.Expected,nontailAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
+       throw new Exception("non-tail semantic plan is not idempotent");
+
    int commits=0, cancels=0;
    var success = new SequenceCompletion();
    success.Commit(delegate { commits++; });
