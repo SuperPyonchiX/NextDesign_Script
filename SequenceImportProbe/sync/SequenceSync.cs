@@ -798,6 +798,29 @@ public sealed class SequenceTrialState
         if(changed.Length>12)lines.Add("additional changed relations="+(changed.Length-12));
         return string.Join("\n",lines);
     }
+    // Deleting an execution removes one relation from each owner collection.
+    // Whether the product compacts the surviving indices is unmeasured, so report the
+    // order around the deletion instead of correcting it.
+    public string[] DeletionOwners(SequenceStructurePreparation prepared)
+    {
+        var removed=new HashSet<string>(prepared.DeleteIds);
+        return Relations.Values.Where(r=>removed.Contains(r[1]) && !removed.Contains(r[0])).Select(r=>r[0])
+            .Distinct().OrderBy(id=>id,StringComparer.Ordinal).ToArray();
+    }
+    public string OrderReport(string[] owners,SequenceStructurePreparation prepared)
+    {
+        var removed=new HashSet<string>(prepared.DeleteIds);
+        var lines=new List<string>();
+        foreach(string owner in owners)
+        {
+            var rows=Relations.Where(p=>p.Value[0]==owner)
+                .OrderBy(p=>int.Parse(p.Value[2],System.Globalization.CultureInfo.InvariantCulture))
+                .ThenBy(p=>p.Key,StringComparer.Ordinal)
+                .Select(p=>p.Value[2]+":"+p.Key+(removed.Contains(p.Value[1])?"*":"")).ToArray();
+            lines.Add("source="+owner+" "+(rows.Length==0?"(なし)":string.Join(" ",rows)));
+        }
+        return string.Join("\n",lines);
+    }
     public SequenceTrialState Expected(SequenceStructurePreparation prepared,SyncPlan plan,bool delete)
     {
         var result=new SequenceTrialState{Models=new Dictionary<string,string>(Models),Shapes=new Dictionary<string,string>(Shapes),ShapeModels=new Dictionary<string,string>(ShapeModels),

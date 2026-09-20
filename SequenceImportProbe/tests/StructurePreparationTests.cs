@@ -81,6 +81,26 @@ public static class StructurePreparationTests
         var insertion=SequenceJson.Parse(orderPackage.ReconnectJson);insertion["Relations"].Items[0].Properties["SourceIndex"]=SequenceJson.Parse("0");orderPackage.ReconnectJson=insertion.ToJsonString();
         var inserted=ordered.Expected(orderPackage,orderPlan,false);
         Require(inserted.Relations["r2"][2]=="0" && inserted.Relations["existing"][2]=="1" && inserted.Relations["r1"][2]=="2","explicit insertion order incorrect");
+        var owned=new SequenceTrialState();
+        owned.Models["execB"]="removed";
+        owned.Relations["own-a"]=new[]{"lane","execA","0","0"};
+        owned.Relations["own-b"]=new[]{"lane","execB","1","0"};
+        owned.Relations["own-c"]=new[]{"lane","execC","2","0"};
+        owned.Relations["root-b"]=new[]{"root","execB","1","0"};
+        var ownedPackage=new SequenceStructurePreparation{DeleteIds=new[]{"execB"},
+            ReconnectJson=PumlBuild.Json(PumlBuild.Obj("Relations",new object[0]))};
+        var ownedPlan=new SyncPlan{Expected=new SequenceDocument()};
+        var owners=owned.DeletionOwners(ownedPackage);
+        Require(owners.Length==2 && owners[0]=="lane" && owners[1]=="root","deletion owners not detected");
+        string ownedReport=owned.OrderReport(owners,ownedPackage);
+        Require(ownedReport.Contains("0:own-a 1:own-b* 2:own-c"),"deleted sibling not marked in order report");
+        var ownedAfter=owned.Expected(ownedPackage,ownedPlan,true);
+        Require(!ownedAfter.Relations.ContainsKey("own-b") && !ownedAfter.Relations.ContainsKey("root-b"),"owning relation not removed");
+        // Unmeasured on the product: the expected state leaves surviving indices as read.
+        // If a run shows the SDK compacting them, change this expectation with the evidence.
+        Require(ownedAfter.Relations["own-c"][2]=="2","sibling order changed without measurement");
+        Require(ownedAfter.OrderReport(owners,ownedPackage)=="source=lane 0:own-a 2:own-c\nsource=root (なし)","post-delete order report incorrect");
+        Require(owned.Relations["own-c"][2]=="2" && owned.Relations.ContainsKey("own-b"),"deletion report mutated the snapshot");
         var expectedOrder=new SequenceTrialState();var actualOrder=new SequenceTrialState();
         expectedOrder.Relations["r"]=new[]{"source","target","0","0"};actualOrder.Relations["r"]=new[]{"source","target","1","0"};
         Require(expectedOrder.RelationDifferences(actualOrder).Contains("SourceIndex: expected=0 actual=1"),"relation order diagnostic missing");

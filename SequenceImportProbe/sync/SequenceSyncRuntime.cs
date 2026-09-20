@@ -334,6 +334,7 @@ public static class SequenceStructureTrial
         var before=Read(root,diagram);string original=before.Signature();
         var expectedReconnect=before.Expected(prepared,plan,false);
         var expectedFinal=before.Expected(prepared,plan,true);
+        var deletionOwners=before.DeletionOwners(prepared);
         string rootId=root.Id,editorId=diagram.Id;
         Func<ISequenceDiagram> fresh=()=>{
             var model=project.GetModelById(rootId) as IInteraction;
@@ -364,7 +365,12 @@ public static class SequenceStructureTrial
             using(project.SuspendModelVerification())foreach(string id in prepared.DeleteIds)project.GetModelById(id).Delete();
             stage="削除後のエディタ反映";Import(project,prepared.EditorAfterDeleteJson,log);
             foreach(string id in prepared.DeleteIds){var m=project.GetModelById(id);if(m!=null && !m.IsDeleted)throw new InvalidOperationException("S230: 削除対象が残っています。");}
-            Verify(expectedFinal,Read((IInteraction)project.GetModelById(rootId),fresh()),"削除後",log);
+            var afterDelete=Read((IInteraction)project.GetModelById(rootId),fresh());
+            if(deletionOwners.Length>0)
+                log.AppendLine("\f所有関連の順序 / 削除段階\n削除前(*が消える関連)\n"+before.OrderReport(deletionOwners,prepared)
+                    +"\n削除後 期待\n"+expectedFinal.OrderReport(deletionOwners,prepared)
+                    +"\n削除後 実測\n"+afterDelete.OrderReport(deletionOwners,prepared)+"\f");
+            Verify(expectedFinal,afterDelete,"削除後",log);
             log.AppendLine("trial execution deletion and SDK state: verified");
         };
         Action rollback=delegate {transaction.Rollback();};

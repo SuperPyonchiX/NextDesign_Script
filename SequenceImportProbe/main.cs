@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.29";
+    public const string Title = "シーケンス生成実験 / 0.8.30";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -992,6 +992,7 @@ public static class SequenceStructureTrial
         var before=Read(root,diagram);string original=before.Signature();
         var expectedReconnect=before.Expected(prepared,plan,false);
         var expectedFinal=before.Expected(prepared,plan,true);
+        var deletionOwners=before.DeletionOwners(prepared);
         string rootId=root.Id,editorId=diagram.Id;
         Func<ISequenceDiagram> fresh=()=>{
             var model=project.GetModelById(rootId) as IInteraction;
@@ -1022,7 +1023,12 @@ public static class SequenceStructureTrial
             using(project.SuspendModelVerification())foreach(string id in prepared.DeleteIds)project.GetModelById(id).Delete();
             stage="削除後のエディタ反映";Import(project,prepared.EditorAfterDeleteJson,log);
             foreach(string id in prepared.DeleteIds){var m=project.GetModelById(id);if(m!=null && !m.IsDeleted)throw new InvalidOperationException("S230: 削除対象が残っています。");}
-            Verify(expectedFinal,Read((IInteraction)project.GetModelById(rootId),fresh()),"削除後",log);
+            var afterDelete=Read((IInteraction)project.GetModelById(rootId),fresh());
+            if(deletionOwners.Length>0)
+                log.AppendLine("\f所有関連の順序 / 削除段階\n削除前(*が消える関連)\n"+before.OrderReport(deletionOwners,prepared)
+                    +"\n削除後 期待\n"+expectedFinal.OrderReport(deletionOwners,prepared)
+                    +"\n削除後 実測\n"+afterDelete.OrderReport(deletionOwners,prepared)+"\f");
+            Verify(expectedFinal,afterDelete,"削除後",log);
             log.AppendLine("trial execution deletion and SDK state: verified");
         };
         Action rollback=delegate {transaction.Rollback();};
@@ -3162,6 +3168,29 @@ public sealed class SequenceTrialState
             lines.Add("endpoints: "+actual.Relations[id][0]+" -> "+actual.Relations[id][1]);
         }
         if(changed.Length>12)lines.Add("additional changed relations="+(changed.Length-12));
+        return string.Join("\n",lines);
+    }
+    // Deleting an execution removes one relation from each owner collection.
+    // Whether the product compacts the surviving indices is unmeasured, so report the
+    // order around the deletion instead of correcting it.
+    public string[] DeletionOwners(SequenceStructurePreparation prepared)
+    {
+        var removed=new HashSet<string>(prepared.DeleteIds);
+        return Relations.Values.Where(r=>removed.Contains(r[1]) && !removed.Contains(r[0])).Select(r=>r[0])
+            .Distinct().OrderBy(id=>id,StringComparer.Ordinal).ToArray();
+    }
+    public string OrderReport(string[] owners,SequenceStructurePreparation prepared)
+    {
+        var removed=new HashSet<string>(prepared.DeleteIds);
+        var lines=new List<string>();
+        foreach(string owner in owners)
+        {
+            var rows=Relations.Where(p=>p.Value[0]==owner)
+                .OrderBy(p=>int.Parse(p.Value[2],System.Globalization.CultureInfo.InvariantCulture))
+                .ThenBy(p=>p.Key,StringComparer.Ordinal)
+                .Select(p=>p.Value[2]+":"+p.Key+(removed.Contains(p.Value[1])?"*":"")).ToArray();
+            lines.Add("source="+owner+" "+(rows.Length==0?"(なし)":string.Join(" ",rows)));
+        }
         return string.Join("\n",lines);
     }
     public SequenceTrialState Expected(SequenceStructurePreparation prepared,SyncPlan plan,bool delete)
