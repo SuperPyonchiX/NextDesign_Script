@@ -18,11 +18,11 @@ public void ReplaceSequence(ICommandContext context, ICommandParams parameters) 
 public void ProbeSequenceDelta(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, false, true, false, true); }
 public void ProbeSequenceUpdate(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, false, true); }
 public void ShowSequenceResult(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Show(context.App); }
-public void ShowSequenceDetails(ICommandContext context, ICommandParams parameters) { context.App.Window.UI.ShowInformationDialog(SequenceExperiment.Details, SequenceExperiment.Title); }
+public void ShowSequenceDetails(ICommandContext context, ICommandParams parameters) { foreach(var page in SequenceExperiment.Details.Split('\f')) context.App.Window.UI.ShowInformationDialog(page, SequenceExperiment.Title); }
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.6";
+    public const string Title = "シーケンス生成実験 / 0.8.7";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -600,7 +600,7 @@ public sealed class DiagramSnapshot
             for(int i=0;i<operands.Length;i++)
             {
                 var operand=operands[i];double top=positions[i],bottom=i+1<positions.Length?positions[i+1]:f.LocationY+f.Height;
-                add(operand,"operand",operand.Guard,top);doc.Elements.Last().Parent=f.ModelId;
+                add(operand,"operand",i>0 && string.Equals(SequenceLabels.Fold(operand.Guard),"else",StringComparison.OrdinalIgnoreCase)?"":operand.Guard,top);doc.Elements.Last().Parent=f.ModelId;
                 log.AppendLine("Operand bounds: id="+operand.ModelId+" fragment="+f.ModelId+" top="+top+" bottom="+bottom+" rawPosition="+operand.Position);
                 if(top<f.LocationY-0.00001 || bottom>f.LocationY+f.Height+0.00001 || bottom<=top)
                     throw new InvalidOperationException("S210: オペランドの境界が不正です: "+operand.ModelId);
@@ -2173,7 +2173,7 @@ public sealed class SyncPlan
     }
     static string Text(string value) { return (value??"").Replace("\r\n","\n").Replace('\r','\n'); }
     static string Properties(SequenceElement e)
-    { return SequencePayload.Q(e.Kind=="participant" || e.Kind=="interaction" ? SequenceLabels.Fold(e.Text) : Text(e.Text))+string.Join("",e.Attributes.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>SequencePayload.Q(p.Key)+SequencePayload.Q(p.Value))); }
+    { return SequencePayload.Q(e.Kind=="participant" || e.Kind=="interaction" || e.Kind=="ref" || e.Kind=="operand" ? SequenceLabels.Fold(e.Text) : Text(e.Text))+string.Join("",e.Attributes.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>SequencePayload.Q(p.Key)+SequencePayload.Q(p.Value))); }
     static string LinkKey(SequenceElement e,Dictionary<string,string> ids)
     {
         return string.Join("",e.Links.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>SequencePayload.Q(p.Key)+
@@ -2500,7 +2500,36 @@ public static class SequenceAudit
             lines.Add((role=="sendExecution"?"送信":"受信")+"実行区間への接続数 図/入力: "+current.Elements.Count(e=>e.Kind=="message" && e.Links.ContainsKey(role))+" / "+desired.Elements.Count(e=>e.Kind=="message" && e.Links.ContainsKey(role)));
         lines.Add("本文の空白以外は一律に正規化していません。");
         lines.Add("本文・モデルID・パスはこの画面には表示しません。");
-        return string.Join("\n",lines);
+        return string.Join("\n",lines)+"\f"+Residuals(current,desired,plan);
+    }
+    static string Residuals(SequenceDocument current,SequenceDocument desired,SyncPlan plan)
+    {
+        var before=current.Elements.ToDictionary(e=>e.Id);var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        var tokens=new Dictionary<string,string>();int serial=0;
+        foreach(var e in current.Elements.Concat(plan.Expected.Elements))if(!tokens.ContainsKey(e.Id))tokens[e.Id]=e.Kind+"#"+(++serial);
+        Func<string,string> token=id=>tokens.ContainsKey(id)?tokens[id]:"?";
+        var rows=new List<string>{"残差の内訳（#番号は今回だけの匿名番号）"};
+        foreach(var c in plan.Changes.Where(c=>c.Action=="update" || c.Action=="move"))
+        {
+            var a=after[c.Id];var b=before[c.Id];
+            if(a.Parent!=b.Parent)rows.Add("L"+c.Line+" "+a.Kind+" 所属: "+token(b.Parent)+" → "+token(a.Parent));
+            if(c.Action=="update")foreach(var role in new[]{"startAfter","endBefore","endContainer","outer"})
+            {
+                if(EqualLinks(a,b,role))continue;
+                string[] x,y;b.Links.TryGetValue(role,out x);a.Links.TryGetValue(role,out y);
+                rows.Add("L"+c.Line+" "+role+": "+string.Join(",",(x??new string[0]).Select(token))+" → "+string.Join(",",(y??new string[0]).Select(token)));
+            }
+        }
+        foreach(var a in plan.Expected.Elements.Where(e=>(e.Kind=="note" || e.Kind=="ref") && !before.ContainsKey(e.Id)))
+        {
+            var candidates=current.Elements.Where(b=>b.Kind==a.Kind && !after.ContainsKey(b.Id)).ToArray();
+            var text=candidates.Where(b=>Fold(b.Text)==Fold(a.Text)).ToArray();
+            rows.Add("L"+a.Line+" "+a.Kind+" 未対応: 同種="+candidates.Length+" 空白正規化本文一致="+text.Length+" 接続先一致="+text.Count(b=>EqualLinks(a,b,"targets")));
+            foreach(var b in text.Take(2))rows.Add("  接続数 図/入力="+(b.Links.ContainsKey("targets")?b.Links["targets"].Length:0)+"/"+(a.Links.ContainsKey("targets")?a.Links["targets"].Length:0)+" 所属一致="+(a.Parent==b.Parent));
+        }
+        if(rows.Count==1)rows.Add("所属・境界・未対応Note/refの残差なし");
+        // Each page remains photographable even with a large diagram.
+        return string.Join("\f",Enumerable.Range(0,(rows.Count+13)/14).Select(i=>string.Join("\n",rows.Skip(i*14).Take(14))));
     }
 }
 

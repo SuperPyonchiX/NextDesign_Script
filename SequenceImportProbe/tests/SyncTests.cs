@@ -144,6 +144,10 @@ public static class SyncTests
         var positionsOnly=triggered.Copy();Ids(positionsOnly);var reorderedBars=positionsOnly.Copy();
         foreach(var bar in reorderedBars.Elements.Where(e=>e.Kind=="execution"))bar.Order+=100;
         Require(Plan(positionsOnly,reorderedBars).IsEmpty,"interval storage order shifted unrelated message ordering");
+        var refLabels=Doc("ref over A : Service Name");Ids(refLabels);
+        refLabels.Elements.Single(e=>e.Kind=="ref").Text="Service\nName";
+        Require(Plan(refLabels,Doc("ref over A : Service Name")).IsEmpty,"exported ref whitespace caused recreation");
+        Require(!audit.Contains("private-design-label") && !audit.Contains("old-"),"residual diagnostic contains confidential values");
         Console.WriteLine("PASS: all-kind semantic plans, mixed changes, ID retention, block edits, ambiguity, moves, source trivia and idempotence");
     }
 }

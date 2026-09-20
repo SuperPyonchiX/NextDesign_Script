@@ -41,7 +41,7 @@ public sealed class DiagramSnapshot
             for(int i=0;i<operands.Length;i++)
             {
                 var operand=operands[i];double top=positions[i],bottom=i+1<positions.Length?positions[i+1]:f.LocationY+f.Height;
-                add(operand,"operand",operand.Guard,top);doc.Elements.Last().Parent=f.ModelId;
+                add(operand,"operand",i>0 && string.Equals(SequenceLabels.Fold(operand.Guard),"else",StringComparison.OrdinalIgnoreCase)?"":operand.Guard,top);doc.Elements.Last().Parent=f.ModelId;
                 log.AppendLine("Operand bounds: id="+operand.ModelId+" fragment="+f.ModelId+" top="+top+" bottom="+bottom+" rawPosition="+operand.Position);
                 if(top<f.LocationY-0.00001 || bottom>f.LocationY+f.Height+0.00001 || bottom<=top)
                     throw new InvalidOperationException("S210: オペランドの境界が不正です: "+operand.ModelId);
