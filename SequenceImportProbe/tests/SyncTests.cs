@@ -81,6 +81,26 @@ public static class SyncTests
         Require(SequenceReferenceResolver.Find("Service",candidates).Length==2,"ambiguous ref selected silently");
         Require(SequenceReferenceResolver.Find("missing",candidates).Length==0,"missing ref invented");
         Require(SequenceJson.Parse(old.ToJson())["Elements"].Items.Count==old.Elements.Count,"diagnostic serialization lost elements");
+        var membership=Doc("opt outer\nopt inner\nA -> B : inside\nend\nend");
+        var member=membership.Elements.Single(e=>e.Kind=="message");
+        var inner=member.Parent;var outer=membership.Elements.Single(e=>e.Kind=="operand" && e.Text=="outer").Id;
+        var evidence=new[]{new SequenceMembership{Child=member.Id,Parent=outer,Evidence="ancestor"},
+            new SequenceMembership{Child=member.Id,Parent=inner,Evidence="direct"},
+            new SequenceMembership{Child=member.Id,Parent=inner,Evidence="SDK duplicate"}};
+        foreach(var order in new[]{evidence,evidence.Reverse().ToArray()})
+        {
+            var copy=membership.Copy();copy.Elements.Single(e=>e.Id==member.Id).Parent="root";
+            SequenceMembership.Resolve(copy,order,line=>{});copy.Validate();
+            Require(copy.Elements.Single(e=>e.Id==member.Id).Parent==inner,"nested membership lost nearest operand");
+        }
+        var conflict=Doc("alt left\nA -> B : one\nelse right\nA -> B : two\nend");
+        var rows=conflict.Elements.Where(e=>e.Kind=="message").ToArray();
+        var logs=new List<string>();failed=false;
+        try {SequenceMembership.Resolve(conflict,new[]{new SequenceMembership{Child=rows[0].Id,Parent=rows[1].Parent,Evidence="conflict"}},logs.Add);}
+        catch(InvalidOperationException){failed=true;}
+        Require(failed && logs.Any(l=>l.Contains("conflict")),"unrelated operands silently selected or evidence lost");
+        failed=false;try {SequenceMembership.Resolve(membership,new[]{new SequenceMembership{Child=outer,Parent=inner,Evidence="cycle"}},line=>{});}
+        catch(InvalidOperationException){failed=true;}Require(failed,"membership cycle accepted");
         Console.WriteLine("PASS: all-kind semantic plans, mixed changes, ID retention, block edits, ambiguity, moves, source trivia and idempotence");
     }
 }

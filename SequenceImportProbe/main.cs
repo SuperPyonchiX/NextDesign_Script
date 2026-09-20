@@ -22,7 +22,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.0";
+    public const string Title = "シーケンス生成実験 / 0.8.1";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -565,7 +565,7 @@ public sealed class DiagramSnapshot
     public Dictionary<string,string> ShapeIds=new Dictionary<string,string>();
     public Dictionary<string,object> Geometry=new Dictionary<string,object>();
     public List<string> Limitations=new List<string>();
-    public static DiagramSnapshot Read(ISequenceDiagram diagram)
+    public static DiagramSnapshot Read(ISequenceDiagram diagram, StringBuilder log)
     {
         var root=diagram.Model as IInteraction;
         if(root==null)throw new InvalidOperationException("S210: シーケンス図を開いてください。");
@@ -645,22 +645,22 @@ public sealed class DiagramSnapshot
         var byId=doc.Elements.ToDictionary(e=>e.Id);
         // Model ownership is not operand membership: use the actual structural relationships.
         var relations=SequenceMappedUpdate.Tree(root).SelectMany(m=>m.GetRelationsWhere((r,f)=>true)).GroupBy(r=>r.Id).Select(g=>g.First()).ToArray();
+        var memberships=new List<SequenceMembership>();
         foreach(var relation in relations)
         {
             if(!byId.ContainsKey(relation.Source.Id) || !byId.ContainsKey(relation.Target.Id))continue;
             if(relation.Metaclass.Id==SequencePayload.Prefix+"NestedInteractionFragment" || relation.Metaclass.Id==SequencePayload.Prefix+"OperandTargetMessage")
             {
-                var child=byId[relation.Target.Id];
-                if(child.Parent!=root.Id && child.Parent!=relation.Source.Id)throw new InvalidOperationException("S210: 複数の所属先があります: "+child.Id);
-                child.Parent=relation.Source.Id;
+                memberships.Add(new SequenceMembership{Child=relation.Target.Id,Parent=relation.Source.Id,
+                    Evidence=relation.Metaclass.Id+" / "+relation.Id});
             }
         }
         foreach(var operand in diagram.Fragments.SelectMany(f=>f.Operands))foreach(var message in operand.Messages)
         {
-            var e=byId[message.ModelId];
-            if(e.Parent!=root.Id && e.Parent!=operand.ModelId)throw new InvalidOperationException("S210: SDKと関連の分岐所属が一致しません。");
-            e.Parent=operand.ModelId;
+            memberships.Add(new SequenceMembership{Child=message.ModelId,Parent=operand.ModelId,Evidence="SDK operand.Messages"});
         }
+        SequenceMembership.Resolve(doc,memberships,line=>log.AppendLine(line));
+
         foreach(var e in diagram.ExecutionSpecifications)
         {
             var item=byId[e.ModelId];
@@ -706,7 +706,7 @@ public static class SequenceSyncRuntime
             if(string.IsNullOrEmpty(path))return;
             if(new FileInfo(path).Length>300000)throw new InvalidOperationException("S210: 入力は300KB以下にしてください。");
             var desired=SequenceDocument.Parse(File.ReadAllText(path,new UTF8Encoding(false,true)));
-            var current=DiagramSnapshot.Read(diagram);
+            var current=DiagramSnapshot.Read(diagram,log);
             // Resolve only unambiguous references for this non-mutating audit command.
             var project=app.Workspace.CurrentProject;
             var interactions=SequenceMappedUpdate.Tree(project.DesignModel).OfType<IInteraction>()
@@ -2306,6 +2306,42 @@ public static class SequenceReferenceResolver
         var qualified=all.Where(c=>!string.IsNullOrEmpty(c.Path) && c.Path==text).ToArray();
         return (qualified.Length>0?qualified:all.Where(c=>c.Name==text))
             .OrderBy(c=>c.Path,StringComparer.Ordinal).ThenBy(c=>c.Id,StringComparer.Ordinal).ToArray();
+    }
+}
+
+// Resolve transitive membership only after collecting every relationship and SDK observation.
+public sealed class SequenceMembership
+{
+    public string Child, Parent, Evidence;
+    public static void Resolve(SequenceDocument document,IEnumerable<SequenceMembership> observations,Action<string> log)
+    {
+        var index=document.Elements.ToDictionary(e=>e.Id);
+        var root=document.Elements.Single(e=>e.Kind=="interaction").Id;
+        var edges=observations.Concat(document.Elements.Where(e=>e.Parent!=null && e.Parent!=root)
+            .Select(e=>new SequenceMembership{Child=e.Id,Parent=e.Parent,Evidence="shape container"})).ToArray();
+        foreach(var edge in edges.OrderBy(e=>e.Child,StringComparer.Ordinal).ThenBy(e=>e.Parent,StringComparer.Ordinal))
+        {
+            log("Membership: child="+edge.Child+" parent="+edge.Parent+" source="+edge.Evidence);
+            if(!index.ContainsKey(edge.Child) || !index.ContainsKey(edge.Parent))throw new InvalidOperationException("S210: 所属関連の端点が図にありません。");
+        }
+        var parents=edges.GroupBy(e=>e.Child).ToDictionary(g=>g.Key,g=>g.Select(e=>e.Parent).Distinct().ToArray());
+        Func<string,string,bool> reaches=(start,target)=>{
+            var visited=new HashSet<string>();var pending=new Stack<string>();pending.Push(start);
+            while(pending.Count>0) {var at=pending.Pop();if(!visited.Add(at))continue;
+                string[] next;if(!parents.TryGetValue(at,out next))continue;
+                foreach(var id in next) {if(id==target)return true;pending.Push(id);}}
+            return false;
+        };
+        foreach(var id in parents.Keys)if(reaches(id,id))throw new InvalidOperationException("S210: 所属関連が循環しています: "+id);
+        var resolved=new Dictionary<string,string>();
+        foreach(var pair in parents)
+        {
+            var nearest=pair.Value.Where(p=>!pair.Value.Any(other=>other!=p && reaches(other,p))).ToArray();
+            if(nearest.Length!=1)throw new InvalidOperationException("S210: 包含関係で解決できない所属候補があります: "+pair.Key+" / "+string.Join(", ",nearest));
+            resolved[pair.Key]=nearest[0];
+            log("Membership resolved: child="+pair.Key+" parent="+nearest[0]+" candidates="+pair.Value.Length);
+        }
+        foreach(var pair in resolved)index[pair.Key].Parent=pair.Value;
     }
 }
 // END GENERATED SequenceSync.cs

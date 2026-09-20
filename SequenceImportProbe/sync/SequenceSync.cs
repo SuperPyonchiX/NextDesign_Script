@@ -303,3 +303,39 @@ public static class SequenceReferenceResolver
             .OrderBy(c=>c.Path,StringComparer.Ordinal).ThenBy(c=>c.Id,StringComparer.Ordinal).ToArray();
     }
 }
+
+// Resolve transitive membership only after collecting every relationship and SDK observation.
+public sealed class SequenceMembership
+{
+    public string Child, Parent, Evidence;
+    public static void Resolve(SequenceDocument document,IEnumerable<SequenceMembership> observations,Action<string> log)
+    {
+        var index=document.Elements.ToDictionary(e=>e.Id);
+        var root=document.Elements.Single(e=>e.Kind=="interaction").Id;
+        var edges=observations.Concat(document.Elements.Where(e=>e.Parent!=null && e.Parent!=root)
+            .Select(e=>new SequenceMembership{Child=e.Id,Parent=e.Parent,Evidence="shape container"})).ToArray();
+        foreach(var edge in edges.OrderBy(e=>e.Child,StringComparer.Ordinal).ThenBy(e=>e.Parent,StringComparer.Ordinal))
+        {
+            log("Membership: child="+edge.Child+" parent="+edge.Parent+" source="+edge.Evidence);
+            if(!index.ContainsKey(edge.Child) || !index.ContainsKey(edge.Parent))throw new InvalidOperationException("S210: 所属関連の端点が図にありません。");
+        }
+        var parents=edges.GroupBy(e=>e.Child).ToDictionary(g=>g.Key,g=>g.Select(e=>e.Parent).Distinct().ToArray());
+        Func<string,string,bool> reaches=(start,target)=>{
+            var visited=new HashSet<string>();var pending=new Stack<string>();pending.Push(start);
+            while(pending.Count>0) {var at=pending.Pop();if(!visited.Add(at))continue;
+                string[] next;if(!parents.TryGetValue(at,out next))continue;
+                foreach(var id in next) {if(id==target)return true;pending.Push(id);}}
+            return false;
+        };
+        foreach(var id in parents.Keys)if(reaches(id,id))throw new InvalidOperationException("S210: 所属関連が循環しています: "+id);
+        var resolved=new Dictionary<string,string>();
+        foreach(var pair in parents)
+        {
+            var nearest=pair.Value.Where(p=>!pair.Value.Any(other=>other!=p && reaches(other,p))).ToArray();
+            if(nearest.Length!=1)throw new InvalidOperationException("S210: 包含関係で解決できない所属候補があります: "+pair.Key+" / "+string.Join(", ",nearest));
+            resolved[pair.Key]=nearest[0];
+            log("Membership resolved: child="+pair.Key+" parent="+nearest[0]+" candidates="+pair.Value.Length);
+        }
+        foreach(var pair in resolved)index[pair.Key].Parent=pair.Value;
+    }
+}

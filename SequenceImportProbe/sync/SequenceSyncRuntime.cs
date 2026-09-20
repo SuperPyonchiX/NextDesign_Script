@@ -6,7 +6,7 @@ public sealed class DiagramSnapshot
     public Dictionary<string,string> ShapeIds=new Dictionary<string,string>();
     public Dictionary<string,object> Geometry=new Dictionary<string,object>();
     public List<string> Limitations=new List<string>();
-    public static DiagramSnapshot Read(ISequenceDiagram diagram)
+    public static DiagramSnapshot Read(ISequenceDiagram diagram, StringBuilder log)
     {
         var root=diagram.Model as IInteraction;
         if(root==null)throw new InvalidOperationException("S210: シーケンス図を開いてください。");
@@ -86,22 +86,22 @@ public sealed class DiagramSnapshot
         var byId=doc.Elements.ToDictionary(e=>e.Id);
         // Model ownership is not operand membership: use the actual structural relationships.
         var relations=SequenceMappedUpdate.Tree(root).SelectMany(m=>m.GetRelationsWhere((r,f)=>true)).GroupBy(r=>r.Id).Select(g=>g.First()).ToArray();
+        var memberships=new List<SequenceMembership>();
         foreach(var relation in relations)
         {
             if(!byId.ContainsKey(relation.Source.Id) || !byId.ContainsKey(relation.Target.Id))continue;
             if(relation.Metaclass.Id==SequencePayload.Prefix+"NestedInteractionFragment" || relation.Metaclass.Id==SequencePayload.Prefix+"OperandTargetMessage")
             {
-                var child=byId[relation.Target.Id];
-                if(child.Parent!=root.Id && child.Parent!=relation.Source.Id)throw new InvalidOperationException("S210: 複数の所属先があります: "+child.Id);
-                child.Parent=relation.Source.Id;
+                memberships.Add(new SequenceMembership{Child=relation.Target.Id,Parent=relation.Source.Id,
+                    Evidence=relation.Metaclass.Id+" / "+relation.Id});
             }
         }
         foreach(var operand in diagram.Fragments.SelectMany(f=>f.Operands))foreach(var message in operand.Messages)
         {
-            var e=byId[message.ModelId];
-            if(e.Parent!=root.Id && e.Parent!=operand.ModelId)throw new InvalidOperationException("S210: SDKと関連の分岐所属が一致しません。");
-            e.Parent=operand.ModelId;
+            memberships.Add(new SequenceMembership{Child=message.ModelId,Parent=operand.ModelId,Evidence="SDK operand.Messages"});
         }
+        SequenceMembership.Resolve(doc,memberships,line=>log.AppendLine(line));
+
         foreach(var e in diagram.ExecutionSpecifications)
         {
             var item=byId[e.ModelId];
@@ -147,7 +147,7 @@ public static class SequenceSyncRuntime
             if(string.IsNullOrEmpty(path))return;
             if(new FileInfo(path).Length>300000)throw new InvalidOperationException("S210: 入力は300KB以下にしてください。");
             var desired=SequenceDocument.Parse(File.ReadAllText(path,new UTF8Encoding(false,true)));
-            var current=DiagramSnapshot.Read(diagram);
+            var current=DiagramSnapshot.Read(diagram,log);
             // Resolve only unambiguous references for this non-mutating audit command.
             var project=app.Workspace.CurrentProject;
             var interactions=SequenceMappedUpdate.Tree(project.DesignModel).OfType<IInteraction>()
