@@ -586,8 +586,13 @@ public sealed class SequenceStructurePreflight
     public List<string> DeleteExecutions=new List<string>();
     public List<string> AddExecutions=new List<string>();
     public bool Candidate { get { return Reasons.Count==0 && (ReconnectMessages.Count+DeleteExecutions.Count+AddExecutions.Count)>0; } }
+    // The deletion-only mode stays exactly as the product confirmed it. The other mode
+    // covers a receiver change together with deletions, additions, or both.
     public bool CanCommit(bool reconnect)
-    { return Candidate && AddExecutions.Count==0 && DeleteExecutions.Count>0 && (reconnect?ReconnectMessages.Count>0:ReconnectMessages.Count==0); }
+    {
+        if(!Candidate || DeleteExecutions.Count+AddExecutions.Count==0)return false;
+        return reconnect?ReconnectMessages.Count>0:ReconnectMessages.Count==0 && AddExecutions.Count==0;
+    }
     static string[] Link(SequenceElement e,string role)
     { string[] ids;return e.Links.TryGetValue(role,out ids)?ids:new string[0]; }
     static string Comparable(SequenceElement e)
@@ -1028,6 +1033,29 @@ public sealed class SequenceTrialState
             lines.Add("source="+owner+" "+(rows.Length==0?"(なし)":string.Join(" ",rows)));
         }
         return string.Join("\n",lines);
+    }
+    // A shape this run creates is predicted from the numbers we send, while the product
+    // reports them back with the representation drift its export already shows on every
+    // imported coordinate. Round both sides for those shapes only; existing shapes are
+    // compared as the SDK reports them, unchanged.
+    public void Round(IEnumerable<string> shapeIds)
+    {
+        foreach(string id in shapeIds)
+        {
+            string value;
+            if(!Shapes.TryGetValue(id,out value))continue;
+            SequenceJson node;
+            try {node=SequenceJson.Parse(value);} catch(Exception) {continue;}
+            if(node==null || node.Items==null)continue;
+            var rows=new List<string>();
+            foreach(var item in node.Items)
+            {
+                string raw=item.StringValue();double number;
+                rows.Add(double.TryParse(raw,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out number)
+                    ? Math.Round(number,3).ToString("R",System.Globalization.CultureInfo.InvariantCulture) : raw);
+            }
+            Shapes[id]=PumlBuild.Json(rows.ToArray());
+        }
     }
     public string ShapeDifferences(SequenceTrialState actual)
     {

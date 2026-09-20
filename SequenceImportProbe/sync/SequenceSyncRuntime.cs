@@ -277,6 +277,11 @@ public static class SequenceStructureTrial
     static string Port(IMessagePort value) {var m=value as IModel;return m==null?"":m.Id;}
     static string FieldId(IField value) {return value==null?"":value.Id;}
     static string Number(double value){return value.ToString("R",System.Globalization.CultureInfo.InvariantCulture);}
+    static SequenceTrialState Rounded(IProject project,string rootId,Func<ISequenceDiagram> fresh,string[] newShapes)
+    {
+        var state=Read((IInteraction)project.GetModelById(rootId),fresh());
+        state.Round(newShapes);return state;
+    }
     static SequenceTrialState Read(IInteraction root,ISequenceDiagram diagram)
     {
         var state=new SequenceTrialState();
@@ -330,15 +335,19 @@ public static class SequenceStructureTrial
     {
         int reconnectCount=prepared.ReconnectCount;
         if(reconnectCommit && !retain)throw new InvalidOperationException("S231: 確定モードが不正です。");
-        if(retain && (prepared.DeleteIds.Length==0 || (reconnectCommit?reconnectCount==0:reconnectCount!=0)
-            || plan.Changes.Any(c=>!(c.Action=="delete" && c.Kind=="execution") && !(reconnectCommit && c.Action=="update" && c.Kind=="message"))))
+        if(retain && (prepared.DeleteIds.Length+prepared.AddedExecutions.Length==0 || (reconnectCommit?reconnectCount==0:reconnectCount!=0)
+            || plan.Changes.Any(c=>!(c.Action=="delete" && c.Kind=="execution")
+                && !(reconnectCommit && c.Action=="update" && c.Kind=="message")
+                && !(reconnectCommit && c.Action=="add" && c.Kind=="execution"))))
             throw new InvalidOperationException("S231: 確定モードの対象外の差分があります。");
         string caseId=reconnectCommit?"UPDATE007":retain?"UPDATE006":"UPDATE005";
         var root=diagram.Model as IInteraction;
-        var before=Read(root,diagram);string original=before.Signature();
+        var newShapes=prepared.AddedExecutions.Select(a=>a.ShapeId).ToArray();
+        var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
         var expectedReconnect=before.Expected(prepared,plan,false);
         var expectedFinal=before.Expected(prepared,plan,true);
         var deletionOwners=before.DeletionOwners(prepared);
+        expectedReconnect.Round(newShapes);expectedFinal.Round(newShapes);
         string rootId=root.Id,editorId=diagram.Id;
         Func<ISequenceDiagram> fresh=()=>{
             var model=project.GetModelById(rootId) as IInteraction;
@@ -351,7 +360,7 @@ public static class SequenceStructureTrial
         if(!app.Window.UI.ShowConfirmDialog(confirmation,SequenceExperiment.Title))
             return caseId+": キャンセル / 図への変更なし";
         if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=editorId
-            || Read(root,fresh()).Signature()!=original)
+            || Rounded(project,rootId,fresh,newShapes).Signature()!=original)
             throw new InvalidOperationException("S230: 確認中に対象の図が変化しました。");
         // Serialized attributes are checked before starting; export is unavailable after a write.
         if(SequenceEditorCapture.Read(project,root,diagram,log).Fingerprint()!=SequenceEditorDocument.Read(exported,rootId,editorId).Fingerprint())
@@ -367,14 +376,14 @@ public static class SequenceStructureTrial
                 log.AppendLine("add execution payload: model="+entry.ModelId+" shape="+entry.ShapeId
                     +" geometry(X,Y,Length)="+entry.Geometry+" relation order="+PumlBuild.Json(entry.RelationSources));
             Import(project,prepared.ReconnectJson,log);
-            Verify(expectedReconnect,Read((IInteraction)project.GetModelById(rootId),fresh()),"接続変更後",log);
+            Verify(expectedReconnect,Rounded(project,rootId,fresh,newShapes),"接続変更後",log);
             log.AppendLine("receiver reconnection count: "+prepared.ReconnectCount
                 +"; added executions: "+prepared.AddedExecutions.Length+"; SDK state verified");
             stage="不要実行区間の削除";
             using(project.SuspendModelVerification())foreach(string id in prepared.DeleteIds)project.GetModelById(id).Delete();
             stage="削除後のエディタ反映";Import(project,prepared.EditorAfterDeleteJson,log);
             foreach(string id in prepared.DeleteIds){var m=project.GetModelById(id);if(m!=null && !m.IsDeleted)throw new InvalidOperationException("S230: 削除対象が残っています。");}
-            var afterDelete=Read((IInteraction)project.GetModelById(rootId),fresh());
+            var afterDelete=Rounded(project,rootId,fresh,newShapes);
             if(deletionOwners.Length>0)
                 log.AppendLine("\f所有関連の順序 / 削除段階\n削除前(*が消える関連)\n"+before.OrderReport(deletionOwners,prepared)
                     +"\n削除後 期待\n"+expectedFinal.OrderReport(deletionOwners,prepared)
@@ -383,7 +392,7 @@ public static class SequenceStructureTrial
             log.AppendLine("trial execution deletion and SDK state: verified");
         };
         Action rollback=delegate {transaction.Rollback();};
-        Action verifyRestored=delegate {Verify(before,Read((IInteraction)project.GetModelById(rootId),fresh()),"取消後",log);};
+        Action verifyRestored=delegate {Verify(before,Rounded(project,rootId,fresh,newShapes),"取消後",log);};
         // Explicit completion only; Dispose may attempt a second rollback.
         string summary;
         if(retain)

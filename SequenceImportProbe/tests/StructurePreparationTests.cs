@@ -153,7 +153,7 @@ public static class StructurePreparationTests
         var gate=SequenceStructurePreflight.Check(current,plan);
         Require(gate.Candidate && gate.AddExecutions.SequenceEqual(new[]{bar}) && gate.ReconnectMessages.SequenceEqual(new[]{ids[6]}),
             "added bar with a reconnect was not a candidate");
-        Require(!gate.CanCommit(true) && !gate.CanCommit(false),"addition reached a commit mode");
+        Require(gate.CanCommit(true) && !gate.CanCommit(false),"commit modes accepted the wrong scope for an addition");
 
         var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan);
         Require(package.AddedExecutions.Length==1,"addition was not prepared");
@@ -260,6 +260,21 @@ public static class StructurePreparationTests
             "post-delete order report incorrect");
         Require(owned.Relations["own-c"][2]=="2" && owned.Relations.ContainsKey("own-b") && owned.RelationFields.ContainsKey("own-b"),
             "deletion report mutated the snapshot");
+        var drift=new SequenceTrialState();
+        drift.Shapes["new"]=PumlBuild.Json(new[]{"488.000001","140.000001","100","40.000001","40.000001"});
+        drift.Shapes["kept"]=PumlBuild.Json(new[]{"10.000001","20","30","40","50"});
+        drift.Shapes["text"]="[\"1\",\"2\"]note body";
+        var asked=new SequenceTrialState();
+        asked.Shapes["new"]=PumlBuild.Json(new[]{"488","140","100","40","40"});
+        asked.Shapes["kept"]=PumlBuild.Json(new[]{"10","20","30","40","50"});
+        asked.Shapes["text"]="[\"1\",\"2\"]note body";
+        drift.Round(new[]{"new","text","absent"});asked.Round(new[]{"new","text","absent"});
+        Require(drift.Shapes["new"]==asked.Shapes["new"],"representation drift on a created shape was not reconciled");
+        Require(drift.Shapes["kept"]!=asked.Shapes["kept"],"an existing shape was rounded");
+        Require(drift.Shapes["text"]=="[\"1\",\"2\"]note body","a shape carrying text was rewritten");
+        drift.Shapes["new"]=PumlBuild.Json(new[]{"496","140","100","40","40"});
+        drift.Round(new[]{"new"});
+        Require(drift.Shapes["new"]!=asked.Shapes["new"],"a real position difference was rounded away");
         var expectedShapes=new SequenceTrialState();var actualShapes=new SequenceTrialState();
         expectedShapes.Shapes["s1"]="[10,20,16,40,40]";expectedShapes.ShapeModels["s1"]="exec";
         actualShapes.Shapes["s1"]="[10,24,16,40,40]";actualShapes.ShapeModels["s1"]="exec";

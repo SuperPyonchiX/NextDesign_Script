@@ -94,8 +94,8 @@ public static class PayloadTest {
    var addGate=SequenceStructurePreflight.Check(batchAfter,addPlan);
    if(!addGate.Candidate || addPlan.Changes.Count!=2 || addGate.AddExecutions.Count!=1 || addGate.ReconnectMessages.Count!=1 || addGate.DeleteExecutions.Count!=0)
        throw new Exception("addition sample must contain one added execution and one reconnect: "+addPlan.ToJson()+addGate.ToJson());
-   if(addGate.CanCommit(true) || addGate.CanCommit(false))
-       throw new Exception("addition reached a commit mode before the product confirmed it");
+   if(!addGate.CanCommit(true) || addGate.CanCommit(false))
+       throw new Exception("addition sample did not reach exactly the receiver-change commit mode");
    if(SyncPlan.Build(addPlan.Expected,occupiedBefore,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("addition semantic plan is not idempotent");
 

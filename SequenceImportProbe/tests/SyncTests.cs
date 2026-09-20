@@ -53,7 +53,8 @@
         Require(gate.AddExecutions.SequenceEqual(new[]{added[0].Id}),"added receive bar was not accepted: "+plan.ToJson()+gate.ToJson());
         Require(gate.Candidate && gate.Reasons.Count==0,"added receive bar was not a candidate");
         Require(gate.ReconnectMessages.Count==1,"the message pointing at the new bar was not accepted");
-        Require(!gate.CanCommit(true) && !gate.CanCommit(false),"addition reached a commit mode before the product confirmed it");
+        Require(gate.CanCommit(true),"a receiver change with an addition cannot be committed");
+        Require(!gate.CanCommit(false),"the deletion-only mode accepted an addition");
         Require(unchanged==before.ToJson()+plan.Expected.ToJson()+plan.ToJson(),"preflight changed diff");
 
         Func<Action<SequenceElement>,SequenceStructurePreflight> probe=mutate=>{
