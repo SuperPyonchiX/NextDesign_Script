@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.53";
+    public const string Title = "シーケンス生成実験 / 0.8.54";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -138,7 +138,7 @@ public static class SequenceExperiment
             if (plan != null)
             {
                 stage = "PlantUML生成データの構築";
-                payload = PumlBuild.Build(plan, PumlRuntime.Profile(diagram, sources, plan), diagram.EditorDefinition.Id, schema, replacement==null?null:replacement.Identity);
+                payload = PumlBuild.Build(plan, PumlRuntime.Profile(diagram, sources, plan, project), diagram.EditorDefinition.Id, schema, replacement==null?null:replacement.Identity);
                 Write(Path.Combine(directory, "source.puml"), pumlText);
             }
             rootId = payload.Ids[0];
@@ -535,6 +535,29 @@ public static class PumlRuntime
     // so read the concrete type from there instead of falling back to the abstract one.
     static IClass Resolve(ISequenceDiagram diagram,string[] definitionTypes,IEnumerable<IModel> observed,string label)
     { return Resolve(diagram,definitionTypes,observed,null,label); }
+    static bool Inherits(IClass candidate,IClass ancestor)
+    {
+        var seen=new HashSet<string>();var pending=new List<IClass>{candidate};
+        for(int i=0;i<pending.Count && i<512;i++)
+        {
+            if(pending[i].Id==ancestor.Id)return true;
+            foreach(var super in pending[i].SuperClasses.Cast<IClass>())if(seen.Add(super.Id))pending.Add(super);
+        }
+        return false;
+    }
+    // Last resort for a kind the view definition does not list and whose owning field is
+    // declared abstract: the profile itself holds exactly one concrete subclass.
+    static IClass Descend(IProject project,IClass abstractClass,string label)
+    {
+        if(project==null || project.Profile==null || abstractClass==null)return null;
+        var concrete=project.Profile.Metamodels.AllClasses.Cast<IClass>()
+            .Where(k=>!k.IsAbstract && k.Id!=abstractClass.Id && Inherits(k,abstractClass))
+            .GroupBy(k=>k.Id).Select(g=>g.First()).ToArray();
+        if(concrete.Length==1)return concrete[0];
+        if(concrete.Length>1)throw new InvalidOperationException("E121: "+label+"の具体型が複数あり、自動選択できません: "
+            +string.Join(", ",concrete.Select(k=>k.FullName)));
+        return null;
+    }
     // Some kinds are not placeable on their own and so are absent from the view
     // definition; an operand only exists inside a fragment. For those the field on the
     // concrete owner class carries the type, as long as it is not the abstract one.
@@ -552,6 +575,7 @@ public static class PumlRuntime
             .GroupBy(name=>name,StringComparer.OrdinalIgnoreCase).Select(g=>g.Key).OrderBy(name=>name,StringComparer.Ordinal));
         if(defined.Length>1)throw new InvalidOperationException("E121: ビュー定義の"+label+"に複数の型があり、自動選択できません。定義の種別: "+available);
         if(declared!=null && !declared.IsAbstract)return declared;
+        if(declared!=null)available+=" / 宣言型: "+declared.FullName+"（抽象）";
         throw new InvalidOperationException("E121: "+label+"の具体型を決められません。"
             +label+"がある図を開いて取り込むか、この種別名を開発側へ伝えてください。定義の種別: "+available);
     }
@@ -569,6 +593,8 @@ public static class PumlRuntime
         return new[]{interaction,frame,lifeline,lifeline,execution,execution,messageClass};
     }
     public static PumlProfile Profile(ISequenceDiagram diagram,IClass[] source,PumlPlan plan)
+    { return Profile(diagram,source,plan,null); }
+    public static PumlProfile Profile(ISequenceDiagram diagram,IClass[] source,PumlPlan plan,IProject project)
     {
         var p=new PumlProfile();
         string[] names={"Interaction","Frame","Lifeline","Lifeline","ExecutionSpecification","ExecutionSpecification","Message"};
@@ -606,7 +632,7 @@ public static class PumlRuntime
             var declaredOperand=Child(p,c,"Operands","Operands","___CombinedFragment_InteractionOperand");
             var operand=Resolve(diagram,new[]{"InteractionOperand","Operand","Operands"},
                 diagram.Fragments.Where(f=>f.Model.Metaclass.Id==c.Id).SelectMany(f=>f.Operands).Select(o=>o.Model),
-                declaredOperand,"分岐");
+                declaredOperand!=null && declaredOperand.IsAbstract?Descend(project,declaredOperand,"分岐"):declaredOperand,"分岐");
             p.Types["InteractionOperand"]=operand.Id; classes.Add(operand);
             foreach(var op in plan.All().Where(n=>n.Kind=="fragment").Select(n=>n.Operator).Distinct())p.Operators[op]=Literal(c,"Operator",op);
         }
