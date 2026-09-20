@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.54";
+    public const string Title = "シーケンス生成実験 / 0.8.55";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -545,6 +545,23 @@ public static class PumlRuntime
         }
         return false;
     }
+    // The surest sample is a real element, and the open diagram is not the only place to
+    // look: one anywhere in the project settles the type the same way.
+    static IClass Anywhere(IProject project,IClass declared)
+    {
+        if(project==null || declared==null || project.DesignModel==null)return null;
+        var types=new List<IClass>();int scanned=0;
+        foreach(var model in SequenceMappedUpdate.Tree(project.DesignModel))
+        {
+            if(++scanned>200000)break;
+            var type=model.Metaclass;
+            if(type==null || type.IsAbstract || type.Id==declared.Id)continue;
+            if(!Inherits(type,declared))continue;
+            if(!types.Any(k=>k.Id==type.Id))types.Add(type);
+            if(types.Count>1)break;
+        }
+        return types.Count==1?types[0]:null;
+    }
     // Last resort for a kind the view definition does not list and whose owning field is
     // declared abstract: the profile itself holds exactly one concrete subclass.
     static IClass Descend(IProject project,IClass abstractClass,string label)
@@ -620,19 +637,25 @@ public static class PumlRuntime
         if(plan.All().Any(n=>n.Left=="[" || n.Right=="]"))
         {
             var declaredEnd=Child(p,source[0],"MessageEnds","MessageEnds","___Interaction_MessageEnd");
-            var c=Resolve(diagram,new[]{"MessageEnd","MessageEnds"},diagram.MessageEnds.Select(e=>e.Model),declaredEnd,"メッセージ端");
+            var c=Resolve(diagram,new[]{"MessageEnd","MessageEnds"},diagram.MessageEnds.Select(e=>e.Model),declaredEnd!=null && declaredEnd.IsAbstract
+                    ?(Anywhere(project,declaredEnd) ?? Descend(project,declaredEnd,"メッセージ端"))
+                    :declaredEnd,"メッセージ端");
             p.Types["MessageEnd"]=c.Id; classes.Add(c);
         }
         if(plan.All().Any(n=>n.Kind=="fragment"))
         {
             var declaredFragment=Child(p,source[0],"Fragments","CombinedFragments","___Interaction_CombinedFragment");
             var c=Resolve(diagram,new[]{"CombinedFragment","Fragment","CombinedFragments"},
-                diagram.Fragments.Select(f=>f.Model),declaredFragment,"複合フラグメント");
+                diagram.Fragments.Select(f=>f.Model),declaredFragment!=null && declaredFragment.IsAbstract
+                    ?(Anywhere(project,declaredFragment) ?? Descend(project,declaredFragment,"複合フラグメント"))
+                    :declaredFragment,"複合フラグメント");
             p.Types["CombinedFragment"]=c.Id; classes.Add(c);
             var declaredOperand=Child(p,c,"Operands","Operands","___CombinedFragment_InteractionOperand");
             var operand=Resolve(diagram,new[]{"InteractionOperand","Operand","Operands"},
                 diagram.Fragments.Where(f=>f.Model.Metaclass.Id==c.Id).SelectMany(f=>f.Operands).Select(o=>o.Model),
-                declaredOperand!=null && declaredOperand.IsAbstract?Descend(project,declaredOperand,"分岐"):declaredOperand,"分岐");
+                declaredOperand!=null && declaredOperand.IsAbstract
+                    ?(Anywhere(project,declaredOperand) ?? Descend(project,declaredOperand,"分岐"))
+                    :declaredOperand,"分岐");
             p.Types["InteractionOperand"]=operand.Id; classes.Add(operand);
             foreach(var op in plan.All().Where(n=>n.Kind=="fragment").Select(n=>n.Operator).Distinct())p.Operators[op]=Literal(c,"Operator",op);
         }
@@ -640,14 +663,18 @@ public static class PumlRuntime
         {
             var declaredUse=Child(p,source[0],"InteractionUses","InteractionUses","___Interaction_InteractionUse");
             var c=Resolve(diagram,new[]{"InteractionUse","InteractionUses","Ref"},
-                diagram.InteractionUses.Select(f=>f.Model),declaredUse,"相互作用の利用");
+                diagram.InteractionUses.Select(f=>f.Model),declaredUse!=null && declaredUse.IsAbstract
+                    ?(Anywhere(project,declaredUse) ?? Descend(project,declaredUse,"相互作用の利用"))
+                    :declaredUse,"相互作用の利用");
             p.Types["InteractionUse"]=c.Id; classes.Add(c);
         }
         if(plan.All().Any(n=>n.Kind=="note"))
         {
             var declaredNote=Child(p,source[0],"Notes","Notes","___Interaction_InteractionNote");
             var c=Resolve(diagram,new[]{"InteractionNote","Note","Notes"},
-                diagram.Notes.Select(n=>n.Model),declaredNote,"Note");
+                diagram.Notes.Select(n=>n.Model),declaredNote!=null && declaredNote.IsAbstract
+                    ?(Anywhere(project,declaredNote) ?? Descend(project,declaredNote,"Note"))
+                    :declaredNote,"Note");
             p.Types["InteractionNote"]=c.Id; classes.Add(c);
             var f=Field(c,"Body") ?? Field(c,"Text") ?? Field(c,"Name");
             if(f==null)throw new InvalidOperationException("E121: Note本文フィールドを取得できません。");
