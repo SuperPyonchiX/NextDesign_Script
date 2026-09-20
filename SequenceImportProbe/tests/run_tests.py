@@ -37,6 +37,20 @@ public static class PayloadTest {
    if(!trialGate.Candidate || trialPlan.Changes.Count!=1 || trialGate.DeleteExecutions.Count!=1 || trialGate.ReconnectMessages.Count!=0)
        throw new Exception("trial sample is not exactly one execution deletion");
 
+   var reconnectBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-before.puml")));
+   var reconnectAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-after.puml")));
+   var reconnectPlan=SyncPlan.Build(reconnectBefore,reconnectAfter,()=>Guid.NewGuid().ToString());
+   var reconnectGate=SequenceStructurePreflight.Check(reconnectBefore,reconnectPlan);
+   if(!reconnectGate.Candidate || reconnectPlan.Changes.Count!=2 || reconnectGate.ReconnectMessages.Count!=1 || reconnectGate.DeleteExecutions.Count!=1)
+       throw new Exception("reconnect sample must contain exactly one receiver update and one deletion: "+reconnectPlan.ToJson()+reconnectGate.ToJson());
+
+   if(!trialGate.CanCommit(false) || trialGate.CanCommit(true) || reconnectGate.CanCommit(false) || !reconnectGate.CanCommit(true))
+       throw new Exception("commit modes accepted the wrong scope");
+   reconnectGate.Reasons.Add("unsupported change");
+   if(reconnectGate.CanCommit(true))throw new Exception("commit accepted partially supported plan");
+   var emptyGate=new SequenceStructurePreflight();
+   if(emptyGate.CanCommit(false) || emptyGate.CanCommit(true))throw new Exception("empty commit accepted");
+
    int commits=0, cancels=0;
    var success = new SequenceCompletion();
    success.Commit(delegate { commits++; });

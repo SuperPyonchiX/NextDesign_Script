@@ -585,6 +585,8 @@ public sealed class SequenceStructurePreflight
     public List<string> ReconnectMessages=new List<string>();
     public List<string> DeleteExecutions=new List<string>();
     public bool Candidate { get { return Reasons.Count==0 && (ReconnectMessages.Count+DeleteExecutions.Count)>0; } }
+    public bool CanCommit(bool reconnect)
+    { return Candidate && DeleteExecutions.Count>0 && (reconnect?ReconnectMessages.Count>0:ReconnectMessages.Count==0); }
     static string[] Link(SequenceElement e,string role)
     { string[] ids;return e.Links.TryGetValue(role,out ids)?ids:new string[0]; }
     static string Comparable(SequenceElement e)

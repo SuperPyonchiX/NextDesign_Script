@@ -9,6 +9,7 @@ using System.Text.RegularExpressions;
 using NextDesign.Core;
 using NextDesign.Desktop;
 
+public void CommitReceiverStructure(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App,true,true,true,true); }
 public void CommitUnusedExecutions(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App,true,true,true); }
 public void TrialSequenceStructure(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App,true,true); }
 public void PrepareSequenceStructure(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App,true); }
@@ -26,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.23";
+    public const string Title = "シーケンス生成実験 / 0.8.24";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -829,10 +830,10 @@ public static class SequenceSyncRuntime
         while(model!=null) {if(!visited.Add(model.Id))throw new InvalidOperationException("S210: モデルの所有関係が循環しています。");parts.Add(model.Name);model=model.Owner;}
         parts.Reverse();return string.Join("::",parts);
     }
-    public static void Preview(IApplication app,bool prepare=false,bool trial=false,bool retain=false)
+    public static void Preview(IApplication app,bool prepare=false,bool trial=false,bool retain=false,bool reconnectCommit=false)
     {
         var log=new StringBuilder();string report=null;string screenshot=null;
-        trial=trial||retain;prepare=prepare||trial;
+        retain=retain||reconnectCommit;trial=trial||retain;prepare=prepare||trial;
         try
         {
             var diagram=app.Workspace.CurrentEditor as ISequenceDiagram;
@@ -854,8 +855,8 @@ public static class SequenceSyncRuntime
             }
             var plan=SequenceNotePolicy.Build(current.Document,desired,()=>Guid.NewGuid().ToString());
             var preflight=SequenceStructurePreflight.Check(current.Document,plan);
-            if(retain && (!preflight.Candidate || preflight.ReconnectMessages.Count!=0 || preflight.DeleteExecutions.Count==0))
-                throw new InvalidOperationException("S231: 確定できるのは未使用実行区間の削除だけです。差分を検証してください。");
+            if(retain && !preflight.CanCommit(reconnectCommit))
+                throw new InvalidOperationException(reconnectCommit?"S231: 既存区間への受信接続変更と区間削除だけの差分が必要です。":"S231: 確定できるのは未使用実行区間の削除だけです。差分を検証してください。");
             report="{\"version\":1,\"project\":"+SequencePayload.Q(project.Id)+",\"diagram\":"+SequencePayload.Q(diagram.Id)
                 +",\"current\":"+current.Document.ToJson()+",\"desired\":"+desired.ToJson()+",\"plan\":"+plan.ToJson()
                 +",\"structurePreflight\":"+preflight.ToJson()+",\"expected\":"+plan.Expected.ToJson()+",\"limitations\":"+PumlBuild.Json(current.Limitations.ToArray())
@@ -908,7 +909,7 @@ public static class SequenceSyncRuntime
                         +"\n保存先: "+directory+"\n準備ファイルの手動インポートはしないでください。保存ファイルから適用する機能はありません。";
                     if(trial)
                     {
-                        SequenceExperiment.Summary=SequenceStructureTrial.Run(app,project,diagram,preparation,plan,exported,directory,log,retain);
+                        SequenceExperiment.Summary=SequenceStructureTrial.Run(app,project,diagram,preparation,plan,exported,directory,log,retain,reconnectCommit);
                         screenshot=SequenceExperiment.Summary+"\f会社PC内の試行診断\n"+log.ToString();
                     }
                 }
@@ -977,10 +978,14 @@ public static class SequenceStructureTrial
         foreach(var e in result.Errors)log.AppendLine(e.Kind+": "+e.Message);
         if(result.State!="success" || result.Errors.Any(e=>e.Kind!=UnitImportErrorKind.Info))throw new InvalidOperationException("S230: インポートが失敗または警告を返しました。");
     }
-    public static string Run(IApplication app,IProject project,ISequenceDiagram diagram,SequenceStructurePreparation prepared,SyncPlan plan,string exported,string directory,StringBuilder log,bool retain=false)
+    public static string Run(IApplication app,IProject project,ISequenceDiagram diagram,SequenceStructurePreparation prepared,SyncPlan plan,string exported,string directory,StringBuilder log,bool retain=false,bool reconnectCommit=false)
     {
-        if(retain && (prepared.DeleteIds.Length==0 || plan.Changes.Any(c=>c.Action!="delete" || c.Kind!="execution") || SequenceJson.Parse(prepared.ReconnectJson)["Relations"].Items.Count!=0))
-            throw new InvalidOperationException("S231: 削除以外の差分は確定対象外です。");
+        int reconnectCount=SequenceJson.Parse(prepared.ReconnectJson)["Relations"].Items.Count;
+        if(reconnectCommit && !retain)throw new InvalidOperationException("S231: 確定モードが不正です。");
+        if(retain && (prepared.DeleteIds.Length==0 || (reconnectCommit?reconnectCount==0:reconnectCount!=0)
+            || plan.Changes.Any(c=>!(c.Action=="delete" && c.Kind=="execution") && !(reconnectCommit && c.Action=="update" && c.Kind=="message"))))
+            throw new InvalidOperationException("S231: 確定モードの対象外の差分があります。");
+        string caseId=reconnectCommit?"UPDATE007":retain?"UPDATE006":"UPDATE005";
         var root=diagram.Model as IInteraction;
         var before=Read(root,diagram);string original=before.Signature();
         var expectedReconnect=before.Expected(prepared,plan,false);
@@ -992,10 +997,10 @@ public static class SequenceStructureTrial
             return model.GetEditors().OfType<ISequenceDiagram>().Single(d=>d.Id==editorId);
         };
         string confirmation=retain
-            ? "コピーのプロジェクトで実行してください。\n未使用実行区間を"+prepared.DeleteIds.Length+"件削除し、照合成功時に変更を確定します。\n自動保存はしません。確定後はUndo/Redoと保存再読込を確認してください。実行しますか？"
+            ? "コピーのプロジェクトで実行してください。\n受信接続変更: "+reconnectCount+"件 / 実行区間削除: "+prepared.DeleteIds.Length+"件。照合成功時に変更を確定します。\n自動保存はしません。確定後はUndo/Redoと保存再読込を確認してください。実行しますか？"
             : "コピーのプロジェクトで実行してください。\n受信接続変更と実行区間削除を一時適用し、照合後に必ず取り消します。\n自動保存・変更の確定は行いません。試行しますか？";
         if(!app.Window.UI.ShowConfirmDialog(confirmation,SequenceExperiment.Title))
-            return (retain?"UPDATE006":"UPDATE005")+": キャンセル / 図への変更なし";
+            return caseId+": キャンセル / 図への変更なし";
         if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=editorId
             || Read(root,fresh()).Signature()!=original)
             throw new InvalidOperationException("S230: 確認中に対象の図が変化しました。");
@@ -1027,7 +1032,7 @@ public static class SequenceStructureTrial
             var completion=new SequenceCommitTrial();
             completion.Run(apply,delegate {stage="変更の確定";transaction.Commit();},rollback,verifyRestored);
             foreach(var error in new[]{completion.ApplyError,completion.CommitError,completion.RollbackError,completion.VerifyError})if(error!=null)log.AppendLine(error.ToString());
-            summary="ケース: UPDATE006 / "+(completion.Committed?"削除・SDK照合・変更確定: 成功":"停止段階: "+stage)
+            summary="ケース: "+caseId+" / "+(completion.Committed?"構造更新・SDK照合・変更確定: 成功":"停止段階: "+stage)
                 +(completion.Committed?"\nUndo/Redoと保存再読込を確認してください。":"\n取消API: "+(completion.RollbackReturned?"正常終了":"失敗・未確認")+" / 復元照合: "+(completion.Restored?"一致":"未確認・不一致"))
                 +(!completion.Committed && !completion.Restored?"\n保存せずコピーを開き直してください。":"")
                 +"\nプロジェクトの自動保存: していません\nUndo/Redo・スタイル読戻し・保存再読込: 未検証\nこの結果と診断表示を撮影してください。";
@@ -2943,6 +2948,8 @@ public sealed class SequenceStructurePreflight
     public List<string> ReconnectMessages=new List<string>();
     public List<string> DeleteExecutions=new List<string>();
     public bool Candidate { get { return Reasons.Count==0 && (ReconnectMessages.Count+DeleteExecutions.Count)>0; } }
+    public bool CanCommit(bool reconnect)
+    { return Candidate && DeleteExecutions.Count>0 && (reconnect?ReconnectMessages.Count>0:ReconnectMessages.Count==0); }
     static string[] Link(SequenceElement e,string role)
     { string[] ids;return e.Links.TryGetValue(role,out ids)?ids:new string[0]; }
     static string Comparable(SequenceElement e)
