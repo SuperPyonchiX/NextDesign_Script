@@ -629,6 +629,17 @@ public sealed class ClassSyncPlan
     {
         return string.Join("|",e.Links.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>p.Key+":"+string.Join(",",p.Value.Select(id=>map==null?id:map[id]))));
     }
+    // Report-file text for an added or deleted element. Links spell out both ends so an
+    // unmatched line can be found in the input and in the written-back PlantUML.
+    static string Describe(ClassElement e,ClassDocument doc)
+    {
+        if(e.Kind!="link")return e.Text;
+        var index=doc.Elements.ToDictionary(x=>x.Id);
+        ClassElement from,to;
+        string a=index.TryGetValue(e.Link("from")??"",out from)?from.Attr("alias"):"?";
+        string b=index.TryGetValue(e.Link("to")??"",out to)?to.Attr("alias"):"?";
+        return a+" "+e.Attr("arrow")+" "+b+" : "+e.Text+" ["+e.Attr("toMultiplicity")+"] field="+e.Attr("field");
+    }
     static string Differences(ClassElement before,ClassElement after)
     {
         var keys=new List<string>();
@@ -740,7 +751,7 @@ public sealed class ClassSyncPlan
         foreach(var e in plan.Expected.Elements)
         {
             ClassElement before;
-            if(!old.TryGetValue(e.Id,out before)) {plan.Changes.Add(new ClassChange{Action="add",Id=e.Id,Kind=e.Kind,Line=e.Line,Detail=e.Kind=="link"?"":e.Text});continue;}
+            if(!old.TryGetValue(e.Id,out before)) {plan.Changes.Add(new ClassChange{Action="add",Id=e.Id,Kind=e.Kind,Line=e.Line,Detail=Describe(e,plan.Expected)});continue;}
             if(e.Kind=="diagram" && !desired.HasTitle)e.Text=before.Text;
             string differences=Differences(before,e);
             if(differences.Length>0)plan.Changes.Add(new ClassChange{Action="update",Id=e.Id,Kind=e.Kind,Line=e.Line,Detail=differences});
@@ -768,7 +779,7 @@ public sealed class ClassSyncPlan
                 plan.Changes.Add(new ClassChange{Action="move",Id=id,Kind=e.Kind,Line=e.Line,Detail="order"});
             }
         }
-        foreach(var e in current.Elements.Where(e=>!map.ContainsValue(e.Id)))plan.Changes.Add(new ClassChange{Action="delete",Id=e.Id,Kind=e.Kind,Detail=e.Kind=="link"?"":e.Text});
+        foreach(var e in current.Elements.Where(e=>!map.ContainsValue(e.Id)))plan.Changes.Add(new ClassChange{Action="delete",Id=e.Id,Kind=e.Kind,Detail=Describe(e,current)});
         plan.Expected.Validate();return plan;
     }
 }
