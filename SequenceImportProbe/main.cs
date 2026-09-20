@@ -22,7 +22,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.4";
+    public const string Title = "シーケンス生成実験 / 0.8.5";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -2077,7 +2077,7 @@ public sealed class SequenceDocument
         var active=new Dictionary<string,Stack<SequenceElement>>();int next=0;
         Action<IEnumerable<PumlNode>,string> visit=null;
         visit=(nodes,parent)=>{
-            int order=0;
+            int order=0;SequenceElement previousEvent=null;
             foreach(var n in nodes)
             {
                 if(n.Kind=="activate")
@@ -2088,13 +2088,16 @@ public sealed class SequenceDocument
                     result.Elements.Add(e);
                     if(!active.ContainsKey(n.Left))active[n.Left]=new Stack<SequenceElement>();
                     if(active[n.Left].Count>0)e.Links["outer"]=new[]{active[n.Left].Peek().Id};
-                    active[n.Left].Push(e);continue;
+                    active[n.Left].Push(e);
+                    if(previousEvent!=null && previousEvent.Kind=="message" && previousEvent.Links["receiver"].SequenceEqual(new[]{aliases[n.Left]}))
+                        previousEvent.Links["receiveExecution"]=new[]{e.Id};
+                    continue;
                 }
                 if(n.Kind=="deactivate")
                 {
                     if(!active.ContainsKey(n.Left) || active[n.Left].Count==0)
                         throw new InvalidOperationException("S202: "+n.Line+"行目のdeactivateに対応する開始がありません。");
-                    var e=active[n.Left].Pop();e.Attributes["endParent"]=parent;
+                    var e=active[n.Left].Pop();e.Attributes["endParent"]=parent;previousEvent=null;
                     // Boundaries use neighbouring semantic elements below, not physical source lines.
                     e.Attributes["end"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);continue;
                 }
@@ -2111,7 +2114,7 @@ public sealed class SequenceDocument
                 if(n.Kind=="fragment") {item.Attributes["operator"]=n.Operator;if(n.Operator!="group")item.Text="";}
                 if(n.Kind=="note" || n.Kind=="ref") { item.Links["targets"]=n.Targets.Select(t=>aliases[t]).ToArray();if(n.Kind=="note")item.Attributes["position"]=n.Operator; }
                 if(n.Kind=="destroy" || n.Kind=="create")item.Links["participant"]=new[]{aliases[n.Left]};
-                result.Elements.Add(item);visit(n.Children,item.Id);
+                result.Elements.Add(item);visit(n.Children,item.Id);previousEvent=item;
             }
         };
         visit(parsed.Nodes,"root");
@@ -2197,7 +2200,7 @@ public sealed class SyncPlan
         while(progress)
         {
             progress=false;
-            foreach(var a in desired.Elements.Where(e=>!map.ContainsKey(e.Id)).ToArray())
+            foreach(var a in desired.Elements.Where(e=>e.Kind!="execution" && !map.ContainsKey(e.Id)).ToArray())
             {
                 if(a.Parent==null || !map.ContainsKey(a.Parent))continue;
                 if(a.Kind=="fragment" || a.Kind=="operand")
@@ -2222,7 +2225,7 @@ public sealed class SyncPlan
                 var a=desired.Elements.Where(e=>e.Parent==parent.Id).OrderBy(e=>e.Order).ToArray();
                 var b=current.Elements.Where(e=>e.Parent==map[parent.Id]).OrderBy(e=>e.Order).ToArray();
                 Func<int,int,bool> equal=(i,j)=>map.ContainsKey(a[i].Id)?map[a[i].Id]==b[j].Id:
-                    !used.Contains(b[j].Id) && Comparable(a[i],b[j],map) && desiredKeys[a[i].Id]==currentKeys[b[j].Id];
+                    a[i].Kind!="execution" && !used.Contains(b[j].Id) && Comparable(a[i],b[j],map) && desiredKeys[a[i].Id]==currentKeys[b[j].Id];
                 int[,] length=new int[a.Length+1,b.Length+1];
                 for(int i=a.Length-1;i>=0;i--)for(int j=b.Length-1;j>=0;j--)
                     length[i,j]=equal(i,j)?1+length[i+1,j+1]:Math.Max(length[i+1,j],length[i,j+1]);
@@ -2238,7 +2241,7 @@ public sealed class SyncPlan
         };
         align();
         // Unique exact moves may cross containers; preserve IDs only when neither side is ambiguous.
-        foreach(var a in desired.Elements.Where(e=>!map.ContainsKey(e.Id)).ToArray())
+        foreach(var a in desired.Elements.Where(e=>e.Kind!="execution" && !map.ContainsKey(e.Id)).ToArray())
         {
             var candidates=current.Elements.Where(b=>!used.Contains(b.Id) && Comparable(a,b,map) && desiredKeys[a.Id]==currentKeys[b.Id]).ToArray();
             if(candidates.Length==1 && desired.Elements.Count(b=>!map.ContainsKey(b.Id) && b.Kind==a.Kind && desiredKeys[b.Id]==desiredKeys[a.Id])==1)bind(a,candidates[0]);
@@ -2248,7 +2251,7 @@ public sealed class SyncPlan
         while(progress)
         {
             progress=false;
-            foreach(var a in desired.Elements.Where(e=>!map.ContainsKey(e.Id)).ToArray())
+            foreach(var a in desired.Elements.Where(e=>e.Kind!="execution" && !map.ContainsKey(e.Id)).ToArray())
             {
                 if(a.Parent==null || !map.ContainsKey(a.Parent))continue;
                 var candidates=current.Elements.Where(b=>!used.Contains(b.Id) && b.Parent==map[a.Parent] && b.Kind==a.Kind).ToArray();
@@ -2257,6 +2260,37 @@ public sealed class SyncPlan
             }
         }
         align();
+        Func<SequenceDocument,SequenceElement,bool,string> incident=(doc,execution,input)=>{
+            var tokens=new List<string>();
+            foreach(var message in doc.Elements.Where(e=>e.Kind=="message"))foreach(var role in new[]{"sendExecution","receiveExecution"})
+            {
+                string[] ids;if(!message.Links.TryGetValue(role,out ids) || !ids.Contains(execution.Id))continue;
+                if(input && !map.ContainsKey(message.Id))return null;
+                tokens.Add(role+":"+(input?map[message.Id]:message.Id));
+            }
+            return tokens.Count==0?null:string.Join("|",tokens.OrderBy(v=>v,StringComparer.Ordinal));
+        };
+        foreach(var a in desired.Elements.Where(e=>e.Kind=="execution" && !map.ContainsKey(e.Id)))
+        {
+            string key=incident(desired,a,true);if(key==null)continue;
+            var candidates=current.Elements.Where(b=>b.Kind=="execution" && !used.Contains(b.Id) && Comparable(a,b,map) && incident(current,b,false)==key).ToArray();
+            int inputs=desired.Elements.Count(b=>b.Kind=="execution" && !map.ContainsKey(b.Id) && incident(desired,b,true)==key);
+            if(candidates.Length==1 && inputs==1)bind(a,candidates[0]);
+        }
+        // Unconnected bars still need a no-op identity: require all boundary references to resolve.
+        progress=true;
+        while(progress)
+        {
+            progress=false;
+            foreach(var a in desired.Elements.Where(e=>e.Kind=="execution" && !map.ContainsKey(e.Id)).ToArray())
+            {
+                if(!map.ContainsKey(a.Parent) || a.Links.Values.SelectMany(v=>v).Any(id=>!map.ContainsKey(id)))continue;
+                string key=LinkKey(a,map);
+                var candidates=current.Elements.Where(b=>b.Kind=="execution" && !used.Contains(b.Id) && b.Parent==map[a.Parent] && Properties(a)==Properties(b) && LinkKey(b,null)==key).ToArray();
+                int peers=desired.Elements.Count(b=>b.Kind=="execution" && !map.ContainsKey(b.Id) && b.Parent==a.Parent && b.Links.Values.SelectMany(v=>v).All(map.ContainsKey) && LinkKey(b,map)==key);
+                if(candidates.Length==1 && peers==1) {bind(a,candidates[0]);progress=true;}
+            }
+        }
         foreach(var a in desired.Elements.Where(e=>!map.ContainsKey(e.Id)))
         {
             string id=newId();if(string.IsNullOrEmpty(id) || old.ContainsKey(id) || map.ContainsValue(id))throw new InvalidOperationException("S203: 新IDが重複しています。");

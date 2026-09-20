@@ -129,6 +129,18 @@ public static class SyncTests
         var barPlan=Plan(withBars,withoutBars);
         Require(!barPlan.Changes.Any(c=>(c.Kind=="fragment" || c.Kind=="operand" || c.Kind=="message") && (c.Action=="add" || c.Action=="delete")),"activation difference recreated enclosing structure");
         Require(barPlan.Changes.Any(c=>c.Kind=="execution" && c.Action=="delete"),"activation difference silently suppressed");
+        var triggered=Doc("A -> B : begin\nactivate B\nB --> A : end\ndeactivate B");
+        var triggerMessage=triggered.Elements.Single(e=>e.Kind=="message" && e.Text=="begin");
+        Require(triggerMessage.Links["receiveExecution"].Single()==triggered.Elements.Single(e=>e.Kind=="execution").Id,"post-message activate not bound to receiver");
+        var outgoing=Doc("A -> B : begin\nactivate A\nA -> B : next");
+        Require(!outgoing.Elements.Single(e=>e.Kind=="message" && e.Text=="begin").Links.ContainsKey("receiveExecution"),"sender activation bound to receiver");
+        var bars=Doc("A -> B : first\nactivate B\nB --> A : one\ndeactivate B\nA -> B : second\nactivate B\nB --> A : two\ndeactivate B");Ids(bars);
+        var shifted=bars.Copy();foreach(var bar in shifted.Elements.Where(e=>e.Kind=="execution"))bar.Links["startAfter"]=new string[0];
+        var barsPlan=Plan(bars,shifted);
+        Require(!barsPlan.Changes.Any(c=>c.Kind=="execution" && (c.Action=="add" || c.Action=="delete")),"boundary difference recreated bars with identical incident messages");
+        Require(barsPlan.Changes.Count(c=>c.Kind=="execution" && c.Action=="update")==2,"boundary differences hidden");
+        var unused=Doc("activate A\ndeactivate A");Ids(unused);
+        Require(Plan(unused,Doc("activate A\ndeactivate A")).IsEmpty,"unique empty bar no-op recreated");
         Console.WriteLine("PASS: all-kind semantic plans, mixed changes, ID retention, block edits, ambiguity, moves, source trivia and idempotence");
     }
 }
