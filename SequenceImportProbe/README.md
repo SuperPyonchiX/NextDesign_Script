@@ -1,6 +1,24 @@
-# シーケンス生成実験 0.8.52
+# シーケンス生成実験 0.8.53
 
 Next Design V3.1.9向けのC#スクリプト拡張。PlantUMLからの新規図生成と、対応表を使った既存図のメッセージ本文更新・削除を扱う。本文更新・メッセージ削除・空のアクティベーションバー整理は実機確認済み。
+
+## 0.8.53: オペランドの型は所有側のフィールドから取る
+
+0.8.52 で基本型の解決は通った。診断に `Base types from view definition:` と7件のGUIDが出て、E104 は解消した。
+
+次に止まったのはオペランド（分岐）の型で、エラーがビュー定義の種別名を列挙してくれた。
+
+```
+Constraint, Destruction, ExecutionSpecification, Fragment, Frame, InteractionUse,
+Lifeline, LifelineMapping, MappingTextLabel, Message, MessageEnd, MessageMapping,
+Note, NoteAnchor, SequenceTextLabel, StateInvariant
+```
+
+複合フラグメントは `Fragment`、ref は `InteractionUse`、Note は `Note`、メッセージ端は `MessageEnd` で当たっていた。**オペランドに相当する種別だけ無い。**単独で配置できる要素ではないので、定義に出てこない。
+
+そこで最後の手段を足した。具体型が決まったフラグメントクラスの `Operands` フィールドが指す型を使う。ただし**抽象型でない場合だけ**採用する。抽象型のまま進むのが今回の一連の原因だったので、そこは踏まない。
+
+同じ最後の手段を、フラグメント・ref・Note・メッセージ端にも付けた。優先順位は「図にある同種要素 → ビュー定義 → 所有側フィールドの具体型 → E121で停止」。
 
 ## 0.8.52: 基本型もビュー定義から引く
 

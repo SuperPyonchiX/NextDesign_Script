@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.52";
+    public const string Title = "シーケンス生成実験 / 0.8.53";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -534,6 +534,11 @@ public static class PumlRuntime
     // from nothing has none. The view definition names the classes the editor may place,
     // so read the concrete type from there instead of falling back to the abstract one.
     static IClass Resolve(ISequenceDiagram diagram,string[] definitionTypes,IEnumerable<IModel> observed,string label)
+    { return Resolve(diagram,definitionTypes,observed,null,label); }
+    // Some kinds are not placeable on their own and so are absent from the view
+    // definition; an operand only exists inside a fragment. For those the field on the
+    // concrete owner class carries the type, as long as it is not the abstract one.
+    static IClass Resolve(ISequenceDiagram diagram,string[] definitionTypes,IEnumerable<IModel> observed,IClass declared,string label)
     {
         var seen=observed.Select(m=>m.Metaclass).GroupBy(c=>c.Id).Select(g=>g.First()).ToArray();
         if(seen.Length>1)throw new InvalidOperationException("E121: 見本の"+label+"に複数の型があり、自動選択できません。");
@@ -546,6 +551,7 @@ public static class PumlRuntime
         string available=string.Join(", ",elements.Select(e=>e.Type).Where(name=>!string.IsNullOrEmpty(name))
             .GroupBy(name=>name,StringComparer.OrdinalIgnoreCase).Select(g=>g.Key).OrderBy(name=>name,StringComparer.Ordinal));
         if(defined.Length>1)throw new InvalidOperationException("E121: ビュー定義の"+label+"に複数の型があり、自動選択できません。定義の種別: "+available);
+        if(declared!=null && !declared.IsAbstract)return declared;
         throw new InvalidOperationException("E121: "+label+"の具体型を決められません。"
             +label+"がある図を開いて取り込むか、この種別名を開発側へ伝えてください。定義の種別: "+available);
     }
@@ -587,34 +593,35 @@ public static class PumlRuntime
         }
         if(plan.All().Any(n=>n.Left=="[" || n.Right=="]"))
         {
-            Child(p,source[0],"MessageEnds","MessageEnds","___Interaction_MessageEnd");
-            var c=Resolve(diagram,new[]{"MessageEnd","MessageEnds"},diagram.MessageEnds.Select(e=>e.Model),"メッセージ端");
+            var declaredEnd=Child(p,source[0],"MessageEnds","MessageEnds","___Interaction_MessageEnd");
+            var c=Resolve(diagram,new[]{"MessageEnd","MessageEnds"},diagram.MessageEnds.Select(e=>e.Model),declaredEnd,"メッセージ端");
             p.Types["MessageEnd"]=c.Id; classes.Add(c);
         }
         if(plan.All().Any(n=>n.Kind=="fragment"))
         {
-            Child(p,source[0],"Fragments","CombinedFragments","___Interaction_CombinedFragment");
+            var declaredFragment=Child(p,source[0],"Fragments","CombinedFragments","___Interaction_CombinedFragment");
             var c=Resolve(diagram,new[]{"CombinedFragment","Fragment","CombinedFragments"},
-                diagram.Fragments.Select(f=>f.Model),"複合フラグメント");
+                diagram.Fragments.Select(f=>f.Model),declaredFragment,"複合フラグメント");
             p.Types["CombinedFragment"]=c.Id; classes.Add(c);
-            Child(p,c,"Operands","Operands","___CombinedFragment_InteractionOperand");
+            var declaredOperand=Child(p,c,"Operands","Operands","___CombinedFragment_InteractionOperand");
             var operand=Resolve(diagram,new[]{"InteractionOperand","Operand","Operands"},
-                diagram.Fragments.Where(f=>f.Model.Metaclass.Id==c.Id).SelectMany(f=>f.Operands).Select(o=>o.Model),"分岐");
+                diagram.Fragments.Where(f=>f.Model.Metaclass.Id==c.Id).SelectMany(f=>f.Operands).Select(o=>o.Model),
+                declaredOperand,"分岐");
             p.Types["InteractionOperand"]=operand.Id; classes.Add(operand);
             foreach(var op in plan.All().Where(n=>n.Kind=="fragment").Select(n=>n.Operator).Distinct())p.Operators[op]=Literal(c,"Operator",op);
         }
         if(plan.All().Any(n=>n.Kind=="ref"))
         {
-            Child(p,source[0],"InteractionUses","InteractionUses","___Interaction_InteractionUse");
+            var declaredUse=Child(p,source[0],"InteractionUses","InteractionUses","___Interaction_InteractionUse");
             var c=Resolve(diagram,new[]{"InteractionUse","InteractionUses","Ref"},
-                diagram.InteractionUses.Select(f=>f.Model),"相互作用の利用");
+                diagram.InteractionUses.Select(f=>f.Model),declaredUse,"相互作用の利用");
             p.Types["InteractionUse"]=c.Id; classes.Add(c);
         }
         if(plan.All().Any(n=>n.Kind=="note"))
         {
-            Child(p,source[0],"Notes","Notes","___Interaction_InteractionNote");
+            var declaredNote=Child(p,source[0],"Notes","Notes","___Interaction_InteractionNote");
             var c=Resolve(diagram,new[]{"InteractionNote","Note","Notes"},
-                diagram.Notes.Select(n=>n.Model),"Note");
+                diagram.Notes.Select(n=>n.Model),declaredNote,"Note");
             p.Types["InteractionNote"]=c.Id; classes.Add(c);
             var f=Field(c,"Body") ?? Field(c,"Text") ?? Field(c,"Name");
             if(f==null)throw new InvalidOperationException("E121: Note本文フィールドを取得できません。");
