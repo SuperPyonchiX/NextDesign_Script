@@ -138,18 +138,19 @@ public static class PayloadTest {
    if(SyncPlan.Build(addBackPlan.Expected,batchAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("message addition semantic plan is not idempotent");
 
-   // An empty alt block that no activation bar crosses, removed as a whole. Bars that
-   // span a fragment boundary are not importable, so the sample closes them first.
+   // An alt block shaped like the fragment sample the product is known to import:
+   // messages inside, no activation bars anywhere.
    var fragmentBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
-   var fragmentPlan=SyncPlan.Build(fragmentBefore,batchAfter,()=>Guid.NewGuid().ToString());
+   var fragmentAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-after.puml")));
+   var fragmentPlan=SyncPlan.Build(fragmentBefore,fragmentAfter,()=>Guid.NewGuid().ToString());
    var fragmentGate=SequenceStructurePreflight.Check(fragmentBefore,fragmentPlan);
    if(!fragmentGate.Candidate || fragmentGate.DeleteFragments.Count!=1 || fragmentGate.DeleteOperands.Count!=1
-       || fragmentGate.Targets!=2)
-       throw new Exception("fragment sample must remove one fragment and its operand: "
+       || fragmentGate.DeleteMessages.Count!=1 || fragmentGate.Targets!=3)
+       throw new Exception("fragment sample must remove one fragment, its operand and the message inside: "
            +fragmentPlan.ToJson()+fragmentGate.ToJson());
    if(!fragmentGate.CanCommit(true) || fragmentGate.CanCommit(false))
        throw new Exception("fragment removal did not reach exactly the receiver-change commit mode");
-   if(SyncPlan.Build(fragmentPlan.Expected,batchAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
+   if(SyncPlan.Build(fragmentPlan.Expected,fragmentAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("fragment semantic plan is not idempotent");
 
    // Dropping the frame but keeping something inside leaves it nowhere to live.
@@ -159,7 +160,7 @@ public static class PayloadTest {
    var inner=occupied.Elements.First(e=>e.Kind=="message").Copy();
    inner.Id="inner-message";inner.Parent=operand.Id;occupied.Elements.Add(inner);
    var kept=occupied.Copy();kept.Elements.RemoveAll(e=>e.Id==frame.Id || e.Id==operand.Id);
-   kept.Elements.Single(e=>e.Id==inner.Id).Parent=occupied.Elements.Single(x=>x.Kind=="interaction").Id;
+   foreach(var e in kept.Elements)if(e.Parent==operand.Id)e.Parent=occupied.Elements.Single(x=>x.Kind=="interaction").Id;
    foreach(var e in kept.Elements)foreach(var key in e.Links.Keys.ToArray())
        e.Links[key]=e.Links[key].Where(id=>id!=frame.Id && id!=operand.Id).ToArray();
    var keptPlan=new SyncPlan{Expected=kept};

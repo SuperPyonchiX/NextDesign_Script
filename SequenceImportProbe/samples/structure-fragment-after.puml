@@ -3,7 +3,4 @@ participant A
 participant B
 A -> B : first()
 B --> A : firstDone()
-alt ready
-  A -> B : guarded()
-end
 @enduml
