@@ -5,6 +5,10 @@
     { bool rejected=false;try{action();}catch(InvalidOperationException){rejected=true;}Require(rejected,"invalid snapshot accepted"); }
     public static void Run()
     {
+        var bars=new[]{"sender","receiver","shared","empty","already-empty"};
+        Require(SequenceActivationCleanup.Unused(bars,new[]{"sender","receiver","shared","shared",null}).SequenceEqual(new[]{"already-empty","empty"}),"connected incoming/outgoing/shared bars deleted");
+        Require(SequenceActivationCleanup.Unused(bars,new[]{"shared"}).SequenceEqual(new[]{"already-empty","empty","receiver","sender"}),"last message deletion does not clean bars");
+        Require(SequenceActivationCleanup.Unused(new[]{"shared"},new[]{"shared"}).Length==0,"cleanup repeat is not no-op");
         var messages=Enumerable.Range(0,20).Select(i=>PumlBuild.Obj("Id","shape"+i,"ModelId","message"+i,"SourceY",i*70.5,"TargetY",i*70.5,
             "Style",PumlBuild.Obj("Theme",false,"Unknown",new object[]{"custom",null,5}),"FutureProperty",PumlBuild.Obj("nested",true))).ToArray();
         var editor=PumlBuild.Obj("Id","editor","ModelId","root","ViewType","SequenceDiagram",
@@ -13,6 +17,15 @@
             "Notes",new[]{PumlBuild.Obj("Id","note-shape","ModelId","note","X",12.5,"Style",PumlBuild.Obj("Color","blue"))});
         var unit=PumlBuild.Obj("Type","Model","SchemaVersion","11.1","Editors",new[]{editor});
         var before=SequenceEditorDocument.Read(PumlBuild.Json(unit),"root","editor");
+        var withBars=SequenceEditorDocument.Read(before.ImportJson(),"root","editor");
+        withBars.Editor.Properties["ExecutionSpecifications"]=SequenceJson.Parse(PumlBuild.Json(new[]{
+            PumlBuild.Obj("Id","empty-shape","ModelId","empty","X",1,"Length",40),
+            PumlBuild.Obj("Id","shared-shape","ModelId","shared","X",2,"Length",50)}));
+        var cleanBars=withBars.Without(new[]{"empty","message0"});
+        Require(cleanBars.Editor["ExecutionSpecifications"].Items.Count==1 && SequenceEditorDocument.Value(cleanBars.Editor["ExecutionSpecifications"].Items[0],"ModelId")=="shared","empty bar not removed or shared bar removed");
+        Require(cleanBars.Messages().Length==19,"combined cleanup missed message");
+        Require(cleanBars.Editor["ExecutionSpecifications"].Items[0].ToJsonString()==withBars.Editor["ExecutionSpecifications"].Items[1].ToJsonString(),"retained bar attributes changed");
+        Require(withBars.Editor["ExecutionSpecifications"].Items.Count==2,"cleanup mutated baseline");
         string original=before.Editor.ToJsonString();
         var altered=SequenceEditorDocument.Read(before.ImportJson(),"root","editor");
         altered.Messages()[0].Properties["SourceY"]=SequenceJson.Parse("0.000001");

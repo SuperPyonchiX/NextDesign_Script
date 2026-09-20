@@ -21,7 +21,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.7.3";
+    public const string Title = "シーケンス生成実験 / 0.7.4";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -601,7 +601,7 @@ public static class SequenceMappedUpdate
         foreach(var n in diagram.Notes.OrderBy(n=>n.Id))rows.Add(n.Id+":"+n.Text);
         foreach(var u in diagram.InteractionUses.OrderBy(u=>u.Id))rows.Add(u.Id+":"+u.Text);
         foreach(var l in diagram.Lifelines.OrderBy(l=>l.Id))rows.Add(l.Id+":"+Number(l.TimelineLength));
-        foreach(var e in diagram.ExecutionSpecifications.OrderBy(e=>e.Id))rows.Add(e.Id+":"+Number(e.Length));
+        foreach(var e in diagram.ExecutionSpecifications.Where(e=>!removed.Contains(e.ModelId)).OrderBy(e=>e.Id))rows.Add(e.Id+":"+Number(e.Length));
         return SequenceMapFile.Hash(string.Join("\n",rows));
     }
     static string ReadInput(IApplication app,string title)
@@ -740,36 +740,46 @@ public static class SequenceMappedUpdate
                 var merge=SequenceNameMerge.Resolve(requested,currentNames);
                 var edits=merge.Writes;
                 var unmapped=SequenceExportMatch.Unmapped(root.Messages.Select(m=>m.Id).Concat(diagram.Messages.Select(m=>m.Model.Id)),retainedIds);
-                string coverage="\nPlantUMLにないメッセージの削除: "+unmapped.Length+"件";
+                var remainingMessages=Tree(root).OfType<IMessage>().Where(m=>!unmapped.Contains(m.Id)).ToArray();
+                var usedPorts=remainingMessages.SelectMany(m=>new[]{m.SendPort,m.ReceivePort}).OfType<IModel>().Select(p=>p.Id)
+                    .Concat(diagram.Messages.Where(m=>!unmapped.Contains(m.ModelId)).SelectMany(m=>new[]{m.SendPort,m.ReceivePort}).Where(p=>p!=null).Select(p=>p.ModelId)).ToArray();
+                // Initialization/destruction executions and owners of child models have semantics beyond their messages.
+                var candidates=Tree(root).OfType<IExecutionSpecification>().Where(e=>!e.IsInitialization && !e.IsDestruction && !e.GetChildren().Any()).ToArray();
+                var protectedByRelations=candidates.Where(e=>e.GetRelationsWhere((r,f)=>true).Any(r=>
+                    (r.Source is IMessage && !unmapped.Contains(r.Source.Id)) || (r.Target is IMessage && !unmapped.Contains(r.Target.Id)))).Select(e=>e.Id);
+                var emptyBars=SequenceActivationCleanup.Unused(candidates.Select(e=>e.Id),usedPorts.Concat(protectedByRelations));
+                var removedIds=unmapped.Concat(emptyBars).ToArray();
+                detail.AppendLine("Unused activation bars="+string.Join(",",emptyBars));
+                string coverage="\nPlantUMLにないメッセージの削除: "+unmapped.Length+"件\n接続メッセージのないアクティベーションバーの削除: "+emptyBars.Length+"件";
                 detail.AppendLine("Unmapped messages="+string.Join(",",unmapped));
                 detail.AppendLine("Name merge: requested="+requested.Count+", writes="+edits.Count+", PlantUML priority="+merge.Conflicts+", already matched="+merge.AlreadyMatched);
-                if(edits.Count==0 && unmapped.Length==0 && plan.Retained.Length==map.MessageIds.Length && requested.All(e=>e.Before==e.After))
+                if(edits.Count==0 && removedIds.Length==0 && plan.Retained.Length==map.MessageIds.Length && requested.All(e=>e.Before==e.After))
                 {
-                    SequenceExperiment.Summary="対応付け済みメッセージの本文差分なし。更新APIは呼び出していません。"+coverage+"\n追加・移動・実行区間等の同期は未対応です。\n図・PlantUML・対応表は変更していません。";
+                    SequenceExperiment.Summary="対応付け済みメッセージの本文差分なし。更新APIは呼び出していません。"+coverage+"\n追加・移動・実行区間の一般同期は未対応です。\n図・PlantUML・対応表は変更していません。";
                     detail.AppendLine("No-op; no transaction or model write.");
                 }
                 else
                 {
                     var names=edits.ToDictionary(e=>map.MessageIds[e.Index],e=>e.After);
-                    var removed=new HashSet<string>(unmapped);
-                    var deletionModels=unmapped.Select(id=>project.GetModelById(id) as IMessage).ToArray();
-                    if(deletionModels.Any(m=>m==null || m.IsDeleted || !m.IsEditable || m.Interaction==null || m.Interaction.Id!=root.Id || m.GetChildren().Any()))
-                        throw new InvalidOperationException("E181: 削除対象のメッセージが編集不可・別図所属・子要素ありのいずれかです。");
-                    if(root.GetEditors().OfType<ISequenceDiagram>().Where(d=>d.Id!=diagram.Id).Any(d=>d.Messages.Any(m=>removed.Contains(m.ModelId))))
+                    var removed=new HashSet<string>(removedIds);
+                    var deletionModels=removedIds.Select(id=>project.GetModelById(id)).ToArray();
+                    if(deletionModels.Any(m=>m==null || m.IsDeleted || !m.IsEditable || !Tree(root).Any(n=>n.Id==m.Id) || m.GetChildren().Any()))
+                        throw new InvalidOperationException("E181: 削除対象が編集不可・別図所属・子要素ありのいずれかです。");
+                    if(root.GetEditors().OfType<ISequenceDiagram>().Where(d=>d.Id!=diagram.Id).Any(d=>d.Shapes.Any(m=>removed.Contains(m.ModelId))))
                         throw new InvalidOperationException("E181: 削除対象が別のシーケンス図にも表示されています。この版は複数図の同時削除に未対応です。");
                     foreach(var id in names.Keys)if(!project.GetModelById(id).IsEditable)throw new InvalidOperationException("E169: 更新対象のメッセージを編集できません。");
                     // Relations incident to deleted messages may disappear; their other endpoint models must survive.
                     var external=deletionModels.SelectMany(m=>m.GetRelationsWhere((r,f)=>true)).SelectMany(r=>new[]{r.Source,r.Target})
                         .Where(m=>!removed.Contains(m.Id)).GroupBy(m=>m.Id).Select(g=>g.First()).ToDictionary(m=>m.Id,m=>m.Metaclass.Id+":"+m.Name);
                     SequenceEditorDocument editorBefore=null,editorAfter=null;
-                    if(unmapped.Length>0)
+                    if(removedIds.Length>0)
                     {
                         editorBefore=SequenceEditorCapture.Read(project,root,diagram,detail);
-                        editorAfter=editorBefore.Without(unmapped);
+                        editorAfter=editorBefore.Without(removedIds);
                     }
                     string preview=string.Join("\n",edits.Take(10).Select(e=>e.Line+"行目: "+e.Before+" → "+e.After));
                     preview+="\n"+string.Join("\n",deletionModels.Take(10).Select(m=>"削除: "+m.Name));
-                    if(!app.Window.UI.ShowConfirmDialog("図「"+root.Name+"」をPlantUMLに合わせます。\n本文更新: "+edits.Count+"件 / メッセージ削除: "+unmapped.Length+"件\n"+preview+"\n削除対象につながる関連も削除します。残す要素のID・配置を照合し、表示設定は元のデータを引き継ぎます。プロジェクトは自動保存しません。実行しますか？",SequenceExperiment.Title))throw new OperationCanceledException();
+                    if(!app.Window.UI.ShowConfirmDialog("図「"+root.Name+"」をPlantUMLに合わせます。\n本文更新: "+edits.Count+"件 / メッセージ削除: "+unmapped.Length+"件 / 空のバー削除: "+emptyBars.Length+"件\n"+preview+"\n削除対象につながる関連も削除します。残す要素のID・配置を照合し、表示設定は元のデータを引き継ぎます。プロジェクトは自動保存しません。実行しますか？",SequenceExperiment.Title))throw new OperationCanceledException();
                     CheckContext(app,project,root,diagram,original);
                     if(SequenceMapFile.Read(path).Serialize()!=map.Serialize())throw new InvalidOperationException("E175: 確認中に対応表が変更されました。");
                     if(editorBefore!=null && SequenceEditorCapture.Read(project,root,diagram,detail).Fingerprint()!=editorBefore.Fingerprint())
@@ -780,7 +790,7 @@ public static class SequenceMappedUpdate
                     var next=new SequenceMapFile{Project=map.Project,Root=map.Root,Editor=map.Editor,Source=source,Fingerprint=expected,MessageIds=retainedIds};
                     SequenceMapFile.WriteNew(pending,next);prepared=true;
                     detail.AppendLine("Prepared map: "+pending);
-                    if(edits.Count>0 || unmapped.Length>0)
+                    if(edits.Count>0 || removedIds.Length>0)
                     {
                         transaction=project.BeginUndoTransaction(false);
                         if(transaction==null)throw new InvalidOperationException("E174: トランザクションを開始できませんでした。");
@@ -791,10 +801,10 @@ public static class SequenceMappedUpdate
                         project.GetModelById(id).SetField("Name",edit.After);
                         detail.AppendLine("Name updated: "+id);
                     }
-                    if(unmapped.Length>0)
+                    if(removedIds.Length>0)
                     {
                         using(project.SuspendModelVerification())foreach(var message in deletionModels)message.Delete();
-                        foreach(string id in unmapped)
+                        foreach(string id in removedIds)
                         {
                             var model=project.GetModelById(id);
                             if((model!=null && !model.IsDeleted) || root.Messages.Any(m=>m.Id==id))throw new InvalidOperationException("E182: 削除対象のモデルが残っています。");
@@ -813,10 +823,10 @@ public static class SequenceMappedUpdate
                         if(!new HashSet<string>(editorAfter.Shapes().Select(n=>SequenceEditorDocument.Value(n,"Id")+":"+SequenceEditorDocument.Value(n,"ModelId")))
                             .SetEquals(fresh.Shapes.Select(n=>n.Id+":"+n.ModelId)))
                             throw new InvalidOperationException("E183: 削除後の図形IDが期待値と一致しません。");
-                        foreach(string id in unmapped)
+                        foreach(string id in removedIds)
                         {
                             var deleted=project.GetModelById(id);
-                            if((deleted!=null && !deleted.IsDeleted) || fresh.Messages.Any(m=>m.ModelId==id))
+                            if((deleted!=null && !deleted.IsDeleted) || fresh.Shapes.Any(m=>m.ModelId==id))
                                 throw new InvalidOperationException("E183: 削除対象のモデルまたは図形が再出現しました。");
                         }
                         detail.AppendLine("Deletion readback: live model/shape removal verified; serialized styles preserved in import payload, runtime style readback unavailable.");
@@ -839,7 +849,7 @@ public static class SequenceMappedUpdate
                     if(SequenceMapFile.Read(path).Serialize()!=map.Serialize())throw new InvalidOperationException("E175: 更新中に対応表が変更されました。");
                     if(transaction!=null)completion.Commit(delegate{transaction.Commit();});committed=true;
                     File.Replace(pending,path,path+".bak");pending=null;
-                    SequenceExperiment.Summary="メッセージ本文の差分更新: "+edits.Count+"件\n図側の本文変更をPlantUMLに合わせた対象: "+merge.Conflicts+"件 / 本文一致: "+merge.AlreadyMatched+"件\nID・関連・配置の保持照合: 一致"+coverage+"\n追加・移動・実行区間等の同期: 未対応\n対応表: 更新済み（前回分は .bak）\nプロジェクト保存: していません\n保存後のGit差分・Undo/Redo・再読込は別途確認してください。";
+                    SequenceExperiment.Summary="メッセージ本文の差分更新: "+edits.Count+"件\n図側の本文変更をPlantUMLに合わせた対象: "+merge.Conflicts+"件 / 本文一致: "+merge.AlreadyMatched+"件\nID・関連・配置の保持照合: 一致"+coverage+"\n追加・移動・実行区間の一般同期: 未対応\n対応表: 更新済み（前回分は .bak）\nプロジェクト保存: していません\n保存後のGit差分・Undo/Redo・再読込は別途確認してください。";
                 }
             }
         }
@@ -1756,8 +1766,13 @@ public class SequenceEditorDocument
     {
         var ids=new HashSet<string>(deleted);
         var copy=new SequenceEditorDocument{Schema=Schema,Editor=SequenceJson.Parse(Editor.ToJsonString())};
-        var messages=copy.Editor["Messages"];
-        for(int i=messages.Items.Count-1;i>=0;i--)if(ids.Contains(Value(messages.Items[i],"ModelId")))messages.Items.RemoveAt(i);
+        foreach(string collection in new[]{"Messages","ExecutionSpecifications"})
+        {
+            var shapes=copy.Editor[collection];
+            if(shapes==null)continue;
+            if(shapes.Items==null)throw new InvalidOperationException("E180: 図形配列の形式が不正です: "+collection);
+            for(int i=shapes.Items.Count-1;i>=0;i--)if(ids.Contains(Value(shapes.Items[i],"ModelId")))shapes.Items.RemoveAt(i);
+        }
         return copy;
     }
     public string ImportJson()
@@ -1778,4 +1793,13 @@ public class SequenceEditorDocument
         return raw;
     }
     public string Fingerprint() { return SequenceMapFile.Hash(Canonical(Editor)); }
+}
+
+public static class SequenceActivationCleanup
+{
+    public static string[] Unused(IEnumerable<string> executions,IEnumerable<string> retainedMessagePorts)
+    {
+        var used=new HashSet<string>(retainedMessagePorts.Where(id=>!string.IsNullOrEmpty(id)));
+        return executions.Where(id=>!used.Contains(id)).Distinct().OrderBy(id=>id,StringComparer.Ordinal).ToArray();
+    }
 }
