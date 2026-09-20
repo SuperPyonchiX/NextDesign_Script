@@ -1,4 +1,4 @@
-public static class SyncTests
+﻿public static class SyncTests
 {
     static int serial;
     static void Require(bool condition,string message) { if(!condition)throw new Exception(message); }
@@ -166,6 +166,18 @@ public static class SyncTests
         Require(renamedNote.Changes.Any(c=>c.Kind=="note" && c.Action=="update"),"note text edit hidden");
         Require(renamedNote.Expected.Elements.Single(e=>e.Kind=="note").Links["targets"].SequenceEqual(linkedNote.Elements.Single(e=>e.Kind=="note").Links["targets"]),"existing anchor replaced by placement hint");
         Require(SequenceNotePolicy.Build(Doc(""),Doc("note over B : added"),()=>"new-note").Expected.Elements.Single(e=>e.Kind=="note").Links["targets"].Length==0,"new note acquired anchor");
+        var noteBody="heading\n  detail\n\nnext";
+        var sourceNote=Doc("note over A : original");Ids(sourceNote);
+        sourceNote.Elements.Single(e=>e.Kind=="note").Text=noteBody;
+        var exportedNote=Doc("note over A\n  heading\n    detail\n\n  next\nend note");
+        Require(SequenceNotePolicy.Build(sourceNote,exportedNote,()=>"new-note").IsEmpty,"export indentation created note update");
+        Require(Doc("opt scope\n  note over A\n    heading\n      detail\n\n    next\n  end note\nend").Elements.Single(e=>e.Kind=="note").Text==noteBody,"nested note indentation or paragraphs lost");
+        Require(Doc("note across\n  heading\n    detail\n\n  next\nend note").Elements.Single(e=>e.Kind=="note").Text==noteBody,"across block indentation differs");
+        Require(Doc("note over A\nheading\n  detail\nend note").Elements.Single(e=>e.Kind=="note").Text=="heading\n  detail","unformatted note indentation lost");
+        Require(Doc("note over A\n    intentional\nend note").Elements.Single(e=>e.Kind=="note").Text=="  intentional","intentional leading indent collapsed");
+        var editedNote=Doc("note over A\n  heading\n      detail\n\n  next\nend note");
+        Require(SequenceNotePolicy.Build(sourceNote,editedNote,()=>"new-note").Changes.Any(c=>c.Kind=="note" && c.Action=="update"),"relative whitespace edit hidden");
+        Require(SequenceNotePolicy.Build(sourceNote,Doc("note over A\n  heading\n    detail\n  next\nend note"),()=>"new-note").Changes.Any(c=>c.Kind=="note" && c.Action=="update"),"paragraph deletion hidden");
         Console.WriteLine("PASS: all-kind semantic plans, mixed changes, ID retention, block edits, ambiguity, moves, source trivia and idempotence");
     }
 }

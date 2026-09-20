@@ -22,7 +22,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.10";
+    public const string Title = "シーケンス生成実験 / 0.8.11";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -1240,6 +1240,16 @@ public class PumlNode
 }
 public class PumlPlan
 {
+    // The exporter prefixes note body lines with the opening indentation plus
+    // one two-space level. Remove only that complete prefix, never common body
+    // whitespace: intentional relative indentation and blank lines are content.
+    private static string NoteBody(List<string> body,string opening)
+    {
+        string prefix=new string(opening.TakeWhile(c=>c==' ' || c=='\t').ToArray())+"  ";
+        bool formatted=body.Any(s=>s.Length>0) && body.Where(s=>s.Length>0).All(s=>s.StartsWith(prefix,StringComparison.Ordinal));
+        return string.Join("\n",body.Select(s=>formatted && s.Length>0?s.Substring(prefix.Length):s));
+    }
+
     public string Title = "PlantUML";
     public int StyleDirectives;
     public List<int> IgnoredDestroyedActivities=new List<int>();
@@ -1319,7 +1329,7 @@ public class PumlPlan
                 {
                     var body=new List<string>();bool closed=false;
                     while(++i<lines.Length) {if(lines[i].Trim()=="end note") {closed=true;break;}body.Add(lines[i]);}
-                    if(!closed)throw Error(line,"end noteが不足しています。");n.Text=string.Join("\n",body);
+                    if(!closed)throw Error(line,"end noteが不足しています。");n.Text=NoteBody(body,lines[line-1]);
                 }
                 n.Text=n.Text.Replace("\\n","\n");lists.Peek().Add(n);continue;
             }
@@ -1334,7 +1344,7 @@ public class PumlPlan
                 {
                     var body = new List<string>(); bool closed = false;
                     while (++i < lines.Length) { if (lines[i].Trim()=="end "+n.Kind) { closed=true; break; } body.Add(lines[i]); }
-                    if (!closed) throw Error(line,"end "+n.Kind+"が不足しています。"); n.Text=string.Join("\n",body);
+                    if (!closed) throw Error(line,"end "+n.Kind+"が不足しています。"); n.Text=n.Kind=="note"?NoteBody(body,lines[line-1]):string.Join("\n",body);
                 }
                 n.Text=n.Text.Replace("\\n","\n"); lists.Peek().Add(n); continue;
             }
