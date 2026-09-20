@@ -353,7 +353,9 @@ public static class SequenceStructureTrial
             throw new InvalidOperationException("S231: 確定モードの対象外の差分があります。");
         string caseId=reconnectCommit?"UPDATE007":retain?"UPDATE006":"UPDATE005";
         var root=diagram.Model as IInteraction;
-        var newShapes=prepared.AddedExecutions.Select(a=>a.ShapeId).ToArray();
+        var newShapes=prepared.AddedExecutions.Select(a=>a.ShapeId)
+            .Concat(prepared.AddedParticipants.Select(a=>a.ShapeId)).ToArray();
+        var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds).ToArray();
         var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
         var expectedReconnect=before.Expected(prepared,plan,false);
         var expectedFinal=before.Expected(prepared,plan,true);
@@ -383,17 +385,20 @@ public static class SequenceStructureTrial
         if(transaction==null)throw new InvalidOperationException("S230: トランザクションを開始できません。");
         Action apply=delegate {
             stage=prepared.AddedExecutions.Length>0?"実行区間の追加と受信接続の変更":"受信接続の変更";
+            foreach(var lane in prepared.AddedParticipants)
+                log.AppendLine("add participant payload: model="+lane.ModelId+" shape="+lane.ShapeId+" X="+lane.X);
             foreach(var entry in prepared.AddedExecutions)
                 log.AppendLine("add execution payload: model="+entry.ModelId+" shape="+entry.ShapeId
                     +" geometry(X,Y,Length)="+entry.Geometry+" relation order="+PumlBuild.Json(entry.RelationSources));
             Import(project,prepared.ReconnectJson,log);
             Verify(expectedReconnect,Rounded(project,rootId,fresh,newShapes),"接続変更後",log);
             log.AppendLine("receiver reconnection count: "+prepared.ReconnectCount
-                +"; added executions: "+prepared.AddedExecutions.Length+"; SDK state verified");
-            stage="不要実行区間の削除";
-            using(project.SuspendModelVerification())foreach(string id in prepared.DeleteIds)project.GetModelById(id).Delete();
+                +"; added executions: "+prepared.AddedExecutions.Length
+                +"; added participants: "+prepared.AddedParticipants.Length+"; SDK state verified");
+            stage="不要な要素の削除";
+            using(project.SuspendModelVerification())foreach(string id in removedModels)project.GetModelById(id).Delete();
             stage="削除後のエディタ反映";Import(project,prepared.EditorAfterDeleteJson,log);
-            foreach(string id in prepared.DeleteIds){var m=project.GetModelById(id);if(m!=null && !m.IsDeleted)throw new InvalidOperationException("S230: 削除対象が残っています。");}
+            foreach(string id in removedModels){var m=project.GetModelById(id);if(m!=null && !m.IsDeleted)throw new InvalidOperationException("S230: 削除対象が残っています。");}
             var afterDelete=Rounded(project,rootId,fresh,newShapes);
             if(deletionOwners.Length>0)
                 log.AppendLine("\f所有関連の順序 / 削除段階\n削除前(*が消える関連)\n"+before.OrderReport(deletionOwners,prepared)
@@ -453,7 +458,8 @@ public static class SequenceStructureTrial
                 +(trial.Restored?"":"\n保存せずコピーを開き直してください。")+"\nこの結果と診断表示を撮影してください。";
         }
         summary+="\n今回の対象: 受信接続変更 "+reconnectCount+"件 / 実行区間削除 "+prepared.DeleteIds.Length+"件"
-            +" / 実行区間追加 "+prepared.AddedExecutions.Length+"件";
+            +" / 実行区間追加 "+prepared.AddedExecutions.Length+"件"
+            +" / 参加者追加 "+prepared.AddedParticipants.Length+"件 / 参加者削除 "+prepared.DeleteParticipantIds.Length+"件";
         log.AppendLine(summary);
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
         catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}

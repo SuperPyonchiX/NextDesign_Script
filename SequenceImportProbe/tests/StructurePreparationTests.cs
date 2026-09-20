@@ -208,8 +208,80 @@ public static class StructurePreparationTests
         Require(expected.Ports[ids[6]][1]==bar,"receive port not moved onto the new bar");
         Require(state.Signature()==before,"expected state mutated the snapshot");
     }
+    // A lane the input declares and the diagram does not have. It goes at the right end,
+    // one lane spacing past the current rightmost lane, so nothing existing moves.
+    static void AddedParticipant()
+    {
+        var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
+        var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
+        string editorId=raw["Editors"].Items.Single()["Id"].StringValue();
+        var current=new SequenceDocument();
+        current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
+        current.Elements.Add(new SequenceElement{Id=ids[2],Kind="participant",Parent=ids[0],Order=0,Text="A"});
+        current.Elements.Add(new SequenceElement{Id=ids[3],Kind="participant",Parent=ids[0],Order=1,Text="B"});
+
+        string lane="added-lane";
+        var desired=current.Copy();
+        desired.Elements.Add(new SequenceElement{Id=lane,Kind="participant",Parent=ids[0],Order=2,Text="C"});
+        var plan=new SyncPlan{Expected=desired};
+        plan.Changes.Add(new SequenceChange{Action="add",Kind="participant",Id=lane,Line=4});
+
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate && gate.AddParticipants.SequenceEqual(new[]{lane}),"added lane was not a candidate");
+        Require(!gate.CanCommit(true) && !gate.CanCommit(false),"a participant change reached a commit mode");
+
+        var middle=current.Copy();
+        middle.Elements.Add(new SequenceElement{Id=lane,Kind="participant",Parent=ids[0],Order=-1,Text="C"});
+        var middlePlan=new SyncPlan{Expected=middle};middlePlan.Changes.AddRange(plan.Changes);
+        Require(SequenceStructurePreflight.Check(current,middlePlan).AddParticipants.Count==0,"a lane inserted before existing ones was accepted");
+
+        var used=desired.Copy();
+        var msg=new SequenceElement{Id="msg",Kind="message",Parent=ids[0],Text="call"};
+        msg.Links["sender"]=new[]{ids[2]};msg.Links["receiver"]=new[]{lane};used.Elements.Add(msg);
+        var usedPlan=new SyncPlan{Expected=used};usedPlan.Changes.AddRange(plan.Changes);
+        Require(SequenceStructurePreflight.Check(current,usedPlan).AddParticipants.Count==0,"a lane a message already uses was accepted");
+
+        var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan);
+        Require(package.AddedParticipants.Length==1,"lane was not prepared");
+        var added=package.AddedParticipants[0];
+        var patch=SequenceJson.Parse(package.ReconnectJson);
+        var entity=patch["Entities"].Items.Single(e=>e["Id"].StringValue()==lane);
+        Require(entity["MetamodelId"].StringValue()=="laneB" && entity["Name"].StringValue()=="C","new lane did not clone the sample type or take its name");
+        var link=patch["Relations"].Items.Single(r=>r["Id"].StringValue()==added.RelationId);
+        Require(link["TargetId"].StringValue()==lane && link["SourceIndex"]==null,"lane ownership relation is wrong");
+        var laneShapes=patch["Editors"].Items.Single()["Lifelines"].Items;
+        var created=laneShapes.Single(sh=>sh["ModelId"].StringValue()==lane);
+        // Sample lanes sit at X=20 and X=220 with width 100, so the new one lands at 460.
+        Require(laneShapes.Count==3 && created["X"].Raw=="460" && created["Width"].Raw=="100","new lane was not placed one spacing to the right");
+
+        var state=new SequenceTrialState();
+        foreach(var e in raw["Entities"].Items)state.Models[e["Id"].StringValue()]=e.ToJsonString();
+        foreach(var r in raw["Relations"].Items)
+        {
+            string id=r["Id"].StringValue();
+            state.Relations[id]=new[]{r["SourceId"].StringValue(),r["TargetId"].StringValue(),r["SourceIndex"].Raw,r["TargetIndex"].Raw};
+            state.RelationFields[id]=r["MetamodelId"].StringValue();
+        }
+        foreach(var sh in SequenceEditorDocument.Read(raw.ToJsonString(),ids[0],editorId).Shapes())
+        {string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        state.Shapes[added.TemplateShapeId]=PumlBuild.Json(new[]{"220","20","100","40"})+"300";
+        string before=state.Signature();
+        var expected=state.Expected(package,plan,false);
+        Require(expected.Models[lane]==PumlBuild.Json(new[]{"laneB","C",ids[0],"False"}),"new lane not in the expected state");
+        Require(expected.Relations[added.RelationId].SequenceEqual(new[]{ids[0],lane,"2","0"}),"lane ownership order not appended");
+        Require(expected.Shapes[added.ShapeId]==PumlBuild.Json(new[]{"460","20","100","40"})+"300","new lane shape not predicted");
+        Require(expected.ShapeModels[added.ShapeId]==lane,"new lane shape owner missing");
+        Require(state.Signature()==before,"expected state mutated the snapshot");
+
+        var drifted=state.Expected(package,plan,false);
+        drifted.Shapes[added.ShapeId]=PumlBuild.Json(new[]{"460.000001","20.000001","100","40.000001"})+"300";
+        drifted.Round(new[]{added.ShapeId});expected.Round(new[]{added.ShapeId});
+        Require(drifted.Shapes[added.ShapeId]==expected.Shapes[added.ShapeId],"lane drift was not reconciled or the timeline length was lost");
+        Require(expected.Shapes[added.ShapeId].EndsWith("300"),"timeline length dropped by rounding");
+    }
     public static void Run()
     {
+        AddedParticipant();
         AddedExecution();
         var ordered=new SequenceTrialState();
         ordered.Relations["r1"]=new[]{"old1","m1","0","0"};ordered.Relations["r2"]=new[]{"old2","m2","0","0"};

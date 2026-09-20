@@ -99,6 +99,22 @@ public static class PayloadTest {
    if(SyncPlan.Build(addPlan.Expected,occupiedBefore,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("addition semantic plan is not idempotent");
 
+   // The batch diagram plus one declared lane, and the same pair read backwards.
+   var laneAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-participant-after.puml")));
+   var lanePlan=SyncPlan.Build(batchAfter,laneAfter,()=>Guid.NewGuid().ToString());
+   var laneGate=SequenceStructurePreflight.Check(batchAfter,lanePlan);
+   if(!laneGate.Candidate || lanePlan.Changes.Count!=1 || laneGate.AddParticipants.Count!=1 || laneGate.Targets!=1)
+       throw new Exception("participant sample must add exactly one lane: "+lanePlan.ToJson()+laneGate.ToJson());
+   if(laneGate.CanCommit(true) || laneGate.CanCommit(false))
+       throw new Exception("a participant change reached a commit mode before the product confirmed it");
+   if(SyncPlan.Build(lanePlan.Expected,laneAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
+       throw new Exception("participant semantic plan is not idempotent");
+
+   var dropPlan=SyncPlan.Build(laneAfter,batchAfter,()=>Guid.NewGuid().ToString());
+   var dropGate=SequenceStructurePreflight.Check(laneAfter,dropPlan);
+   if(!dropGate.Candidate || dropPlan.Changes.Count!=1 || dropGate.DeleteParticipants.Count!=1 || dropGate.Targets!=1)
+       throw new Exception("participant removal sample must delete exactly one lane: "+dropPlan.ToJson()+dropGate.ToJson());
+
    int commits=0, cancels=0;
    var success = new SequenceCompletion();
    success.Commit(delegate { commits++; });

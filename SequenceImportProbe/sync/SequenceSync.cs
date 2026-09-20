@@ -585,13 +585,36 @@ public sealed class SequenceStructurePreflight
     public List<string> ReconnectMessages=new List<string>();
     public List<string> DeleteExecutions=new List<string>();
     public List<string> AddExecutions=new List<string>();
-    public bool Candidate { get { return Reasons.Count==0 && (ReconnectMessages.Count+DeleteExecutions.Count+AddExecutions.Count)>0; } }
+    public List<string> AddParticipants=new List<string>();
+    public List<string> DeleteParticipants=new List<string>();
+    public int Targets { get { return ReconnectMessages.Count+DeleteExecutions.Count+AddExecutions.Count
+        +AddParticipants.Count+DeleteParticipants.Count; } }
+    public bool Candidate { get { return Reasons.Count==0 && Targets>0; } }
     // The deletion-only mode stays exactly as the product confirmed it. The other mode
     // covers a receiver change together with deletions, additions, or both.
     public bool CanCommit(bool reconnect)
     {
-        if(!Candidate || DeleteExecutions.Count+AddExecutions.Count==0)return false;
+        if(!Candidate || AddParticipants.Count+DeleteParticipants.Count>0)return false;
+        if(DeleteExecutions.Count+AddExecutions.Count==0)return false;
         return reconnect?ReconnectMessages.Count>0:ReconnectMessages.Count==0 && AddExecutions.Count==0;
+    }
+    static bool Referenced(SyncPlan plan,string id)
+    {
+        return plan.Expected.Elements.Any(e=>e.Parent==id || e.Links.Values.SelectMany(v=>v).Contains(id));
+    }
+    // A new lane only goes at the right end, where no existing lane has to move.
+    static string ParticipantReason(SequenceDocument current,SyncPlan plan,SequenceElement added)
+    {
+        string root=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
+        if(added.Parent!=root)return "追加する参加者の所有先が相互作用ではありません。";
+        if(added.Links.Count>0)return "追加する参加者に未対応の接続があります。";
+        if(Referenced(plan,added.Id))return "追加する参加者を参照する要素があります。メッセージや実行区間の追加は別途必要です。";
+        var existing=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
+        if(existing.Count==0)return "既存の参加者がないため、新しい参加者を配置できません。";
+        var lanes=plan.Expected.Elements.Where(e=>e.Kind=="participant").OrderBy(e=>e.Order).ToArray();
+        if(lanes.Length==0 || lanes[lanes.Length-1].Id!=added.Id)
+            return "追加する参加者が右端ではありません。途中への挿入は図全体の再配置になるため対象外です。";
+        return null;
     }
     static string[] Link(SequenceElement e,string role)
     { string[] ids;return e.Links.TryGetValue(role,out ids)?ids:new string[0]; }
@@ -642,6 +665,15 @@ public sealed class SequenceStructurePreflight
         var result=new SequenceStructurePreflight();
         var before=current.Elements.ToDictionary(e=>e.Id);
         var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        foreach(var change in plan.Changes.Where(c=>c.Action=="add" && c.Kind=="participant"))
+        {
+            SequenceElement added;
+            if(before.ContainsKey(change.Id) || !after.TryGetValue(change.Id,out added))
+            { result.Reasons.Add("L"+change.Line+" 追加する参加者を期待状態から取得できません。");continue; }
+            string why=ParticipantReason(current,plan,added);
+            if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
+            result.AddParticipants.Add(change.Id);
+        }
         foreach(var change in plan.Changes.Where(c=>c.Action=="add" && c.Kind=="execution"))
         {
             SequenceElement added;
@@ -653,7 +685,13 @@ public sealed class SequenceStructurePreflight
         }
         foreach(var change in plan.Changes)
         {
-            if(change.Action=="add" && change.Kind=="execution")continue;
+            if(change.Action=="add" && (change.Kind=="execution" || change.Kind=="participant"))continue;
+            if(change.Action=="delete" && change.Kind=="participant" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
+            {
+                if(Referenced(plan,change.Id))result.Reasons.Add("L"+change.Line+" 参加者への参照が残るため削除できません。");
+                else result.DeleteParticipants.Add(change.Id);
+                continue;
+            }
             string row="L"+change.Line+" ";
             SequenceElement old,next;
             if(change.Action=="delete" && change.Kind=="execution" && before.TryGetValue(change.Id,out old) && !after.ContainsKey(change.Id))
@@ -686,18 +724,25 @@ public sealed class SequenceStructurePreflight
     {
         return "構造更新の事前判定（図への反映なし）\n受信接続変更候補: "+ReconnectMessages.Count+" / 実行区間削除候補: "+DeleteExecutions.Count
             +" / 実行区間追加候補: "+AddExecutions.Count
+            +" / 参加者追加候補: "+AddParticipants.Count+" / 参加者削除候補: "+DeleteParticipants.Count
             +"\n"+(Reasons.Count>0?"全体を停止: "+Reasons.Count+"件の未対応条件":Candidate?"限定範囲の候補あり。既存図での適用・保持検証は未実施です。":"対象の変更なし")
             +"\n"+string.Join("\n",Reasons.Distinct());
     }
     public string ToJson()
     { return PumlBuild.Json(PumlBuild.Obj("Candidate",Candidate,"ReconnectMessages",ReconnectMessages.ToArray(),"DeleteExecutions",DeleteExecutions.ToArray(),
-        "AddExecutions",AddExecutions.ToArray(),"Reasons",Reasons.ToArray())); }
+        "AddExecutions",AddExecutions.ToArray(),"AddParticipants",AddParticipants.ToArray(),
+        "DeleteParticipants",DeleteParticipants.ToArray(),"Reasons",Reasons.ToArray())); }
 }
 
 // One added execution, described so the expected state can be computed without
 // reading the export again. Template ids point at an existing execution of the same
 // participant; the live SDK values of those templates supply the bar width and the
 // endpoint fields that the export does not name.
+public sealed class SequenceAddedParticipant
+{
+    public string ModelId, Metaclass, Name, OwnerId, ShapeId, TemplateShapeId, RelationId, TemplateRelationId, X;
+}
+
 public sealed class SequenceAddedExecution
 {
     public string ModelId, Metaclass, Name, OwnerId, ShapeId, TemplateShapeId, Geometry;
@@ -712,6 +757,8 @@ public sealed class SequenceStructurePreparation
     public string[] DeleteIds;
     public string[] ReceiveRelationIds=new string[0];
     public SequenceAddedExecution[] AddedExecutions=new SequenceAddedExecution[0];
+    public SequenceAddedParticipant[] AddedParticipants=new SequenceAddedParticipant[0];
+    public string[] DeleteParticipantIds=new string[0];
     static string V(SequenceJson n,string key) { return SequenceEditorDocument.Value(n,key); }
     static SequenceJson[] Array(SequenceJson n,string key)
     {
@@ -787,6 +834,7 @@ public sealed class SequenceStructurePreparation
             Require(!Mentions(other,affected),"変更対象を別のエディタも参照しています。");
         var additions=new List<SequenceAddedExecution>();
         var newEntities=new List<SequenceJson>();
+        var newLaneShapes=new List<SequenceJson>();
         var newRelations=new List<SequenceJson>();
         var newShapes=new List<SequenceJson>();
         foreach(string id in gate.AddExecutions)
@@ -836,6 +884,52 @@ public sealed class SequenceStructurePreparation
                 Geometry=PumlBuild.Json(new[]{Number(geometry["X"]),Number(geometry["Y"]),Number(geometry["Length"])}),
                 RelationIds=relationIds.ToArray(),RelationSources=relationSources.ToArray(),TemplateRelationIds=templateIds.ToArray()});
         }
+        var lanes=new List<SequenceAddedParticipant>();
+        foreach(string id in gate.AddParticipants)
+        {
+            var owned=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"___Interaction_Lifeline" && V(r,"SourceId")==root).ToArray();
+            Require(owned.Length>0,"既存の参加者の所有関連を取得できません。");
+            var shapes3=editor.Shapes();
+            var laneShapes=owned.Select(r=>V(r,"TargetId"))
+                .Select(target=>shapes3.SingleOrDefault(sh=>V(sh,"ModelId")==target)).Where(sh=>sh!=null).ToArray();
+            Require(laneShapes.Length==owned.Length,"参加者の図形を一意に取得できません。");
+            // Rightmost lane is the template: the new one sits one lane spacing further right.
+            var rightmost=laneShapes.OrderBy(sh=>Read(sh,"X")+Read(sh,"Width")/2).Last();
+            string template=V(rightmost,"ModelId");
+            Require(byId.ContainsKey(template) && V(byId[template],"EntityType")=="Lifeline","参加者の見本を取得できません。");
+            var ownerLink=find("___Interaction_Lifeline",root,template);
+            var entity=SequenceJson.Parse(byId[template].ToJsonString());
+            entity.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(id));
+            string name=after[id].Text??"";
+            entity.Properties["Name"]=SequenceJson.Parse(SequencePayload.Q(name));
+            if(entity["Fields"]!=null && entity["Fields"].Properties!=null && entity["Fields"]["Name"]!=null)
+                entity["Fields"].Properties["Name"]=SequenceJson.Parse(SequencePayload.Q(name));
+            newEntities.Add(entity);
+            string relationId=Guid.NewGuid().ToString();
+            var link=SequenceJson.Parse(ownerLink.ToJsonString());
+            link.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(relationId));
+            link.Properties["TargetId"]=SequenceJson.Parse(SequencePayload.Q(id));
+            link.Properties.Remove("SourceIndex");link.Properties.Remove("TargetIndex");
+            newRelations.Add(link);
+            string laneShapeId=Guid.NewGuid().ToString();
+            var laneShape=SequenceJson.Parse(rightmost.ToJsonString());
+            laneShape.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(laneShapeId));
+            laneShape.Properties["ModelId"]=SequenceJson.Parse(SequencePayload.Q(id));
+            double x=Read(rightmost,"X")+LaneSpacing;
+            laneShape.Properties["X"]=SequenceJson.Parse(Number(x));
+            newLaneShapes.Add(laneShape);
+            lanes.Add(new SequenceAddedParticipant{ModelId=id,Metaclass=V(entity,"MetamodelId"),Name=name,OwnerId=root,
+                ShapeId=laneShapeId,TemplateShapeId=V(rightmost,"Id"),RelationId=relationId,
+                TemplateRelationId=V(ownerLink,"Id"),X=Number(x)});
+        }
+        foreach(string id in gate.DeleteParticipants)
+        {
+            Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="Lifeline","削除対象が退避データ内の参加者ではありません。");
+            foreach(var relation in relations.Where(r=>V(r,"SourceId")==id || V(r,"TargetId")==id))
+                Require(V(relation,"TargetId")==id && V(relation,"MetamodelId")==SequencePayload.Prefix+"___Interaction_Lifeline",
+                    "削除する参加者に未対応の関連が残っています。");
+            Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==id)==1,"削除する参加者の図形を一意に取得できません。");
+        }
         var patch=SequenceJson.Parse(editor.ImportJson());
         patch["Entities"].Items.AddRange(newEntities);
         patch["Relations"].Items.AddRange(newRelations);
@@ -846,9 +940,17 @@ public sealed class SequenceStructurePreparation
             Require(bars!=null && bars.Items!=null,"エディタに実行区間の図形配列がありません。");
             bars.Items.AddRange(newShapes);
         }
+        if(newLaneShapes.Count>0)
+        {
+            var laneArray=patch["Editors"].Items.Single()["Lifelines"];
+            Require(laneArray!=null && laneArray.Items!=null,"エディタに参加者の図形配列がありません。");
+            laneArray.Items.AddRange(newLaneShapes);
+        }
         return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),ReconnectCount=changed.Count,
-            EditorAfterDeleteJson=Deleted(editor,newShapes,gate.DeleteExecutions),DeleteIds=gate.DeleteExecutions.ToArray(),
-            AddedExecutions=additions.ToArray(),
+            EditorAfterDeleteJson=Deleted(editor,newShapes,newLaneShapes,gate.DeleteExecutions,gate.DeleteParticipants),
+            DeleteIds=gate.DeleteExecutions.ToArray(),
+            AddedExecutions=additions.ToArray(),AddedParticipants=lanes.ToArray(),
+            DeleteParticipantIds=gate.DeleteParticipants.ToArray(),
             ReceiveRelationIds=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage").Select(r=>V(r,"Id")).ToArray()};
     }
     static string Number(double value)
@@ -907,15 +1009,28 @@ public sealed class SequenceStructurePreparation
         result["Y"]=top;result["Length"]=length;result["Height"]=length;
         return result;
     }
-    static string Deleted(SequenceEditorDocument editor,List<SequenceJson> addedShapes,List<string> removed)
+    internal const double LaneSpacing=240;
+    static string Deleted(SequenceEditorDocument editor,List<SequenceJson> addedShapes,List<SequenceJson> addedLanes,
+        List<string> removed,List<string> removedLanes)
     {
-        var json=SequenceJson.Parse(editor.Without(removed).ImportJson());
-        if(addedShapes.Count>0)
+        var json=SequenceJson.Parse(editor.ImportJson());
+        var view=json["Editors"].Items.Single();
+        var gone=new HashSet<string>(removed.Concat(removedLanes));
+        foreach(string collection in new[]{"Messages","ExecutionSpecifications","Lifelines"})
         {
-            var bars=json["Editors"].Items.Single()["ExecutionSpecifications"];
-            if(bars==null || bars.Items==null)throw new InvalidOperationException("S220: 削除後のエディタに実行区間の図形配列がありません。");
-            bars.Items.AddRange(addedShapes.Select(sh=>SequenceJson.Parse(sh.ToJsonString())));
+            var array=view[collection];
+            if(array==null)continue;
+            if(array.Items==null)throw new InvalidOperationException("S220: 削除後の図形配列の形式が不正です: "+collection);
+            for(int i=array.Items.Count-1;i>=0;i--)
+                if(gone.Contains(SequenceEditorDocument.Value(array.Items[i],"ModelId")))array.Items.RemoveAt(i);
         }
+        Action<string,List<SequenceJson>> append=(collection,shapes)=>{
+            if(shapes.Count==0)return;
+            var array=view[collection];
+            if(array==null || array.Items==null)throw new InvalidOperationException("S220: 削除後のエディタに"+collection+"がありません。");
+            array.Items.AddRange(shapes.Select(sh=>SequenceJson.Parse(sh.ToJsonString())));
+        };
+        append("ExecutionSpecifications",addedShapes);append("Lifelines",addedLanes);
         return json.ToJsonString();
     }
     static bool Mentions(SequenceJson node,HashSet<string> ids)
@@ -1044,8 +1159,11 @@ public sealed class SequenceTrialState
         {
             string value;
             if(!Shapes.TryGetValue(id,out value))continue;
+            int close=value.LastIndexOf(']');
+            if(close<0)continue;
+            string suffix=value.Substring(close+1);
             SequenceJson node;
-            try {node=SequenceJson.Parse(value);} catch(Exception) {continue;}
+            try {node=SequenceJson.Parse(value.Substring(0,close+1));} catch(Exception) {continue;}
             if(node==null || node.Items==null)continue;
             var rows=new List<string>();
             foreach(var item in node.Items)
@@ -1054,7 +1172,7 @@ public sealed class SequenceTrialState
                 rows.Add(double.TryParse(raw,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out number)
                     ? Math.Round(number,3).ToString("R",System.Globalization.CultureInfo.InvariantCulture) : raw);
             }
-            Shapes[id]=PumlBuild.Json(rows.ToArray());
+            Shapes[id]=PumlBuild.Json(rows.ToArray())+suffix;
         }
     }
     public string ShapeDifferences(SequenceTrialState actual)
@@ -1081,6 +1199,26 @@ public sealed class SequenceTrialState
         var result=new SequenceTrialState{Models=new Dictionary<string,string>(Models),Shapes=new Dictionary<string,string>(Shapes),ShapeModels=new Dictionary<string,string>(ShapeModels),
             Relations=Relations.ToDictionary(p=>p.Key,p=>p.Value.ToArray()),Ports=Ports.ToDictionary(p=>p.Key,p=>p.Value.ToArray()),
             RelationFields=new Dictionary<string,string>(RelationFields)};
+        foreach(var lane in prepared.AddedParticipants)
+        {
+            result.Models[lane.ModelId]=PumlBuild.Json(new[]{lane.Metaclass,lane.Name,lane.OwnerId,"False"});
+            string field=result.Field(lane.TemplateRelationId);
+            if(field.Length==0)throw new InvalidOperationException("S230: 追加する参加者の関連の種別情報が不足しています。");
+            int index=result.Relations.Count(pair=>pair.Value[0]==lane.OwnerId && result.Field(pair.Key)==field);
+            result.Relations[lane.RelationId]=new[]{lane.OwnerId,lane.ModelId,
+                index.ToString(System.Globalization.CultureInfo.InvariantCulture),"0"};
+            result.RelationFields[lane.RelationId]=field;
+            string sample;
+            if(!result.Shapes.TryGetValue(lane.TemplateShapeId,out sample))throw new InvalidOperationException("S230: 参加者の見本図形がありません。");
+            int close=sample.LastIndexOf(']');
+            SequenceJson measured=close<0?null:SequenceJson.Parse(sample.Substring(0,close+1));
+            if(measured==null || measured.Items==null || measured.Items.Count!=4)
+                throw new InvalidOperationException("S230: 参加者の図形の項目数が想定と違います。");
+            // Only X is ours; the vertical box and the timeline length come from the product.
+            result.Shapes[lane.ShapeId]=PumlBuild.Json(new[]{lane.X,measured.Items[1].StringValue(),
+                measured.Items[2].StringValue(),measured.Items[3].StringValue()})+sample.Substring(close+1);
+            result.ShapeModels[lane.ShapeId]=lane.ModelId;
+        }
         foreach(var add in prepared.AddedExecutions)
         {
             result.Models[add.ModelId]=PumlBuild.Json(new[]{add.Metaclass,add.Name,add.OwnerId,"False"});
@@ -1107,7 +1245,8 @@ public sealed class SequenceTrialState
         foreach(var r in patch["Relations"].Items)
         {
             string id=r["Id"].StringValue(),source=r["SourceId"].StringValue(),target=r["TargetId"].StringValue();
-            if(prepared.AddedExecutions.Any(a=>a.RelationIds.Contains(id)))continue;
+            if(prepared.AddedExecutions.Any(a=>a.RelationIds.Contains(id))
+                || prepared.AddedParticipants.Any(a=>a.RelationId==id))continue;
             if(!result.Relations.ContainsKey(id) || result.Relations[id][1]!=target || !result.Ports.ContainsKey(target))throw new InvalidOperationException("S230: 変更前の受信関連が一致しません。");
             // SourceIndex belongs to the source endpoint collection, not to the relationship identity.
             // Omitted indices append on import. An explicit index inserts at that position.
@@ -1128,7 +1267,7 @@ public sealed class SequenceTrialState
         }
         if(delete)
         {
-            var removed=new HashSet<string>(prepared.DeleteIds);
+            var removed=new HashSet<string>(prepared.DeleteIds.Concat(prepared.DeleteParticipantIds));
             foreach(string id in removed)result.Models.Remove(id);
             // Measured on the product: deleting a model closes the gap it leaves in the
             // source/field collection that held it. Relations in other fields keep their index.
