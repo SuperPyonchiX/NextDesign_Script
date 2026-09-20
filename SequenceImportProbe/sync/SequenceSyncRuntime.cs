@@ -172,7 +172,7 @@ public static class SequenceSyncRuntime
         while(model!=null) {if(!visited.Add(model.Id))throw new InvalidOperationException("S210: モデルの所有関係が循環しています。");parts.Add(model.Name);model=model.Owner;}
         parts.Reverse();return string.Join("::",parts);
     }
-    public static void Preview(IApplication app)
+    public static void Preview(IApplication app,bool prepare=false)
     {
         var log=new StringBuilder();string report=null;string screenshot=null;
         try
@@ -207,8 +207,49 @@ public static class SequenceSyncRuntime
             log.AppendLine(screenshot);
             SequenceExperiment.Summary=SequenceAudit.Summary(plan,current.Limitations.Count)+"\n構造更新の停止理由: "+preflight.Reasons.Count+"件（診断表示）";
             log.AppendLine("Scope: "+project.Id+" / "+diagram.ModelId+" / "+diagram.Id);
+            if(prepare)
+            {
+                if(!preflight.Candidate)
+                    SequenceExperiment.Summary="構造更新データ: 未作成 / 図への反映なし\n"+preflight.Summary();
+                else
+                {
+                    var root=diagram.Model as IInteraction;
+                    if(root==null || !root.IsEditable || root.IsProxy || root.IsDeleted || string.IsNullOrEmpty(project.Path))
+                        throw new InvalidOperationException("S220: 保存済みで編集可能な図を開いてください。");
+                    string exported=null;
+                    SequenceEditorCapture.Read(project,root,diagram,log,delegate(string value){exported=value;});
+                    var preparation=SequenceStructurePreparation.Build(exported,diagram.Id,current.Document,plan);
+                    var raw=SequenceJson.Parse(exported);
+                    var exportedRelations=new HashSet<string>(raw["Relations"].Items.Select(r=>SequenceEditorDocument.Value(r,"Id")));
+                    foreach(string id in preflight.DeleteExecutions.Concat(preflight.ReconnectMessages))
+                    {
+                        var model=project.GetModelById(id);
+                        if(model==null || model.IsDeleted || model.IsProxy || !model.IsEditable)
+                            throw new InvalidOperationException("S220: 更新対象に編集不可のモデルがあります。");
+                        if(preflight.DeleteExecutions.Contains(id) && model.GetRelationsWhere((r,f)=>true).Any(r=>!exportedRelations.Contains(r.Id)))
+                            throw new InvalidOperationException("S220: 削除対象に退避範囲外の関連があります。");
+                    }
+                    if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=diagram.Id
+                        || DiagramSnapshot.Read(diagram,new StringBuilder()).Document.ToJson()!=current.Document.ToJson())
+                        throw new InvalidOperationException("S220: 準備中に対象の図が変化しました。");
+                    string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.SequenceSync","prepared",Guid.NewGuid().ToString("N"));
+                    Directory.CreateDirectory(directory);
+                    // ready.json is written last. Partial directories must never be used as a package.
+                    SequenceExperiment.Write(Path.Combine(directory,"snapshot.json"),exported);
+                    SequenceExperiment.Write(Path.Combine(directory,"reconnect.json"),preparation.ReconnectJson);
+                    SequenceExperiment.Write(Path.Combine(directory,"editor-after-delete.json"),preparation.EditorAfterDeleteJson);
+                    SequenceExperiment.Write(Path.Combine(directory,"plan.json"),report);
+                    SequenceExperiment.Write(Path.Combine(directory,"ready.json"),PumlBuild.Json(PumlBuild.Obj("Version",1,"Mode","prepare-only", "ProjectId",project.Id,"DiagramId",diagram.Id,
+                        "DeleteExecutions",preparation.DeleteIds,"ExecutionOrder",new[]{"reconnect.json","delete listed execution models","editor-after-delete.json"})));
+                    log.AppendLine("Prepared directory: "+directory);
+                    screenshot+="\f構造更新データの準備: 完了\n受信接続変更: "+preflight.ReconnectMessages.Count+" / 実行区間削除: "+preparation.DeleteIds.Length
+                        +"\n退避データ・接続変更JSON・削除後の図形JSONを保存しました。\n図への適用・Undo/Redo・保存再読込: 未実施";
+                    SequenceExperiment.Summary="構造更新データの準備: 完了 / 図への反映なし\n受信接続変更: "+preflight.ReconnectMessages.Count+" / 実行区間削除: "+preparation.DeleteIds.Length
+                        +"\n保存先: "+directory+"\n準備ファイルの手動インポートはしないでください。適用処理は未実装です。";
+                }
+            }
         }
-        catch(Exception ex) {SequenceExperiment.Summary="図全体の読取り検証を完了できませんでした。\n"+ex.Message;log.AppendLine(ex.ToString());}
+        catch(Exception ex) {SequenceExperiment.Summary=(prepare?"構造更新データの準備を完了できませんでした。図への反映なし。":"図全体の読取り検証を完了できませんでした。")+"\n"+ex.Message;log.AppendLine(ex.ToString());screenshot=null;}
         try
         {
             string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.SequenceSync","reports");

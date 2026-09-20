@@ -636,3 +636,84 @@ public sealed class SequenceStructurePreflight
     public string ToJson()
     { return PumlBuild.Json(PumlBuild.Obj("Candidate",Candidate,"ReconnectMessages",ReconnectMessages.ToArray(),"DeleteExecutions",DeleteExecutions.ToArray(),"Reasons",Reasons.ToArray())); }
 }
+
+// Prepared files are diagnostic artifacts; they are never imported by this command.
+public sealed class SequenceStructurePreparation
+{
+    public string ReconnectJson, EditorAfterDeleteJson;
+    public string[] DeleteIds;
+    static string V(SequenceJson n,string key) { return SequenceEditorDocument.Value(n,key); }
+    static SequenceJson[] Array(SequenceJson n,string key)
+    {
+        if(n[key]==null || n[key].Items==null)throw new InvalidOperationException("S220: 退避データの配列が不足しています。");
+        return n[key].Items.ToArray();
+    }
+    static void Require(bool condition,string reason)
+    { if(!condition)throw new InvalidOperationException("S220: "+reason); }
+    public static SequenceStructurePreparation Build(string exported,string editorId,SequenceDocument current,SyncPlan plan)
+    {
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate,"未対応の変更があるか、構造更新の候補がありません。");
+        string root=current.Elements.Single(e=>e.Kind=="interaction").Id;
+        var source=SequenceJson.Parse(exported);
+        var editor=SequenceEditorDocument.Read(exported,root,editorId);
+        var entities=Array(source,"Entities");var relations=Array(source,"Relations");
+        Require(entities.All(e=>!string.IsNullOrEmpty(V(e,"Id"))) && entities.Select(e=>V(e,"Id")).Distinct().Count()==entities.Length,"モデルIDが不足または重複しています。");
+        Require(relations.All(r=>!string.IsNullOrEmpty(V(r,"Id")) && V(r,"SourceId")!=null && V(r,"TargetId")!=null)
+            && relations.Select(r=>V(r,"Id")).Distinct().Count()==relations.Length,"関連IDまたは関連端が不正です。");
+        var byId=entities.ToDictionary(e=>V(e,"Id"));
+        Require(byId.ContainsKey(root) && V(byId[root],"EntityType")=="Interaction","退避データに対象の相互作用がありません。");
+        Require(Array(source,"Editors").Count(e=>V(e,"ModelId")==root)==1,"同じモデルに複数の図があります。");
+        var before=current.Elements.ToDictionary(e=>e.Id);var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        var changed=new List<SequenceJson>();
+        var changedIds=new HashSet<string>();
+        Func<string,string,string,SequenceJson> find=(type,from,to)=>{
+            var matches=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+type && V(r,"SourceId")==from && V(r,"TargetId")==to).ToArray();
+            Require(matches.Length==1,"必要な構造関連を一意に取得できません。");return matches[0];
+        };
+        Action<string,string> checkPort=(id,participant)=>{
+            Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="ExecutionSpecification","接続先は退避データ内の実行区間である必要があります。");
+            find("___Interaction_ExecutionSpecification",root,id);
+            find("OwnedExecutionSpecification",participant,id);
+            Require(relations.Count(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"OwnedExecutionSpecification" && V(r,"TargetId")==id)==1,"実行区間の所属が一意ではありません。");
+        };
+        foreach(string id in gate.ReconnectMessages)
+        {
+            var a=before[id];var b=after[id];
+            Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="Message","変更対象のメッセージが退避データにありません。");
+            find("___Interaction_Message",root,id);
+            string oldPort=a.Links["receiveExecution"].Single(),newPort=b.Links["receiveExecution"].Single();
+            checkPort(oldPort,a.Links["receiver"].Single());checkPort(newPort,b.Links["receiver"].Single());
+            var link=find("ReceiveMessage",oldPort,id);
+            Require(relations.Count(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage" && V(r,"TargetId")==id)==1,"受信接続が一意ではありません。");
+            var copy=SequenceJson.Parse(link.ToJsonString());
+            copy.Properties["SourceId"]=SequenceJson.Parse(SequencePayload.Q(newPort));
+            changed.Add(copy);changedIds.Add(V(link,"Id"));
+        }
+        foreach(string id in gate.DeleteExecutions)
+        {
+            checkPort(id,before[id].Links["participant"].Single());
+            foreach(var relation in relations.Where(r=>V(r,"SourceId")==id || V(r,"TargetId")==id))
+            {
+                if(changedIds.Contains(V(relation,"Id")))continue;
+                bool owned=V(relation,"TargetId")==id && (V(relation,"MetamodelId")==SequencePayload.Prefix+"___Interaction_ExecutionSpecification"
+                    || V(relation,"MetamodelId")==SequencePayload.Prefix+"OwnedExecutionSpecification");
+                Require(owned,"削除する実行区間に未対応の関連が残っています。");
+            }
+        }
+        var affected=new HashSet<string>(gate.DeleteExecutions.Concat(gate.ReconnectMessages));
+        var shapes=editor.Shapes();
+        foreach(string id in affected)Require(shapes.Count(sh=>V(sh,"ModelId")==id)==1,"変更対象の図形を一意に取得できません。");
+        foreach(var other in Array(source,"Editors").Where(e=>V(e,"Id")!=editorId))
+            Require(!Mentions(other,affected),"変更対象を別のエディタも参照しています。");
+        var patch=SequenceJson.Parse(editor.ImportJson());
+        patch["Relations"].Items.AddRange(changed);
+        return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),
+            EditorAfterDeleteJson=editor.Without(gate.DeleteExecutions).ImportJson(),DeleteIds=gate.DeleteExecutions.ToArray()};
+    }
+    static bool Mentions(SequenceJson node,HashSet<string> ids)
+    {
+        if(node.Properties!=null)return node.Properties.Any(p=>p.Key=="ModelId" && ids.Contains(p.Value.StringValue()) || Mentions(p.Value,ids));
+        return node.Items!=null && node.Items.Any(n=>Mentions(n,ids));
+    }
+}

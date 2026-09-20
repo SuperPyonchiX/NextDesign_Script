@@ -9,6 +9,7 @@ using System.Text.RegularExpressions;
 using NextDesign.Core;
 using NextDesign.Desktop;
 
+public void PrepareSequenceStructure(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App,true); }
 public void PreviewSequenceSync(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App); }
 public void CreateSequenceMap(ICommandContext context, ICommandParams parameters) { SequenceMappedUpdate.Run(context.App, true); }
 public void UpdateMappedSequence(ICommandContext context, ICommandParams parameters) { SequenceMappedUpdate.Run(context.App, false); }
@@ -23,7 +24,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.20";
+    public const string Title = "シーケンス生成実験 / 0.8.21";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -826,7 +827,7 @@ public static class SequenceSyncRuntime
         while(model!=null) {if(!visited.Add(model.Id))throw new InvalidOperationException("S210: モデルの所有関係が循環しています。");parts.Add(model.Name);model=model.Owner;}
         parts.Reverse();return string.Join("::",parts);
     }
-    public static void Preview(IApplication app)
+    public static void Preview(IApplication app,bool prepare=false)
     {
         var log=new StringBuilder();string report=null;string screenshot=null;
         try
@@ -861,8 +862,49 @@ public static class SequenceSyncRuntime
             log.AppendLine(screenshot);
             SequenceExperiment.Summary=SequenceAudit.Summary(plan,current.Limitations.Count)+"\n構造更新の停止理由: "+preflight.Reasons.Count+"件（診断表示）";
             log.AppendLine("Scope: "+project.Id+" / "+diagram.ModelId+" / "+diagram.Id);
+            if(prepare)
+            {
+                if(!preflight.Candidate)
+                    SequenceExperiment.Summary="構造更新データ: 未作成 / 図への反映なし\n"+preflight.Summary();
+                else
+                {
+                    var root=diagram.Model as IInteraction;
+                    if(root==null || !root.IsEditable || root.IsProxy || root.IsDeleted || string.IsNullOrEmpty(project.Path))
+                        throw new InvalidOperationException("S220: 保存済みで編集可能な図を開いてください。");
+                    string exported=null;
+                    SequenceEditorCapture.Read(project,root,diagram,log,delegate(string value){exported=value;});
+                    var preparation=SequenceStructurePreparation.Build(exported,diagram.Id,current.Document,plan);
+                    var raw=SequenceJson.Parse(exported);
+                    var exportedRelations=new HashSet<string>(raw["Relations"].Items.Select(r=>SequenceEditorDocument.Value(r,"Id")));
+                    foreach(string id in preflight.DeleteExecutions.Concat(preflight.ReconnectMessages))
+                    {
+                        var model=project.GetModelById(id);
+                        if(model==null || model.IsDeleted || model.IsProxy || !model.IsEditable)
+                            throw new InvalidOperationException("S220: 更新対象に編集不可のモデルがあります。");
+                        if(preflight.DeleteExecutions.Contains(id) && model.GetRelationsWhere((r,f)=>true).Any(r=>!exportedRelations.Contains(r.Id)))
+                            throw new InvalidOperationException("S220: 削除対象に退避範囲外の関連があります。");
+                    }
+                    if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=diagram.Id
+                        || DiagramSnapshot.Read(diagram,new StringBuilder()).Document.ToJson()!=current.Document.ToJson())
+                        throw new InvalidOperationException("S220: 準備中に対象の図が変化しました。");
+                    string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.SequenceSync","prepared",Guid.NewGuid().ToString("N"));
+                    Directory.CreateDirectory(directory);
+                    // ready.json is written last. Partial directories must never be used as a package.
+                    SequenceExperiment.Write(Path.Combine(directory,"snapshot.json"),exported);
+                    SequenceExperiment.Write(Path.Combine(directory,"reconnect.json"),preparation.ReconnectJson);
+                    SequenceExperiment.Write(Path.Combine(directory,"editor-after-delete.json"),preparation.EditorAfterDeleteJson);
+                    SequenceExperiment.Write(Path.Combine(directory,"plan.json"),report);
+                    SequenceExperiment.Write(Path.Combine(directory,"ready.json"),PumlBuild.Json(PumlBuild.Obj("Version",1,"Mode","prepare-only", "ProjectId",project.Id,"DiagramId",diagram.Id,
+                        "DeleteExecutions",preparation.DeleteIds,"ExecutionOrder",new[]{"reconnect.json","delete listed execution models","editor-after-delete.json"})));
+                    log.AppendLine("Prepared directory: "+directory);
+                    screenshot+="\f構造更新データの準備: 完了\n受信接続変更: "+preflight.ReconnectMessages.Count+" / 実行区間削除: "+preparation.DeleteIds.Length
+                        +"\n退避データ・接続変更JSON・削除後の図形JSONを保存しました。\n図への適用・Undo/Redo・保存再読込: 未実施";
+                    SequenceExperiment.Summary="構造更新データの準備: 完了 / 図への反映なし\n受信接続変更: "+preflight.ReconnectMessages.Count+" / 実行区間削除: "+preparation.DeleteIds.Length
+                        +"\n保存先: "+directory+"\n準備ファイルの手動インポートはしないでください。適用処理は未実装です。";
+                }
+            }
         }
-        catch(Exception ex) {SequenceExperiment.Summary="図全体の読取り検証を完了できませんでした。\n"+ex.Message;log.AppendLine(ex.ToString());}
+        catch(Exception ex) {SequenceExperiment.Summary=(prepare?"構造更新データの準備を完了できませんでした。図への反映なし。":"図全体の読取り検証を完了できませんでした。")+"\n"+ex.Message;log.AppendLine(ex.ToString());screenshot=null;}
         try
         {
             string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.SequenceSync","reports");
@@ -1218,7 +1260,7 @@ public static class SequenceEditorCapture
         differences++;
         if(differences<=20)log.AppendLine("Geometry representations differ: shape="+id+", property="+property+", SDK="+actual.ToString("R",System.Globalization.CultureInfo.InvariantCulture)+", JSON="+serialized);
     }
-    public static SequenceEditorDocument Read(IProject project,IInteraction root,ISequenceDiagram diagram,StringBuilder log)
+    public static SequenceEditorDocument Read(IProject project,IInteraction root,ISequenceDiagram diagram,StringBuilder log,Action<string> capture=null)
     {
         // Never read the previously saved unit: it may omit current unsaved edits.
         // Export to a fresh local temporary file through the public SDK instead.
@@ -1231,7 +1273,8 @@ public static class SequenceEditorCapture
             log.AppendLine("Editor snapshot export: unit type="+root.ModelUnit.Type);
             project.UnitManager.ExportModelUnit(root.ModelUnit,path);
             if(!File.Exists(path) || new FileInfo(path).Length>100000000)throw new InvalidOperationException("E180: 図のエクスポートを取得できないか100MBを超えています。");
-            var snapshot=SequenceEditorDocument.Read(File.ReadAllText(path,new UTF8Encoding(false,true)),root.Id,diagram.Id);
+            string exported=File.ReadAllText(path,new UTF8Encoding(false,true));
+            var snapshot=SequenceEditorDocument.Read(exported,root.Id,diagram.Id);
             var shapes=snapshot.Shapes().ToDictionary(n=>SequenceEditorDocument.Value(n,"Id"));
             if(!new HashSet<string>(diagram.Shapes.Select(n=>n.Id+":"+n.ModelId)).SetEquals(shapes.Values.Select(n=>SequenceEditorDocument.Value(n,"Id")+":"+SequenceEditorDocument.Value(n,"ModelId"))))
                 throw new InvalidOperationException("E180: 現在の図とエクスポートの図形IDが一致しません。");
@@ -1255,6 +1298,7 @@ public static class SequenceEditorCapture
                 if(shape["Height"]!=null)Observe(log,node.Id,"Height",node.Height,shape,ref differences);
             }
             log.AppendLine("Editor snapshot: live identities verified, shapes="+shapes.Count+", cross-representation differences="+differences+" (first 20 logged; SDK preservation checked after mutation; serialized values retained in payload)");
+            if(capture!=null)capture(exported);
             return snapshot;
         }
         finally
@@ -2820,5 +2864,86 @@ public sealed class SequenceStructurePreflight
     }
     public string ToJson()
     { return PumlBuild.Json(PumlBuild.Obj("Candidate",Candidate,"ReconnectMessages",ReconnectMessages.ToArray(),"DeleteExecutions",DeleteExecutions.ToArray(),"Reasons",Reasons.ToArray())); }
+}
+
+// Prepared files are diagnostic artifacts; they are never imported by this command.
+public sealed class SequenceStructurePreparation
+{
+    public string ReconnectJson, EditorAfterDeleteJson;
+    public string[] DeleteIds;
+    static string V(SequenceJson n,string key) { return SequenceEditorDocument.Value(n,key); }
+    static SequenceJson[] Array(SequenceJson n,string key)
+    {
+        if(n[key]==null || n[key].Items==null)throw new InvalidOperationException("S220: 退避データの配列が不足しています。");
+        return n[key].Items.ToArray();
+    }
+    static void Require(bool condition,string reason)
+    { if(!condition)throw new InvalidOperationException("S220: "+reason); }
+    public static SequenceStructurePreparation Build(string exported,string editorId,SequenceDocument current,SyncPlan plan)
+    {
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate,"未対応の変更があるか、構造更新の候補がありません。");
+        string root=current.Elements.Single(e=>e.Kind=="interaction").Id;
+        var source=SequenceJson.Parse(exported);
+        var editor=SequenceEditorDocument.Read(exported,root,editorId);
+        var entities=Array(source,"Entities");var relations=Array(source,"Relations");
+        Require(entities.All(e=>!string.IsNullOrEmpty(V(e,"Id"))) && entities.Select(e=>V(e,"Id")).Distinct().Count()==entities.Length,"モデルIDが不足または重複しています。");
+        Require(relations.All(r=>!string.IsNullOrEmpty(V(r,"Id")) && V(r,"SourceId")!=null && V(r,"TargetId")!=null)
+            && relations.Select(r=>V(r,"Id")).Distinct().Count()==relations.Length,"関連IDまたは関連端が不正です。");
+        var byId=entities.ToDictionary(e=>V(e,"Id"));
+        Require(byId.ContainsKey(root) && V(byId[root],"EntityType")=="Interaction","退避データに対象の相互作用がありません。");
+        Require(Array(source,"Editors").Count(e=>V(e,"ModelId")==root)==1,"同じモデルに複数の図があります。");
+        var before=current.Elements.ToDictionary(e=>e.Id);var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        var changed=new List<SequenceJson>();
+        var changedIds=new HashSet<string>();
+        Func<string,string,string,SequenceJson> find=(type,from,to)=>{
+            var matches=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+type && V(r,"SourceId")==from && V(r,"TargetId")==to).ToArray();
+            Require(matches.Length==1,"必要な構造関連を一意に取得できません。");return matches[0];
+        };
+        Action<string,string> checkPort=(id,participant)=>{
+            Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="ExecutionSpecification","接続先は退避データ内の実行区間である必要があります。");
+            find("___Interaction_ExecutionSpecification",root,id);
+            find("OwnedExecutionSpecification",participant,id);
+            Require(relations.Count(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"OwnedExecutionSpecification" && V(r,"TargetId")==id)==1,"実行区間の所属が一意ではありません。");
+        };
+        foreach(string id in gate.ReconnectMessages)
+        {
+            var a=before[id];var b=after[id];
+            Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="Message","変更対象のメッセージが退避データにありません。");
+            find("___Interaction_Message",root,id);
+            string oldPort=a.Links["receiveExecution"].Single(),newPort=b.Links["receiveExecution"].Single();
+            checkPort(oldPort,a.Links["receiver"].Single());checkPort(newPort,b.Links["receiver"].Single());
+            var link=find("ReceiveMessage",oldPort,id);
+            Require(relations.Count(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage" && V(r,"TargetId")==id)==1,"受信接続が一意ではありません。");
+            var copy=SequenceJson.Parse(link.ToJsonString());
+            copy.Properties["SourceId"]=SequenceJson.Parse(SequencePayload.Q(newPort));
+            changed.Add(copy);changedIds.Add(V(link,"Id"));
+        }
+        foreach(string id in gate.DeleteExecutions)
+        {
+            checkPort(id,before[id].Links["participant"].Single());
+            foreach(var relation in relations.Where(r=>V(r,"SourceId")==id || V(r,"TargetId")==id))
+            {
+                if(changedIds.Contains(V(relation,"Id")))continue;
+                bool owned=V(relation,"TargetId")==id && (V(relation,"MetamodelId")==SequencePayload.Prefix+"___Interaction_ExecutionSpecification"
+                    || V(relation,"MetamodelId")==SequencePayload.Prefix+"OwnedExecutionSpecification");
+                Require(owned,"削除する実行区間に未対応の関連が残っています。");
+            }
+        }
+        var affected=new HashSet<string>(gate.DeleteExecutions.Concat(gate.ReconnectMessages));
+        var shapes=editor.Shapes();
+        foreach(string id in affected)Require(shapes.Count(sh=>V(sh,"ModelId")==id)==1,"変更対象の図形を一意に取得できません。");
+        foreach(var other in Array(source,"Editors").Where(e=>V(e,"Id")!=editorId))
+            Require(!Mentions(other,affected),"変更対象を別のエディタも参照しています。");
+        var patch=SequenceJson.Parse(editor.ImportJson());
+        patch["Relations"].Items.AddRange(changed);
+        return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),
+            EditorAfterDeleteJson=editor.Without(gate.DeleteExecutions).ImportJson(),DeleteIds=gate.DeleteExecutions.ToArray()};
+    }
+    static bool Mentions(SequenceJson node,HashSet<string> ids)
+    {
+        if(node.Properties!=null)return node.Properties.Any(p=>p.Key=="ModelId" && ids.Contains(p.Value.StringValue()) || Mentions(p.Value,ids));
+        return node.Items!=null && node.Items.Any(n=>Mentions(n,ids));
+    }
 }
 // END GENERATED SequenceSync.cs
