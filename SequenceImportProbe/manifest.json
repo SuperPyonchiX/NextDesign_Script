@@ -2,7 +2,7 @@
   "name": "SequenceImportProbe",
   "displayName": "シーケンス生成実験",
   "description": "PlantUMLから新しいシーケンス図を生成する実験用拡張。",
-  "version": "0.8.25",
+  "version": "0.8.26",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -14,98 +14,62 @@
           "label": "シーケンス生成実験",
           "groups": [
             {
-              "id": "SequenceImportProbe.Run",
-              "label": "生成・更新の検証",
+              "id": "SequenceImportProbe.Diagnostics",
+              "label": "結果・診断",
               "controls": [
                 {
-                  "id": "SequenceImportProbe.SyncPreviewButton",
+                  "id": "SequenceImportProbe.DetailsButton",
                   "type": "Button",
-                  "label": "図全体の差分を検証",
-                  "command": "SequenceImportProbe.SyncPreview"
-                },
-                {
-                  "id": "SequenceImportProbe.PrepareStructureButton",
-                  "type": "Button",
-                  "label": "構造更新データを準備",
-                  "command": "SequenceImportProbe.PrepareStructure"
-                },
-                {
-                  "id": "SequenceImportProbe.TrialStructureButton",
-                  "type": "Button",
-                  "label": "構造更新を試行して戻す",
-                  "command": "SequenceImportProbe.TrialStructure"
-                },
-                {
-                  "id": "SequenceImportProbe.CommitUnusedButton",
-                  "type": "Button",
-                  "label": "未使用区間の削除を確定（検証）",
-                  "command": "SequenceImportProbe.CommitUnused"
-                },
-                {
-                  "id": "SequenceImportProbe.CommitReceiverButton",
-                  "type": "Button",
-                  "label": "受信接続変更と削除を確定（検証）",
-                  "command": "SequenceImportProbe.CommitReceiver"
-                },
-                {
-                  "id": "SequenceImportProbe.StructureProbeButton",
-                  "type": "Button",
-                  "label": "接続・実行区間APIを検証",
-                  "command": "SequenceImportProbe.StructureProbe"
-                },
-                {
-                  "id": "SequenceImportProbe.MapButton",
-                  "type": "Button",
-                  "label": "差分対応表を作成",
-                  "command": "SequenceImportProbe.Map"
-                },
-                {
-                  "id": "SequenceImportProbe.MappedUpdateButton",
-                  "type": "Button",
-                  "label": "メッセージを差分更新",
-                  "command": "SequenceImportProbe.MappedUpdate"
-                },
-                {
-                  "id": "SequenceImportProbe.ImportButton",
-                  "type": "Button",
-                  "label": "PlantUMLを取り込む",
-                  "command": "SequenceImportProbe.Import"
-                },
-                {
-                  "id": "SequenceImportProbe.ReplaceButton",
-                  "type": "Button",
-                  "label": "全体置換（旧実験）",
-                  "command": "SequenceImportProbe.Replace"
-                },
-                {
-                  "id": "SequenceImportProbe.CreateButton",
-                  "type": "Button",
-                  "label": "最小図を生成",
-                  "command": "SequenceImportProbe.Create"
-                },
-                {
-                  "id": "SequenceImportProbe.DeltaProbeButton",
-                  "type": "Button",
-                  "label": "差分更新APIを検証",
-                  "command": "SequenceImportProbe.DeltaProbe"
-                },
-                {
-                  "id": "SequenceImportProbe.UpdateProbeButton",
-                  "type": "Button",
-                  "label": "更新APIを検証",
-                  "command": "SequenceImportProbe.UpdateProbe"
+                  "label": "診断表示",
+                  "command": "SequenceImportProbe.Details"
                 },
                 {
                   "id": "SequenceImportProbe.ResultButton",
                   "type": "Button",
                   "label": "結果表示",
                   "command": "SequenceImportProbe.Result"
+                }
+              ]
+            },
+            {
+              "id": "SequenceImportProbe.Input",
+              "label": "取込・比較",
+              "controls": [
+                {
+                  "id": "SequenceImportProbe.ImportButton",
+                  "type": "Button",
+                  "label": "PlantUML取込",
+                  "command": "SequenceImportProbe.Import"
                 },
                 {
-                  "id": "SequenceImportProbe.DetailsButton",
+                  "id": "SequenceImportProbe.SyncPreviewButton",
                   "type": "Button",
-                  "label": "診断表示",
-                  "command": "SequenceImportProbe.Details"
+                  "label": "差分を検証",
+                  "command": "SequenceImportProbe.SyncPreview"
+                }
+              ]
+            },
+            {
+              "id": "SequenceImportProbe.Run",
+              "label": "構造更新の検証",
+              "controls": [
+                {
+                  "id": "SequenceImportProbe.TrialStructureButton",
+                  "type": "Button",
+                  "label": "試行して戻す",
+                  "command": "SequenceImportProbe.TrialStructure"
+                },
+                {
+                  "id": "SequenceImportProbe.CommitUnusedButton",
+                  "type": "Button",
+                  "label": "区間削除を確定",
+                  "command": "SequenceImportProbe.CommitUnused"
+                },
+                {
+                  "id": "SequenceImportProbe.CommitReceiverButton",
+                  "type": "Button",
+                  "label": "接続変更・削除を確定",
+                  "command": "SequenceImportProbe.CommitReceiver"
                 }
               ]
             }
@@ -114,10 +78,6 @@
       ]
     },
     "commands": [
-      {
-        "id": "SequenceImportProbe.Create",
-        "execFunc": "CreateMinimalSequence"
-      },
       {
         "id": "SequenceImportProbe.Result",
         "execFunc": "ShowSequenceResult"
@@ -131,36 +91,8 @@
         "execFunc": "ImportPlantUml"
       },
       {
-        "id": "SequenceImportProbe.UpdateProbe",
-        "execFunc": "ProbeSequenceUpdate"
-      },
-      {
-        "id": "SequenceImportProbe.Replace",
-        "execFunc": "ReplaceSequence"
-      },
-      {
-        "id": "SequenceImportProbe.DeltaProbe",
-        "execFunc": "ProbeSequenceDelta"
-      },
-      {
-        "id": "SequenceImportProbe.Map",
-        "execFunc": "CreateSequenceMap"
-      },
-      {
-        "id": "SequenceImportProbe.MappedUpdate",
-        "execFunc": "UpdateMappedSequence"
-      },
-      {
         "id": "SequenceImportProbe.SyncPreview",
         "execFunc": "PreviewSequenceSync"
-      },
-      {
-        "id": "SequenceImportProbe.StructureProbe",
-        "execFunc": "ProbeSequenceStructure"
-      },
-      {
-        "id": "SequenceImportProbe.PrepareStructure",
-        "execFunc": "PrepareSequenceStructure"
       },
       {
         "id": "SequenceImportProbe.TrialStructure",
