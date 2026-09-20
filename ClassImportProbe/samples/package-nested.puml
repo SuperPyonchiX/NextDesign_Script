@@ -1,0 +1,20 @@
+@startuml
+hide empty members
+
+package "P" {
+  package "Q" {
+    class "X" as X
+  }
+}
+
+package "P" {
+  package "R" {
+    class "Y" as Y
+  }
+}
+
+component "Board" as Board {
+  class "Chip" as Chip
+}
+
+@enduml

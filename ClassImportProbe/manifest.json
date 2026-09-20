@@ -1,0 +1,81 @@
+{
+  "name": "ClassImportProbe",
+  "displayName": "クラス図同期実験",
+  "description": "PlantUMLと既存クラス図を比較する実験用拡張。0.1.0は読取り専用。",
+  "version": "0.1.0",
+  "publisher": "ksk01",
+  "main": "main.cs",
+  "lifecycle": "project",
+  "extensionPoints": {
+    "ribbon": {
+      "tabs": [
+        {
+          "id": "ClassImportProbe.Tab",
+          "label": "クラス図同期実験",
+          "groups": [
+            {
+              "id": "ClassImportProbe.Diagnostics",
+              "label": "結果・診断",
+              "controls": [
+                {
+                  "id": "ClassImportProbe.DetailsButton",
+                  "type": "Button",
+                  "label": "診断表示",
+                  "command": "ClassImportProbe.Details"
+                },
+                {
+                  "id": "ClassImportProbe.ResultButton",
+                  "type": "Button",
+                  "label": "結果表示",
+                  "command": "ClassImportProbe.Result"
+                }
+              ]
+            },
+            {
+              "id": "ClassImportProbe.Probe",
+              "label": "調査",
+              "controls": [
+                {
+                  "id": "ClassImportProbe.ProbeButton",
+                  "type": "Button",
+                  "label": "クラス図調査",
+                  "command": "ClassImportProbe.ProbeDiagram"
+                }
+              ]
+            },
+            {
+              "id": "ClassImportProbe.Compare",
+              "label": "比較",
+              "controls": [
+                {
+                  "id": "ClassImportProbe.PreviewButton",
+                  "type": "Button",
+                  "label": "差分を検証",
+                  "command": "ClassImportProbe.SyncPreview"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "commands": [
+      {
+        "id": "ClassImportProbe.Result",
+        "execFunc": "ShowClassResult"
+      },
+      {
+        "id": "ClassImportProbe.Details",
+        "execFunc": "ShowClassDetails"
+      },
+      {
+        "id": "ClassImportProbe.ProbeDiagram",
+        "execFunc": "ProbeClassDiagram"
+      },
+      {
+        "id": "ClassImportProbe.SyncPreview",
+        "execFunc": "PreviewClassSync"
+      }
+    ]
+  }
+}

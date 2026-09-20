@@ -1,0 +1,10 @@
+@startuml
+hide empty members
+
+class "A" as A
+class "B" as B
+
+A "0..*" -- "1" B : owner / items
+A "1" o-- "0..*" B : Children
+
+@enduml

@@ -1,0 +1,28 @@
+@startuml
+title 機能構成
+hide empty members
+
+package "システム" {
+  class "制御部" as Controller {
+    - state : int [0..1] = 0
+    + {static} count : int
+    --
+    + start(mode : int) : bool
+    # stop()
+  }
+}
+
+interface "IDriver" as IDriver {
+  + drive(speed : int)
+}
+enum "Mode" as Mode {
+  Idle
+  Running
+}
+abstract class "Base" as Base
+
+Controller --|> Base : SuperClasses
+Controller --> "0..*" IDriver : drivers
+Controller ..> Mode : Uses
+
+@enduml

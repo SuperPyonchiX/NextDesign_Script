@@ -1,0 +1,15 @@
+@startuml
+hide empty members
+
+class "Parent" as Parent
+class "Child" as Child
+class "Whole" as Whole
+class "Part" as Part
+
+Child --|> Parent : SuperClasses
+Parent <|-- Child : SubClasses
+Part --* Whole : Whole
+Whole *-- Part : Parts
+Whole <-- Part : RelateFrom
+
+@enduml
