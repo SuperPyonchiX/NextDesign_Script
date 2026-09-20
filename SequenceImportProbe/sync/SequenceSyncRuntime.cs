@@ -355,11 +355,11 @@ public static class SequenceStructureTrial
         if(reconnectCommit && !retain)throw new InvalidOperationException("S231: 確定モードが不正です。");
         int touched=prepared.DeleteIds.Length+prepared.AddedExecutions.Length
             +prepared.AddedParticipants.Length+prepared.DeleteParticipantIds.Length
-            +prepared.DeleteMessageIds.Length+reconnectCount;
+            +prepared.DeleteMessageIds.Length+prepared.AddedMessages.Length+reconnectCount;
         Func<SequenceChange,bool> supported=c=>
             (c.Action=="delete" && c.Kind=="execution")
             || (reconnectCommit && c.Action=="update" && c.Kind=="message")
-            || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant"))
+            || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message"))
             || (reconnectCommit && c.Action=="delete" && (c.Kind=="participant" || c.Kind=="message"));
         if(retain && (touched==0 || (!reconnectCommit && touched!=prepared.DeleteIds.Length)
             || plan.Changes.Any(c=>!supported(c))))
@@ -367,7 +367,8 @@ public static class SequenceStructureTrial
         string caseId=reconnectCommit?"UPDATE007":retain?"UPDATE006":"UPDATE005";
         var root=diagram.Model as IInteraction;
         var newShapes=prepared.AddedExecutions.Select(a=>a.ShapeId)
-            .Concat(prepared.AddedParticipants.Select(a=>a.ShapeId)).ToArray();
+            .Concat(prepared.AddedParticipants.Select(a=>a.ShapeId))
+            .Concat(prepared.AddedMessages.Select(a=>a.ShapeId)).ToArray();
         var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
             .Concat(prepared.DeleteMessageIds).ToArray();
         var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
@@ -399,6 +400,8 @@ public static class SequenceStructureTrial
         if(transaction==null)throw new InvalidOperationException("S230: トランザクションを開始できません。");
         Action apply=delegate {
             stage=prepared.AddedExecutions.Length>0?"実行区間の追加と受信接続の変更":"受信接続の変更";
+            foreach(var wire in prepared.AddedMessages)
+                log.AppendLine("add message payload: model="+wire.ModelId+" shape="+wire.ShapeId+" Y="+wire.Y);
             foreach(var lane in prepared.AddedParticipants)
                 log.AppendLine("add participant payload: model="+lane.ModelId+" shape="+lane.ShapeId+" X="+lane.X);
             foreach(var entry in prepared.AddedExecutions)
@@ -474,7 +477,8 @@ public static class SequenceStructureTrial
         summary+="\n今回の対象: 受信接続変更 "+reconnectCount+"件 / 実行区間削除 "+prepared.DeleteIds.Length+"件"
             +" / 実行区間追加 "+prepared.AddedExecutions.Length+"件"
             +" / 参加者追加 "+prepared.AddedParticipants.Length+"件 / 参加者削除 "+prepared.DeleteParticipantIds.Length+"件"
-            +" / メッセージ削除 "+prepared.DeleteMessageIds.Length+"件";
+            +" / メッセージ削除 "+prepared.DeleteMessageIds.Length+"件"
+            +" / メッセージ追加 "+prepared.AddedMessages.Length+"件";
         log.AppendLine(summary);
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
         catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}

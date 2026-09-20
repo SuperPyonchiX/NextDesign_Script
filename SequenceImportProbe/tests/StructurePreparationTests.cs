@@ -337,8 +337,88 @@ public static class StructurePreparationTests
         anchoredPlan.Changes.Add(new SequenceChange{Action="delete",Kind="message",Id=ids[6],Line=4});
         Require(SequenceStructurePreflight.Check(anchored,anchoredPlan).DeleteMessages.Count==0,"a message still used as a boundary was accepted");
     }
+    // A message the input adds after the last one, into space the bars already cover.
+    static void AddedMessage()
+    {
+        var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
+        var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
+        string editorId=raw["Editors"].Items.Single()["Id"].StringValue();
+        var current=new SequenceDocument();
+        current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
+        current.Elements.Add(new SequenceElement{Id=ids[2],Kind="participant",Parent=ids[0]});
+        current.Elements.Add(new SequenceElement{Id=ids[3],Kind="participant",Parent=ids[0]});
+        foreach(string id in new[]{ids[4],ids[5]})
+        {var e=new SequenceElement{Id=id,Kind="execution",Parent=ids[0]};e.Links["participant"]=new[]{id==ids[4]?ids[2]:ids[3]};current.Elements.Add(e);}
+        var msg=new SequenceElement{Id=ids[6],Kind="message",Parent=ids[0],Order=0,Text="probe()"};
+        msg.Attributes["sort"]="sync";
+        msg.Links["sender"]=new[]{ids[2]};msg.Links["receiver"]=new[]{ids[3]};
+        msg.Links["sendExecution"]=new[]{ids[4]};msg.Links["receiveExecution"]=new[]{ids[5]};current.Elements.Add(msg);
+
+        string wire="added-message";
+        var desired=current.Copy();
+        var extra=new SequenceElement{Id=wire,Kind="message",Parent=ids[0],Order=1,Text="again()"};
+        extra.Attributes["sort"]="sync";
+        extra.Links["sender"]=new[]{ids[2]};extra.Links["receiver"]=new[]{ids[3]};
+        extra.Links["sendExecution"]=new[]{ids[4]};extra.Links["receiveExecution"]=new[]{ids[5]};
+        desired.Elements.Add(extra);
+        var plan=new SyncPlan{Expected=desired};
+        plan.Changes.Add(new SequenceChange{Action="add",Kind="message",Id=wire,Line=5});
+
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate && gate.AddMessages.SequenceEqual(new[]{wire}),"added message was not a candidate");
+        Require(gate.CanCommit(true) && !gate.CanCommit(false),"commit modes accepted the wrong scope for a message");
+
+        var first=desired.Copy();first.Elements.Single(e=>e.Id==wire).Order=-1;
+        var firstPlan=new SyncPlan{Expected=first};firstPlan.Changes.AddRange(plan.Changes);
+        Require(SequenceStructurePreflight.Check(current,firstPlan).AddMessages.Count==0,"a message placed before existing ones was accepted");
+
+        var reply=desired.Copy();reply.Elements.Single(e=>e.Id==wire).Attributes["sort"]="reply";
+        var replyPlan=new SyncPlan{Expected=reply};replyPlan.Changes.AddRange(plan.Changes);
+        Require(SequenceStructurePreflight.Check(current,replyPlan).AddMessages.Count==0,"a sort with no existing sample was accepted");
+
+        var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan);
+        Require(package.AddedMessages.Length==1,"message was not prepared");
+        var added=package.AddedMessages[0];
+        var patch=SequenceJson.Parse(package.ReconnectJson);
+        var entity=patch["Entities"].Items.Single(e=>e["Id"].StringValue()==wire);
+        Require(entity["MetamodelId"].StringValue()=="message" && entity["Name"].StringValue()=="again()","new message did not clone the sample type or take its name");
+        Require(patch["Relations"].Items.Count==3,"the three endpoint relations were not built");
+        Require(added.RelationSources[0]==ids[4] && added.RelationSources[1]==ids[5] && added.RelationSources[2]==ids[0],
+            "endpoints are not sent before the interaction membership");
+        foreach(string id in added.RelationIds)
+        {
+            var relation=patch["Relations"].Items.Single(r=>r["Id"].StringValue()==id);
+            Require(relation["TargetId"].StringValue()==wire && relation["SourceIndex"]==null,"endpoint relation is wrong");
+        }
+        // The sample message sits at Y=80 inside bars that run from 50 to 170 and 80 to 160.
+        var wires=patch["Editors"].Items.Single()["Messages"].Items;
+        var created=wires.Single(sh=>sh["ModelId"].StringValue()==wire);
+        Require(wires.Count==2 && created["SourceY"].Raw=="130" && created["TargetY"].Raw=="130","new message was not placed one step below the last");
+
+        var state=new SequenceTrialState();
+        foreach(var e in raw["Entities"].Items)state.Models[e["Id"].StringValue()]=e.ToJsonString();
+        foreach(var r in raw["Relations"].Items)
+        {
+            string id=r["Id"].StringValue();
+            state.Relations[id]=new[]{r["SourceId"].StringValue(),r["TargetId"].StringValue(),r["SourceIndex"].Raw,r["TargetIndex"].Raw};
+            state.RelationFields[id]=r["MetamodelId"].StringValue();
+        }
+        foreach(var sh in SequenceEditorDocument.Read(raw.ToJsonString(),ids[0],editorId).Shapes())
+        {string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        state.Shapes[added.TemplateShapeId]=PumlBuild.Json(new[]{"probe()","80","80","0"});
+        state.Ports[ids[6]]=new[]{ids[4],ids[5],ids[2],ids[3],"sync"};
+        string before=state.Signature();
+        var expected=state.Expected(package,plan,false);
+        Require(expected.Models[wire]==PumlBuild.Json(new[]{"message","again()",ids[0],"False"}),"new message not in the expected state");
+        Require(expected.Shapes[added.ShapeId]==PumlBuild.Json(new[]{"again()","130","130","0"}),"new message shape not predicted");
+        Require(expected.ShapeModels[added.ShapeId]==wire,"new message shape owner missing");
+        Require(expected.Ports[wire].SequenceEqual(new[]{ids[4],ids[5],ids[2],ids[3],"sync"}),"new message ports not predicted");
+        Require(expected.Ports[ids[6]].SequenceEqual(state.Ports[ids[6]]),"the sample message ports changed");
+        Require(state.Signature()==before,"expected state mutated the snapshot");
+    }
     public static void Run()
     {
+        AddedMessage();
         DeletedMessage();
         AddedParticipant();
         AddedExecution();

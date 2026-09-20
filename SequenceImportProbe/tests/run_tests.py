@@ -128,6 +128,16 @@ public static class PayloadTest {
    if(SyncPlan.Build(messagePlan.Expected,messageAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("message semantic plan is not idempotent");
 
+   // The same pair read backwards puts the reply back, into the space the bars still cover.
+   var addBackPlan=SyncPlan.Build(messageAfter,batchAfter,()=>Guid.NewGuid().ToString());
+   var addBackGate=SequenceStructurePreflight.Check(messageAfter,addBackPlan);
+   if(!addBackGate.Candidate || addBackPlan.Changes.Count!=1 || addBackGate.AddMessages.Count!=1 || addBackGate.Targets!=1)
+       throw new Exception("message addition sample must add exactly one message: "+addBackPlan.ToJson()+addBackGate.ToJson());
+   if(!addBackGate.CanCommit(true) || addBackGate.CanCommit(false))
+       throw new Exception("message addition did not reach exactly the receiver-change commit mode");
+   if(SyncPlan.Build(addBackPlan.Expected,batchAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
+       throw new Exception("message addition semantic plan is not idempotent");
+
    int commits=0, cancels=0;
    var success = new SequenceCompletion();
    success.Commit(delegate { commits++; });
