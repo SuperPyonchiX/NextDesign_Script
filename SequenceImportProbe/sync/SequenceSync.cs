@@ -59,8 +59,10 @@ public sealed class SequenceDocument
         Action<IEnumerable<PumlNode>,string> visit=null;
         visit=(nodes,parent)=>{
             int order=0;SequenceElement previousEvent=null;
-            foreach(var n in nodes)
+            var orderedNodes=nodes.ToArray();
+            for(int nodeIndex=0;nodeIndex<orderedNodes.Length;nodeIndex++)
             {
+                var n=orderedNodes[nodeIndex];
                 if(n.Kind=="activate")
                 {
                     var e=new SequenceElement{Id="e"+(next++),Kind="execution",Parent=parent,Order=order++,Line=n.Line};
@@ -92,6 +94,11 @@ public sealed class SequenceDocument
                     foreach(var endpoint in new[]{new[]{"sendExecution",n.Left},new[]{"receiveExecution",n.Right}})
                         if(active.ContainsKey(endpoint[1]) && active[endpoint[1]].Count>0)item.Links[endpoint[0]]=new[]{active[endpoint[1]].Peek().Id};
                 }
+                // A self reply closing the innermost activation returns to its
+                // caller. Keep the sender on the inner bar; do not pop until deactivate.
+                if(n.Kind=="reply" && n.Left==n.Right && active.ContainsKey(n.Left) && active[n.Left].Count>1
+                    && nodeIndex+1<orderedNodes.Length && orderedNodes[nodeIndex+1].Kind=="deactivate" && orderedNodes[nodeIndex+1].Left==n.Left)
+                    item.Links["receiveExecution"]=new[]{active[n.Left].Skip(1).First().Id};
                 if(n.Kind=="fragment") {item.Attributes["operator"]=n.Operator;if(n.Operator!="group")item.Text="";}
                 if(n.Kind=="note" || n.Kind=="ref") { item.Links["targets"]=n.Targets.Select(t=>aliases[t]).ToArray();if(n.Kind=="note")item.Attributes["position"]=n.Operator; }
                 if(n.Kind=="destroy" || n.Kind=="create")item.Links["participant"]=new[]{aliases[n.Left]};
@@ -353,7 +360,12 @@ public static class SequenceReferenceResolver
     {
         var all=input.GroupBy(c=>c.Id).Select(g=>g.First()).ToArray();
         var qualified=all.Where(c=>!string.IsNullOrEmpty(c.Path) && c.Path==text).ToArray();
-        return (qualified.Length>0?qualified:all.Where(c=>c.Name==text))
+        var exact=qualified.Length>0?qualified:all.Where(c=>c.Name==text).ToArray();
+        if(exact.Length>0)return exact.OrderBy(c=>c.Path,StringComparer.Ordinal).ThenBy(c=>c.Id,StringComparer.Ordinal).ToArray();
+        string folded=SequenceLabels.Fold(text);
+        if(folded.Length==0)return new SequenceReferenceCandidate[0];
+        var foldedPaths=all.Where(c=>!string.IsNullOrEmpty(c.Path) && SequenceLabels.Fold(c.Path)==folded).ToArray();
+        return (foldedPaths.Length>0?foldedPaths:all.Where(c=>SequenceLabels.Fold(c.Name)==folded))
             .OrderBy(c=>c.Path,StringComparer.Ordinal).ThenBy(c=>c.Id,StringComparer.Ordinal).ToArray();
     }
 }

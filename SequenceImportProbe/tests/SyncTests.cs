@@ -202,6 +202,18 @@
         string portReport=SequenceAudit.Reasons(portOld,portNew,Plan(portOld,portNew));
         Require(portReport.Contains("receiveExecution") && portReport.Contains("入力=未解決"),"port and reference diagnostics missing");
         Require(!portReport.Contains("secret-target") && !portReport.Contains("hidden-label") && !portReport.Contains("hidden-ref"),"residual details disclosed source data");
+        var spaceRefs=new[]{new SequenceReferenceCandidate{Id="wide",Name="Task　Start",Path="Area　One::Task　Start"},new SequenceReferenceCandidate{Id="other",Name="Task  Start",Path="Else::Task  Start"}};
+        Require(SequenceReferenceResolver.Find("Task Start",spaceRefs).Length==2,"normalized ambiguity hidden");
+        Require(SequenceReferenceResolver.Find("Task　Start",spaceRefs).Single().Id=="wide","exact match lost priority");
+        Require(SequenceReferenceResolver.Find("Area One::Task Start",spaceRefs).Single().Id=="wide","qualified whitespace fallback failed");
+        Require(SequenceReferenceResolver.Find("Task Start",spaceRefs.Take(1)).Single().Id=="wide","wide space fallback failed");
+        Require(SequenceReferenceResolver.Find("TaskStart",spaceRefs).Length==0,"significant word boundary removed");
+        var selfReturn=Doc("activate A\nA -> A : nested\nactivate A\nA --> A : result\ndeactivate A\ndeactivate A");
+        var reply=selfReturn.Elements.Single(e=>e.Kind=="message" && e.Attributes["sort"]=="reply");
+        var returnInner=selfReturn.Elements.Single(e=>e.Id==reply.Links["sendExecution"][0]);
+        Require(reply.Links["receiveExecution"].SequenceEqual(returnInner.Links["outer"]),"self reply did not return to outer activation");
+        var selfNoClose=Doc("activate A\nactivate A\nA --> A : result\nA -> B : later\ndeactivate A\ndeactivate A").Elements.First(e=>e.Kind=="message");
+        Require(selfNoClose.Links["sendExecution"].SequenceEqual(selfNoClose.Links["receiveExecution"]),"self reply without immediate close was guessed");
         Console.WriteLine("PASS: all-kind semantic plans, mixed changes, ID retention, block edits, ambiguity, moves, source trivia and idempotence");
     }
 }
