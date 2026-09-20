@@ -717,3 +717,71 @@ public sealed class SequenceStructurePreparation
         return node.Items!=null && node.Items.Any(n=>Mentions(n,ids));
     }
 }
+
+// There is deliberately no commit callback. The native owner starts one transaction.
+public sealed class SequenceRollbackTrial
+{
+    public bool Applied, RollbackReturned, Restored;
+    public Exception ApplyError, RollbackError, VerifyError;
+    public void Run(Action apply,Action rollback,Action verifyRestored)
+    {
+        try {apply();Applied=true;}
+        catch(Exception ex){ApplyError=ex;}
+        finally
+        {
+            try {rollback();RollbackReturned=true;}
+            catch(Exception ex){RollbackError=ex;}
+            if(RollbackReturned)
+            {
+                try {verifyRestored();Restored=true;}
+                catch(Exception ex){VerifyError=ex;}
+            }
+        }
+    }
+}
+
+public sealed class SequenceTrialState
+{
+    public Dictionary<string,string> Models=new Dictionary<string,string>(), Shapes=new Dictionary<string,string>(), ShapeModels=new Dictionary<string,string>();
+    // Relations: source, target, source index, target index. Ports: send port, receive port, sender, receiver, kind.
+    public Dictionary<string,string[]> Relations=new Dictionary<string,string[]>(), Ports=new Dictionary<string,string[]>();
+    public string Signature()
+    {
+        return PumlBuild.Json(new object[]{Models.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>new[]{p.Key,p.Value}).ToArray(),
+            Shapes.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>new[]{p.Key,p.Value}).ToArray(),
+            ShapeModels.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>new[]{p.Key,p.Value}).ToArray(),
+            Relations.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>new[]{p.Key}.Concat(p.Value).ToArray()).ToArray(),
+            Ports.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>new[]{p.Key}.Concat(p.Value).ToArray()).ToArray()});
+    }
+    static int Differences(Dictionary<string,string> a,Dictionary<string,string> b)
+    {return a.Keys.Union(b.Keys).Count(k=>!a.ContainsKey(k) || !b.ContainsKey(k) || a[k]!=b[k]);}
+    public string DifferenceCounts(SequenceTrialState actual)
+    {
+        return "モデル="+Differences(Models,actual.Models)+" 関連="+Differences(Relations.ToDictionary(p=>p.Key,p=>PumlBuild.Json(p.Value)),actual.Relations.ToDictionary(p=>p.Key,p=>PumlBuild.Json(p.Value)))
+            +" 図形="+Differences(Shapes,actual.Shapes)+" 図形所属="+Differences(ShapeModels,actual.ShapeModels)
+            +" 送受信="+Differences(Ports.ToDictionary(p=>p.Key,p=>PumlBuild.Json(p.Value)),actual.Ports.ToDictionary(p=>p.Key,p=>PumlBuild.Json(p.Value)));
+    }
+    public SequenceTrialState Expected(SequenceStructurePreparation prepared,SyncPlan plan,bool delete)
+    {
+        var result=new SequenceTrialState{Models=new Dictionary<string,string>(Models),Shapes=new Dictionary<string,string>(Shapes),ShapeModels=new Dictionary<string,string>(ShapeModels),
+            Relations=Relations.ToDictionary(p=>p.Key,p=>p.Value.ToArray()),Ports=Ports.ToDictionary(p=>p.Key,p=>p.Value.ToArray())};
+        var patch=SequenceJson.Parse(prepared.ReconnectJson);
+        foreach(var r in patch["Relations"].Items)
+        {
+            string id=r["Id"].StringValue(),source=r["SourceId"].StringValue(),target=r["TargetId"].StringValue();
+            if(!result.Relations.ContainsKey(id) || result.Relations[id][1]!=target || !result.Ports.ContainsKey(target))throw new InvalidOperationException("S230: 変更前の受信関連が一致しません。");
+            result.Relations[id]=new[]{source,target,r["SourceIndex"].Raw,r["TargetIndex"].Raw};
+            result.Ports[target][1]=source;
+            result.Ports[target][3]=plan.Expected.Elements.Single(e=>e.Id==target).Links["receiver"].Single();
+        }
+        if(delete)
+        {
+            var removed=new HashSet<string>(prepared.DeleteIds);
+            foreach(string id in removed)result.Models.Remove(id);
+            foreach(string id in result.Relations.Where(p=>removed.Contains(p.Value[0]) || removed.Contains(p.Value[1])).Select(p=>p.Key).ToArray())result.Relations.Remove(id);
+            foreach(string id in result.ShapeModels.Where(p=>removed.Contains(p.Value)).Select(p=>p.Key).ToArray()){result.Shapes.Remove(id);result.ShapeModels.Remove(id);}
+            if(result.Ports.Values.Any(p=>removed.Contains(p[0]) || removed.Contains(p[1])))throw new InvalidOperationException("S230: 削除区間への接続が残っています。");
+        }
+        return result;
+    }
+}

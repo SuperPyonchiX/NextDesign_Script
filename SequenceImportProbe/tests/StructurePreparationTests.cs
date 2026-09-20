@@ -5,8 +5,27 @@ public static class StructurePreparationTests
     static void Set(SequenceJson n,string key,string value){n.Properties[key]=SequenceJson.Parse(SequencePayload.Q(value));}
     static void Reject(Action action,string reason)
     {bool rejected=false;try{action();}catch(InvalidOperationException){rejected=true;}Require(rejected,reason);}
+    static void RollbackTrials()
+    {
+        // Simulate reconnection, deletion, editor import and final verification failures.
+        for(int fail=-1;fail<4;fail++)
+        {
+            int value=0,cancels=0,checks=0;int chosen=fail;var trial=new SequenceRollbackTrial();
+            trial.Run(delegate {for(int step=0;step<4;step++){value++;if(step==chosen)throw new Exception("injected");}},
+                delegate{cancels++;value=0;},delegate{checks++;Require(value==0,"not restored");});
+            Require(cancels==1 && checks==1 && trial.Restored && trial.RollbackReturned,"rollback flow failed");
+            Require(trial.Applied==(fail<0) && (trial.ApplyError==null)==(fail<0),"apply result lost");
+        }
+        int attempts=0,verify=0;var rollbackFailure=new SequenceRollbackTrial();
+        rollbackFailure.Run(delegate{throw new Exception("apply");},delegate{attempts++;throw new Exception("rollback");},delegate{verify++;});
+        Require(attempts==1 && verify==0 && !rollbackFailure.Restored && !rollbackFailure.RollbackReturned && rollbackFailure.ApplyError!=null && rollbackFailure.RollbackError!=null,"rollback failure reported as restored");
+        var verifyFailure=new SequenceRollbackTrial();
+        verifyFailure.Run(delegate{},delegate{},delegate{throw new Exception("mismatch");});
+        Require(verifyFailure.Applied && verifyFailure.RollbackReturned && !verifyFailure.Restored && verifyFailure.VerifyError!=null,"verification failure ignored");
+    }
     public static void Run()
     {
+        RollbackTrials();
         var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
         var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;string replacement="replacement-execution";
         var extra=Clone(raw["Entities"].Items[5]);Set(extra,"Id",replacement);raw["Entities"].Items.Add(extra);
@@ -29,6 +48,20 @@ public static class StructurePreparationTests
         plan.Changes.Add(new SequenceChange{Action="update",Kind="message",Id=ids[6],Line=4});plan.Changes.Add(new SequenceChange{Action="delete",Kind="execution",Id=ids[5]});
         string original=raw.ToJsonString(),semantic=current.ToJson()+plan.Expected.ToJson();
         var package=SequenceStructurePreparation.Build(original,editorId,current,plan);
+        var state=new SequenceTrialState();
+        foreach(var e in raw["Entities"].Items)state.Models[e["Id"].StringValue()]=e.ToJsonString();
+        foreach(var r in raw["Relations"].Items)state.Relations[r["Id"].StringValue()]=new[]{r["SourceId"].StringValue(),r["TargetId"].StringValue(),r["SourceIndex"].Raw,r["TargetIndex"].Raw};
+        foreach(var sh in SequenceEditorDocument.Read(original,ids[0],editorId).Shapes()){string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        state.Ports[ids[6]]=new[]{ids[4],ids[5],ids[2],ids[3],"sync"};
+        string beforeState=state.Signature();
+        var connected=state.Expected(package,plan,false);var finalState=state.Expected(package,plan,true);
+        Require(connected.Models.ContainsKey(ids[5]) && connected.Ports[ids[6]][1]==replacement,"connect-only stage removed execution");
+        Require(!finalState.Models.ContainsKey(ids[5]) && !finalState.ShapeModels.Values.Contains(ids[5]),"expected deletion retained execution");
+        Require(finalState.Relations.ContainsKey(receiver["Id"].StringValue()) && finalState.Relations[receiver["Id"].StringValue()][0]==replacement,"reconnected relation dropped with old port");
+        Require(finalState.Ports[ids[6]][0]==ids[4] && finalState.Ports[ids[6]][3]==ids[3] && state.Signature()==beforeState,"expected SDK state mutated source or unrelated port");
+        var unscheduled=new SequenceTrialState();unscheduled.Ports["kept"]=new[]{ids[5],"","","","sync"};
+        var deletionOnly=new SequenceStructurePreparation{DeleteIds=new[]{ids[5]},ReconnectJson="{\"Relations\":[]}"};
+        Reject(()=>unscheduled.Expected(deletionOnly,plan,true),"deleting referenced port accepted");
         var reconnect=SequenceJson.Parse(package.ReconnectJson);var changed=reconnect["Relations"].Items.Single();
         var expected=Clone(receiver);Set(expected,"SourceId",replacement);
         Require(changed.ToJsonString()==expected.ToJsonString(),"relation identity, order or unknown data changed");

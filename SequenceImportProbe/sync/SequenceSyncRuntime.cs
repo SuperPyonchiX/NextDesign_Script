@@ -172,9 +172,10 @@ public static class SequenceSyncRuntime
         while(model!=null) {if(!visited.Add(model.Id))throw new InvalidOperationException("S210: モデルの所有関係が循環しています。");parts.Add(model.Name);model=model.Owner;}
         parts.Reverse();return string.Join("::",parts);
     }
-    public static void Preview(IApplication app,bool prepare=false)
+    public static void Preview(IApplication app,bool prepare=false,bool trial=false)
     {
         var log=new StringBuilder();string report=null;string screenshot=null;
+        prepare=prepare||trial;
         try
         {
             var diagram=app.Workspace.CurrentEditor as ISequenceDiagram;
@@ -245,11 +246,16 @@ public static class SequenceSyncRuntime
                     screenshot+="\f構造更新データの準備: 完了\n受信接続変更: "+preflight.ReconnectMessages.Count+" / 実行区間削除: "+preparation.DeleteIds.Length
                         +"\n退避データ・接続変更JSON・削除後の図形JSONを保存しました。\n図への適用・Undo/Redo・保存再読込: 未実施";
                     SequenceExperiment.Summary="構造更新データの準備: 完了 / 図への反映なし\n受信接続変更: "+preflight.ReconnectMessages.Count+" / 実行区間削除: "+preparation.DeleteIds.Length
-                        +"\n保存先: "+directory+"\n準備ファイルの手動インポートはしないでください。適用処理は未実装です。";
+                        +"\n保存先: "+directory+"\n準備ファイルの手動インポートはしないでください。保存ファイルから適用する機能はありません。";
+                    if(trial)
+                    {
+                        SequenceExperiment.Summary=SequenceStructureTrial.Run(app,project,diagram,preparation,plan,exported,directory,log);
+                        screenshot=SequenceExperiment.Summary+"\f会社PC内の試行診断\n"+log.ToString();
+                    }
                 }
             }
         }
-        catch(Exception ex) {SequenceExperiment.Summary=(prepare?"構造更新データの準備を完了できませんでした。図への反映なし。":"図全体の読取り検証を完了できませんでした。")+"\n"+ex.Message;log.AppendLine(ex.ToString());screenshot=null;}
+        catch(Exception ex) {SequenceExperiment.Summary=(trial?"構造更新の試行を完了できませんでした。診断表示を確認してください。":prepare?"構造更新データの準備を完了できませんでした。図への反映なし。":"図全体の読取り検証を完了できませんでした。")+"\n"+ex.Message;log.AppendLine(ex.ToString());screenshot=null;}
         try
         {
             string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.SequenceSync","reports");
@@ -261,5 +267,105 @@ public static class SequenceSyncRuntime
         }
         catch(Exception ex) {log.AppendLine("診断の保存失敗: "+ex.Message);SequenceExperiment.Summary+="\n診断ファイルを保存できませんでした。診断表示で確認してください。";}
         SequenceExperiment.Details=screenshot??log.ToString();SequenceExperiment.Show(app);
+    }
+}
+
+public static class SequenceStructureTrial
+{
+    static string Port(IMessagePort value) {var m=value as IModel;return m==null?"":m.Id;}
+    static string Number(double value){return value.ToString("R",System.Globalization.CultureInfo.InvariantCulture);}
+    static SequenceTrialState Read(IInteraction root,ISequenceDiagram diagram)
+    {
+        var state=new SequenceTrialState();
+        var tree=SequenceMappedUpdate.Tree(root).ToArray();
+        Action<IModel> record=m=>state.Models[m.Id]=PumlBuild.Json(new[]{m.Metaclass.Id,m.Name,m.Owner==null?"":m.Owner.Id,m.IsDeleted.ToString()});
+        foreach(var model in tree)
+        {
+            record(model);
+            foreach(var r in model.GetRelationsWhere((relation,field)=>true))
+            {
+                state.Relations[r.Id]=new[]{r.Source.Id,r.Target.Id,r.SourceIndex.ToString(System.Globalization.CultureInfo.InvariantCulture),r.TargetIndex.ToString(System.Globalization.CultureInfo.InvariantCulture)};
+                record(r.Source);record(r.Target);
+            }
+        }
+        foreach(var m in root.Messages)
+            state.Ports[m.Id]=new[]{Port(m.SendPort),Port(m.ReceivePort),m.Sender==null?"":m.Sender.Id,m.Receiver==null?"":m.Receiver.Id,m.Kind};
+        foreach(var shape in diagram.Shapes)
+        {
+            var rows=new List<string>();var node=shape as ISequenceNodeShape;
+            if(node!=null)rows.AddRange(new[]{Number(node.LocationX),Number(node.LocationY),Number(node.Width),Number(node.Height)});
+            var message=shape as IMessageShape;
+            if(message!=null)rows.AddRange(new[]{message.Text,Number(message.SourceY),Number(message.TargetY),Number(message.SelfloopBendsX)});
+            var execution=shape as IExecutionSpecificationShape;if(execution!=null)rows.Add(Number(execution.Length));
+            state.Shapes[shape.Id]=PumlBuild.Json(rows.ToArray());state.ShapeModels[shape.Id]=shape.ModelId;
+        }
+        foreach(var f in diagram.Fragments){state.Shapes[f.Id]+=f.Text;foreach(var o in f.Operands)state.Shapes[o.Id]+=PumlBuild.Json(new[]{o.Guard,Number(o.Position)});}
+        foreach(var n in diagram.Notes)state.Shapes[n.Id]+=n.Text;
+        foreach(var u in diagram.InteractionUses)state.Shapes[u.Id]+=u.Text;
+        foreach(var l in diagram.Lifelines)state.Shapes[l.Id]+=Number(l.TimelineLength);
+        return state;
+    }
+    static void Verify(SequenceTrialState expected,SequenceTrialState actual,string phase,StringBuilder log)
+    {
+        string differences=expected.DifferenceCounts(actual);log.AppendLine(phase+": "+differences);
+        if(expected.Signature()!=actual.Signature())throw new InvalidOperationException("S230: "+phase+"の照合が不一致です。"+differences);
+    }
+    static void Import(IProject project,string json,StringBuilder log)
+    {
+        var result=project.ImportUnitFromJson(json,null,null);
+        if(result==null)throw new InvalidOperationException("S230: インポート結果がありません。");
+        log.AppendLine("trial import: "+result.State);
+        foreach(var e in result.Errors)log.AppendLine(e.Kind+": "+e.Message);
+        if(result.State!="success" || result.Errors.Any(e=>e.Kind!=UnitImportErrorKind.Info))throw new InvalidOperationException("S230: インポートが失敗または警告を返しました。");
+    }
+    public static string Run(IApplication app,IProject project,ISequenceDiagram diagram,SequenceStructurePreparation prepared,SyncPlan plan,string exported,string directory,StringBuilder log)
+    {
+        var root=diagram.Model as IInteraction;
+        var before=Read(root,diagram);string original=before.Signature();
+        var expectedReconnect=before.Expected(prepared,plan,false);
+        var expectedFinal=before.Expected(prepared,plan,true);
+        string rootId=root.Id,editorId=diagram.Id;
+        Func<ISequenceDiagram> fresh=()=>{
+            var model=project.GetModelById(rootId) as IInteraction;
+            if(model==null)throw new InvalidOperationException("S230: 対象の図を取得できません。");
+            return model.GetEditors().OfType<ISequenceDiagram>().Single(d=>d.Id==editorId);
+        };
+        if(!app.Window.UI.ShowConfirmDialog("コピーのプロジェクトで実行してください。\n現在の図に受信接続変更と実行区間削除を一時適用し、照合後に必ず取り消します。\n受信接続変更: "+SequenceJson.Parse(prepared.ReconnectJson)["Relations"].Items.Count+" / 実行区間削除: "+prepared.DeleteIds.Length+"\n自動保存・変更の確定は行いません。試行しますか？",SequenceExperiment.Title))
+            return "UPDATE005: キャンセル / 図への変更なし";
+        if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=editorId
+            || Read(root,fresh()).Signature()!=original)
+            throw new InvalidOperationException("S230: 確認中に対象の図が変化しました。");
+        // Serialized attributes are checked before starting; export is unavailable after a write.
+        if(SequenceEditorCapture.Read(project,root,diagram,log).Fingerprint()!=SequenceEditorDocument.Read(exported,rootId,editorId).Fingerprint())
+            throw new InvalidOperationException("S230: 確認中に表示設定が変化しました。");
+        SequenceExperiment.Write(Path.Combine(directory,"trial-before-sdk.json"),original);
+        SequenceExperiment.Write(Path.Combine(directory,"trial-expected-sdk.json"),expectedFinal.Signature());
+        string stage="トランザクション開始";
+        var transaction=project.BeginUndoTransaction(false);
+        if(transaction==null)throw new InvalidOperationException("S230: トランザクションを開始できません。");
+        var trial=new SequenceRollbackTrial();
+        trial.Run(delegate {
+            stage="受信接続の変更";Import(project,prepared.ReconnectJson,log);
+            Verify(expectedReconnect,Read((IInteraction)project.GetModelById(rootId),fresh()),"接続変更後",log);
+            log.AppendLine("trial receiver reconnection: verified");
+            stage="不要実行区間の削除";
+            using(project.SuspendModelVerification())foreach(string id in prepared.DeleteIds)project.GetModelById(id).Delete();
+            stage="削除後のエディタ反映";Import(project,prepared.EditorAfterDeleteJson,log);
+            foreach(string id in prepared.DeleteIds){var m=project.GetModelById(id);if(m!=null && !m.IsDeleted)throw new InvalidOperationException("S230: 削除対象が残っています。");}
+            Verify(expectedFinal,Read((IInteraction)project.GetModelById(rootId),fresh()),"削除後",log);
+            log.AppendLine("trial execution deletion and SDK state: verified");
+        },delegate {transaction.Rollback();},delegate {
+            Verify(before,Read((IInteraction)project.GetModelById(rootId),fresh()),"取消後",log);
+        });
+        // Explicit rollback only; Dispose may trigger a second rollback with autoCommit=false.
+        foreach(var error in new[]{trial.ApplyError,trial.RollbackError,trial.VerifyError})if(error!=null)log.AppendLine(error.ToString());
+        string summary="ケース: UPDATE005 / "+(trial.Applied?"一時適用・SDK読戻し照合: 一致":"停止段階: "+stage)
+            +"\n取消API: "+(trial.RollbackReturned?"正常終了":"失敗・未確認")+" / 復元照合: "+(trial.Restored?"一致":"未確認・不一致")
+            +"\n変更の確定・プロジェクト保存: していません\nスタイルの適用後読戻し・保存再読込: 未検証"
+            +(trial.Restored?"":"\n保存せずコピーを開き直してください。")+"\nこの結果と診断表示を撮影してください。";
+        log.AppendLine(summary);
+        try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
+        catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}
+        return summary;
     }
 }

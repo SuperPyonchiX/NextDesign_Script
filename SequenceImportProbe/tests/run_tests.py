@@ -30,6 +30,13 @@ public static class PayloadTest {
    EditorTests.Run();
    SyncTests.Run();
    StructurePreparationTests.Run();
+   var trialBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-trial-before.puml")));
+   var trialAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-trial-after.puml")));
+   var trialPlan=SyncPlan.Build(trialBefore,trialAfter,()=>Guid.NewGuid().ToString());
+   var trialGate=SequenceStructurePreflight.Check(trialBefore,trialPlan);
+   if(!trialGate.Candidate || trialPlan.Changes.Count!=1 || trialGate.DeleteExecutions.Count!=1 || trialGate.ReconnectMessages.Count!=0)
+       throw new Exception("trial sample is not exactly one execution deletion");
+
    int commits=0, cancels=0;
    var success = new SequenceCompletion();
    success.Commit(delegate { commits++; });
