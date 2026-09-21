@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.6.2";
+    public const string Version = "0.6.3";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -1331,7 +1331,9 @@ public static class ClassSyncRuntime
         ClassEditorCapture.Unit unit=null;
         // The editor re-import does not come back on Rollback (K034), so the trial only
         // proves the relationship write; the visible line is applied on commit alone.
-        if((preflight.LinkAddCount>0 || preflight.ClassAddCount>0) && retain)
+        // Class nodes come from AddNodeShape and are visible (K053), so only link additions
+        // need the editor capture and its saved-project precondition.
+        if(preflight.LinkAddCount>0 && retain)
         {
             var diagramModel=ClassDiagramKind.ModelOf(editor);
             if(diagramModel==null || string.IsNullOrEmpty(project.Path))throw new InvalidOperationException("C220: 保存済みのプロジェクトで実行してください。");
@@ -1380,7 +1382,8 @@ public static class ClassSyncRuntime
                     c.Node=node;
                     log.AppendLine("class node "+node.Id+" at ("+node.LocationX+","+node.LocationY+") visible="+node.IsVisible);
                 }
-                else log.AppendLine("class node not created through the API; the commit will add it to the editor");
+                else if(unit!=null)log.AppendLine("class node not created through the API; the commit will add it to the editor");
+                else throw new InvalidOperationException("C230: クラスのノードを作成できませんでした（AddNodeShape がノードを返しませんでした）。");
             }
             if(deferredMembers.Count>0 || deferredLinks.Count>0)
             {
