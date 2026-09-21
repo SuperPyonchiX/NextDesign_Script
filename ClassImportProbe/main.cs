@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.5.0";
+    public const string Version = "0.5.1";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -1047,8 +1047,19 @@ public static class ClassSyncRuntime
                 if(ClassText.Inline(ClassText.Normalize(member.Name))!=change.Text)throw new InvalidOperationException("C220: 削除するメンバの名前が読取りと一致しません。");
                 // A type definition child (StructureType etc.) may be referenced as the type of
                 // other members; refuse when anything outside the member itself points at it.
-                var incoming=member.GetRelationsWhere((rel,f)=>rel.Target!=null && rel.Target.Id==member.Id && rel.IsReference).Cast<IRelationship>().ToList();
-                if(incoming.Count>0)throw new InvalidOperationException("C220: メンバ '"+change.Text+"' は "+incoming.Count+" 件の参照先になっているため削除しません。");
+                // References from outside the member's own subtree (a sequence message calling
+                // the operation, an attribute typed by this definition) keep it alive; the
+                // stop reason names them so the input can be judged. References from its own
+                // arguments do not count.
+                var incoming=member.GetRelationsWhere((rel,f)=>rel.Target!=null && rel.Target.Id==member.Id && rel.IsReference).Cast<IRelationship>()
+                    .Where(rel=>{var src=rel.Source;int g=0;while(src!=null && g++<32){if(src.Id==member.Id)return false;src=src.Owner;}return true;}).ToList();
+                if(incoming.Count>0)
+                {
+                    var who=incoming.Take(5).Select(rel=>{var src=rel.Source;string field=rel.SourceField!=null?rel.SourceField.Name:"?";var owner=src==null?null:src.Owner;
+                        return (src==null?"?":src.ClassName+" '"+ClassText.Normalize(src.Name)+"'")+"."+field+(owner==null?"":" in "+owner.ClassName+" '"+ClassText.Normalize(owner.Name)+"'");}).ToArray();
+                    foreach(var w in who)log.AppendLine("referenced by: "+w);
+                    throw new InvalidOperationException("C220: メンバ '"+change.Text+"' は "+incoming.Count+" 件の参照先になっているため削除しません。\n参照元: "+string.Join(" / ",who)+(incoming.Count>5?" ...":""));
+                }
                 // An operation owns its arguments and they go with it; anything else with
                 // children (a type definition with members) stays.
                 if(change.Kind!="operation" && member.GetChildren().Cast<IModel>().Any(m=>!m.IsDeleted))throw new InvalidOperationException("C220: メンバ '"+change.Text+"' は子モデルを持つため削除しません。");
