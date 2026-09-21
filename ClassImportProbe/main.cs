@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.3.0";
+    public const string Version = "0.3.1";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -357,7 +357,7 @@ public sealed class ClassDiagramSnapshot
             Limitations.Add("関連の種別が対応表にないため既定の矢印で読みました: フィールド="+f.Name);
         return o.DefaultLink;
     }
-    static string Multiplicity(IField f)
+    public static string Multiplicity(IField f)
     {
         int lower,upper;
         try { lower=f.LowerBound;upper=f.UpperBound; } catch(Exception) { return ""; }
@@ -700,6 +700,26 @@ public static class ClassSyncRuntime
         if(cls.Name==className)return true;
         try { return cls.GetAllSuperClasses().Cast<IClass>().Any(c=>c.Name==className); } catch(Exception) { return false; }
     }
+    static ClassElement ClassByAlias(ClassDocument doc,string alias) { return doc.Elements.FirstOrDefault(e=>e.Kind=="class" && e.Attr("alias")==alias); }
+    static bool RemovePartnerLine(ClassDocument doc,string fromAlias,string toAlias,string field)
+    {
+        var from=ClassByAlias(doc,fromAlias);var to=ClassByAlias(doc,toAlias);
+        if(from==null || to==null)return false;
+        var line=doc.Elements.FirstOrDefault(e=>e.Kind=="link" && e.Link("from")==from.Id && e.Link("to")==to.Id && e.Text==field);
+        if(line==null)return false;
+        doc.Elements.Remove(line);return true;
+    }
+    static bool AddPartnerLine(ClassDocument doc,string fromAlias,string toAlias,IField field,ClassSyncOptions options)
+    {
+        var from=ClassByAlias(doc,fromAlias);var to=ClassByAlias(doc,toAlias);
+        if(from==null || to==null)return false;
+        if(doc.Elements.Any(e=>e.Kind=="link" && e.Link("from")==from.Id && e.Link("to")==to.Id && e.Text==field.Name))return false;
+        string arrow;if(!options.LinkMap.TryGetValue(field.Name,out arrow))arrow=options.DefaultLink;
+        var e=new ClassElement{Id="implied"+doc.Elements.Count,Kind="link",Parent="root",Text=ClassText.IsSystemName(field.Name)?"":ClassText.Inline(field.Name),Order=doc.Elements.Count};
+        e.Attributes["arrow"]=arrow;e.Attributes["field"]=field.Name;e.Attributes["toMultiplicity"]=ClassDiagramSnapshot.Multiplicity(field);
+        e.Links["from"]=new[]{from.Id};e.Links["to"]=new[]{to.Id};
+        doc.Elements.Add(e);return true;
+    }
     static int CountConnectors(IApplication app)
     {
         try { var d=app.Workspace.CurrentEditor as IDiagram;return d==null?-1:d.Connectors.Cast<object>().Count(); } catch(Exception) { return -1; }
@@ -771,6 +791,10 @@ public static class ClassSyncRuntime
         // also looks up the relationship to learn the paired field on the other side, so the
         // input can be checked for the partner line before anything is written.
         var links=new List<ResolvedLink>();
+        // The expected document: the input plus what the product does on the other side of a
+        // two-field relationship. Partner lines are dropped for deletes here and added after
+        // a Relate once the partner field has been observed.
+        var effective=desired.Copy();
         foreach(var change in preflight.Links)
         {
             string fromId,toId;
@@ -796,9 +820,12 @@ public static class ClassSyncRuntime
                 {
                     var partner=relation.SourceField!=null && relation.SourceField.Name==change.Field?relation.TargetField:relation.SourceField;
                     resolved.RelationId=relation.Id;resolved.PartnerField=partner==null?"":partner.Name;
-                    log.AppendLine("delete link relation="+relation.Id+" class="+(ClassDiagramKind.ModelOf(relation)==null?"?":"")+" fields="+change.Field+"/"+resolved.PartnerField+" twoWay="+relation.IsTwoWay);
-                    // If the input still lists the partner line, the read-back will report it as a
-                    // residual and the trial rolls back; the message names the line to remove.
+                    log.AppendLine("delete link relation="+relation.Id+" fields="+change.Field+"/"+resolved.PartnerField+" twoWay="+relation.IsTwoWay);
+                    // One relationship carries both fields (K027): removing this side removes the
+                    // partner line too. If the input still lists it, drop it from the expected
+                    // document instead of failing the read-back.
+                    if(resolved.PartnerField.Length>0 && RemovePartnerLine(effective,change.ToAlias,change.FromAlias,resolved.PartnerField))
+                        log.AppendLine("partner line dropped from the expected input: "+change.ToAlias+" -> "+change.FromAlias+" : "+resolved.PartnerField);
                 }
             }
             log.AppendLine("link target: "+change.Action+" "+from.ClassName+" '"+from.Name+"' -["+change.Field+" : "+field.Type+"]-> "+to.ClassName+" '"+to.Name+"'");
@@ -847,20 +874,31 @@ public static class ClassSyncRuntime
             foreach(var l in links)
             {
                 stage=l.Change.Action=="add"?"関連の追加":"関連の削除";
-                if(l.Change.Action=="add")l.From.Relate(l.Change.Field,l.To);else l.From.UnRelate(l.Change.Field,l.To);
-                bool present=l.From.GetFieldValues(l.Change.Field).Cast<object>().OfType<IModel>().Any(m=>m.Id==l.To.Id);
-                if(present!=(l.Change.Action=="add"))throw new InvalidOperationException("C230: 関連の読戻しが一致しません: "+l.Change.FromAlias+" -> "+l.Change.ToAlias+" : "+l.Change.Field);
-                // Observe what the product did on the other side and on the canvas.
+                bool wanted=l.Change.Action=="add";
+                Func<bool> presentNow=()=>l.From.GetFieldValues(l.Change.Field).Cast<object>().OfType<IModel>().Any(m=>m.Id==l.To.Id);
+                // The partner side of the same relationship may already have done this.
+                if(presentNow()==wanted) { log.AppendLine("already "+(wanted?"present":"absent")+" through the partner field: "+l.Change.FromAlias+" -> "+l.Change.ToAlias+" : "+l.Change.Field);continue; }
+                if(wanted)l.From.Relate(l.Change.Field,l.To);else l.From.UnRelate(l.Change.Field,l.To);
+                if(presentNow()!=wanted)throw new InvalidOperationException("C230: 関連の読戻しが一致しません: "+l.Change.FromAlias+" -> "+l.Change.ToAlias+" : "+l.Change.Field);
+                // Observe what the product did on the other side; an add's partner field is
+                // learned here and its line joins the expected document.
                 try
                 {
-                    var relations=l.From.GetRelationsOf(l.To).Cast<IRelationship>().Select(x=>x.Id+" "+(x.SourceField==null?"-":x.SourceField.Name)+"/"+(x.TargetField==null?"-":x.TargetField.Name)).ToArray();
-                    log.AppendLine("after "+l.Change.Action+": relations "+l.From.Name+"->"+l.To.Name+" = ["+string.Join(", ",relations)+"]");
+                    var relations=l.From.GetRelationsOf(l.To).Cast<IRelationship>().ToList();
+                    log.AppendLine("after "+l.Change.Action+": relations "+l.From.Name+"->"+l.To.Name+" = ["+string.Join(", ",relations.Select(x=>x.Id+" "+(x.SourceField==null?"-":x.SourceField.Name)+"/"+(x.TargetField==null?"-":x.TargetField.Name)).ToArray())+"]");
+                    if(wanted)
+                    {
+                        var mine=relations.FirstOrDefault(x=>(x.SourceField!=null && x.SourceField.Name==l.Change.Field) || (x.TargetField!=null && x.TargetField.Name==l.Change.Field));
+                        var partner=mine==null?null:(mine.SourceField!=null && mine.SourceField.Name==l.Change.Field?mine.TargetField:mine.SourceField);
+                        if(partner!=null && partner.Name!=l.Change.Field && AddPartnerLine(effective,l.Change.ToAlias,l.Change.FromAlias,partner,options))
+                            log.AppendLine("partner line added to the expected input: "+l.Change.ToAlias+" -> "+l.Change.FromAlias+" : "+partner.Name);
+                    }
                 }
                 catch(Exception ex) { log.AppendLine("GetRelationsOf after write failed: "+ex.Message); }
             }
             if(links.Count>0)log.AppendLine("connectors on the diagram: "+connectorsBefore+" -> "+CountConnectors(app));
             stage="更新後の照合";
-            VerifyAgainst(app,editorId,desired,"更新後",log);
+            VerifyAgainst(app,editorId,effective,"更新後",log);
         };
         Action rollback=delegate {stage="取消";transaction.Rollback();};
         Action verifyRestored=delegate {stage="取消後の照合";VerifyRestored(app,editorId,originalJson,log);};
@@ -875,7 +913,7 @@ public static class ClassSyncRuntime
             lines.Add("確定: "+(completion.Committed?"成功":completion.Applied?"失敗":"未実施"));
             if(completion.Committed)
             {
-                bool still=Matches(delegate {VerifyAgainst(app,editorId,desired,"確定後",log);},log);
+                bool still=Matches(delegate {VerifyAgainst(app,editorId,effective,"確定後",log);},log);
                 lines.Add("確定後の再照合: "+(still?"一致":"不一致（診断ファイル参照）"));
                 log.AppendLine("undo availability: project="+project.CanUndo+" workspace="+app.Workspace.CanUndo()+" (nested transaction; see K113)");
                 lines.Add("Undo/Redo・保存再読込: 手動で確認してください");
