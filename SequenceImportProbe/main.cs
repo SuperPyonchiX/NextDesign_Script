@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.70";
+    public const string Title = "シーケンス生成実験 / 0.8.71";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -4134,7 +4134,10 @@ public sealed class SequenceStructurePreparation
             newFrameShapes.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,
                 "X",Number(box["X"]),"Y",Number(box["Y"]),"Width",Number(box["Width"]),"Height",Number(box["Height"])))));
             frames.Add(new SequenceAddedFragment{ModelId=id,Metaclass=types.Fragment,Name=name,OwnerId=root,
-                ShapeId=shapeId,TemplateShapeId=frameTemplate==null?"":V(frameTemplate,"Id"),Text=name,
+                // The shape carries the operator as written, except for a group, which shows
+                // its own name.
+                ShapeId=shapeId,TemplateShapeId=frameTemplate==null?"":V(frameTemplate,"Id"),
+                Text=operatorName=="group"?name:operatorName,
                 Geometry=PumlBuild.Json(new[]{Number(box["X"]),Number(box["Y"]),Number(box["Width"]),Number(box["Height"])}),
                 RelationIds=relationIds.ToArray(),RelationSources=relationSources.ToArray(),
                 RelationTargets=relationTargets.ToArray(),RelationFields=relationFields.ToArray()});
@@ -4652,26 +4655,49 @@ public sealed class SequenceTrialState
     // reports them back with the representation drift its export already shows on every
     // imported coordinate. Round both sides for those shapes only; existing shapes are
     // compared as the SDK reports them, unchanged.
+    // A shape signature is one or more arrays followed by free text, and an operand puts
+    // its position in the second one. Round every array, not only the first.
+    static string RoundArrays(string value)
+    {
+        var output=new StringBuilder();
+        int at=0;
+        while(at<value.Length)
+        {
+            if(value[at]!='[') {output.Append(value[at]);at++;continue;}
+            int start=at,depth=0;bool text=false;
+            for(;at<value.Length;at++)
+            {
+                char c=value[at];
+                if(text) { if(c=='\\')at++; else if(c=='"')text=false; continue; }
+                if(c=='"') {text=true;continue;}
+                if(c=='[') {depth++;continue;}
+                if(c==']') {depth--;if(depth==0){at++;break;}}
+            }
+            string chunk=value.Substring(start,at-start);
+            try
+            {
+                var node=SequenceJson.Parse(chunk);
+                if(node==null || node.Items==null) {output.Append(chunk);continue;}
+                var rows=new List<string>();
+                foreach(var item in node.Items)
+                {
+                    string raw=item.StringValue();double number;
+                    rows.Add(double.TryParse(raw,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out number)
+                        ? Math.Round(number,3).ToString("R",System.Globalization.CultureInfo.InvariantCulture) : raw);
+                }
+                output.Append(PumlBuild.Json(rows.ToArray()));
+            }
+            catch(Exception) {output.Append(chunk);}
+        }
+        return output.ToString();
+    }
     public void Round(IEnumerable<string> shapeIds)
     {
         foreach(string id in shapeIds)
         {
             string value;
             if(!Shapes.TryGetValue(id,out value))continue;
-            int close=value.LastIndexOf(']');
-            if(close<0)continue;
-            string suffix=value.Substring(close+1);
-            SequenceJson node;
-            try {node=SequenceJson.Parse(value.Substring(0,close+1));} catch(Exception) {continue;}
-            if(node==null || node.Items==null)continue;
-            var rows=new List<string>();
-            foreach(var item in node.Items)
-            {
-                string raw=item.StringValue();double number;
-                rows.Add(double.TryParse(raw,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out number)
-                    ? Math.Round(number,3).ToString("R",System.Globalization.CultureInfo.InvariantCulture) : raw);
-            }
-            Shapes[id]=PumlBuild.Json(rows.ToArray())+suffix;
+            Shapes[id]=RoundArrays(value);
         }
     }
     public string ShapeDifferences(SequenceTrialState actual)
@@ -4750,7 +4776,6 @@ public sealed class SequenceTrialState
                 throw new InvalidOperationException("S230: フラグメントの図形の項目数が想定と違います。");
             result.Shapes[frame.ShapeId]=frame.Geometry+frame.Text;
             result.ShapeModels[frame.ShapeId]=frame.ModelId;
-            double frameY=Coordinate(box.Items[1].StringValue()),frameHeight=Coordinate(box.Items[3].StringValue());
             foreach(var branch in prepared.AddedOperands.Where(o=>o.OwnerId==frame.ModelId))
             {
                 result.Models[branch.ModelId]=PumlBuild.Json(new[]{branch.Metaclass,branch.Name,branch.OwnerId,"False"});
@@ -4760,16 +4785,9 @@ public sealed class SequenceTrialState
                 result.Relations[branch.RelationIds[0]]=new[]{branch.OwnerId,branch.ModelId,
                     index.ToString(System.Globalization.CultureInfo.InvariantCulture),"0"};
                 result.RelationFields[branch.RelationIds[0]]=field;
-                // The product lays the operand out inside the frame: the band runs from this
-                // operand's position down to the next one, or to the bottom of the frame.
-                double top=Coordinate(branch.Position),height=frameHeight-top;
-                foreach(var sibling in prepared.AddedOperands.Where(o=>o.OwnerId==frame.ModelId))
-                {
-                    double other=Coordinate(sibling.Position);
-                    if(other>top)height=Math.Min(height,other-top);
-                }
-                result.Shapes[branch.ShapeId]=PumlBuild.Json(new[]{box.Items[0].StringValue(),
-                    Coordinate(frameY+top),box.Items[2].StringValue(),Coordinate(height)})
+                // An operand has no rectangle of its own: the product reads back an empty
+                // geometry and keeps only the guard and the offset from the frame's top.
+                result.Shapes[branch.ShapeId]=PumlBuild.Json(new string[0])
                     +PumlBuild.Json(new[]{branch.Guard,branch.Position});
                 result.ShapeModels[branch.ShapeId]=branch.ModelId;
             }
