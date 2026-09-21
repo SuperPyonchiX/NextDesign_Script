@@ -1,8 +1,8 @@
 {
   "name": "ClassImportProbe",
   "displayName": "クラス図同期実験",
-  "description": "PlantUMLと既存クラス図を比較する実験用拡張。0.1.0は読取り専用。",
-  "version": "0.6.5",
+  "description": "PlantUMLを正本にして既存クラス図を差分更新する拡張。",
+  "version": "0.7.0",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -56,6 +56,18 @@
               ]
             },
             {
+              "id": "ClassImportProbe.Apply",
+              "label": "反映",
+              "controls": [
+                {
+                  "id": "ClassImportProbe.ApplyButton",
+                  "type": "Button",
+                  "label": "PlantUMLを反映",
+                  "command": "ClassImportProbe.ApplySync"
+                }
+              ]
+            },
+            {
               "id": "ClassImportProbe.TextUpdate",
               "label": "更新の検証",
               "controls": [
@@ -78,6 +90,10 @@
       ]
     },
     "commands": [
+      {
+        "id": "ClassImportProbe.ApplySync",
+        "execFunc": "ApplyClassSync"
+      },
       {
         "id": "ClassImportProbe.TrialText",
         "execFunc": "TrialClassText"

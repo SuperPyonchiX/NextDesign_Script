@@ -604,6 +604,18 @@ public static class ClassDiagramProbe
 
 public static class ClassSyncRuntime
 {
+    // The diagram a run works on. Set by Run(); null means the ribbon's active editor.
+    // Re-reading through the model keeps the reference valid after undo or re-import.
+    [ThreadStatic] static string targetModelId, targetEditorId;
+    static IEditor Current(IApplication app)
+    {
+        if(targetEditorId==null)return app.Workspace.CurrentEditor;
+        var active=app.Workspace.CurrentEditor;
+        if(active!=null && active.Id==targetEditorId)return active;
+        var project=app.Workspace.CurrentProject;var model=project==null?null:project.GetModelById(targetModelId);
+        if(model==null)return null;
+        return model.GetEditors().Cast<IEditor>().FirstOrDefault(e=>e.Id==targetEditorId);
+    }
     static void Refresh(IApplication app,StringBuilder log)
     {
         try {app.Window.EditorPage.UpdateEditors();log.AppendLine("editors refreshed");}
@@ -613,7 +625,7 @@ public static class ClassSyncRuntime
     // Re-read the diagram through the SDK and compare it with the input. Never re-export.
     static void VerifyAgainst(IApplication app,string editorId,ClassDocument desired,string stage,StringBuilder log,bool tolerateMemberOrder=false)
     {
-        var editor=app.Workspace.CurrentEditor;
+        var editor=Current(app);
         if(editor==null || editor.Id!=editorId)throw new InvalidOperationException("C230: "+stage+": 対象の図が表示されていません。");
         var after=ClassDiagramSnapshot.Read((IDiagram)editor,new ClassSyncOptions(),log).Document;
         var residual=ClassSyncPlan.Build(after,desired,()=>Guid.NewGuid().ToString());
@@ -636,7 +648,7 @@ public static class ClassSyncRuntime
     }
     static void VerifyRestored(IApplication app,string editorId,string originalJson,StringBuilder log)
     {
-        var editor=app.Workspace.CurrentEditor;
+        var editor=Current(app);
         if(editor==null || editor.Id!=editorId)throw new InvalidOperationException("C230: 取消後: 対象の図が表示されていません。");
         var after=ClassDiagramSnapshot.Read((IDiagram)editor,new ClassSyncOptions(),log).Document;
         if(after.ToJson()!=originalJson)throw new InvalidOperationException("C230: 取消後: 図が処理前の状態に戻っていません。");
@@ -859,7 +871,7 @@ public static class ClassSyncRuntime
     static void AddSystemLinesForNewClasses(IApplication app,ClassDocument doc,List<ResolvedClass> newClasses,ClassSyncOptions options,StringBuilder log)
     {
         if(newClasses.Count==0)return;
-        var d=app.Workspace.CurrentEditor as IDiagram;if(d==null)return;
+        var d=Current(app) as IDiagram;if(d==null)return;
         var after=ClassDiagramSnapshot.Read(d,options,new StringBuilder());
         var newModelIds=new HashSet<string>(newClasses.Select(c=>c.Model.Id),StringComparer.Ordinal);
         var newElementIds=new HashSet<string>(after.ModelIds.Where(p=>newModelIds.Contains(p.Value)).Select(p=>p.Key),StringComparer.Ordinal);
@@ -893,7 +905,7 @@ public static class ClassSyncRuntime
     // connector's own Id, model and ends and IsVisible=true, then re-apply Editors only.
     static void ReapplyEditorWithVisibleConnectors(IApplication app,IProject project,ClassEditorCapture.Unit unit,HashSet<string> before,StringBuilder log,List<ResolvedClass> newClasses)
     {
-        var d=app.Workspace.CurrentEditor as IDiagram;if(d==null)throw new InvalidOperationException("C230: 図が表示されていません。");
+        var d=Current(app) as IDiagram;if(d==null)throw new InvalidOperationException("C230: 図が表示されていません。");
         var connectors=unit.Editor["Connectors"];
         int added=0;
         // New classes: a node cloned from the sibling's node entry (same DefinitionId, Style,
@@ -960,7 +972,7 @@ public static class ClassSyncRuntime
     }
     static void ShowNewConnectors(IApplication app,HashSet<string> before,StringBuilder log)
     {
-        var d=app.Workspace.CurrentEditor as IDiagram;if(d==null)return;
+        var d=Current(app) as IDiagram;if(d==null)return;
         int shown=0;
         foreach(var c in d.Connectors.Cast<object>().ToList())
         {
@@ -986,12 +998,12 @@ public static class ClassSyncRuntime
     }
     static int CountConnectors(IApplication app)
     {
-        try { var d=app.Workspace.CurrentEditor as IDiagram;return d==null?-1:d.Connectors.Cast<object>().Count(); } catch(Exception) { return -1; }
+        try { var d=Current(app) as IDiagram;return d==null?-1:d.Connectors.Cast<object>().Count(); } catch(Exception) { return -1; }
     }
     static HashSet<string> ConnectorIds(IApplication app)
     {
         var ids=new HashSet<string>(StringComparer.Ordinal);
-        try { var d=app.Workspace.CurrentEditor as IDiagram;if(d!=null)foreach(var c in d.Connectors) { var s=c as IShape;if(s!=null)ids.Add(s.Id); } } catch(Exception) { }
+        try { var d=Current(app) as IDiagram;if(d!=null)foreach(var c in d.Connectors) { var s=c as IShape;if(s!=null)ids.Add(s.Id); } } catch(Exception) { }
         return ids;
     }
     // What the product drew for a connector that appeared during this run: both ends, their
@@ -1000,7 +1012,7 @@ public static class ClassSyncRuntime
     {
         try
         {
-            var d=app.Workspace.CurrentEditor as IDiagram;if(d==null)return;
+            var d=Current(app) as IDiagram;if(d==null)return;
             foreach(var c in d.Connectors)
             {
                 var connector=c as IConnector;if(connector==null || before.Contains(connector.Id))continue;
@@ -1021,7 +1033,7 @@ public static class ClassSyncRuntime
     // Text update: member name, visibility and (attributes) type. A type is a reference to an
     // existing type model, resolved by name before anything is written; nothing is created.
     // Trial always rolls back; commit keeps the change only after the same verification succeeds.
-    static string RunTextUpdate(IApplication app,IProject project,IEditor editor,ClassDiagramSnapshot snapshot,ClassDocument desired,ClassTextPreflight preflight,bool retain,StringBuilder log)
+    static string RunTextUpdate(IApplication app,IProject project,IEditor editor,ClassDiagramSnapshot snapshot,ClassDocument desired,ClassTextPreflight preflight,bool retain,StringBuilder log,Func<string,bool> confirm)
     {
         string editorId=editor.Id;string originalJson=snapshot.Document.ToJson();
         var options=new ClassSyncOptions();typeTargets.Clear();
@@ -1293,9 +1305,9 @@ public static class ClassSyncRuntime
             if(preflight.LinkAddCount>0 && (existing==null || existing.Items==null || existing.Items.Count==0))throw new InvalidOperationException("C220: 図に既存の線がないため、線の雛形を取れません。");
             log.AppendLine("editor captured for re-import: schema="+unit.Schema+" connectors="+(existing==null || existing.Items==null?0:existing.Items.Count));
         }
-        if(!app.Window.UI.ShowConfirmDialog(confirmation,ClassExperiment.Title))return "本文更新: 中止（確認で取消）";
-        if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=editorId
-            || ClassDiagramSnapshot.Read((IDiagram)app.Workspace.CurrentEditor,new ClassSyncOptions(),new StringBuilder()).Document.ToJson()!=originalJson)
+        if(!confirm(confirmation))return "本文更新: 中止（確認で取消）";
+        if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || Current(app)==null || Current(app).Id!=editorId
+            || ClassDiagramSnapshot.Read((IDiagram)Current(app),new ClassSyncOptions(),new StringBuilder()).Document.ToJson()!=originalJson)
             throw new InvalidOperationException("C220: 確認中に対象の図が変化しました。");
         string stage="開始前";
         var transaction=project.BeginUndoTransaction(false);
@@ -1313,7 +1325,7 @@ public static class ClassSyncRuntime
                 // then by checking what the product may have auto-created; the commit falls back to
                 // the editor re-import when neither yields a node.
                 stage="クラスのノード追加";
-                var d=(IDiagram)app.Workspace.CurrentEditor;
+                var d=(IDiagram)Current(app);
                 INode node=d.Nodes.Cast<object>().OfType<INode>().FirstOrDefault(n=>{var m=ClassDiagramKind.ModelOf(n);return m!=null && m.Id==created.Id;});
                 if(node==null)
                 {
@@ -1458,7 +1470,7 @@ public static class ClassSyncRuntime
             foreach(var c in classes.Where(x=>x.Change.Action=="delete"))
             {
                 stage="クラスの削除";
-                string id=c.Model.Id;var dd=(IDiagram)app.Workspace.CurrentEditor;int nodesBefore=dd.Nodes.Cast<object>().Count();
+                string id=c.Model.Id;var dd=(IDiagram)Current(app);int nodesBefore=dd.Nodes.Cast<object>().Count();
                 // Deleting the model alone may leave its node behind as a shape without a model
                 // (K057). Delete through the shape with deleteModel=true, which removes both; when
                 // the class has no node on this diagram, delete the model directly.
@@ -1513,7 +1525,7 @@ public static class ClassSyncRuntime
                 lines.Add("取消API: "+(completion.RollbackReturned?"正常終了":"失敗"));
                 lines.Add("復元照合: "+(completion.Restored?"一致":"未確認または不一致。保存せずにコピーを開き直してください"));
             }
-            return "本文更新の確定 (UPDATE-C001)\n"+string.Join("\n",lines.ToArray());
+            return (applyMode?"PlantUMLの反映":"本文更新の確定 (UPDATE-C001)")+"\n"+string.Join("\n",lines.ToArray());
         }
         var trial=new ClassRollbackTrial();
         trial.Run(apply,rollback,verifyRestored);
@@ -1527,22 +1539,30 @@ public static class ClassSyncRuntime
         lines.Add("復元照合: "+(trial.Restored?"一致":"未確認または不一致。保存せずにコピーを開き直してください"));
         return "本文更新の試行 (UPDATE-C000)\n"+string.Join("\n",lines.ToArray());
     }
-    public static void Preview(IApplication app,bool trial=false,bool retain=false)
+    // Everything Run() produces for the caller (ribbon dialog or MCP response).
+    public sealed class Outcome
     {
-        var log=new StringBuilder();string report=null;string screenshot=null;string currentPuml=null;string snapshotNote=null;
+        public bool Succeeded, Applied, Committed;
+        public string Summary="", Details="", ReportJson, CurrentPuml, Log="", ErrorMessage;
+        public int Changes, Limitations, StopReasons;
+    }
+    [ThreadStatic] static bool applyMode;
+    // Compare the PlantUML text with the editor's diagram; optionally apply (trial rolls
+    // back, retain commits). confirm() gates the write; the caller supplies dialogs or an
+    // automatic yes. No file dialogs, no result windows: the caller decides what to show.
+    public static Outcome Run(IApplication app,IEditor editor,string pumlText,string sourceLabel,bool trial,bool retain,bool apply,Func<string,bool> confirm)
+    {
+        var log=new StringBuilder();var outcome=new Outcome();string screenshot=null;string snapshotNote=null;
         trial=trial||retain;
+        targetEditorId=editor==null?null:editor.Id;targetModelId=editor==null?null:editor.ModelId;applyMode=apply;
         try
         {
-            var editor=app.Workspace.CurrentEditor;
             string reject=ClassDiagramKind.Reject(editor);
             if(reject!=null)throw new InvalidOperationException(reject);
             var diagram=(IDiagram)editor;var project=app.Workspace.CurrentProject;
-            string path=app.Window.UI.ShowOpenFileDialog("図と比較するPlantUML（PlantUmlToolのクラス図出力）","PlantUML (*.puml;*.plantuml)|*.puml;*.plantuml");
-            if(string.IsNullOrEmpty(path))return;
-            if(new FileInfo(path).Length>300000)throw new InvalidOperationException("C120: 入力は300KB以下にしてください。");
-            log.AppendLine("PlantUML file: "+path);
+            if(pumlText==null || pumlText.Length>300000)throw new InvalidOperationException("C120: 入力は300KB以下にしてください。");
+            log.AppendLine("PlantUML source: "+sourceLabel);
             var parser=new ClassPumlParser();
-            string pumlText=File.ReadAllText(path,new UTF8Encoding(false,true));
             ClassDocument desired;
             try { desired=parser.Parse(pumlText); }
             catch(InvalidOperationException parseError)
@@ -1563,8 +1583,8 @@ public static class ClassSyncRuntime
             if(snapshotNote!=null)snapshot.Limitations.Add(snapshotNote);
             var current=snapshot.Document;
             var plan=ClassSyncPlan.Build(current,desired,()=>Guid.NewGuid().ToString());
-            currentPuml=ClassPumlWriter.Write(current);
-            report="{\"version\":1,\"project\":"+ClassJson.Q(project==null?"":project.Id)+",\"diagram\":"+ClassJson.Q(editor.Id)
+            outcome.CurrentPuml=ClassPumlWriter.Write(current);
+            outcome.ReportJson="{\"version\":1,\"project\":"+ClassJson.Q(project==null?"":project.Id)+",\"diagram\":"+ClassJson.Q(editor.Id)
                 +",\"current\":"+current.ToJson()+",\"desired\":"+desired.ToJson()+",\"plan\":"+plan.ToJson()
                 +",\"limitations\":"+ClassJson.Json(snapshot.Limitations.ToArray())
                 +",\"modelIds\":"+ClassJson.Json(snapshot.ModelIds.ToDictionary(p=>p.Key,p=>(object)p.Value))
@@ -1572,25 +1592,58 @@ public static class ClassSyncRuntime
             foreach(var c in plan.Changes)log.AppendLine(c.Action+" "+c.Kind+" line="+c.Line+" id="+c.Id+" detail="+c.Detail);
             foreach(var warning in snapshot.Limitations)log.AppendLine("要照合: "+warning);
             var preflight=ClassTextPreflight.Check(current,desired,plan);
+            outcome.Changes=plan.Changes.Count;outcome.Limitations=snapshot.Limitations.Count;outcome.StopReasons=preflight.Reasons.Count;
             screenshot=(trial?"適用前の比較結果（更新後の残差ではありません）\n":"現在の図と入力の比較結果（図は変更していません）\n")+ClassAudit.Summary(plan,snapshot.Limitations.Count)
                 +"\f変更候補の内訳（入力行と種類のみ）\n"+ClassAudit.Reasons(plan)
                 +"\f要照合項目 "+snapshot.Limitations.Count+"件\n"+(snapshot.Limitations.Count==0?"なし":string.Join("\n",snapshot.Limitations.ToArray()))
                 +"\f"+preflight.Summary();
             log.AppendLine(screenshot.Replace('\f','\n'));
-            ClassExperiment.Summary=ClassAudit.Summary(plan,snapshot.Limitations.Count)+(trial?"":"\n図への反映は行いません。")+"\n本文更新の停止理由: "+preflight.Reasons.Count+"件（診断表示）";
+            outcome.Summary=ClassAudit.Summary(plan,snapshot.Limitations.Count)+(trial?"":"\n図への反映は行いません。")+"\n反映の停止理由: "+preflight.Reasons.Count+"件（診断表示）";
             log.AppendLine("Scope: "+(project==null?"":project.Id)+" / "+editor.ModelId+" / "+editor.Id);
             if(trial)
             {
-                if(!preflight.Candidate)throw new InvalidOperationException("C231: このボタンで反映できるのは、クラスの追加削除、属性・操作の追加削除と名前・可視性・型・引数の変更、関連の追加削除です。クラスの改名・所有先の変更、package の追加削除は扱えません。\n"+preflight.Summary());
-                if(project==null)throw new InvalidOperationException("C220: プロジェクトを取得できません。");
-                ClassExperiment.Summary=RunTextUpdate(app,project,editor,snapshot,desired,preflight,retain,log);
-                screenshot=ClassExperiment.Summary+"\f会社PC内の試行診断\n"+log.ToString();
+                if(plan.Changes.Count==0) { outcome.Summary="差分候補なし。図は変更していません。";outcome.Succeeded=true; }
+                else
+                {
+                    if(!preflight.Candidate)throw new InvalidOperationException("C231: 反映できるのは、クラスの追加削除、属性・操作の追加削除と名前・可視性・型・引数の変更、関連の追加削除です。クラスの改名・所有先の変更、package の追加削除は扱えません。\n"+preflight.Summary());
+                    if(project==null)throw new InvalidOperationException("C220: プロジェクトを取得できません。");
+                    string result=RunTextUpdate(app,project,editor,snapshot,desired,preflight,retain,log,confirm);
+                    outcome.Summary=result;
+                    outcome.Applied=result.Contains("一致") && !result.Contains("失敗");
+                    outcome.Committed=result.Contains("確定: 成功");
+                    outcome.Succeeded=retain?outcome.Committed:outcome.Applied;
+                    screenshot=result+"\f会社PC内の試行診断\n"+log.ToString();
+                }
             }
+            else outcome.Succeeded=true;
         }
-        catch(Exception ex) { ClassExperiment.Summary=(trial?"本文更新を完了できませんでした。診断表示を確認してください。":"図全体の読取り検証を完了できませんでした。")+"\n"+ex.Message;log.AppendLine(ex.ToString());screenshot=null; }
-        string stem=ClassExperiment.SaveReport("preview",log.ToString(),report,currentPuml);
+        catch(Exception ex)
+        {
+            outcome.ErrorMessage=ex.Message;
+            outcome.Summary=(trial?"反映を完了できませんでした。診断表示を確認してください。":"図全体の読取り検証を完了できませんでした。")+"\n"+ex.Message;
+            log.AppendLine(ex.ToString());screenshot=null;
+        }
+        finally { targetEditorId=null;targetModelId=null;applyMode=false; }
+        outcome.Log=log.ToString();
+        outcome.Details=screenshot??outcome.Log;
+        return outcome;
+    }
+    // Ribbon entry: pick the file, run against the active editor, save the report, show the result.
+    public static void Preview(IApplication app,bool trial=false,bool retain=false,bool apply=false)
+    {
+        var editor=app.Workspace.CurrentEditor;
+        string reject=ClassDiagramKind.Reject(editor);
+        if(reject!=null) { ClassExperiment.Summary=reject;ClassExperiment.Details=reject;ClassExperiment.Show(app);return; }
+        string path=app.Window.UI.ShowOpenFileDialog(apply?"反映するPlantUML":"図と比較するPlantUML（PlantUmlToolのクラス図出力）","PlantUML (*.puml;*.plantuml)|*.puml;*.plantuml");
+        if(string.IsNullOrEmpty(path))return;
+        string pumlText;
+        try { if(new FileInfo(path).Length>300000)throw new InvalidOperationException("C120: 入力は300KB以下にしてください。");pumlText=File.ReadAllText(path,new UTF8Encoding(false,true)); }
+        catch(Exception ex) { ClassExperiment.Summary=ex.Message;ClassExperiment.Details=ex.ToString();ClassExperiment.Show(app);return; }
+        var outcome=Run(app,editor,pumlText,path,trial,retain,apply,message=>app.Window.UI.ShowConfirmDialog(message,ClassExperiment.Title));
+        ClassExperiment.Summary=outcome.Summary;
+        string stem=ClassExperiment.SaveReport(apply?"apply":"preview",outcome.Log,outcome.ReportJson,outcome.CurrentPuml);
         if(stem!=null)ClassExperiment.Summary+="\n診断保存先: "+stem+".txt";
-        ClassExperiment.Details=screenshot??log.ToString();
+        ClassExperiment.Details=outcome.Details;
         ClassExperiment.Show(app);
     }
 }
