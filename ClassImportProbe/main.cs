@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.6.1";
+    public const string Version = "0.6.2";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -905,6 +905,30 @@ public static class ClassSyncRuntime
         if(line==null)return false;
         doc.Elements.Remove(line);return true;
     }
+    // A class created under a package gets anonymous back-references from the product
+    // (K054); the exporter prints them as unlabeled lines. Lines from system-named fields
+    // that touch a new class and are absent from the input are added to the expected document.
+    static void AddSystemLinesForNewClasses(IApplication app,ClassDocument doc,List<ResolvedClass> newClasses,ClassSyncOptions options,StringBuilder log)
+    {
+        if(newClasses.Count==0)return;
+        var d=app.Workspace.CurrentEditor as IDiagram;if(d==null)return;
+        var after=ClassDiagramSnapshot.Read(d,options,new StringBuilder());
+        var newModelIds=new HashSet<string>(newClasses.Select(c=>c.Model.Id),StringComparer.Ordinal);
+        var newElementIds=new HashSet<string>(after.ModelIds.Where(p=>newModelIds.Contains(p.Value)).Select(p=>p.Key),StringComparer.Ordinal);
+        var afterIndex=after.Document.Elements.ToDictionary(e=>e.Id);
+        foreach(var line in after.Document.Elements.Where(e=>e.Kind=="link" && ClassText.IsSystemName(e.Attr("field")) && (newElementIds.Contains(e.Link("from")) || newElementIds.Contains(e.Link("to")))))
+        {
+            string fromAlias=afterIndex[line.Link("from")].Attr("alias"),toAlias=afterIndex[line.Link("to")].Attr("alias");
+            var from=ClassByAlias(doc,fromAlias);var to=ClassByAlias(doc,toAlias);
+            if(from==null || to==null)continue;
+            if(doc.Elements.Any(e=>e.Kind=="link" && e.Link("from")==from.Id && e.Link("to")==to.Id && e.Text==line.Text))continue;
+            var e2=new ClassElement{Id="impliedsys"+doc.Elements.Count,Kind="link",Parent="root",Text=line.Text,Order=doc.Elements.Count};
+            e2.Attributes["arrow"]=line.Attr("arrow");e2.Attributes["field"]=line.Attr("field");e2.Attributes["toMultiplicity"]=line.Attr("toMultiplicity");
+            e2.Links["from"]=new[]{from.Id};e2.Links["to"]=new[]{to.Id};
+            doc.Elements.Add(e2);
+            log.AppendLine("implied system line added to the expected input: "+fromAlias+" -> "+toAlias+" field="+line.Attr("field"));
+        }
+    }
     static bool AddPartnerLine(ClassDocument doc,string fromAlias,string toAlias,IField field,ClassSyncOptions options)
     {
         var from=ClassByAlias(doc,fromAlias);var to=ClassByAlias(doc,toAlias);
@@ -1181,6 +1205,13 @@ public static class ClassSyncRuntime
                 // Reuse the metaclass of an existing sibling of the same kind so the profile's
                 // concrete class (Property / Method) is not guessed; fall back to the field type.
                 var sibling=owner.GetFieldValues(fieldName).Cast<object>().OfType<IModel>().FirstOrDefault(m=>!m.IsDeleted);
+                // A new class has no members yet: borrow the metaclass from the class it was
+                // created next to (Method rather than the field's Operation, K054).
+                if(sibling==null)
+                {
+                    var created=classes.FirstOrDefault(c=>c.Model!=null && c.Model.Id==owner.Id);
+                    if(created!=null)sibling=created.Sibling.GetFieldValues(fieldName).Cast<object>().OfType<IModel>().FirstOrDefault(m=>!m.IsDeleted);
+                }
                 // The short ClassName is not accepted by AddNewModel(string,string) (K038); pass the
                 // metaclass object from a sibling, or the field's declared type class when the
                 // class has no member of this kind yet.
@@ -1494,6 +1525,7 @@ public static class ClassSyncRuntime
             }
             stage="更新後の照合";
             if(typeTargets.Values.Any(x=>x.Created)) { AddCreatedTypeLines(effective,snapshot,log);appendedMembers=true; }
+            AddSystemLinesForNewClasses(app,effective,classes.Where(x=>x.Change.Action=="add" && x.Model!=null).ToList(),options,log);
             VerifyAgainst(app,editorId,effective,"更新後",log,appendedMembers);
         };
         Action rollback=delegate {stage="取消";transaction.Rollback();};
