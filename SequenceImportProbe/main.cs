@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.65";
+    public const string Title = "シーケンス生成実験 / 0.8.66";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -1253,14 +1253,15 @@ public static class SequenceStructureTrial
         int touched=prepared.DeleteIds.Length+prepared.AddedExecutions.Length
             +prepared.AddedParticipants.Length+prepared.DeleteParticipantIds.Length
             +prepared.DeleteMessageIds.Length+prepared.AddedMessages.Length
-            +prepared.DeleteFrameIds.Length+reconnectCount;
+            +prepared.DeleteFrameIds.Length+prepared.AddedFragments.Length+prepared.AddedOperands.Length+reconnectCount;
         Func<SequenceChange,bool> supported=c=>
             (c.Action=="delete" && c.Kind=="execution")
             // Boundary anchors shifting with a deletion write nothing. The preflight only
             // lets a plan through when that is all an execution update amounts to.
             || (c.Action=="update" && c.Kind=="execution")
             || (reconnectCommit && c.Action=="update" && c.Kind=="message")
-            || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message"))
+            || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message"
+                || c.Kind=="fragment" || c.Kind=="operand"))
             || (reconnectCommit && c.Action=="delete"
                 && (c.Kind=="participant" || c.Kind=="message" || c.Kind=="fragment" || c.Kind=="operand"));
         if(retain && (touched==0 || (!reconnectCommit && touched!=prepared.DeleteIds.Length)
@@ -1270,7 +1271,9 @@ public static class SequenceStructureTrial
         var root=diagram.Model as IInteraction;
         var newShapes=prepared.AddedExecutions.Select(a=>a.ShapeId)
             .Concat(prepared.AddedParticipants.Select(a=>a.ShapeId))
-            .Concat(prepared.AddedMessages.Select(a=>a.ShapeId)).ToArray();
+            .Concat(prepared.AddedMessages.Select(a=>a.ShapeId))
+            .Concat(prepared.AddedFragments.Select(a=>a.ShapeId))
+            .Concat(prepared.AddedOperands.Select(a=>a.ShapeId)).ToArray();
         var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
             .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).ToArray();
         var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
@@ -3420,7 +3423,7 @@ public sealed class SequenceStructurePreflight
     // be leaving in the same plan, so nothing is left without a place to live.
     // Document order across owners, so "goes last" means the same thing for a message
     // at the top level and for one inside a new frame. Bars are stored, not sequenced.
-    static string[] Flatten(SequenceDocument doc)
+    internal static string[] Flatten(SequenceDocument doc)
     {
         var order=new List<string>();
         Action<string> walk=null;
@@ -3467,6 +3470,11 @@ public sealed class SequenceStructurePreflight
                 return "追加するフラグメントの中に"+child.Kind+"があるため対象外です。オペランド・メッセージ・実行区間だけを扱います。";
             if(!adding.Contains(child.Id))return "追加するフラグメントの中に、この計画で追加しない要素があります。";
         }
+        // Every relation the new frame needs has to have a template: the frame's own
+        // ownership, its operands, the lifelines it spans, and a message inside an operand.
+        if(!current.Elements.Any(e=>e.Kind=="message" && e.Parent!=null
+            && current.Elements.Any(o=>o.Id==e.Parent && o.Kind=="operand")))
+            return "図にオペランド内のメッセージがないため、所属関連の見本が取れません。";
         var operands=inside.Where(e=>e.Kind=="operand" && e.Parent==added.Id).ToArray();
         if(operands.Length==0)return "追加するフラグメントにオペランドがありません。";
         // The product cannot lay out a frame that encloses no message.
@@ -3804,6 +3812,20 @@ public sealed class SequenceAddedExecution
     public string[] RelationIds=new string[0], RelationSources=new string[0], TemplateRelationIds=new string[0];
 }
 
+// A frame and its operands. The frame shape carries its text after the numbers and an
+// operand shape carries its guard, matching how the SDK side reads them back.
+public sealed class SequenceAddedFragment
+{
+    public string ModelId, Metaclass, Name, OwnerId, ShapeId, TemplateShapeId, Geometry, Text;
+    public string[] RelationIds=new string[0], RelationSources=new string[0], RelationTargets=new string[0], TemplateRelationIds=new string[0];
+}
+
+public sealed class SequenceAddedOperand
+{
+    public string ModelId, Metaclass, Name, OwnerId, ShapeId, TemplateShapeId, Geometry, Guard, Position;
+    public string[] RelationIds=new string[0], RelationSources=new string[0], TemplateRelationIds=new string[0];
+}
+
 // Prepared files are diagnostic artifacts; they are never imported by this command.
 public sealed class SequenceStructurePreparation
 {
@@ -3814,6 +3836,8 @@ public sealed class SequenceStructurePreparation
     public SequenceAddedExecution[] AddedExecutions=new SequenceAddedExecution[0];
     public SequenceAddedParticipant[] AddedParticipants=new SequenceAddedParticipant[0];
     public SequenceAddedMessage[] AddedMessages=new SequenceAddedMessage[0];
+    public SequenceAddedFragment[] AddedFragments=new SequenceAddedFragment[0];
+    public SequenceAddedOperand[] AddedOperands=new SequenceAddedOperand[0];
     public string[] DeleteParticipantIds=new string[0];
     public string[] DeleteMessageIds=new string[0];
     public string[] DeleteFrameIds=new string[0];
@@ -3905,6 +3929,22 @@ public sealed class SequenceStructurePreparation
         foreach(string id in affected)Require(shapes.Count(sh=>V(sh,"ModelId")==id)==1,"変更対象の図形を一意に取得できません。");
         foreach(var other in Array(source,"Editors").Where(e=>V(e,"Id")!=editorId))
             Require(!Mentions(other,affected),"変更対象を別のエディタも参照しています。");
+        SequenceJson frameTemplate=null;string frameTemplateModel=null,operandTemplateModel=null;
+        if(gate.AddFragments.Count>0)
+        {
+            var sampleFrames=entities.Where(e=>V(e,"EntityType")=="CombinedFragment").ToArray();
+            Require(sampleFrames.Length>0,"退避データにフラグメントの見本がありません。");
+            frameTemplateModel=V(sampleFrames[0],"Id");
+            var frameShapes=editor.Shapes().Where(sh=>V(sh,"ModelId")==frameTemplateModel).ToArray();
+            Require(frameShapes.Length==1,"フラグメントの見本図形を一意に取得できません。");
+            frameTemplate=frameShapes[0];
+            var sampleOperands=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"___CombinedFragment_InteractionOperand"
+                && V(r,"SourceId")==frameTemplateModel).ToArray();
+            Require(sampleOperands.Length>0,"オペランドの見本を取得できません。");
+            operandTemplateModel=V(sampleOperands[0],"TargetId");
+        }
+        var layout=gate.AddFragments.Count>0?FrameLayout(gate,plan,editor,frameTemplate)
+            :new Dictionary<string,Dictionary<string,double>>(StringComparer.Ordinal);
         var additions=new List<SequenceAddedExecution>();
         var newEntities=new List<SequenceJson>();
         var newLaneShapes=new List<SequenceJson>();
@@ -3945,7 +3985,13 @@ public sealed class SequenceStructurePreparation
             var shape=SequenceJson.Parse(templateShapes[0].ToJsonString());
             shape.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(shapeId));
             shape.Properties["ModelId"]=SequenceJson.Parse(SequencePayload.Q(id));
-            var geometry=Geometry(wanted,after,editor,laneShapes[0],templateShapes[0]);
+            Dictionary<string,double> geometry;
+            if(layout.ContainsKey(id))
+            {
+                geometry=new Dictionary<string,double>(layout[id]);
+                geometry["X"]=Read(laneShapes[0],"X")+Read(laneShapes[0],"Width")/2+8*Depth(wanted,after);
+            }
+            else geometry=Geometry(wanted,after,editor,laneShapes[0],templateShapes[0]);
             foreach(var pair in geometry)
             {
                 Require(shape[pair.Key]!=null,"実行区間の図形に"+pair.Key+"がありません。");
@@ -3957,33 +4003,130 @@ public sealed class SequenceStructurePreparation
                 Geometry=PumlBuild.Json(new[]{Number(geometry["X"]),Number(geometry["Y"]),Number(geometry["Length"])}),
                 RelationIds=relationIds.ToArray(),RelationSources=relationSources.ToArray(),TemplateRelationIds=templateIds.ToArray()});
         }
+        // Frames and their operands are built before the messages inside them, so the
+        // ownership those messages need is already in the same import.
+        var frames=new List<SequenceAddedFragment>();
+        var branches=new List<SequenceAddedOperand>();
+        var newFrameShapes=new List<SequenceJson>();
+        var newOperandShapes=new List<SequenceJson>();
+        foreach(string id in gate.AddFragments)
+        {
+            var wanted=after[id];
+            Require(layout.ContainsKey(id),"追加するフラグメントの配置を決められません。");
+            var ownerLink=find("___Interaction_CombinedFragment",root,frameTemplateModel);
+            var entity=SequenceJson.Parse(byId[frameTemplateModel].ToJsonString());
+            entity.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(id));
+            string name=wanted.Text??"";
+            entity.Properties["Name"]=SequenceJson.Parse(SequencePayload.Q(name));
+            if(entity["Fields"]!=null && entity["Fields"].Properties!=null)
+            {
+                if(entity["Fields"]["Name"]!=null)entity["Fields"].Properties["Name"]=SequenceJson.Parse(SequencePayload.Q(name));
+                string operatorName;
+                Require(wanted.Attributes.TryGetValue("operator",out operatorName),"追加するフラグメントに演算子がありません。");
+                Require(entity["Fields"]["Operator"]!=null,"フラグメントの見本に演算子がありません。");
+            }
+            newEntities.Add(entity);
+            var relationIds=new List<string>();var relationSources=new List<string>();
+            var relationTargets=new List<string>();var templateIds=new List<string>();
+            // Ownership first, then the lanes the frame spans, as the generator writes them.
+            var wiring=new List<SequenceJson>{ownerLink};
+            wiring.AddRange(relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"CrossingFragmentCoveredLifeline"
+                && V(r,"SourceId")==frameTemplateModel));
+            Require(wiring.Count>1,"フラグメントがまたぐライフラインの関連の見本がありません。");
+            foreach(var origin in wiring)
+            {
+                var copy=SequenceJson.Parse(origin.ToJsonString());
+                string relationId=Guid.NewGuid().ToString();
+                copy.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(relationId));
+                bool owned=V(origin,"MetamodelId")==SequencePayload.Prefix+"___Interaction_CombinedFragment";
+                copy.Properties[owned?"TargetId":"SourceId"]=SequenceJson.Parse(SequencePayload.Q(id));
+                copy.Properties.Remove("SourceIndex");copy.Properties.Remove("TargetIndex");
+                newRelations.Add(copy);
+                relationIds.Add(relationId);relationSources.Add(V(copy,"SourceId"));
+                relationTargets.Add(V(copy,"TargetId"));templateIds.Add(V(origin,"Id"));
+            }
+            string shapeId=Guid.NewGuid().ToString();
+            var shape=SequenceJson.Parse(frameTemplate.ToJsonString());
+            shape.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(shapeId));
+            shape.Properties["ModelId"]=SequenceJson.Parse(SequencePayload.Q(id));
+            foreach(var pair in layout[id])
+            {
+                Require(shape[pair.Key]!=null,"フラグメントの図形に"+pair.Key+"がありません。");
+                shape.Properties[pair.Key]=SequenceJson.Parse(Number(pair.Value));
+            }
+            newFrameShapes.Add(shape);
+            frames.Add(new SequenceAddedFragment{ModelId=id,Metaclass=V(entity,"MetamodelId"),Name=name,OwnerId=root,
+                ShapeId=shapeId,TemplateShapeId=V(frameTemplate,"Id"),Text=name,
+                Geometry=PumlBuild.Json(new[]{Number(layout[id]["X"]),Number(layout[id]["Y"]),
+                    Number(layout[id]["Width"]),Number(layout[id]["Height"])}),
+                RelationIds=relationIds.ToArray(),RelationSources=relationSources.ToArray(),
+                RelationTargets=relationTargets.ToArray(),TemplateRelationIds=templateIds.ToArray()});
+        }
+        foreach(string id in gate.AddOperands)
+        {
+            var wanted=after[id];
+            Require(layout.ContainsKey(id),"追加するオペランドの配置を決められません。");
+            Require(wanted.Parent!=null && gate.AddFragments.Contains(wanted.Parent),"追加するオペランドの所有先がこの計画のフラグメントではありません。");
+            var ownerLink=find("___CombinedFragment_InteractionOperand",frameTemplateModel,operandTemplateModel);
+            var entity=SequenceJson.Parse(byId[operandTemplateModel].ToJsonString());
+            entity.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(id));
+            string guard=wanted.Text??"";
+            if(entity["Fields"]!=null && entity["Fields"].Properties!=null && entity["Fields"]["Guard"]!=null)
+                entity["Fields"].Properties["Guard"]=SequenceJson.Parse(SequencePayload.Q(guard));
+            newEntities.Add(entity);
+            var copy=SequenceJson.Parse(ownerLink.ToJsonString());
+            string relationId=Guid.NewGuid().ToString();
+            copy.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(relationId));
+            copy.Properties["SourceId"]=SequenceJson.Parse(SequencePayload.Q(wanted.Parent));
+            copy.Properties["TargetId"]=SequenceJson.Parse(SequencePayload.Q(id));
+            copy.Properties.Remove("SourceIndex");copy.Properties.Remove("TargetIndex");
+            newRelations.Add(copy);
+            var operandShapes=editor.Shapes().Where(sh=>V(sh,"ModelId")==operandTemplateModel).ToArray();
+            Require(operandShapes.Length==1,"オペランドの見本図形を一意に取得できません。");
+            string shapeId=Guid.NewGuid().ToString();
+            var shape=SequenceJson.Parse(operandShapes[0].ToJsonString());
+            shape.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(shapeId));
+            shape.Properties["ModelId"]=SequenceJson.Parse(SequencePayload.Q(id));
+            Require(shape["Position"]!=null,"オペランドの図形に位置がありません。");
+            shape.Properties["Position"]=SequenceJson.Parse(Number(layout[id]["Position"]));
+            newOperandShapes.Add(shape);
+            branches.Add(new SequenceAddedOperand{ModelId=id,Metaclass=V(entity,"MetamodelId"),Name="",OwnerId=wanted.Parent,
+                ShapeId=shapeId,TemplateShapeId=V(operandShapes[0],"Id"),Guard=guard,Position=Number(layout[id]["Position"]),
+                RelationIds=new[]{relationId},RelationSources=new[]{wanted.Parent},TemplateRelationIds=new[]{V(ownerLink,"Id")}});
+        }
         var wires=new List<SequenceAddedMessage>();
         var newMessageShapes=new List<SequenceJson>();
         foreach(string id in gate.AddMessages)
         {
             var wanted=after[id];
-            var ordered=plan.Expected.Elements.Where(e=>e.Kind=="message" && e.Parent==root).OrderBy(e=>e.Order).ToArray();
-            string previous=ordered[ordered.Length-2].Id;
-            var sameSort=ordered.Take(ordered.Length-1)
-                .Where(e=>SequenceStructurePreflight.Attribute(e)==SequenceStructurePreflight.Attribute(wanted)).ToArray();
+            var walk=SequenceStructurePreflight.Flatten(plan.Expected);
+            var earlier=walk.Take(System.Array.IndexOf(walk,id)).Where(after.ContainsKey).Select(e=>after[e])
+                .Where(e=>e.Kind=="message" && byId.ContainsKey(e.Id)).ToArray();
+            var sameSort=earlier.Where(e=>SequenceStructurePreflight.Attribute(e)==SequenceStructurePreflight.Attribute(wanted)).ToArray();
             Require(sameSort.Length>0,"同じ種別の既存メッセージがありません。");
             string template=sameSort[sameSort.Length-1].Id;
-            Require(byId.ContainsKey(template) && V(byId[template],"EntityType")=="Message","メッセージの見本を取得できません。");
-            Require(byId.ContainsKey(previous),"直前のメッセージを退避データから取得できません。");
+            Require(V(byId[template],"EntityType")=="Message","メッセージの見本を取得できません。");
             string send=wanted.Links["sendExecution"].Single(),receive=wanted.Links["receiveExecution"].Single();
             var shapes4=editor.Shapes();
             var templateShapes=shapes4.Where(sh=>V(sh,"ModelId")==template).ToArray();
             Require(templateShapes.Length==1,"メッセージの見本図形を一意に取得できません。");
-            var previousShapes=shapes4.Where(sh=>V(sh,"ModelId")==previous).ToArray();
-            Require(previousShapes.Length==1,"直前のメッセージの図形を一意に取得できません。");
-            double y=Read(previousShapes[0],"TargetY")+MessageSpacing;
-            // Only space the current bars already cover; growing them is a separate change.
-            foreach(string port in new[]{send,receive})
+            double y;
+            if(layout.ContainsKey(id))y=layout[id]["Y"];
+            else
             {
-                var bar=shapes4.Where(sh=>V(sh,"ModelId")==port).ToArray();
-                Require(bar.Length==1,"接続先の実行区間の図形を一意に取得できません。");
-                double top=Read(bar[0],"Y"),bottom=top+Read(bar[0],"Length");
-                Require(y>=top && y<=bottom,"追加するメッセージが既存の実行区間の範囲に収まりません。後続の移動は対象外です。");
+                Require(earlier.Length>0,"直前のメッセージを退避データから取得できません。");
+                string previous=earlier[earlier.Length-1].Id;
+                var previousShapes=shapes4.Where(sh=>V(sh,"ModelId")==previous).ToArray();
+                Require(previousShapes.Length==1,"直前のメッセージの図形を一意に取得できません。");
+                y=Read(previousShapes[0],"TargetY")+MessageSpacing;
+                // Only space the current bars already cover; growing them is a separate change.
+                foreach(string port in new[]{send,receive})
+                {
+                    var bar=shapes4.Where(sh=>V(sh,"ModelId")==port).ToArray();
+                    Require(bar.Length==1,"接続先の実行区間の図形を一意に取得できません。");
+                    double top=Read(bar[0],"Y"),bottom=top+Read(bar[0],"Length");
+                    Require(y>=top && y<=bottom,"追加するメッセージが既存の実行区間の範囲に収まりません。後続の移動は対象外です。");
+                }
             }
             Require(shapes4.All(sh=>V(sh,"ModelId")==template || sh["TargetY"]==null || Read(sh,"TargetY")!=y),
                 "追加するメッセージの位置に既存の図形があります。");
@@ -3996,10 +4139,15 @@ public sealed class SequenceStructurePreparation
             newEntities.Add(entity);
             var relationIds=new List<string>();var relationSources=new List<string>();var templateIds=new List<string>();
             // Endpoints before membership, as the executions needed.
-            var wiring=new[]{new[]{"SendMessage",send},new[]{"ReceiveMessage",receive},new[]{"___Interaction_Message",root}};
+            var wiring=new List<string[]>{new[]{"SendMessage",send},new[]{"ReceiveMessage",receive},new[]{"___Interaction_Message",root}};
+            // A message inside a frame is owned by the interaction and also pointed at by
+            // the operand it sits in, the way the generator writes it.
+            if(wanted.Parent!=root)wiring.Add(new[]{"OperandTargetMessage",wanted.Parent});
             foreach(var pair in wiring)
             {
-                var origin=find(pair[0],pair[0]=="___Interaction_Message"?root:V(find(pair[0],null,template),"SourceId"),template);
+                var origin=pair[0]=="OperandTargetMessage"
+                    ?relations.First(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"OperandTargetMessage")
+                    :find(pair[0],pair[0]=="___Interaction_Message"?root:V(find(pair[0],null,template),"SourceId"),template);
                 var copy=SequenceJson.Parse(origin.ToJsonString());
                 string relationId=Guid.NewGuid().ToString();
                 copy.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(relationId));
@@ -4109,6 +4257,14 @@ public sealed class SequenceStructurePreparation
             Require(wireArray!=null && wireArray.Items!=null,"エディタにメッセージの図形配列がありません。");
             wireArray.Items.AddRange(newMessageShapes);
         }
+        foreach(var pair in new[]{new object[]{"Fragments",newFrameShapes},new object[]{"Operands",newOperandShapes}})
+        {
+            var frameShapeList=(List<SequenceJson>)pair[1];
+            if(frameShapeList.Count==0)continue;
+            var target=patch["Editors"].Items.Single()[(string)pair[0]];
+            Require(target!=null && target.Items!=null,"エディタに"+(string)pair[0]+"の図形配列がありません。");
+            target.Items.AddRange(frameShapeList);
+        }
         if(newLaneShapes.Count>0)
         {
             var laneArray=patch["Editors"].Items.Single()["Lifelines"];
@@ -4121,6 +4277,7 @@ public sealed class SequenceStructurePreparation
                     .Concat(gate.DeleteFragments).Concat(gate.DeleteOperands).ToList()),
             DeleteIds=gate.DeleteExecutions.ToArray(),
             AddedExecutions=additions.ToArray(),AddedParticipants=lanes.ToArray(),AddedMessages=wires.ToArray(),
+            AddedFragments=frames.ToArray(),AddedOperands=branches.ToArray(),
             DeleteParticipantIds=gate.DeleteParticipants.ToArray(),DeleteMessageIds=gate.DeleteMessages.ToArray(),
             DeleteFrameIds=gate.DeleteFragments.Concat(gate.DeleteOperands).ToArray(),
             ReceiveRelationIds=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage").Select(r=>V(r,"Id")).ToArray()};
@@ -4137,6 +4294,82 @@ public sealed class SequenceStructurePreparation
     }
     // The generator places a bar at the lane centre and steps 8px right per nesting
     // level. Reuse that rule so an added bar lands where a generated one would.
+    // A frame decides the position of everything inside it, so the whole block is laid
+    // out in one pass: a bar's top is the first message it touches, and that message sits
+    // where the frame puts it. Resolving those one at a time would be circular. The steps
+    // are the ones the generator uses when it builds a diagram from scratch.
+    internal static Dictionary<string,Dictionary<string,double>> FrameLayout(SequenceStructurePreflight gate,
+        SyncPlan plan,SequenceEditorDocument editor,SequenceJson frameTemplate)
+    {
+        var layout=new Dictionary<string,Dictionary<string,double>>(StringComparer.Ordinal);
+        if(gate.AddFragments.Count==0)return layout;
+        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        double floor=0;
+        foreach(var shape in editor.Shapes())
+        {
+            foreach(string key in new[]{"TargetY","SourceY"})
+                if(shape[key]!=null)floor=Math.Max(floor,Read(shape,key));
+            if(shape["Y"]==null)continue;
+            double bottom=Read(shape,"Y");
+            foreach(string key in new[]{"Length","Height"})
+                if(shape[key]!=null)bottom=Math.Max(bottom,Read(shape,"Y")+Read(shape,key));
+            floor=Math.Max(floor,bottom);
+        }
+        double x=Read(frameTemplate,"X"),width=Read(frameTemplate,"Width");
+        double at=floor+MessageSpacing;
+        var order=SequenceStructurePreflight.Flatten(plan.Expected);
+        foreach(string frameId in order.Where(gate.AddFragments.Contains))
+        {
+            double top=at,y=at;bool first=true;
+            foreach(string operandId in order.Where(id=>after.ContainsKey(id) && after[id].Kind=="operand" && after[id].Parent==frameId))
+            {
+                y+=first?30:12;first=false;
+                var guard=after[operandId].Text??"";
+                var slot=new Dictionary<string,double>();slot["Position"]=y-top;layout[operandId]=slot;
+                y+=40+18*(guard.Replace("\r\n","\n").Split('\n').Length-1);
+                foreach(string messageId in order.Where(id=>after.ContainsKey(id) && after[id].Kind=="message" && after[id].Parent==operandId))
+                {
+                    var row=new Dictionary<string,double>();row["Y"]=y;layout[messageId]=row;
+                    y+=MessageSpacing;
+                }
+                y+=8;
+            }
+            var frame=new Dictionary<string,double>();
+            frame["X"]=x;frame["Y"]=top;frame["Width"]=width;frame["Height"]=Math.Max(40,y-top);
+            layout[frameId]=frame;
+            at=y+16;
+        }
+        // Bars inside the block span the messages they touch.
+        foreach(string barId in gate.AddExecutions)
+        {
+            var bar=after[barId];
+            if(bar.Parent==null || !layout.ContainsKey(bar.Parent))continue;
+            double top=double.MaxValue,bottom=double.MinValue;
+            foreach(var message in plan.Expected.Elements.Where(e=>e.Kind=="message"))
+                foreach(string role in new[]{"sendExecution","receiveExecution"})
+                {
+                    string[] ids;
+                    if(!message.Links.TryGetValue(role,out ids) || !ids.Contains(barId) || !layout.ContainsKey(message.Id))continue;
+                    top=Math.Min(top,layout[message.Id]["Y"]);bottom=Math.Max(bottom,layout[message.Id]["Y"]);
+                }
+            if(top==double.MaxValue)continue;
+            var slot=new Dictionary<string,double>();
+            slot["Y"]=top;slot["Length"]=Math.Max(40,bottom+16-top);slot["Height"]=slot["Length"];
+            layout[barId]=slot;
+        }
+        return layout;
+    }
+    static int Depth(SequenceElement wanted,Dictionary<string,SequenceElement> after)
+    {
+        int depth=0;
+        for(var at=wanted;;depth++)
+        {
+            var outer=at.Links.ContainsKey("outer")?at.Links["outer"]:new string[0];
+            if(outer.Length==0)return depth;
+            if(depth>32 || !after.ContainsKey(outer[0]))throw new InvalidOperationException("S220: 入れ子の階層を解決できません。");
+            at=after[outer[0]];
+        }
+    }
     static Dictionary<string,double> Geometry(SequenceElement wanted,Dictionary<string,SequenceElement> after,
         SequenceEditorDocument editor,SequenceJson lane,SequenceJson templateShape)
     {
@@ -4366,6 +4599,10 @@ public sealed class SequenceTrialState
     }
     public string Model(string shape)
     { string value;return ShapeModels.TryGetValue(shape,out value)?value:""; }
+    static double Coordinate(string value)
+    { return double.Parse(value,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture); }
+    static string Coordinate(double value)
+    { return value.ToString("R",System.Globalization.CultureInfo.InvariantCulture); }
     public SequenceTrialState Expected(SequenceStructurePreparation prepared,SyncPlan plan,bool delete)
     {
         var result=new SequenceTrialState{Models=new Dictionary<string,string>(Models),Shapes=new Dictionary<string,string>(Shapes),ShapeModels=new Dictionary<string,string>(ShapeModels),
@@ -4396,6 +4633,49 @@ public sealed class SequenceTrialState
             string[] pattern;
             if(!result.Ports.TryGetValue(wire.TemplateModelId,out pattern))throw new InvalidOperationException("S230: メッセージの見本の送受信がありません。");
             result.Ports[wire.ModelId]=new[]{wire.SendPort,wire.ReceivePort,wire.Sender,wire.Receiver,pattern[4]};
+        }
+        // A frame carries its text after the rectangle, and an operand its guard and
+        // position, matching how the SDK side reads both back.
+        foreach(var frame in prepared.AddedFragments)
+        {
+            result.Models[frame.ModelId]=PumlBuild.Json(new[]{frame.Metaclass,frame.Name,frame.OwnerId,"False"});
+            for(int i=0;i<frame.RelationIds.Length;i++)
+            {
+                string field=result.Field(frame.TemplateRelationIds[i]);
+                if(field.Length==0)throw new InvalidOperationException("S230: 追加するフラグメントの関連の種別情報が不足しています。");
+                int index=result.Relations.Count(pair=>pair.Value[0]==frame.RelationSources[i] && result.Field(pair.Key)==field);
+                result.Relations[frame.RelationIds[i]]=new[]{frame.RelationSources[i],frame.RelationTargets[i],
+                    index.ToString(System.Globalization.CultureInfo.InvariantCulture),"0"};
+                result.RelationFields[frame.RelationIds[i]]=field;
+            }
+            var box=SequenceJson.Parse(frame.Geometry);
+            if(box==null || box.Items==null || box.Items.Count!=4)
+                throw new InvalidOperationException("S230: フラグメントの図形の項目数が想定と違います。");
+            result.Shapes[frame.ShapeId]=frame.Geometry+frame.Text;
+            result.ShapeModels[frame.ShapeId]=frame.ModelId;
+            double frameY=Coordinate(box.Items[1].StringValue()),frameHeight=Coordinate(box.Items[3].StringValue());
+            foreach(var branch in prepared.AddedOperands.Where(o=>o.OwnerId==frame.ModelId))
+            {
+                result.Models[branch.ModelId]=PumlBuild.Json(new[]{branch.Metaclass,branch.Name,branch.OwnerId,"False"});
+                string field=result.Field(branch.TemplateRelationIds[0]);
+                if(field.Length==0)throw new InvalidOperationException("S230: 追加するオペランドの関連の種別情報が不足しています。");
+                int index=result.Relations.Count(pair=>pair.Value[0]==branch.OwnerId && result.Field(pair.Key)==field);
+                result.Relations[branch.RelationIds[0]]=new[]{branch.OwnerId,branch.ModelId,
+                    index.ToString(System.Globalization.CultureInfo.InvariantCulture),"0"};
+                result.RelationFields[branch.RelationIds[0]]=field;
+                // The product lays the operand out inside the frame: the band runs from this
+                // operand's position down to the next one, or to the bottom of the frame.
+                double top=Coordinate(branch.Position),height=frameHeight-top;
+                foreach(var sibling in prepared.AddedOperands.Where(o=>o.OwnerId==frame.ModelId))
+                {
+                    double other=Coordinate(sibling.Position);
+                    if(other>top)height=Math.Min(height,other-top);
+                }
+                result.Shapes[branch.ShapeId]=PumlBuild.Json(new[]{box.Items[0].StringValue(),
+                    Coordinate(frameY+top),box.Items[2].StringValue(),Coordinate(height)})
+                    +PumlBuild.Json(new[]{branch.Guard,branch.Position});
+                result.ShapeModels[branch.ShapeId]=branch.ModelId;
+            }
         }
         foreach(var lane in prepared.AddedParticipants)
         {

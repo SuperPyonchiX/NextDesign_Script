@@ -371,14 +371,15 @@ public static class SequenceStructureTrial
         int touched=prepared.DeleteIds.Length+prepared.AddedExecutions.Length
             +prepared.AddedParticipants.Length+prepared.DeleteParticipantIds.Length
             +prepared.DeleteMessageIds.Length+prepared.AddedMessages.Length
-            +prepared.DeleteFrameIds.Length+reconnectCount;
+            +prepared.DeleteFrameIds.Length+prepared.AddedFragments.Length+prepared.AddedOperands.Length+reconnectCount;
         Func<SequenceChange,bool> supported=c=>
             (c.Action=="delete" && c.Kind=="execution")
             // Boundary anchors shifting with a deletion write nothing. The preflight only
             // lets a plan through when that is all an execution update amounts to.
             || (c.Action=="update" && c.Kind=="execution")
             || (reconnectCommit && c.Action=="update" && c.Kind=="message")
-            || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message"))
+            || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message"
+                || c.Kind=="fragment" || c.Kind=="operand"))
             || (reconnectCommit && c.Action=="delete"
                 && (c.Kind=="participant" || c.Kind=="message" || c.Kind=="fragment" || c.Kind=="operand"));
         if(retain && (touched==0 || (!reconnectCommit && touched!=prepared.DeleteIds.Length)
@@ -388,7 +389,9 @@ public static class SequenceStructureTrial
         var root=diagram.Model as IInteraction;
         var newShapes=prepared.AddedExecutions.Select(a=>a.ShapeId)
             .Concat(prepared.AddedParticipants.Select(a=>a.ShapeId))
-            .Concat(prepared.AddedMessages.Select(a=>a.ShapeId)).ToArray();
+            .Concat(prepared.AddedMessages.Select(a=>a.ShapeId))
+            .Concat(prepared.AddedFragments.Select(a=>a.ShapeId))
+            .Concat(prepared.AddedOperands.Select(a=>a.ShapeId)).ToArray();
         var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
             .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).ToArray();
         var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
