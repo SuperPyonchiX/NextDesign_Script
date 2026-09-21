@@ -699,9 +699,11 @@ public sealed class SequenceStructurePreflight
     public List<string> AddMessages=new List<string>();
     public List<string> DeleteFragments=new List<string>();
     public List<string> DeleteOperands=new List<string>();
+    public List<string> AddFragments=new List<string>();
+    public List<string> AddOperands=new List<string>();
     public int Targets { get { return ReconnectMessages.Count+DeleteExecutions.Count+AddExecutions.Count
         +AddParticipants.Count+DeleteParticipants.Count+DeleteMessages.Count+AddMessages.Count
-        +DeleteFragments.Count+DeleteOperands.Count; } }
+        +DeleteFragments.Count+DeleteOperands.Count+AddFragments.Count+AddOperands.Count; } }
     public bool Candidate { get { return Reasons.Count==0 && Targets>0; } }
     // The deletion-only mode stays exactly as the product confirmed it. The other mode
     // covers a receiver change together with deletions, additions, or both.
@@ -715,6 +717,73 @@ public sealed class SequenceStructurePreflight
     }
     // A fragment goes only as a whole: its operands and everything inside them have to
     // be leaving in the same plan, so nothing is left without a place to live.
+    // Document order across owners, so "goes last" means the same thing for a message
+    // at the top level and for one inside a new frame. Bars are stored, not sequenced.
+    static string[] Flatten(SequenceDocument doc)
+    {
+        var order=new List<string>();
+        Action<string> walk=null;
+        walk=parent=>{
+            foreach(var e in doc.Elements.Where(n=>n.Parent==parent && n.Kind!="participant" && n.Kind!="execution").OrderBy(n=>n.Order))
+            {order.Add(e.Id);walk(e.Id);}
+        };
+        walk(doc.Elements.Single(e=>e.Kind=="interaction").Id);
+        return order.ToArray();
+    }
+    static string Appended(SequenceDocument current,SyncPlan plan,string id,string what)
+    {
+        var order=Flatten(plan.Expected);
+        int at=Array.IndexOf(order,id);
+        if(at<0)return what+"が図の並びに現れません。";
+        var existing=new HashSet<string>(current.Elements.Select(e=>e.Id));
+        for(int i=at+1;i<order.Length;i++)
+            if(existing.Contains(order[i]))return what+"が末尾ではありません。途中への挿入は後続の移動になるため対象外です。";
+        return null;
+    }
+    // A new frame is appended whole: the frame, its operands and everything in them are
+    // all new. Wrapping existing messages would move them into the frame, which is a
+    // different change and not handled here.
+    static string FragmentAddReason(SequenceDocument current,SyncPlan plan,SequenceElement added,HashSet<string> adding)
+    {
+        var before=current.Elements.ToDictionary(e=>e.Id);
+        string root=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
+        if(added.Parent!=root)return "追加するフラグメントの所有先が相互作用ではありません。入れ子のフラグメントは対象外です。";
+        if(added.Links.Count>0)return "追加するフラグメントに未対応の接続があります。";
+        foreach(string kind in new[]{"fragment","operand"})
+            if(!current.Elements.Any(e=>e.Kind==kind))
+                return "図に"+kind+"がないため、追加する型と図形の見本が取れません。";
+        var inside=new List<SequenceElement>();var pending=new List<string>{added.Id};
+        for(int i=0;i<pending.Count;i++)
+        {
+            if(pending.Count>500)return "追加するフラグメントの入れ子が深すぎます。";
+            foreach(var child in plan.Expected.Elements.Where(e=>e.Parent==pending[i])){inside.Add(child);pending.Add(child.Id);}
+        }
+        foreach(var child in inside)
+        {
+            if(before.ContainsKey(child.Id))
+                return "追加するフラグメントの中に既存の要素があります。既存のメッセージを枠で囲む変更は対象外です。";
+            if(child.Kind!="operand" && child.Kind!="message" && child.Kind!="execution")
+                return "追加するフラグメントの中に"+child.Kind+"があるため対象外です。オペランド・メッセージ・実行区間だけを扱います。";
+            if(!adding.Contains(child.Id))return "追加するフラグメントの中に、この計画で追加しない要素があります。";
+        }
+        var operands=inside.Where(e=>e.Kind=="operand" && e.Parent==added.Id).ToArray();
+        if(operands.Length==0)return "追加するフラグメントにオペランドがありません。";
+        // The product cannot lay out a frame that encloses no message.
+        foreach(var operand in operands)
+            if(!plan.Expected.Elements.Any(e=>e.Kind=="message" && e.Parent==operand.Id))
+                return "メッセージのないオペランドがあります。空の枠は図形を作れません。";
+        return Appended(current,plan,added.Id,"追加するフラグメント");
+    }
+    static string OperandAddReason(SequenceDocument current,SyncPlan plan,SequenceElement added,HashSet<string> adding)
+    {
+        if(added.Parent==null || !adding.Contains(added.Parent))
+            return "オペランド単独の追加は対象外です。フラグメントごと追加する場合だけ扱います。";
+        SequenceElement owner;
+        if(!plan.Expected.Elements.ToDictionary(e=>e.Id).TryGetValue(added.Parent,out owner) || owner.Kind!="fragment")
+            return "追加するオペランドの所有先がフラグメントではありません。";
+        if(added.Links.Count>0)return "追加するオペランドに未対応の接続があります。";
+        return null;
+    }
     static string FragmentReason(SequenceDocument current,SyncPlan plan,string id)
     {
         var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
@@ -741,14 +810,27 @@ public sealed class SequenceStructurePreflight
     }
     // A new message only goes after every existing one, into space the current bars
     // already cover. Inserting between messages would push the rest of the diagram down.
-    static string MessageReason(SequenceDocument current,SyncPlan plan,SequenceElement added,List<string> addedExecutions)
+    static string MessageReason(SequenceDocument current,SyncPlan plan,SequenceElement added,List<string> addedExecutions,HashSet<string> adding)
     {
         var before=current.Elements.ToDictionary(e=>e.Id);
+        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
         string root=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
-        if(added.Parent!=root)return "追加するメッセージの所有先が相互作用ではありません。";
+        if(added.Parent!=root && !(adding.Contains(added.Parent) && after.ContainsKey(added.Parent) && after[added.Parent].Kind=="operand"))
+            return "追加するメッセージの所有先が相互作用でも、この計画で追加するオペランドでもありません。";
         var known=new[]{"sender","receiver","sendExecution","receiveExecution"};
         if(added.Links.Keys.Any(key=>!known.Contains(key)))return "追加するメッセージに未対応の接続があります。";
-        if(Referenced(plan,added.Id))return "追加するメッセージを参照する要素があります。";
+        foreach(var e in plan.Expected.Elements)
+        {
+            if(e.Parent==added.Id)return "追加するメッセージが他の要素を所有しています。";
+            foreach(var pair in e.Links)
+                if(pair.Value.Contains(added.Id))
+                {
+                    // A bar added with the message names it as its own boundary. That is
+                    // the frame being built, not an outside reference to the message.
+                    if(adding.Contains(e.Id) && e.Kind=="execution" && (pair.Key=="startAfter" || pair.Key=="endBefore"))continue;
+                    return "追加するメッセージを参照する要素があります。";
+                }
+        }
         foreach(string role in new[]{"sender","receiver"})
         {
             var ends=Link(added,role);
@@ -763,14 +845,14 @@ public sealed class SequenceStructurePreflight
             if(!before.ContainsKey(ports[0]) && !addedExecutions.Contains(ports[0]))
                 return "追加するメッセージの接続先は既存の実行区間か、この計画で追加する実行区間である必要があります。";
         }
-        var messages=plan.Expected.Elements.Where(e=>e.Kind=="message" && e.Parent==root).OrderBy(e=>e.Order).ToArray();
-        if(messages.Length<2 || messages[messages.Length-1].Id!=added.Id)
-            return "追加するメッセージが最後ではありません。途中への挿入は後続の移動になるため対象外です。";
-        var previous=messages[messages.Length-2];
-        if(!before.ContainsKey(previous.Id))return "直前のメッセージが既存ではありません。";
+        string why=Appended(current,plan,added.Id,"追加するメッセージ");
+        if(why!=null)return why;
+        var order=Flatten(plan.Expected);
+        var earlier=order.Take(Array.IndexOf(order,added.Id)).Select(id=>after[id]).Where(e=>e.Kind=="message").ToArray();
+        if(earlier.Length==0)return "直前のメッセージがありません。最初のメッセージの追加は対象外です。";
         // Position comes from the message before it; the type and shape come from any
         // existing message of the same sort, so a reply after a call is still describable.
-        if(!messages.Take(messages.Length-1).Any(e=>before.ContainsKey(e.Id) && Attribute(e)==Attribute(added)))
+        if(!earlier.Any(e=>before.ContainsKey(e.Id) && Attribute(e)==Attribute(added)))
             return "同じ種別の既存メッセージがないため、見本にできません。";
         return null;
     }
@@ -818,37 +900,49 @@ public sealed class SequenceStructurePreflight
     // An added execution is only describable when it is a plain receive bar on an
     // existing participant: owned by the interaction, optionally nested in one of that
     // participant's existing bars, and referenced by messages as receiveExecution only.
-    static string AddReason(SequenceDocument current,SyncPlan plan,SequenceElement added)
+    static string AddReason(SequenceDocument current,SyncPlan plan,SequenceElement added,HashSet<string> adding)
     {
         var before=current.Elements.ToDictionary(e=>e.Id);
+        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
         string root=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
-        if(added.Parent!=root)return "追加する実行区間の所有先が相互作用ではありません。";
+        // A bar is owned either by the interaction or by an operand of a frame this plan adds.
+        Func<string,bool> container=id=>id==root
+            || (adding.Contains(id) && after.ContainsKey(id) && after[id].Kind=="operand");
+        if(!container(added.Parent))
+            return "追加する実行区間の所有先が相互作用でも、この計画で追加するオペランドでもありません。";
         var participant=Link(added,"participant");
         if(participant.Length!=1 || !before.ContainsKey(participant[0]) || before[participant[0]].Kind!="participant")
             return "追加する実行区間の参加者が既存の参加者ではありません。";
         var outer=Link(added,"outer");
-        if(outer.Length>1 || (outer.Length==1 && (!before.ContainsKey(outer[0]) || before[outer[0]].Kind!="execution"
-            || !Link(before[outer[0]],"participant").SequenceEqual(participant))))
-            return "追加する実行区間の入れ子先が同じ参加者の既存区間ではありません。";
+        if(outer.Length>1 || (outer.Length==1 && (!after.ContainsKey(outer[0]) || after[outer[0]].Kind!="execution"
+            || !Link(after[outer[0]],"participant").SequenceEqual(participant))))
+            return "追加する実行区間の入れ子先が同じ参加者の実行区間ではありません。";
         var known=new[]{"participant","outer","startAfter","endBefore","endContainer"};
         if(added.Links.Keys.Any(key=>!known.Contains(key)))return "追加する実行区間に未対応の接続があります。";
-        if(!Link(added,"endContainer").SequenceEqual(new[]{root}))return "追加する実行区間の終了位置が相互作用の直下ではありません。";
+        var ends=Link(added,"endContainer");
+        if(ends.Length!=1 || !container(ends[0]))
+            return "追加する実行区間の終了位置が相互作用でも、この計画で追加するオペランドでもありません。";
         foreach(string key in new[]{"startAfter","endBefore"})
         {
             var anchor=Link(added,key);
-            if(anchor.Length>1 || (anchor.Length==1 && !before.ContainsKey(anchor[0])))
-                return "追加する実行区間の境界が既存要素を指していません。";
+            if(anchor.Length>1 || (anchor.Length==1 && !after.ContainsKey(anchor[0])))
+                return "追加する実行区間の境界が期待状態の要素を指していません。";
         }
         if(plan.Expected.Elements.Any(e=>e.Parent==added.Id))return "追加する実行区間が他の要素を所有しています。";
-        int receivers=0;
+        int links=0;
         foreach(var e in plan.Expected.Elements)
             foreach(var pair in e.Links)
                 if(pair.Value.Contains(added.Id))
                 {
-                    if(pair.Key!="receiveExecution" || e.Kind!="message")return "追加する実行区間が受信以外から参照されています。";
-                    receivers++;
+                    if(pair.Key=="outer" && e.Kind=="execution" && adding.Contains(e.Id)){links++;continue;}
+                    if(e.Kind!="message" || (pair.Key!="receiveExecution" && pair.Key!="sendExecution"))
+                        return "追加する実行区間がメッセージの送受信以外から参照されています。";
+                    // Moving an existing message onto a new bar is a reconnection, not an addition.
+                    if(pair.Key=="sendExecution" && !adding.Contains(e.Id))
+                        return "追加する実行区間を送信元にする既存メッセージがあります。既存メッセージの送信元は変えられません。";
+                    links++;
                 }
-        if(receivers==0)return "追加する実行区間を受信先にするメッセージがありません。";
+        if(links==0)return "追加する実行区間に接続するメッセージがありません。";
         return null;
     }
     public static SequenceStructurePreflight Check(SequenceDocument current,SyncPlan plan)
@@ -857,13 +951,32 @@ public sealed class SequenceStructurePreflight
         var result=new SequenceStructurePreflight();
         var before=current.Elements.ToDictionary(e=>e.Id);
         var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        var adding=new HashSet<string>(plan.Changes.Where(c=>c.Action=="add").Select(c=>c.Id));
+        foreach(var change in plan.Changes.Where(c=>c.Action=="add" && c.Kind=="fragment"))
+        {
+            SequenceElement added;
+            if(before.ContainsKey(change.Id) || !after.TryGetValue(change.Id,out added))
+            { result.Reasons.Add("L"+change.Line+" 追加するフラグメントを期待状態から取得できません。");continue; }
+            string why=FragmentAddReason(current,plan,added,adding);
+            if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
+            result.AddFragments.Add(change.Id);
+        }
+        foreach(var change in plan.Changes.Where(c=>c.Action=="add" && c.Kind=="operand"))
+        {
+            SequenceElement added;
+            if(before.ContainsKey(change.Id) || !after.TryGetValue(change.Id,out added))
+            { result.Reasons.Add("L"+change.Line+" 追加するオペランドを期待状態から取得できません。");continue; }
+            string why=OperandAddReason(current,plan,added,adding);
+            if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
+            result.AddOperands.Add(change.Id);
+        }
         foreach(var change in plan.Changes.Where(c=>c.Action=="add" && c.Kind=="message"))
         {
             SequenceElement added;
             if(before.ContainsKey(change.Id) || !after.TryGetValue(change.Id,out added))
             { result.Reasons.Add("L"+change.Line+" 追加するメッセージを期待状態から取得できません。");continue; }
             string why=MessageReason(current,plan,added,
-                plan.Changes.Where(c=>c.Action=="add" && c.Kind=="execution").Select(c=>c.Id).ToList());
+                plan.Changes.Where(c=>c.Action=="add" && c.Kind=="execution").Select(c=>c.Id).ToList(),adding);
             if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
             result.AddMessages.Add(change.Id);
         }
@@ -881,13 +994,13 @@ public sealed class SequenceStructurePreflight
             SequenceElement added;
             if(before.ContainsKey(change.Id) || !after.TryGetValue(change.Id,out added))
             { result.Reasons.Add("L"+change.Line+" 追加する実行区間を期待状態から取得できません。");continue; }
-            string why=AddReason(current,plan,added);
+            string why=AddReason(current,plan,added,adding);
             if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
             result.AddExecutions.Add(change.Id);
         }
         foreach(var change in plan.Changes)
         {
-            if(change.Action=="add" && (change.Kind=="execution" || change.Kind=="participant" || change.Kind=="message"))continue;
+            if(change.Action=="add" && new[]{"execution","participant","message","fragment","operand"}.Contains(change.Kind))continue;
             if(change.Action=="delete" && change.Kind=="participant" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
             {
                 if(Referenced(plan,change.Id))result.Reasons.Add("L"+change.Line+" 参加者への参照が残るため削除できません。");
@@ -954,6 +1067,7 @@ public sealed class SequenceStructurePreflight
             +" / 参加者追加候補: "+AddParticipants.Count+" / 参加者削除候補: "+DeleteParticipants.Count
             +" / メッセージ削除候補: "+DeleteMessages.Count+" / メッセージ追加候補: "+AddMessages.Count
             +" / フラグメント削除候補: "+DeleteFragments.Count+" / オペランド削除候補: "+DeleteOperands.Count
+            +" / フラグメント追加候補: "+AddFragments.Count+" / オペランド追加候補: "+AddOperands.Count
             +"\n"+(Reasons.Count>0?"全体を停止: "+Reasons.Count+"件の未対応条件":Candidate?"限定範囲の候補あり。既存図での適用・保持検証は未実施です。":"対象の変更なし")
             +"\n"+string.Join("\n",Reasons.Distinct());
     }
@@ -963,6 +1077,7 @@ public sealed class SequenceStructurePreflight
         "DeleteParticipants",DeleteParticipants.ToArray(),"DeleteMessages",DeleteMessages.ToArray(),
         "AddMessages",AddMessages.ToArray(),"DeleteFragments",DeleteFragments.ToArray(),
         "DeleteOperands",DeleteOperands.ToArray(),
+        "AddFragments",AddFragments.ToArray(),"AddOperands",AddOperands.ToArray(),
         "Reasons",Reasons.ToArray())); }
 }
 
