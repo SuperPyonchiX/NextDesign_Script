@@ -863,13 +863,26 @@ public sealed class ClassMemberChange
     public int Line;
 }
 
+// One class to create on the diagram, or one existing class to remove. A new class is
+// placed under the same owner as a sibling class from the input (its container in the
+// document), next to the sibling's node; its members and links follow through their own
+// changes, which refer to the class by ExpectedId.
+public sealed class ClassChangeItem
+{
+    public string Action, ExpectedId, CurrentId, Text, Keyword, Stereotype, ContainerId, ContainerAlias, SiblingId, SiblingAlias;
+    public int Line;
+}
+
 public sealed class ClassTextPreflight
 {
     public List<ClassMemberEdit> Edits = new List<ClassMemberEdit>();
     public List<ClassLinkChange> Links = new List<ClassLinkChange>();
     public List<ClassMemberChange> Members = new List<ClassMemberChange>();
+    public List<ClassChangeItem> Classes = new List<ClassChangeItem>();
+    public int ClassAddCount { get { return Classes.Count(c=>c.Action=="add"); } }
+    public int ClassDeleteCount { get { return Classes.Count(c=>c.Action=="delete"); } }
     public List<string> Reasons = new List<string>();
-    public bool Candidate { get { return Reasons.Count==0 && (Edits.Count>0 || Links.Count>0 || Members.Count>0); } }
+    public bool Candidate { get { return Reasons.Count==0 && (Edits.Count>0 || Links.Count>0 || Members.Count>0 || Classes.Count>0); } }
     public int MemberAddCount { get { return Members.Count(m=>m.Action=="add"); } }
     public int MemberDeleteCount { get { return Members.Count(m=>m.Action=="delete"); } }
     public int LinkAddCount { get { return Links.Count(l=>l.Action=="add"); } }
@@ -904,9 +917,58 @@ public sealed class ClassTextPreflight
         var result=new ClassTextPreflight();
         var old=current.Elements.ToDictionary(e=>e.Id);
         var target=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        // Classes first: a new class becomes a valid owner for member adds and a valid end for
+        // link adds below. Its sibling is the nearest existing class in the same container.
+        var pendingClasses=new HashSet<string>(StringComparer.Ordinal);
+        foreach(var c in plan.Changes.Where(x=>x.Kind=="class"))
+        {
+            string where=c.Line>0?" 入力"+c.Line+"行":"";
+            ClassElement cls;
+            if(c.Action=="add" && target.TryGetValue(c.Id,out cls))
+            {
+                ClassElement container;
+                if(!target.TryGetValue(cls.Parent??"",out container)) { result.Reasons.Add("add class"+where+": 所有先を特定できません"); continue; }
+                if(container.Kind=="class" && !old.ContainsKey(container.Id)) { result.Reasons.Add("add class"+where+": 新しいクラスの中に入れ子のクラスは扱えません"); continue; }
+                if(cls.Text.Length==0 || cls.Text.Contains("\\n")) { result.Reasons.Add("add class"+where+": 空または改行を含む名前は扱えません"); continue; }
+                if(ClassDocument.IsContainerKeyword(cls.Attr("keyword"))) { result.Reasons.Add("add class"+where+": package / component の追加は扱えません"); continue; }
+                var sibling=plan.Expected.Elements.Where(e=>e.Kind=="class" && e.Id!=cls.Id && e.Parent==cls.Parent && old.ContainsKey(e.Id) && e.Attr("stereotype")==cls.Attr("stereotype") && e.Attr("keyword")==cls.Attr("keyword"))
+                    .OrderBy(e=>Math.Abs(e.Order-cls.Order)).FirstOrDefault();
+                if(sibling==null)sibling=plan.Expected.Elements.Where(e=>e.Kind=="class" && e.Id!=cls.Id && e.Parent==cls.Parent && old.ContainsKey(e.Id)).OrderBy(e=>Math.Abs(e.Order-cls.Order)).FirstOrDefault();
+                if(sibling==null) { result.Reasons.Add("add class"+where+": 同じ所有先に既存のクラスがなく、種類と配置を決められません"); continue; }
+                result.Classes.Add(new ClassChangeItem{Action="add",ExpectedId=cls.Id,Text=cls.Text,Keyword=cls.Attr("keyword"),Stereotype=cls.Attr("stereotype"),ContainerId=container.Id,ContainerAlias=container.Attr("alias"),SiblingId=sibling.Id,SiblingAlias=sibling.Attr("alias"),Line=c.Line});
+                pendingClasses.Add(cls.Id);
+                continue;
+            }
+            if(c.Action=="delete" && old.TryGetValue(c.Id,out cls))
+            {
+                if(ClassDocument.IsContainerKeyword(cls.Attr("keyword"))) { result.Reasons.Add("delete class ("+cls.Text+"): package / component の削除は扱えません"); continue; }
+                if(current.Elements.Any(e=>e.Kind=="class" && e.Parent==cls.Id)) { result.Reasons.Add("delete class ("+cls.Text+"): 入れ子のクラスを持つため扱えません"); continue; }
+                result.Classes.Add(new ClassChangeItem{Action="delete",CurrentId=cls.Id,Text=cls.Text,Keyword=cls.Attr("keyword")});
+                continue;
+            }
+        }
+        var deletedClasses=new HashSet<string>(result.Classes.Where(x=>x.Action=="delete").Select(x=>x.CurrentId),StringComparer.Ordinal);
         foreach(var c in plan.Changes)
         {
             string where=c.Line>0?" 入力"+c.Line+"行":"";
+            if(c.Kind=="class")
+            {
+                if((c.Action=="add" && pendingClasses.Contains(c.Id)) || (c.Action=="delete" && deletedClasses.Contains(c.Id)))continue;
+                if(c.Action=="add" || c.Action=="delete")continue; // reason already recorded
+                if(c.Action=="update") { result.Reasons.Add("update class"+where+" ["+c.Detail+"]: クラスの改名・キーワード変更は扱えません"); continue; }
+                result.Reasons.Add(c.Action+" class"+where+": 扱えません"); continue;
+            }
+            // Members and links that belong to a deleted class go with it and need no separate write.
+            if(c.Action=="delete" && (c.Kind=="attribute" || c.Kind=="operation" || c.Kind=="literal"))
+            {
+                ClassElement gone;
+                if(old.TryGetValue(c.Id,out gone) && deletedClasses.Contains(gone.Parent))continue;
+            }
+            if(c.Action=="delete" && c.Kind=="link")
+            {
+                ClassElement gone;
+                if(old.TryGetValue(c.Id,out gone) && (deletedClasses.Contains(gone.Link("from")??"") || deletedClasses.Contains(gone.Link("to")??"")))continue;
+            }
             if(c.Kind=="link")
             {
                 // A link is a reference field on the source class. Adds need both ends to be
@@ -917,7 +979,10 @@ public sealed class ClassTextPreflight
                 {
                     ClassElement from,to;
                     if(link.Text.Length==0) { result.Reasons.Add("add link"+where+": ロール名（フィールド名）のない関連は扱えません"); continue; }
-                    if(!old.TryGetValue(link.Link("from")??"",out from) || !old.TryGetValue(link.Link("to")??"",out to)) { result.Reasons.Add("add link"+where+": 両端が既存のクラスではありません"); continue; }
+                    string fromKey=link.Link("from")??"",toKey=link.Link("to")??"";
+                    bool fromOk=old.TryGetValue(fromKey,out from) || (pendingClasses.Contains(fromKey) && target.TryGetValue(fromKey,out from));
+                    bool toOk=old.TryGetValue(toKey,out to) || (pendingClasses.Contains(toKey) && target.TryGetValue(toKey,out to));
+                    if(!fromOk || !toOk) { result.Reasons.Add("add link"+where+": 両端が既存または追加するクラスではありません"); continue; }
                     result.Links.Add(new ClassLinkChange{Action="add",FromId=from.Id,ToId=to.Id,Field=link.Text,FromAlias=from.Attr("alias"),ToAlias=to.Attr("alias"),Line=c.Line});
                     continue;
                 }
@@ -936,7 +1001,8 @@ public sealed class ClassTextPreflight
                 if(c.Action=="add" && target.TryGetValue(c.Id,out member))
                 {
                     ClassElement owner;
-                    if(!old.TryGetValue(member.Parent??"",out owner)) { result.Reasons.Add("add "+c.Kind+where+": 所有先のクラスが既存ではありません"); continue; }
+                    string ownerKey=member.Parent??"";
+                    if(!old.TryGetValue(ownerKey,out owner) && !(pendingClasses.Contains(ownerKey) && target.TryGetValue(ownerKey,out owner))) { result.Reasons.Add("add "+c.Kind+where+": 所有先のクラスが既存または追加するクラスではありません"); continue; }
                     if(member.Text.Length==0 || member.Text.Contains("\\n")) { result.Reasons.Add("add "+c.Kind+where+": 空または改行を含む名前は扱えません"); continue; }
                     if(c.Kind=="operation" && member.Attr("returnType").Length>0) { result.Reasons.Add("add operation"+where+": 戻り値付きの操作の追加は扱えません"); continue; }
                     if(c.Kind=="operation" && ParameterNames(member.Attr("parameters")).Any(n=>n.Length==0 || n.Contains("\\n"))) { result.Reasons.Add("add operation"+where+": 引数名が空か改行を含みます"); continue; }
@@ -985,7 +1051,7 @@ public sealed class ClassTextPreflight
     {
         var sb=new StringBuilder();
         sb.Append("本文更新の事前判定: ").Append(Candidate?"候補あり":"停止").Append('\n');
-        sb.Append("メンバ ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append(" / 引数 ").Append(Edits.Count(e=>e.ParametersChanged)).Append("） / メンバ追加 ").Append(MemberAddCount).Append(" 削除 ").Append(MemberDeleteCount).Append(" / 関連 追加 ").Append(LinkAddCount).Append(" 削除 ").Append(LinkDeleteCount).Append(" / 停止理由 ").Append(Reasons.Count).Append("件\n");
+        sb.Append("メンバ ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append(" / 引数 ").Append(Edits.Count(e=>e.ParametersChanged)).Append("） / クラス追加 ").Append(ClassAddCount).Append(" 削除 ").Append(ClassDeleteCount).Append(" / メンバ追加 ").Append(MemberAddCount).Append(" 削除 ").Append(MemberDeleteCount).Append(" / 関連 追加 ").Append(LinkAddCount).Append(" 削除 ").Append(LinkDeleteCount).Append(" / 停止理由 ").Append(Reasons.Count).Append("件\n");
         foreach(var r in Reasons)sb.Append("  ").Append(r).Append('\n');
         return sb.ToString().TrimEnd();
     }

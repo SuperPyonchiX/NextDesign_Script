@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.5.4";
+    public const string Version = "0.6.0";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -830,6 +830,9 @@ public static class ClassSyncRuntime
         if(!after.SequenceEqual(plan.Names))throw new InvalidOperationException("C230: 引数の読戻しが一致しません: ["+string.Join(", ",after)+"]");
     }
     class ResolvedLink { public IModel From, To; public ClassLinkChange Change; public string RelationId="", PartnerField=""; }
+    // A class to create (owner and owning field taken from its sibling, node placed next to
+    // the sibling's node) or to delete.
+    class ResolvedClass { public ClassChangeItem Change; public IModel Owner, Sibling, Model; public IField OwningField; public IClass Class; public INode SiblingNode, Node; }
     class ResolvedMember { public IModel Owner, Member, InsertBefore; public TypeTarget TypeTarget; public ClassMemberChange Change; public string Field, ClassName, VisibilityValue, TypeField; public IField OwningField; public IClass MemberClass; public string Parameters; }
     static IEnumerable<IModel> Tree(IModel root)
     {
@@ -899,15 +902,42 @@ public static class ClassSyncRuntime
     // Build the captured editor plus one entry per connector that appeared during this run,
     // cloned from an existing connector (same DefinitionId, Style and Labels) with the new
     // connector's own Id, model and ends and IsVisible=true, then re-apply Editors only.
-    static void ReapplyEditorWithVisibleConnectors(IApplication app,IProject project,ClassEditorCapture.Unit unit,HashSet<string> before,StringBuilder log)
+    static void ReapplyEditorWithVisibleConnectors(IApplication app,IProject project,ClassEditorCapture.Unit unit,HashSet<string> before,StringBuilder log,List<ResolvedClass> newClasses)
     {
         var d=app.Workspace.CurrentEditor as IDiagram;if(d==null)throw new InvalidOperationException("C230: 図が表示されていません。");
         var connectors=unit.Editor["Connectors"];
-        var template=connectors.Items[0];
         int added=0;
+        // New classes: a node cloned from the sibling's node entry (same DefinitionId, Style,
+        // Title, Category, Compartments) with the created model, placed to the right of the
+        // sibling. When the API already made a node, its entry is written with the same Id so
+        // the re-import keeps it and makes it visible.
+        var nodes=unit.Editor["Nodes"];
+        int nodesBefore=d.Nodes.Cast<object>().Count();
+        foreach(var c in newClasses)
+        {
+            if(nodes==null || nodes.Items==null)throw new InvalidOperationException("C230: Editor JSON に Nodes がありません。");
+            var siblingEntry=nodes.Items.FirstOrDefault(n=>ClassJsonNode.Value(n,"Id")==c.SiblingNode.Id);
+            if(siblingEntry==null)throw new InvalidOperationException("C230: 隣のクラスのノードが Editor JSON にありません。");
+            var clone=ClassJsonNode.Parse(siblingEntry.ToJsonString());
+            string nodeId=c.Node!=null?c.Node.Id:Guid.NewGuid().ToString();
+            clone.Properties["Id"]=new ClassJsonNode{Raw=ClassJson.Q(nodeId)};
+            clone.Properties["ModelId"]=new ClassJsonNode{Raw=ClassJson.Q(c.Model.Id)};
+            clone.Properties["LocationX"]=new ClassJsonNode{Raw=(c.SiblingNode.LocationX+c.SiblingNode.Width+40).ToString("R",System.Globalization.CultureInfo.InvariantCulture)};
+            clone.Properties["LocationY"]=new ClassJsonNode{Raw=c.SiblingNode.LocationY.ToString("R",System.Globalization.CultureInfo.InvariantCulture)};
+            clone.Properties["Visible"]=new ClassJsonNode{Raw="true"};
+            clone.Properties["IsVisible"]=new ClassJsonNode{Raw="true"};
+            nodes.Items.Add(clone);added++;
+            log.AppendLine("node entry for re-import: id="+nodeId+" model="+c.Model.Id+" (template node "+c.SiblingNode.Id+", api node "+(c.Node!=null?"yes":"no")+")");
+        }
+        if(connectors==null || connectors.Items==null || connectors.Items.Count==0)
+        {
+            if(added==0) { log.AppendLine("no connector entries to re-apply");return; }
+        }
+        var template=connectors!=null && connectors.Items!=null && connectors.Items.Count>0?connectors.Items[0]:null;
         foreach(var c in d.Connectors.Cast<object>().ToList())
         {
             var shape=c as IConnector;if(shape==null || before.Contains(shape.Id))continue;
+            if(template==null)throw new InvalidOperationException("C230: 図に既存の線がないため、線の雛形を取れません。");
             var own=ClassDiagramKind.ModelOf(shape);
             if(own==null || shape.StartPoint==null || shape.EndPoint==null)throw new InvalidOperationException("C230: 追加されたコネクタのモデルまたは両端を取得できません。");
             var clone=ClassJsonNode.Parse(template.ToJsonString());
@@ -933,6 +963,10 @@ public static class ClassSyncRuntime
         int countAfter=CountConnectors(app);
         log.AppendLine("connectors after re-import: "+countBefore+" -> "+countAfter);
         if(countAfter!=countBefore)throw new InvalidOperationException("C230: エディタ再反映でコネクタ数が変わりました（"+countBefore+" -> "+countAfter+"）。同じIDで上書きされていません。");
+        int nodesAfter=d.Nodes.Cast<object>().Count();
+        int expectedNodes=nodesBefore+newClasses.Count(x=>x.Node==null);
+        log.AppendLine("nodes after re-import: "+nodesBefore+" -> "+nodesAfter+" (expected "+expectedNodes+")");
+        if(nodesAfter!=expectedNodes)throw new InvalidOperationException("C230: エディタ再反映でノード数が想定と違います（"+nodesBefore+" -> "+nodesAfter+"、想定 "+expectedNodes+"）。");
         DescribeNewConnectors(app,before,log);
     }
     static void ShowNewConnectors(IApplication app,HashSet<string> before,StringBuilder log)
@@ -1002,12 +1036,13 @@ public static class ClassSyncRuntime
     {
         string editorId=editor.Id;string originalJson=snapshot.Document.ToJson();
         var options=new ClassSyncOptions();typeTargets.Clear();
+        var idMap=new Dictionary<string,string>(snapshot.ModelIds,StringComparer.Ordinal);
         var targets=new List<ResolvedEdit>();
         List<IModel> everything=null;
         foreach(var edit in preflight.Edits)
         {
             string modelId;
-            if(!snapshot.ModelIds.TryGetValue(edit.CurrentId,out modelId))throw new InvalidOperationException("C220: 更新対象のモデルIDを特定できません。");
+            if(!idMap.TryGetValue(edit.CurrentId,out modelId))throw new InvalidOperationException("C220: 更新対象のモデルIDを特定できません。");
             var model=project.GetModelById(modelId);
             if(model==null || model.IsDeleted || model.IsProxy || !model.IsEditable)throw new InvalidOperationException("C220: 更新対象に編集不可のモデルがあります。");
             string live=ClassText.Inline(ClassText.Normalize(model.Name));
@@ -1056,11 +1091,68 @@ public static class ClassSyncRuntime
         // Members: the owner class and, for adds, the owning field and the metaclass to create
         // (Property under Attribute, Method under Operation as observed on this profile, K008)
         // plus the type model when a type is written. Deletes need the live member model.
-        var members=new List<ResolvedMember>();
-        foreach(var change in preflight.Members)
+        // idMap: input document ids to live model ids. Classes created during the apply register
+        // here so members and links under them resolve on a second pass.
+        var classes=new List<ResolvedClass>();
+        var diagramNow=(IDiagram)editor;
+        foreach(var change in preflight.Classes)
         {
+            var resolved=new ResolvedClass{Change=change};
+            if(change.Action=="add")
+            {
+                string siblingId;
+                if(!idMap.TryGetValue(change.SiblingId,out siblingId))throw new InvalidOperationException("C220: 追加するクラスの隣のクラスを特定できません。");
+                var sibling=project.GetModelById(siblingId);
+                if(sibling==null || sibling.IsDeleted || sibling.IsProxy)throw new InvalidOperationException("C220: 追加するクラスの隣のクラスが取得できません。");
+                var owner=sibling.Owner;
+                if(owner==null || !owner.IsEditable)throw new InvalidOperationException("C220: 追加するクラスの所有先が編集できません。");
+                IField ownerField=null;try { ownerField=sibling.GetOwnerField(); } catch(Exception) { }
+                if(ownerField==null || !ownerField.IsEmbedded)throw new InvalidOperationException("C220: 追加するクラスの所有フィールドを特定できません。");
+                if(owner.GetFieldValues(ownerField.Name).Cast<object>().OfType<IModel>().Any(m=>!m.IsDeleted && ClassText.Inline(ClassText.Normalize(m.Name))==change.Text))
+                    throw new InvalidOperationException("C220: 同じ所有先に同じ名前のクラス '"+change.Text+"' が既にあります。");
+                var siblingNode=diagramNow.Nodes.Cast<object>().OfType<INode>().FirstOrDefault(n=>{var m=ClassDiagramKind.ModelOf(n);return m!=null && m.Id==sibling.Id;});
+                if(siblingNode==null)throw new InvalidOperationException("C220: 隣のクラスのノードが図にありません。");
+                resolved.Owner=owner;resolved.Sibling=sibling;resolved.OwningField=ownerField;resolved.Class=sibling.Metaclass;resolved.SiblingNode=siblingNode;
+                if(!diagramNow.CanAddNodeShape(sibling))log.AppendLine("CanAddNodeShape(sibling)=false: the view may not accept a new node for this metaclass");
+                log.AppendLine("class target: add '"+change.Text+"' as "+resolved.Class.FullName+" under "+owner.ClassName+" '"+owner.Name+"'."+ownerField.Name+" next to '"+sibling.Name+"' node@("+siblingNode.LocationX+","+siblingNode.LocationY+" "+siblingNode.Width+"x"+siblingNode.Height+")");
+            }
+            else
+            {
+                string modelId;
+                if(!idMap.TryGetValue(change.CurrentId,out modelId))throw new InvalidOperationException("C220: 削除するクラスのモデルIDを特定できません。");
+                var model=project.GetModelById(modelId);
+                if(model==null || model.IsDeleted || model.IsProxy || !model.IsEditable)throw new InvalidOperationException("C220: 削除するクラスが編集できません。");
+                if(ClassText.Inline(ClassText.Normalize(model.Name))!=change.Text)throw new InvalidOperationException("C220: 削除するクラスの名前が読取りと一致しません。");
+                // References from outside the class and outside the diagram's classes (a sequence
+                // lifeline, another diagram) keep it alive; links from diagram classes go with it.
+                var onDiagram=new HashSet<string>(snapshot.ModelIds.Values,StringComparer.Ordinal);
+                var subtree=new HashSet<string>(Tree(model).Select(m=>m.Id),StringComparer.Ordinal);
+                var outside=new List<string>();
+                foreach(var member in Tree(model))
+                {
+                    foreach(var rel in member.GetRelationsWhere((x,f)=>x.Target!=null && x.Target.Id==member.Id && x.IsReference).Cast<IRelationship>())
+                    {
+                        var src=rel.Source;if(src==null)continue;
+                        var top=src;int g=0;while(top.Owner!=null && g++<32 && !onDiagram.Contains(top.Id))top=top.Owner;
+                        if(subtree.Contains(src.Id) || onDiagram.Contains(top.Id) || onDiagram.Contains(src.Id))continue;
+                        outside.Add(src.ClassName+" '"+ClassText.Normalize(src.Name)+"'."+(rel.SourceField==null?"?":rel.SourceField.Name)+(src.Owner==null?"":" in "+src.Owner.ClassName+" '"+ClassText.Normalize(src.Owner.Name)+"'"));
+                        if(outside.Count>=5)break;
+                    }
+                    if(outside.Count>=5)break;
+                }
+                if(outside.Count>0)throw new InvalidOperationException("C220: クラス '"+change.Text+"' は図の外から参照されているため削除しません。\n参照元: "+string.Join(" / ",outside.ToArray()));
+                resolved.Model=model;
+                log.AppendLine("class target: delete '"+change.Text+"' model="+modelId+" class="+model.ClassName+" children="+Tree(model).Count());
+            }
+            classes.Add(resolved);
+        }
+        var pendingClassIds=new HashSet<string>(preflight.Classes.Where(c=>c.Action=="add").Select(c=>c.ExpectedId),StringComparer.Ordinal);
+        var members=new List<ResolvedMember>();
+        var deferredMembers=new List<ClassMemberChange>();
+        Action<ClassMemberChange> resolveMember=null;
+        resolveMember=delegate(ClassMemberChange change) {
             string ownerId;
-            if(!snapshot.ModelIds.TryGetValue(change.OwnerId,out ownerId))throw new InvalidOperationException("C220: メンバの所有先のモデルIDを特定できません。");
+            if(!idMap.TryGetValue(change.OwnerId,out ownerId))throw new InvalidOperationException("C220: メンバの所有先のモデルIDを特定できません。");
             var owner=project.GetModelById(ownerId);
             if(owner==null || owner.IsDeleted || owner.IsProxy || !owner.IsEditable)throw new InvalidOperationException("C220: メンバの所有先が編集できません。");
             var resolved=new ResolvedMember{Owner=owner,Change=change};
@@ -1092,7 +1184,7 @@ public static class ClassSyncRuntime
                 if(change.InsertBeforeId!=null)
                 {
                     string beforeId;
-                    if(snapshot.ModelIds.TryGetValue(change.InsertBeforeId,out beforeId))resolved.InsertBefore=project.GetModelById(beforeId);
+                    if(idMap.TryGetValue(change.InsertBeforeId,out beforeId))resolved.InsertBefore=project.GetModelById(beforeId);
                     if(resolved.InsertBefore==null || resolved.InsertBefore.IsDeleted)log.AppendLine("insert position: following member not resolved, appending at the end");
                 }
                 resolved.Parameters=change.Parameters;
@@ -1101,7 +1193,7 @@ public static class ClassSyncRuntime
             else
             {
                 string memberId;
-                if(!snapshot.ModelIds.TryGetValue(change.CurrentId,out memberId))throw new InvalidOperationException("C220: 削除するメンバのモデルIDを特定できません。");
+                if(!idMap.TryGetValue(change.CurrentId,out memberId))throw new InvalidOperationException("C220: 削除するメンバのモデルIDを特定できません。");
                 var member=project.GetModelById(memberId);
                 if(member==null || member.IsDeleted || member.IsProxy || !member.IsEditable)throw new InvalidOperationException("C220: 削除するメンバが編集できません。");
                 if(ClassText.Inline(ClassText.Normalize(member.Name))!=change.Text)throw new InvalidOperationException("C220: 削除するメンバの名前が読取りと一致しません。");
@@ -1127,16 +1219,22 @@ public static class ClassSyncRuntime
                 log.AppendLine("member target: delete "+change.Kind+" '"+change.Text+"' model="+memberId+" class="+member.ClassName);
             }
             members.Add(resolved);
+        };
+        foreach(var change in preflight.Members)
+        {
+            if(change.Action=="add" && pendingClassIds.Contains(change.OwnerId)) { deferredMembers.Add(change);continue; }
+            resolveMember(change);
         }
         var links=new List<ResolvedLink>();
+        var deferredLinks=new List<ClassLinkChange>();
+        Action<ClassLinkChange> resolveLink=null;
         // The expected document: the input plus what the product does on the other side of a
         // two-field relationship. Partner lines are dropped for deletes here and added after
         // a Relate once the partner field has been observed.
         var effective=desired.Copy();
-        foreach(var change in preflight.Links)
-        {
+        resolveLink=delegate(ClassLinkChange change) {
             string fromId,toId;
-            if(!snapshot.ModelIds.TryGetValue(change.FromId,out fromId) || !snapshot.ModelIds.TryGetValue(change.ToId,out toId))throw new InvalidOperationException("C220: 関連の両端のモデルIDを特定できません。");
+            if(!idMap.TryGetValue(change.FromId,out fromId) || !idMap.TryGetValue(change.ToId,out toId))throw new InvalidOperationException("C220: 関連の両端のモデルIDを特定できません。");
             var from=project.GetModelById(fromId);var to=project.GetModelById(toId);
             if(from==null || to==null || from.IsDeleted || to.IsDeleted || from.IsProxy || to.IsProxy || !from.IsEditable)throw new InvalidOperationException("C220: 関連の両端に編集不可のモデルがあります。");
             var field=FieldOf(from,change.Field);
@@ -1168,8 +1266,14 @@ public static class ClassSyncRuntime
             }
             log.AppendLine("link target: "+change.Action+" "+from.ClassName+" '"+from.Name+"' -["+change.Field+" : "+field.Type+"]-> "+to.ClassName+" '"+to.Name+"'");
             links.Add(resolved);
+        };
+        foreach(var change in preflight.Links)
+        {
+            if(change.Action=="add" && (pendingClassIds.Contains(change.FromId) || pendingClassIds.Contains(change.ToId))) { deferredLinks.Add(change);continue; }
+            resolveLink(change);
         }
-        string summary="名前 "+preflight.NameCount+" / 可視性 "+preflight.VisibilityCount+" / 型 "+preflight.TypeCount+" / メンバ追加 "+preflight.MemberAddCount+" / メンバ削除 "+preflight.MemberDeleteCount+" / 関連追加 "+preflight.LinkAddCount+" / 関連削除 "+preflight.LinkDeleteCount;
+        if(deferredMembers.Count>0 || deferredLinks.Count>0)log.AppendLine("deferred until the new classes exist: members="+deferredMembers.Count+" links="+deferredLinks.Count);
+        string summary="名前 "+preflight.NameCount+" / 可視性 "+preflight.VisibilityCount+" / 型 "+preflight.TypeCount+" / クラス追加 "+preflight.ClassAddCount+" / クラス削除 "+preflight.ClassDeleteCount+" / メンバ追加 "+preflight.MemberAddCount+" / メンバ削除 "+preflight.MemberDeleteCount+" / 関連追加 "+preflight.LinkAddCount+" / 関連削除 "+preflight.LinkDeleteCount;
         string confirmation=(retain?"コピーのプロジェクトで実行してください。\nメンバ "+targets.Count+"件・関連 "+links.Count+"件（"+summary+"）を更新し、読戻しが一致したときだけ確定します。":"コピーのプロジェクトで実行してください。\nメンバ "+targets.Count+"件・関連 "+links.Count+"件（"+summary+"）を更新し、読戻しを照合した後に必ず取り消します。")
             +"\n自動保存はしません。Undo/Redo と保存再読込は手動で確認してください。";
         // A new relationship gets a connector the product keeps hidden in the saved editor
@@ -1179,7 +1283,7 @@ public static class ClassSyncRuntime
         ClassEditorCapture.Unit unit=null;
         // The editor re-import does not come back on Rollback (K034), so the trial only
         // proves the relationship write; the visible line is applied on commit alone.
-        if(preflight.LinkAddCount>0 && retain)
+        if((preflight.LinkAddCount>0 || preflight.ClassAddCount>0) && retain)
         {
             var diagramModel=ClassDiagramKind.ModelOf(editor);
             if(diagramModel==null || string.IsNullOrEmpty(project.Path))throw new InvalidOperationException("C220: 保存済みのプロジェクトで実行してください。");
@@ -1188,8 +1292,8 @@ public static class ClassSyncRuntime
             catch(Exception ex) { throw new InvalidOperationException("C220: 更新前の図を退避できません。保存済みの状態で実行してください（未保存扱いのときはコピーを開き直してください）。\n"+ex.Message); }
             if(unit.Editor==null || string.IsNullOrEmpty(unit.Schema))throw new InvalidOperationException("C220: 図の Editor JSON を退避できません。");
             var existing=unit.Editor["Connectors"];
-            if(existing==null || existing.Items==null || existing.Items.Count==0)throw new InvalidOperationException("C220: 図に既存の線がないため、線の雛形を取れません。");
-            log.AppendLine("editor captured for re-import: schema="+unit.Schema+" connectors="+existing.Items.Count);
+            if(preflight.LinkAddCount>0 && (existing==null || existing.Items==null || existing.Items.Count==0))throw new InvalidOperationException("C220: 図に既存の線がないため、線の雛形を取れません。");
+            log.AppendLine("editor captured for re-import: schema="+unit.Schema+" connectors="+(existing==null || existing.Items==null?0:existing.Items.Count));
         }
         if(!app.Window.UI.ShowConfirmDialog(confirmation,ClassExperiment.Title))return "本文更新: 中止（確認で取消）";
         if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=editorId
@@ -1198,6 +1302,44 @@ public static class ClassSyncRuntime
         string stage="開始前";
         var transaction=project.BeginUndoTransaction(false);
         Action apply=delegate {
+            foreach(var c in classes.Where(x=>x.Change.Action=="add"))
+            {
+                stage="クラスの追加";
+                var created=c.Owner.AddNewModel(c.OwningField,c.Class);
+                if(created==null)throw new InvalidOperationException("C230: クラスを作成できませんでした。");
+                created.SetField("Name",c.Change.Text);
+                if(ClassText.Inline(ClassText.Normalize(created.Name))!=c.Change.Text)throw new InvalidOperationException("C230: 作成したクラスの名前の読戻しが一致しません。");
+                c.Model=created;idMap[c.Change.ExpectedId]=created.Id;
+                log.AppendLine("created class "+created.ClassName+" id="+created.Id+" name='"+created.Name+"' owner="+(created.Owner==null?"?":created.Owner.Name));
+                // The node: first through the diagram API using the sibling's element definition,
+                // then by checking what the product may have auto-created; the commit falls back to
+                // the editor re-import when neither yields a node.
+                stage="クラスのノード追加";
+                var d=(IDiagram)app.Workspace.CurrentEditor;
+                INode node=d.Nodes.Cast<object>().OfType<INode>().FirstOrDefault(n=>{var m=ClassDiagramKind.ModelOf(n);return m!=null && m.Id==created.Id;});
+                if(node==null)
+                {
+                    var def=(c.SiblingNode as IRepresentation)==null?null:(c.SiblingNode as IRepresentation).ViewDefinition as IElementDef;
+                    log.AppendLine("sibling node view definition: "+((c.SiblingNode as IRepresentation)==null || (c.SiblingNode as IRepresentation).ViewDefinition==null?"(none)":(c.SiblingNode as IRepresentation).ViewDefinition.GetType().Name)+" asElementDef="+(def!=null));
+                    try { var added=d.AddNodeShape(created,def);log.AppendLine("AddNodeShape: "+(added==null?"null":"ok")); }
+                    catch(Exception ex) { log.AppendLine("AddNodeShape failed: "+ex.Message); }
+                    node=d.Nodes.Cast<object>().OfType<INode>().FirstOrDefault(n=>{var m=ClassDiagramKind.ModelOf(n);return m!=null && m.Id==created.Id;});
+                }
+                if(node!=null)
+                {
+                    try { node.SetLocationAt(c.SiblingNode.LocationX+c.SiblingNode.Width+40,c.SiblingNode.LocationY);node.SetSizeAt(c.SiblingNode.Width,c.SiblingNode.Height); }
+                    catch(Exception ex) { log.AppendLine("node placement failed: "+ex.Message); }
+                    c.Node=node;
+                    log.AppendLine("class node "+node.Id+" at ("+node.LocationX+","+node.LocationY+") visible="+node.IsVisible);
+                }
+                else log.AppendLine("class node not created through the API; the commit will add it to the editor");
+            }
+            if(deferredMembers.Count>0 || deferredLinks.Count>0)
+            {
+                stage="追加クラス配下の解決";
+                foreach(var change in deferredMembers)resolveMember(change);
+                foreach(var change in deferredLinks)resolveLink(change);
+            }
             foreach(var t in targets)
             {
                 var model=t.Model;var edit=t.Edit;
@@ -1314,7 +1456,16 @@ public static class ClassSyncRuntime
                 }
                 catch(Exception ex) { log.AppendLine("GetRelationsOf after write failed: "+ex.Message); }
             }
-            if(links.Count>0)
+            foreach(var c in classes.Where(x=>x.Change.Action=="delete"))
+            {
+                stage="クラスの削除";
+                string id=c.Model.Id;int nodesBefore=((IDiagram)app.Workspace.CurrentEditor).Nodes.Cast<object>().Count();
+                c.Model.Delete();
+                var check=project.GetModelById(id);
+                if(check!=null && !check.IsDeleted)throw new InvalidOperationException("C230: クラスの削除が反映されていません。");
+                log.AppendLine("deleted class id="+id+" nodes "+nodesBefore+" -> "+((IDiagram)app.Workspace.CurrentEditor).Nodes.Cast<object>().Count());
+            }
+            if(links.Count>0 || classes.Any(x=>x.Change.Action=="add"))
             {
                 log.AppendLine("connectors on the diagram: "+connectorsBefore+" -> "+CountConnectors(app));
                 DescribeNewConnectors(app,connectorIdsBefore,log);
@@ -1322,7 +1473,7 @@ public static class ClassSyncRuntime
                 // (K029); the model is right and only the flag hides the line. Show it and
                 // verify the flag reads back true.
                 stage="コネクタの表示";
-                if(unit!=null)ReapplyEditorWithVisibleConnectors(app,project,unit,connectorIdsBefore,log);
+                if(unit!=null)ReapplyEditorWithVisibleConnectors(app,project,unit,connectorIdsBefore,log,classes.Where(x=>x.Change.Action=="add").ToList());
             }
             stage="更新後の照合";
             if(typeTargets.Values.Any(x=>x.Created)) { AddCreatedTypeLines(effective,snapshot,log);appendedMembers=true; }
@@ -1358,6 +1509,7 @@ public static class ClassSyncRuntime
         foreach(var error in new[]{trial.ApplyError,trial.RollbackError,trial.VerifyError})if(error!=null)log.AppendLine(error.ToString());
         Refresh(app,log);
         lines.Add("一時適用と照合: "+(trial.Applied?"一致":"失敗 ("+stage+")"));
+        if(classes.Count>0)lines.Add("クラス 追加 "+preflight.ClassAddCount+" / 削除 "+preflight.ClassDeleteCount+(preflight.ClassAddCount>0?"（ノードの表示は確定時に整えます）":""));
         if(members.Count>0)lines.Add("メンバ 追加 "+preflight.MemberAddCount+" / 削除 "+preflight.MemberDeleteCount);
         if(links.Count>0)lines.Add("関連 追加 "+preflight.LinkAddCount+" / 削除 "+preflight.LinkDeleteCount+(preflight.LinkAddCount>0?"（線の表示は確定時に付けます）":""));
         lines.Add("取消API: "+(trial.RollbackReturned?"正常終了":"失敗"));
@@ -1415,7 +1567,7 @@ public static class ClassSyncRuntime
             log.AppendLine("Scope: "+(project==null?"":project.Id)+" / "+editor.ModelId+" / "+editor.Id);
             if(trial)
             {
-                if(!preflight.Candidate)throw new InvalidOperationException("C231: このボタンで反映できるのは属性・操作の名前・可視性・型・引数、属性・操作の追加削除、既存クラス間の関連の追加削除だけです。\n"+preflight.Summary());
+                if(!preflight.Candidate)throw new InvalidOperationException("C231: このボタンで反映できるのは、クラスの追加削除、属性・操作の追加削除と名前・可視性・型・引数の変更、関連の追加削除です。クラスの改名・所有先の変更、package の追加削除は扱えません。\n"+preflight.Summary());
                 if(project==null)throw new InvalidOperationException("C220: プロジェクトを取得できません。");
                 ClassExperiment.Summary=RunTextUpdate(app,project,editor,snapshot,desired,preflight,retain,log);
                 screenshot=ClassExperiment.Summary+"\f会社PC内の試行診断\n"+log.ToString();
@@ -2296,13 +2448,26 @@ public sealed class ClassMemberChange
     public int Line;
 }
 
+// One class to create on the diagram, or one existing class to remove. A new class is
+// placed under the same owner as a sibling class from the input (its container in the
+// document), next to the sibling's node; its members and links follow through their own
+// changes, which refer to the class by ExpectedId.
+public sealed class ClassChangeItem
+{
+    public string Action, ExpectedId, CurrentId, Text, Keyword, Stereotype, ContainerId, ContainerAlias, SiblingId, SiblingAlias;
+    public int Line;
+}
+
 public sealed class ClassTextPreflight
 {
     public List<ClassMemberEdit> Edits = new List<ClassMemberEdit>();
     public List<ClassLinkChange> Links = new List<ClassLinkChange>();
     public List<ClassMemberChange> Members = new List<ClassMemberChange>();
+    public List<ClassChangeItem> Classes = new List<ClassChangeItem>();
+    public int ClassAddCount { get { return Classes.Count(c=>c.Action=="add"); } }
+    public int ClassDeleteCount { get { return Classes.Count(c=>c.Action=="delete"); } }
     public List<string> Reasons = new List<string>();
-    public bool Candidate { get { return Reasons.Count==0 && (Edits.Count>0 || Links.Count>0 || Members.Count>0); } }
+    public bool Candidate { get { return Reasons.Count==0 && (Edits.Count>0 || Links.Count>0 || Members.Count>0 || Classes.Count>0); } }
     public int MemberAddCount { get { return Members.Count(m=>m.Action=="add"); } }
     public int MemberDeleteCount { get { return Members.Count(m=>m.Action=="delete"); } }
     public int LinkAddCount { get { return Links.Count(l=>l.Action=="add"); } }
@@ -2337,9 +2502,58 @@ public sealed class ClassTextPreflight
         var result=new ClassTextPreflight();
         var old=current.Elements.ToDictionary(e=>e.Id);
         var target=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        // Classes first: a new class becomes a valid owner for member adds and a valid end for
+        // link adds below. Its sibling is the nearest existing class in the same container.
+        var pendingClasses=new HashSet<string>(StringComparer.Ordinal);
+        foreach(var c in plan.Changes.Where(x=>x.Kind=="class"))
+        {
+            string where=c.Line>0?" 入力"+c.Line+"行":"";
+            ClassElement cls;
+            if(c.Action=="add" && target.TryGetValue(c.Id,out cls))
+            {
+                ClassElement container;
+                if(!target.TryGetValue(cls.Parent??"",out container)) { result.Reasons.Add("add class"+where+": 所有先を特定できません"); continue; }
+                if(container.Kind=="class" && !old.ContainsKey(container.Id)) { result.Reasons.Add("add class"+where+": 新しいクラスの中に入れ子のクラスは扱えません"); continue; }
+                if(cls.Text.Length==0 || cls.Text.Contains("\\n")) { result.Reasons.Add("add class"+where+": 空または改行を含む名前は扱えません"); continue; }
+                if(ClassDocument.IsContainerKeyword(cls.Attr("keyword"))) { result.Reasons.Add("add class"+where+": package / component の追加は扱えません"); continue; }
+                var sibling=plan.Expected.Elements.Where(e=>e.Kind=="class" && e.Id!=cls.Id && e.Parent==cls.Parent && old.ContainsKey(e.Id) && e.Attr("stereotype")==cls.Attr("stereotype") && e.Attr("keyword")==cls.Attr("keyword"))
+                    .OrderBy(e=>Math.Abs(e.Order-cls.Order)).FirstOrDefault();
+                if(sibling==null)sibling=plan.Expected.Elements.Where(e=>e.Kind=="class" && e.Id!=cls.Id && e.Parent==cls.Parent && old.ContainsKey(e.Id)).OrderBy(e=>Math.Abs(e.Order-cls.Order)).FirstOrDefault();
+                if(sibling==null) { result.Reasons.Add("add class"+where+": 同じ所有先に既存のクラスがなく、種類と配置を決められません"); continue; }
+                result.Classes.Add(new ClassChangeItem{Action="add",ExpectedId=cls.Id,Text=cls.Text,Keyword=cls.Attr("keyword"),Stereotype=cls.Attr("stereotype"),ContainerId=container.Id,ContainerAlias=container.Attr("alias"),SiblingId=sibling.Id,SiblingAlias=sibling.Attr("alias"),Line=c.Line});
+                pendingClasses.Add(cls.Id);
+                continue;
+            }
+            if(c.Action=="delete" && old.TryGetValue(c.Id,out cls))
+            {
+                if(ClassDocument.IsContainerKeyword(cls.Attr("keyword"))) { result.Reasons.Add("delete class ("+cls.Text+"): package / component の削除は扱えません"); continue; }
+                if(current.Elements.Any(e=>e.Kind=="class" && e.Parent==cls.Id)) { result.Reasons.Add("delete class ("+cls.Text+"): 入れ子のクラスを持つため扱えません"); continue; }
+                result.Classes.Add(new ClassChangeItem{Action="delete",CurrentId=cls.Id,Text=cls.Text,Keyword=cls.Attr("keyword")});
+                continue;
+            }
+        }
+        var deletedClasses=new HashSet<string>(result.Classes.Where(x=>x.Action=="delete").Select(x=>x.CurrentId),StringComparer.Ordinal);
         foreach(var c in plan.Changes)
         {
             string where=c.Line>0?" 入力"+c.Line+"行":"";
+            if(c.Kind=="class")
+            {
+                if((c.Action=="add" && pendingClasses.Contains(c.Id)) || (c.Action=="delete" && deletedClasses.Contains(c.Id)))continue;
+                if(c.Action=="add" || c.Action=="delete")continue; // reason already recorded
+                if(c.Action=="update") { result.Reasons.Add("update class"+where+" ["+c.Detail+"]: クラスの改名・キーワード変更は扱えません"); continue; }
+                result.Reasons.Add(c.Action+" class"+where+": 扱えません"); continue;
+            }
+            // Members and links that belong to a deleted class go with it and need no separate write.
+            if(c.Action=="delete" && (c.Kind=="attribute" || c.Kind=="operation" || c.Kind=="literal"))
+            {
+                ClassElement gone;
+                if(old.TryGetValue(c.Id,out gone) && deletedClasses.Contains(gone.Parent))continue;
+            }
+            if(c.Action=="delete" && c.Kind=="link")
+            {
+                ClassElement gone;
+                if(old.TryGetValue(c.Id,out gone) && (deletedClasses.Contains(gone.Link("from")??"") || deletedClasses.Contains(gone.Link("to")??"")))continue;
+            }
             if(c.Kind=="link")
             {
                 // A link is a reference field on the source class. Adds need both ends to be
@@ -2350,7 +2564,10 @@ public sealed class ClassTextPreflight
                 {
                     ClassElement from,to;
                     if(link.Text.Length==0) { result.Reasons.Add("add link"+where+": ロール名（フィールド名）のない関連は扱えません"); continue; }
-                    if(!old.TryGetValue(link.Link("from")??"",out from) || !old.TryGetValue(link.Link("to")??"",out to)) { result.Reasons.Add("add link"+where+": 両端が既存のクラスではありません"); continue; }
+                    string fromKey=link.Link("from")??"",toKey=link.Link("to")??"";
+                    bool fromOk=old.TryGetValue(fromKey,out from) || (pendingClasses.Contains(fromKey) && target.TryGetValue(fromKey,out from));
+                    bool toOk=old.TryGetValue(toKey,out to) || (pendingClasses.Contains(toKey) && target.TryGetValue(toKey,out to));
+                    if(!fromOk || !toOk) { result.Reasons.Add("add link"+where+": 両端が既存または追加するクラスではありません"); continue; }
                     result.Links.Add(new ClassLinkChange{Action="add",FromId=from.Id,ToId=to.Id,Field=link.Text,FromAlias=from.Attr("alias"),ToAlias=to.Attr("alias"),Line=c.Line});
                     continue;
                 }
@@ -2369,7 +2586,8 @@ public sealed class ClassTextPreflight
                 if(c.Action=="add" && target.TryGetValue(c.Id,out member))
                 {
                     ClassElement owner;
-                    if(!old.TryGetValue(member.Parent??"",out owner)) { result.Reasons.Add("add "+c.Kind+where+": 所有先のクラスが既存ではありません"); continue; }
+                    string ownerKey=member.Parent??"";
+                    if(!old.TryGetValue(ownerKey,out owner) && !(pendingClasses.Contains(ownerKey) && target.TryGetValue(ownerKey,out owner))) { result.Reasons.Add("add "+c.Kind+where+": 所有先のクラスが既存または追加するクラスではありません"); continue; }
                     if(member.Text.Length==0 || member.Text.Contains("\\n")) { result.Reasons.Add("add "+c.Kind+where+": 空または改行を含む名前は扱えません"); continue; }
                     if(c.Kind=="operation" && member.Attr("returnType").Length>0) { result.Reasons.Add("add operation"+where+": 戻り値付きの操作の追加は扱えません"); continue; }
                     if(c.Kind=="operation" && ParameterNames(member.Attr("parameters")).Any(n=>n.Length==0 || n.Contains("\\n"))) { result.Reasons.Add("add operation"+where+": 引数名が空か改行を含みます"); continue; }
@@ -2418,7 +2636,7 @@ public sealed class ClassTextPreflight
     {
         var sb=new StringBuilder();
         sb.Append("本文更新の事前判定: ").Append(Candidate?"候補あり":"停止").Append('\n');
-        sb.Append("メンバ ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append(" / 引数 ").Append(Edits.Count(e=>e.ParametersChanged)).Append("） / メンバ追加 ").Append(MemberAddCount).Append(" 削除 ").Append(MemberDeleteCount).Append(" / 関連 追加 ").Append(LinkAddCount).Append(" 削除 ").Append(LinkDeleteCount).Append(" / 停止理由 ").Append(Reasons.Count).Append("件\n");
+        sb.Append("メンバ ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append(" / 引数 ").Append(Edits.Count(e=>e.ParametersChanged)).Append("） / クラス追加 ").Append(ClassAddCount).Append(" 削除 ").Append(ClassDeleteCount).Append(" / メンバ追加 ").Append(MemberAddCount).Append(" 削除 ").Append(MemberDeleteCount).Append(" / 関連 追加 ").Append(LinkAddCount).Append(" 削除 ").Append(LinkDeleteCount).Append(" / 停止理由 ").Append(Reasons.Count).Append("件\n");
         foreach(var r in Reasons)sb.Append("  ").Append(r).Append('\n');
         return sb.ToString().TrimEnd();
     }

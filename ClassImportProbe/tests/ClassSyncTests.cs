@@ -93,8 +93,17 @@ public static class ClassSyncTests
         Check(linkDelete.Candidate && linkDelete.Links.Count == 1 && linkDelete.Links[0].Action == "delete" && linkDelete.Links[0].Field == "Uses" && linkDelete.Links[0].FromAlias == "Controller" && linkDelete.Links[0].ToAlias == "Mode", "link delete preflight: " + linkDelete.Summary());
         var linkAdd = ClassTextPreflight.Check(Load(samples, "delete-link.puml"), baseline, restored);
         Check(linkAdd.Candidate && linkAdd.Links.Count == 1 && linkAdd.Links[0].Action == "add" && linkAdd.Links[0].Field == "Uses" && linkAdd.Links[0].Line == 26, "link add preflight: " + linkAdd.Summary());
-        var newClassLink = ClassTextPreflight.Check(baseline, Load(samples, "add-class.puml"), added);
-        Check(!newClassLink.Candidate && newClassLink.Links.Count == 0 && newClassLink.Reasons.Any(x => x.Contains("既存のクラス")), "link to a new class stops: " + newClassLink.Summary());
+        // A new class with an operation and a link: the class, its member and the link all pass.
+        var newClass = ClassTextPreflight.Check(baseline, Load(samples, "add-class.puml"), added);
+        Check(newClass.Candidate && newClass.Classes.Count == 1 && newClass.Classes[0].Action == "add" && newClass.Classes[0].Text == "Logger" && newClass.Classes[0].SiblingAlias == "Controller" && newClass.Classes[0].ContainerAlias == "" && newClass.Members.Count == 1 && newClass.Links.Count == 1 && newClass.Links[0].ToAlias == "Logger",
+            "new class preflight: candidate=" + newClass.Candidate + " classes=" + newClass.Classes.Count + " sibling=" + (newClass.Classes.Count > 0 ? newClass.Classes[0].SiblingAlias + "/" + newClass.Classes[0].ContainerAlias : "-") + " members=" + newClass.Members.Count + " links=" + newClass.Links.Count + " " + (newClass.Links.Count > 0 ? newClass.Links[0].ToAlias : "-") + " reasons=" + string.Join("|", newClass.Reasons.ToArray()));
+        var removedClass = ClassTextPreflight.Check(Load(samples, "add-class.puml"), baseline, removed);
+        Check(removedClass.Candidate && removedClass.Classes.Count == 1 && removedClass.Classes[0].Action == "delete" && removedClass.Members.Count == 0 && removedClass.Links.Count == 0, "class delete takes its members and links: " + removedClass.Summary());
+        var renamedClass = ClassTextPreflight.Check(baseline, ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("\"制御部\"", "\"制御装置\"")), classRename);
+        Check(!renamedClass.Candidate && renamedClass.Reasons.Count == 1 && renamedClass.Reasons[0].Contains("改名"), "class rename stops: " + renamedClass.Summary());
+        var lonely = ClassDocument.Parse("@startuml\nclass \"A\" as A\n@enduml\n");
+        var lonelyGate = ClassTextPreflight.Check(ClassDocument.Parse("@startuml\n@enduml\n"), lonely, Plan(ClassDocument.Parse("@startuml\n@enduml\n"), lonely));
+        Check(!lonelyGate.Candidate && lonelyGate.Reasons.Count == 1 && lonelyGate.Reasons[0].Contains("既存のクラスがなく"), "new class without a sibling stops: " + lonelyGate.Summary());
         var multGate = ClassTextPreflight.Check(baseline, ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("\"0..*\" IDriver", "\"1..*\" IDriver")), mult);
         Check(!multGate.Candidate && multGate.Reasons.Count == 1 && multGate.Reasons[0].Contains("多重度"), "multiplicity change stops: " + multGate.Summary());
         var anonymous = ClassDocument.Parse("@startuml\nclass \"A\" as A\nclass \"B\" as B\n\nA --> B\n\n@enduml\n");
@@ -115,7 +124,7 @@ public static class ClassSyncTests
         var bothGate2 = ClassTextPreflight.Check(baseline, renameAndLink, Plan(baseline, renameAndLink));
         Check(bothGate2.Candidate && bothGate2.Edits.Count == 1 && bothGate2.Links.Count == 1, "rename and link delete together: " + bothGate2.Summary());
 
-        foreach (var name in new[] { "add-class.puml", "reorder-member.puml", "move-class.puml" })
+        foreach (var name in new[] { "reorder-member.puml", "move-class.puml" })
         {
             var doc = Load(samples, name);
             var gate = ClassTextPreflight.Check(baseline, doc, Plan(baseline, doc));
@@ -142,8 +151,6 @@ public static class ClassSyncTests
         mixed.Elements.Single(e => e.Kind == "link" && e.Text == "Uses").Attributes["toMultiplicity"] = "1";
         var mixedGate = ClassTextPreflight.Check(baseline, mixed, Plan(baseline, mixed));
         Check(!mixedGate.Candidate && mixedGate.Edits.Count == 1 && mixedGate.Reasons.Count == 1, "mixed plan stops as a whole: " + mixedGate.Summary());
-        var classRenameGate = ClassTextPreflight.Check(baseline, ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("\"制御部\"", "\"制御装置\"")), classRename);
-        Check(!classRenameGate.Candidate && classRenameGate.Reasons.Count == 1, "class rename is out of scope: " + classRenameGate.Summary());
 
         // Trial state machines: apply failure still rolls back; commit failure rolls back once.
         var order = new List<string>();
@@ -189,7 +196,6 @@ public static class ClassSyncTests
         var addDefault = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    + {static} count : int\n", "    + {static} count : int\n    - extra : long = 1\n"));
         var addDefaultGate = ClassTextPreflight.Check(baseline, addDefault, Plan(baseline, addDefault));
         Check(!addDefaultGate.Candidate && addDefaultGate.Reasons.Count == 1, "attribute with default stops: " + addDefaultGate.Summary());
-        Check(!ClassTextPreflight.Check(baseline, Load(samples, "add-class.puml"), added).Candidate, "a new class still stops");
 
         // "<<Kind>>" after a type names the definition to create; it never counts as a difference.
         var kinded = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("- state : int [0..1] = 0", "- state : int <<StructureType>> [0..1] = 0"));
