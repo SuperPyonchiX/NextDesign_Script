@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.64";
+    public const string Title = "シーケンス生成実験 / 0.8.65";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -2839,10 +2839,17 @@ public sealed class SyncPlan
     public SequenceDocument Expected;
     public Dictionary<string,string> Identities=new Dictionary<string,string>();
     public int Recreated;
+    // An input that says nothing about a message endpoint keeps whatever the diagram has.
+    // InheritedPorts is {message, role, execution} in model ids; CarriedExecutions are the
+    // bars that only the diagram knows about; InheritRefusals says where that was declined.
+    public List<string[]> InheritedPorts=new List<string[]>();
+    public List<string> CarriedExecutions=new List<string>();
+    public List<string> InheritRefusals=new List<string>();
     public bool IsEmpty { get { return Changes.Count==0; } }
     public string ToJson()
     {
         return PumlBuild.Json(PumlBuild.Obj("Recreated",Recreated,"Identities",Identities.ToDictionary(p=>p.Key,p=>(object)p.Value),
+            "InheritedPorts",InheritedPorts.Count,"CarriedExecutions",CarriedExecutions.Count,"InheritRefusals",InheritRefusals.Count,
             "Changes",Changes.Select(c=>PumlBuild.Obj("Action",c.Action,"Id",c.Id,"Kind",c.Kind,"Line",c.Line)).ToArray()));
     }
     static string Text(string value) { return (value??"").Replace("\r\n","\n").Replace('\r','\n'); }
@@ -2985,6 +2992,28 @@ public sealed class SyncPlan
             int inputs=desired.Elements.Count(b=>b.Kind=="execution" && !map.ContainsKey(b.Id) && incident(desired,b,true)==key);
             if(candidates.Length==1 && inputs==1)bind(a,candidates[0]);
         }
+        // An input that never opens a bar on one side of a message says nothing about that
+        // endpoint. Drop exactly those role tokens from the diagram side too, so the bar is
+        // still identified by what the input did state. Tokens of deleted messages stay:
+        // dropping them would hide a real change of connection.
+        Func<SequenceElement,string> restricted=execution=>{
+            var tokens=new List<string>();
+            foreach(var message in current.Elements.Where(e=>e.Kind=="message"))foreach(var role in new[]{"sendExecution","receiveExecution"})
+            {
+                string[] ids;if(!message.Links.TryGetValue(role,out ids) || !ids.Contains(execution.Id))continue;
+                var stated=desired.Elements.FirstOrDefault(e=>map.ContainsKey(e.Id) && map[e.Id]==message.Id);
+                if(stated!=null && !stated.Links.ContainsKey(role))continue;
+                tokens.Add(role+":"+message.Id);
+            }
+            return tokens.Count==0?null:string.Join("|",tokens.OrderBy(v=>v,StringComparer.Ordinal));
+        };
+        foreach(var a in desired.Elements.Where(e=>e.Kind=="execution" && !map.ContainsKey(e.Id)))
+        {
+            string key=incident(desired,a,true);if(key==null)continue;
+            var candidates=current.Elements.Where(b=>b.Kind=="execution" && !used.Contains(b.Id) && Comparable(a,b,map) && restricted(b)==key).ToArray();
+            int inputs=desired.Elements.Count(b=>b.Kind=="execution" && !map.ContainsKey(b.Id) && incident(desired,b,true)==key);
+            if(candidates.Length==1 && inputs==1)bind(a,candidates[0]);
+        }
         // Unconnected bars still need a no-op identity: require all boundary references to resolve.
         progress=true;
         while(progress)
@@ -2999,6 +3028,52 @@ public sealed class SyncPlan
                 if(candidates.Length==1 && peers==1) {bind(a,candidates[0]);progress=true;}
             }
         }
+        // Decide, in model ids, which endpoints the input left unspecified. Only links that
+        // already exist in the diagram are carried over; nothing is invented.
+        var inherit=new List<string[]>();var carry=new HashSet<string>();
+        Func<SequenceElement,string,string[]> link=(e,role)=>{string[] v;return e.Links.TryGetValue(role,out v)?v:new string[0];};
+        foreach(var a in desired.Elements.Where(e=>e.Kind=="message" && map.ContainsKey(e.Id)))
+        {
+            SequenceElement before;if(!old.TryGetValue(map[a.Id],out before))continue;
+            foreach(string role in new[]{"sendExecution","receiveExecution"})
+            {
+                if(a.Links.ContainsKey(role))continue;
+                string[] source;if(!before.Links.TryGetValue(role,out source) || source.Length!=1)continue;
+                var end=link(a,role=="sendExecution"?"sender":"receiver").Select(id=>map.ContainsKey(id)?map[id]:null).ToArray();
+                if(end.Length!=1 || end[0]==null)continue;
+                SequenceElement bar;
+                if(!old.TryGetValue(source[0],out bar) || bar.Kind!="execution")continue;
+                // Keeping a bar must not paper over a message that now starts or lands elsewhere.
+                if(!link(bar,"participant").SequenceEqual(end))continue;
+                inherit.Add(new string[]{map[a.Id],role,source[0]});
+            }
+        }
+        Func<string,bool> stays=id=>map.ContainsValue(id) || carry.Contains(id);
+        foreach(var row in inherit.ToArray())
+        {
+            var chain=new List<string>();string reason=null;
+            for(string at=row[2];at!=null && !map.ContainsValue(at) && !carry.Contains(at);)
+            {
+                SequenceElement bar;
+                if(!old.TryGetValue(at,out bar) || chain.Contains(at)) {reason="実行区間をたどれません";break;}
+                chain.Add(at);
+                var next=link(bar,"outer");
+                at=next.Length==1?next[0]:null;
+                if(next.Length>1)reason="入れ子の指定が1件ではありません";
+            }
+            if(reason==null)
+                foreach(string id in chain)
+                {
+                    var bar=old[id];
+                    foreach(string role in new[]{"participant","endContainer"})
+                        if(link(bar,role).Any(target=>!stays(target) && !chain.Contains(target)))reason="保持する実行区間の"+role+"が残りません";
+                    if(bar.Parent!=null && !stays(bar.Parent) && !chain.Contains(bar.Parent))reason="保持する実行区間の所有先が残りません";
+                }
+            if(reason!=null) {inherit.Remove(row);plan.InheritRefusals.Add(reason);continue;}
+            foreach(string id in chain)carry.Add(id);
+        }
+        foreach(string id in carry)used.Add(id);
+        plan.InheritedPorts.AddRange(inherit);plan.CarriedExecutions.AddRange(carry);
         foreach(var a in desired.Elements.Where(e=>!map.ContainsKey(e.Id)))
         {
             string id=newId();if(string.IsNullOrEmpty(id) || old.ContainsKey(id) || map.ContainsValue(id))throw new InvalidOperationException("S203: 新IDが重複しています。");
@@ -3010,6 +3085,27 @@ public sealed class SyncPlan
         {
             string inputId=e.Id;e.Id=map[inputId];e.Parent=e.Parent==null?null:map[e.Parent];
             e.Links=e.Links.ToDictionary(p=>p.Key,p=>p.Value.Select(id=>map[id]).ToArray(),StringComparer.Ordinal);
+        }
+        if(carry.Count>0 || inherit.Count>0)
+        {
+            var expected=plan.Expected.Elements.ToDictionary(e=>e.Id);
+            foreach(string id in carry)
+            {
+                var copy=old[id].Copy();
+                // The anchors name neighbouring events, not model fields. Ones the input
+                // removes simply go; nothing is substituted for them.
+                foreach(string anchor in new[]{"startAfter","endBefore"})
+                {
+                    string[] targets;if(!copy.Links.TryGetValue(anchor,out targets))continue;
+                    copy.Links[anchor]=targets.Where(target=>expected.ContainsKey(target) || carry.Contains(target)).ToArray();
+                }
+                plan.Expected.Elements.Add(copy);expected.Add(copy.Id,copy);
+            }
+            foreach(var row in inherit)
+            {
+                SequenceElement message;
+                if(expected.TryGetValue(row[0],out message))message.Links[row[1]]=new string[]{row[2]};
+            }
         }
         foreach(var e in plan.Expected.Elements)
         {
@@ -3024,7 +3120,8 @@ public sealed class SyncPlan
             var oldPrevious=current.Elements.Where(n=>n.Kind!="execution" && n.Parent==before.Parent && n.Order<before.Order && retained.Contains(n.Id)).OrderBy(n=>n.Order).Select(n=>n.Id).ToArray();
             if(e.Parent!=before.Parent || (e.Kind!="execution" && !previous.SequenceEqual(oldPrevious)))plan.Changes.Add(new SequenceChange{Action="move",Id=e.Id,Kind=e.Kind,Line=e.Line});
         }
-        foreach(var e in current.Elements.Where(e=>!map.ContainsValue(e.Id)))plan.Changes.Add(new SequenceChange{Action="delete",Id=e.Id,Kind=e.Kind});
+        var kept=new HashSet<string>(plan.Expected.Elements.Select(e=>e.Id));
+        foreach(var e in current.Elements.Where(e=>!kept.Contains(e.Id)))plan.Changes.Add(new SequenceChange{Action="delete",Id=e.Id,Kind=e.Kind});
         plan.Expected.Validate();return plan;
     }
 }
@@ -3153,6 +3250,8 @@ public static class SequenceAudit
         }
         if(plan.IsEmpty)lines.Add("差分候補: 0件");
         lines.Add("再作成候補: "+plan.Recreated+" / 要照合: "+limitations);
+        if(plan.InheritedPorts.Count>0 || plan.CarriedExecutions.Count>0)
+            lines.Add("実行区間の指定なし: 引き継ぎ "+plan.InheritedPorts.Count+" / 保持 "+plan.CarriedExecutions.Count);
         lines.Add("未編集で出力した入力の期待値: すべて0件");
         lines.Add("この画面と「診断表示」を撮影してください。");return string.Join("\n",lines);
     }
@@ -3191,6 +3290,15 @@ public static class SequenceAudit
         lines.Add("実行区間数 図/入力: "+current.Elements.Count(e=>e.Kind=="execution")+" / "+desired.Elements.Count(e=>e.Kind=="execution"));
         foreach(var role in new[]{"sendExecution","receiveExecution"})
             lines.Add((role=="sendExecution"?"送信":"受信")+"実行区間への接続数 図/入力: "+current.Elements.Count(e=>e.Kind=="message" && e.Links.ContainsKey(role))+" / "+desired.Elements.Count(e=>e.Kind=="message" && e.Links.ContainsKey(role)));
+        // An input that states nothing about an endpoint keeps the diagram's bar. Say so:
+        // a difference that disappears silently cannot be told apart from one suppressed.
+        lines.Add("実行区間の指定なし: 端点引き継ぎ "+plan.InheritedPorts.Count+"件 / 既存バー保持 "+plan.CarriedExecutions.Count+"件");
+        if(plan.InheritedPorts.Count>0 || plan.CarriedExecutions.Count>0)
+            foreach(var role in new[]{"sendExecution","receiveExecution"})
+                lines.Add((role=="sendExecution"?"送信":"受信")+"実行区間への接続数 図/期待: "+current.Elements.Count(e=>e.Kind=="message" && e.Links.ContainsKey(role))
+                    +" / "+plan.Expected.Elements.Count(e=>e.Kind=="message" && e.Links.ContainsKey(role)));
+        if(plan.InheritRefusals.Count>0)
+            lines.Add("引き継ぎを見送った端点: "+plan.InheritRefusals.Count+"件（"+string.Join("・",plan.InheritRefusals.Distinct().OrderBy(v=>v,StringComparer.Ordinal))+"）");
         lines.Add("本文の空白以外は一律に正規化していません。");
         lines.Add("本文・モデルID・パスはこの画面には表示しません。");
         return string.Join("\n",lines)+"\f"+Residuals(current,desired,plan);
@@ -3351,7 +3459,8 @@ public sealed class SequenceStructurePreflight
         foreach(string role in new[]{"sendExecution","receiveExecution"})
         {
             var ports=Link(added,role);
-            if(ports.Length!=1)return "追加するメッセージの"+role+"が1件ではありません。";
+            if(ports.Length!=1)return "追加するメッセージの"+role+"が1件ではありません（"+ports.Length
+                +"件）。省略した端点は既存メッセージからしか引き継げません。追加するメッセージは、その端点を含む activate の内側に書いてください。";
             if(!before.ContainsKey(ports[0]) && !addedExecutions.Contains(ports[0]))
                 return "追加するメッセージの接続先は既存の実行区間か、この計画で追加する実行区間である必要があります。";
         }

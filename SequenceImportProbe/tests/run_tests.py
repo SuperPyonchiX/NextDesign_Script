@@ -37,6 +37,25 @@ public static class PayloadTest {
    if(!trialGate.Candidate || trialPlan.Changes.Count!=1 || trialGate.DeleteExecutions.Count!=1 || trialGate.ReconnectMessages.Count!=0)
        throw new Exception("trial sample is not exactly one execution deletion");
 
+   var bareModel=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"roundtrip-probe.puml")));
+   var bareInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"omitted-roundtrip.puml")));
+   var barePlan=SyncPlan.Build(bareModel,bareInput,()=>Guid.NewGuid().ToString());
+   if(barePlan.Changes.Count!=0 || barePlan.InheritRefusals.Count!=0)
+       throw new Exception("omitted activations are not a no-op: "+barePlan.ToJson());
+   if(SequenceStructurePreflight.Check(bareModel,barePlan).Targets!=0)
+       throw new Exception("omitted activations produced structure targets");
+
+   var bareBatchInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"omitted-batch.puml")));
+   var bareBatchModel=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-batch-before.puml")));
+   var bareBatchPlan=SyncPlan.Build(bareBatchModel,bareBatchInput,()=>Guid.NewGuid().ToString());
+   if(bareBatchPlan.Changes.Any(c=>c.Kind=="execution" || c.Kind=="message" || c.Kind=="participant"))
+       throw new Exception("omitted activations disturbed the batch sample: "+bareBatchPlan.ToJson());
+   var bareBatchIds=new HashSet<string>(bareBatchModel.Elements.Select(e=>e.Id));
+   if(bareBatchPlan.Expected.Elements.Any(e=>e.Kind=="execution" && !bareBatchIds.Contains(e.Id)))
+       throw new Exception("omitted activations invented execution ids");
+   if(SyncPlan.Build(bareBatchPlan.Expected,bareBatchInput,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
+       throw new Exception("omitted activations are not idempotent");
+
    var reconnectBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-before.puml")));
    var reconnectAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-after.puml")));
    var reconnectPlan=SyncPlan.Build(reconnectBefore,reconnectAfter,()=>Guid.NewGuid().ToString());

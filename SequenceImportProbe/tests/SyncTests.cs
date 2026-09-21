@@ -9,6 +9,40 @@
         var ids=d.Elements.ToDictionary(e=>e.Id,e=>"old-"+e.Id);
         foreach(var e in d.Elements) {e.Id=ids[e.Id];e.Parent=e.Parent==null?null:ids[e.Parent];e.Links=e.Links.ToDictionary(p=>p.Key,p=>p.Value.Select(id=>ids[id]).ToArray());}
     }
+    // An input that never opens a bar on one side of a message states nothing about that
+    // endpoint, so the diagram keeps its own. Deleting a bar still works through the forms
+    // that do not rely on a missing link.
+    static void OmittedActivations()
+    {
+        var model=Doc("activate A\nA -> B : call\nactivate B\nB --> A : done\ndeactivate B\ndeactivate A");Ids(model);
+        Require(Plan(model,Doc("A -> B : call\nB --> A : done")).IsEmpty,"omitted activations produced a diff");
+        Require(Plan(model,Doc("A -> B : call\nactivate B\nB --> A : done\ndeactivate B")).IsEmpty,"sender omission not inherited");
+        Require(Plan(model,Doc("activate A\nA -> B : call\nB --> A : done\ndeactivate A")).IsEmpty,"receiver omission not inherited");
+        // Stating a different extent for a bar is not an omission, and stays a difference.
+        var mixed=Doc("activate A\nA -> B : m1\nactivate B\nB --> A : m2\ndeactivate B\ndeactivate A");Ids(mixed);
+        var shortened=Plan(mixed,Doc("A -> B : m1\nactivate B\ndeactivate B\nB --> A : m2"));
+        Require(shortened.Changes.Count(c=>c.Kind=="execution" && c.Action=="update")==1,"shortened bar extent was swallowed by inheritance");
+        Require(!shortened.Changes.Any(c=>c.Kind=="execution" && (c.Action=="add" || c.Action=="delete")),"shortened bar extent recreated bars");
+        var inherited=Plan(model,Doc("A -> B : call\nB --> A : done"));
+        Require(inherited.InheritedPorts.Count>0 && inherited.InheritRefusals.Count==0,"inheritance was not reported");
+        Require(Plan(inherited.Expected,Doc("A -> B : call\nB --> A : done")).IsEmpty,"inherited plan is not idempotent");
+        Require(inherited.Expected.Elements.Where(e=>e.Kind=="execution").All(e=>e.Id.StartsWith("old-")),"inheritance invented execution ids");
+        var renamed=Plan(model,Doc("A -> B : renamed\nB --> A : done"));
+        Require(renamed.Changes.Count(c=>c.Action=="update" && c.Kind=="message")==1,"text edit hidden by inheritance");
+        Require(!renamed.Changes.Any(c=>c.Kind=="execution"),"text edit disturbed the kept bars");
+        // The confirmed way to delete a bar: leave the enclosing activate open.
+        var nested=Doc("activate A\nactivate B\nA -> B : call\nactivate B\ndeactivate B\nB --> A : done\ndeactivate B\ndeactivate A");Ids(nested);
+        var dropped=Plan(nested,Doc("activate A\nactivate B\nA -> B : call\nB --> A : done\ndeactivate B\ndeactivate A"));
+        Require(dropped.Changes.Count(c=>c.Kind=="execution" && c.Action=="delete")==1,"inner bar deletion lost");
+        Require(!dropped.Changes.Any(c=>c.Kind=="execution" && c.Action=="add"),"inner bar deletion recreated bars");
+        var idle=Doc("activate A\nA -> B : call\nactivate B\ndeactivate B\nactivate B\ndeactivate B\ndeactivate A");Ids(idle);
+        Require(Plan(idle,Doc("activate A\nA -> B : call\nactivate B\ndeactivate B\ndeactivate A"))
+            .Changes.Count(c=>c.Kind=="execution" && c.Action=="delete")==1,"idle bar deletion lost");
+        // A bar cannot be kept when the frame that owns it is going away.
+        var framed=Doc("opt scope\nA -> B : inside\nactivate B\ndeactivate B\nend");Ids(framed);
+        var unframed=Plan(framed,Doc("A -> B : inside"));
+        Require(unframed.Changes.Any(c=>c.Kind=="execution" && c.Action=="delete"),"bar kept although its frame is deleted");
+    }
     static void StructurePreflight()
     {
         var before=Doc("activate A\nA -> B : call\nactivate B\ndeactivate B\ndeactivate A");
@@ -85,6 +119,7 @@
     {
         StructurePreflight();
         AddedExecutionPreflight();
+        OmittedActivations();
         string body="activate A\nA -> B : first\nalt ready\nA -> B : work\nnote over B\nline one\nline two\nend note\nelse wait\nB --> A : wait\nref over A,B : Service\nend\ndeactivate A";
         var old=Doc(body);Ids(old);
         Require(Plan(old,Doc(body)).IsEmpty,"all-kind no-op changed semantics");
@@ -202,7 +237,9 @@
         var withoutBars=Doc("opt check\nA -> B : first\nend");
         var barPlan=Plan(withBars,withoutBars);
         Require(!barPlan.Changes.Any(c=>(c.Kind=="fragment" || c.Kind=="operand" || c.Kind=="message") && (c.Action=="add" || c.Action=="delete")),"activation difference recreated enclosing structure");
-        Require(barPlan.Changes.Any(c=>c.Kind=="execution" && c.Action=="delete"),"activation difference silently suppressed");
+        // Omitting the activate states nothing about the endpoint, so the bar stays.
+        // OmittedActivations() holds the forms that do delete a bar.
+        Require(!barPlan.Changes.Any(c=>c.Kind=="execution"),"omitted activation was treated as a deletion");
         var triggered=Doc("A -> B : begin\nactivate B\nB --> A : end\ndeactivate B");
         var triggerMessage=triggered.Elements.Single(e=>e.Kind=="message" && e.Text=="begin");
         Require(triggerMessage.Links["receiveExecution"].Single()==triggered.Elements.Single(e=>e.Kind=="execution").Id,"post-message activate not bound to receiver");
@@ -268,13 +305,14 @@
         Require(!siblingPlan.Changes.Any(c=>(c.Kind=="fragment" || c.Kind=="operand") && (c.Action=="add" || c.Action=="delete")),"sibling alt child edit recreated containers");
         Require(siblingPlan.Changes.Any(c=>c.Kind=="ref" && c.Action=="move") && siblingPlan.Changes.Any(c=>c.Kind=="message" && c.Action=="update"),"container matching hid real child edits");
         Require(Plan(siblingOld,Doc(siblingBlocks)).IsEmpty,"sibling alt no-op changed");
-        var portOld=Doc("activate A\nactivate B\nA -> B : hidden-label\ndeactivate B\ndeactivate A\nref over A : hidden-ref");Ids(portOld);
-        var portNew=portOld.Copy();
+        // Reconnect the receive end to the enclosing bar, the shape the reconnect samples use.
+        // Simply removing the link would now mean "unspecified" and be inherited, not reported.
+        var portBody="activate B\nactivate A\nA -> B : hidden-label\nactivate B\ndeactivate B\nB --> A : reply\ndeactivate B\ndeactivate A\nref over A : hidden-ref";
+        var portOld=Doc(portBody);Ids(portOld);
+        var portNew=Doc(portBody.Replace("hidden-label\nactivate B\ndeactivate B","hidden-label"));
         portOld.Elements.Single(e=>e.Kind=="ref").Attributes["reference"]="secret-target";
-        portNew.Elements.Single(e=>e.Kind=="ref").Attributes["reference"]="";
-        portNew.Elements.Single(e=>e.Kind=="message").Links.Remove("receiveExecution");
         string portReport=SequenceAudit.Reasons(portOld,portNew,Plan(portOld,portNew));
-        Require(portReport.Contains("receiveExecution") && portReport.Contains("入力=未解決"),"port and reference diagnostics missing");
+        Require(portReport.Contains("receiveExecution") && portReport.Contains("入力=未解決"),"port and reference diagnostics missing >>>"+portReport.Replace("","|"));
         Require(!portReport.Contains("secret-target") && !portReport.Contains("hidden-label") && !portReport.Contains("hidden-ref"),"residual details disclosed source data");
         var spaceRefs=new[]{new SequenceReferenceCandidate{Id="wide",Name="Task　Start",Path="Area　One::Task　Start"},new SequenceReferenceCandidate{Id="other",Name="Task  Start",Path="Else::Task  Start"}};
         Require(SequenceReferenceResolver.Find("Task Start",spaceRefs).Length==2,"normalized ambiguity hidden");
