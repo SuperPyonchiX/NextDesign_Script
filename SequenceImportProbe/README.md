@@ -62,6 +62,8 @@ S220: 削除するCombinedFragmentに未対応の関連が残っています。
 
 `samples/omitted-roundtrip.puml` と `samples/omitted-batch.puml` は activate を一切書かない入力。それぞれ `roundtrip-probe.puml` / `structure-batch-before.puml` 相当の図に対して差分0件になる。
 
+実機確認済み。参加者2・メッセージ4・実行区間4の図に `omitted-batch.puml` を指定して、端点引き継ぎ8件・既存バー保持4件、接続数が 図/入力 4/0 から 図/期待 4/4 になり差分0件。再作成候補0で実行区間のIDも保たれた。フラグメントを含む形と、確定（書込み）は未確認。
+
 ## 0.8.60: 往復の恒等性を測る最小サンプル
 
 無編集の同じファイルで「差分を検証」を実行したところ差分8件。往復が恒等ではなかった。内訳は送信実行区間への接続数が 図3 / 入力0。
