@@ -1,6 +1,6 @@
 # NdMcp — Next Design を MCP クライアントから読む
 
-## 0.2.0: クラス図の PlantUML 同期 API（実機未確認）
+## 0.2.0: クラス図の PlantUML 同期 API
 
 ClassImportProbe（0.7.1）で実機確認したクラス図の同期本体を `main.cs` に転記し、MCP ツール 4 つと HTTP エンドポイント 5 つを足した。読み出し API はこれまでどおり読み取り専用で、書き込むのは `/class-sync/trial` と `/class-sync/apply` だけ。
 
@@ -15,7 +15,7 @@ ClassImportProbe（0.7.1）で実機確認したクラス図の同期本体を `
 - POST の本文は JSON `{path|id, editor?, plantuml|file}`。`file` は Next Design が動く PC 上の .puml パス（300KB 以下）。
 - 応答は `ok` / `changes` / `stopReasons` / `applied` / `committed` / `summary` / `details` と、診断ファイル `reportFile`（`%LOCALAPPDATA%\NextDesign.ClassSync\reports\`、リボン版と同じ場所）。`preview` には `currentPlantuml` も付く。
 - 扱える差分・停止条件・関連の追加に保存済みプロジェクトが要る点は [ClassImportProbe/README.md](../ClassImportProbe/README.md) と同じ。確認ダイアログは出さず自動で「はい」にする（クラス削除などの確認はエージェント側が preview の結果で行う）。
-- **未確認**: MCP 経由では対象の図がメインエディタに開いていないことがある。同期本体は対象エディタを ID で解決するが、非表示の図に対する `AddNodeShape` や Editor JSON の再反映は実機で試していない。失敗したら対象の図を開いた状態で再実行する。
+- **実機確認（2026-09-22）**: 実プロジェクトのクラス図（893 行）で `editors` → `current` → 無編集 preview 0 件 → 属性改名の preview / trial / apply（図をメインエディタで閉じた状態）まで成功。**未確認**: 図を閉じた状態での関連追加の確定（Editor JSON の再反映）とクラス追加（`AddNodeShape`）。失敗したら対象の図を開いた状態で再実行する。
 
 実機手順:
 

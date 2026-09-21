@@ -144,7 +144,7 @@ PowerShell の `curl.exe` は JSON の引用符が崩れやすいので、POST �
 | 6 | Step6: fields の kind / export の生成物 / 編集中フィールドの見え方 | |
 | 7 | Step7: Codex からの呼び出し | 2026-09-19、nd_ping・nd_project 成功。その他の MCP 呼び出しと停止時の応答は未確認 |
 | 8 | Step8: 停止 / プロジェクトを閉じた後 / ND 終了時 | |
-| 9 | Step9: クラス図同期 1〜8 の各応答（changes / applied / committed）。6・7 は図を開いていない状態と開いた状態の比較 | |
+| 9 | Step9: クラス図同期 1〜8 の各応答（changes / applied / committed）。6・7 は図を開いていない状態と開いた状態の比較 | 2026-09-22、1〜6 成功（0.7.2 で無編集 0 件、図を閉じた状態の apply で committed True）。7・8 は未実施 |
 | 10 | Next Design の正確なバージョン（ヘルプ > バージョン情報） | |
 
 ## 判定
