@@ -1102,7 +1102,8 @@ public sealed class SequenceStructurePreflight
 public sealed class SequenceAddedMessage
 {
     public string ModelId, Metaclass, Name, OwnerId, ShapeId, TemplateShapeId, TemplateModelId, Y;
-    public string[] RelationIds=new string[0], RelationSources=new string[0], TemplateRelationIds=new string[0];
+    public string[] RelationIds=new string[0], RelationSources=new string[0], TemplateRelationIds=new string[0],
+        RelationFields=new string[0];
     public string SendPort, ReceivePort, Sender, Receiver;
 }
 
@@ -1437,7 +1438,8 @@ public sealed class SequenceStructurePreparation
             if(entity["Fields"]!=null && entity["Fields"].Properties!=null && entity["Fields"]["Name"]!=null)
                 entity["Fields"].Properties["Name"]=SequenceJson.Parse(SequencePayload.Q(name));
             newEntities.Add(entity);
-            var relationIds=new List<string>();var relationSources=new List<string>();var templateIds=new List<string>();
+            var relationIds=new List<string>();var relationSources=new List<string>();
+            var templateIds=new List<string>();var relationFields=new List<string>();
             // Endpoints before membership, as the executions needed.
             var wiring=new List<string[]>{new[]{"SendMessage",send},new[]{"ReceiveMessage",receive},new[]{"___Interaction_Message",root}};
             // A message inside a frame is owned by the interaction and also pointed at by
@@ -1450,7 +1452,8 @@ public sealed class SequenceStructurePreparation
                 {
                     Require(types!=null && types.Complete(),"オペランド所属の型情報が解決できていません。");
                     newRelations.Add(relate(types.OperandMessage,relationId,pair[1],id));
-                    relationIds.Add(relationId);relationSources.Add(pair[1]);templateIds.Add("");
+                    relationIds.Add(relationId);relationSources.Add(pair[1]);
+                    templateIds.Add("");relationFields.Add(types.OperandMessage[2]);
                     continue;
                 }
                 var origin=find(pair[0],pair[0]=="___Interaction_Message"?root:V(find(pair[0],null,template),"SourceId"),template);
@@ -1460,7 +1463,8 @@ public sealed class SequenceStructurePreparation
                 copy.Properties["TargetId"]=SequenceJson.Parse(SequencePayload.Q(id));
                 copy.Properties.Remove("SourceIndex");copy.Properties.Remove("TargetIndex");
                 newRelations.Add(copy);
-                relationIds.Add(relationId);relationSources.Add(pair[1]);templateIds.Add(V(origin,"Id"));
+                relationIds.Add(relationId);relationSources.Add(pair[1]);
+                templateIds.Add(V(origin,"Id"));relationFields.Add("");
             }
             string wireShapeId=Guid.NewGuid().ToString();
             var wireShape=SequenceJson.Parse(templateShapes[0].ToJsonString());
@@ -1471,7 +1475,8 @@ public sealed class SequenceStructurePreparation
             newMessageShapes.Add(wireShape);
             wires.Add(new SequenceAddedMessage{ModelId=id,Metaclass=V(entity,"MetamodelId"),Name=name,OwnerId=root,
                 ShapeId=wireShapeId,TemplateShapeId=V(templateShapes[0],"Id"),TemplateModelId=template,Y=Number(y),
-                RelationIds=relationIds.ToArray(),RelationSources=relationSources.ToArray(),TemplateRelationIds=templateIds.ToArray(),
+                RelationIds=relationIds.ToArray(),RelationSources=relationSources.ToArray(),
+                TemplateRelationIds=templateIds.ToArray(),RelationFields=relationFields.ToArray(),
                 SendPort=send,ReceivePort=receive,Sender=wanted.Links["sender"].Single(),Receiver=wanted.Links["receiver"].Single()});
         }
         var lanes=new List<SequenceAddedParticipant>();
@@ -1940,7 +1945,10 @@ public sealed class SequenceTrialState
             result.Models[wire.ModelId]=PumlBuild.Json(new[]{wire.Metaclass,wire.Name,wire.OwnerId,"False"});
             for(int i=0;i<wire.RelationIds.Length;i++)
             {
-                string field=result.Field(wire.TemplateRelationIds[i]),origin=wire.RelationSources[i];
+                // A relation built rather than copied carries its own field signature.
+                string field=i<wire.RelationFields.Length && wire.RelationFields[i].Length>0
+                    ?wire.RelationFields[i]:result.Field(wire.TemplateRelationIds[i]);
+                string origin=wire.RelationSources[i];
                 if(field.Length==0)throw new InvalidOperationException("S230: 追加するメッセージの関連の種別情報が不足しています。");
                 int index=result.Relations.Count(pair=>pair.Value[0]==origin && result.Field(pair.Key)==field);
                 result.Relations[wire.RelationIds[i]]=new[]{origin,wire.ModelId,
