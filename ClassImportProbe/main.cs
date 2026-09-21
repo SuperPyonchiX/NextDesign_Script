@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.4.0";
+    public const string Version = "0.4.1";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -690,7 +690,7 @@ public static class ClassSyncRuntime
     // One resolved edit: the member model plus, for a type change, the old and new type models.
     class ResolvedEdit { public IModel Model; public ClassMemberEdit Edit; public IModel OldType, NewType; public string VisibilityValue; }
     class ResolvedLink { public IModel From, To; public ClassLinkChange Change; public string RelationId="", PartnerField=""; }
-    class ResolvedMember { public IModel Owner, Member, TypeModel; public ClassMemberChange Change; public string Field, ClassName, VisibilityValue, TypeField; }
+    class ResolvedMember { public IModel Owner, Member, TypeModel; public ClassMemberChange Change; public string Field, ClassName, VisibilityValue, TypeField; public IField OwningField; public IClass MemberClass; }
     static IEnumerable<IModel> Tree(IModel root)
     {
         var stack=new Stack<IModel>();stack.Push(root);
@@ -912,7 +912,13 @@ public static class ClassSyncRuntime
                 // Reuse the metaclass of an existing sibling of the same kind so the profile's
                 // concrete class (Property / Method) is not guessed; fall back to the field type.
                 var sibling=owner.GetFieldValues(fieldName).Cast<object>().OfType<IModel>().FirstOrDefault(m=>!m.IsDeleted);
-                resolved.Field=fieldName;resolved.ClassName=sibling!=null?sibling.ClassName:field.Type;
+                // The short ClassName is not accepted by AddNewModel(string,string) (K038); pass the
+                // metaclass object from a sibling, or the field's declared type class when the
+                // class has no member of this kind yet.
+                resolved.Field=fieldName;resolved.OwningField=field;
+                resolved.MemberClass=sibling!=null?sibling.Metaclass:field.TypeClass;
+                if(resolved.MemberClass==null)throw new InvalidOperationException("C220: '"+fieldName+"' に作るメタクラスを特定できません。");
+                resolved.ClassName=resolved.MemberClass.FullName;
                 if(owner.GetFieldValues(fieldName).Cast<object>().OfType<IModel>().Any(m=>!m.IsDeleted && ClassText.Inline(ClassText.Normalize(m.Name))==change.Text))
                     throw new InvalidOperationException("C220: 同じ名前のメンバ '"+change.Text+"' が既にあります。");
                 if(change.Visibility.Length>0 && !options.VisibilityValues.TryGetValue(change.Visibility,out resolved.VisibilityValue))throw new InvalidOperationException("C220: 可視性の記号 '"+change.Visibility+"' に対応する値がありません。");
@@ -1050,7 +1056,7 @@ public static class ClassSyncRuntime
                 if(m.Change.Action=="add")
                 {
                     stage="メンバの追加";
-                    var created=m.Owner.AddNewModel(m.Field,m.ClassName,false);
+                    var created=m.Owner.AddNewModel(m.OwningField,m.MemberClass);
                     if(created==null)throw new InvalidOperationException("C230: メンバを作成できませんでした。");
                     created.SetField("Name",m.Change.Text);
                     if(m.VisibilityValue!=null)
