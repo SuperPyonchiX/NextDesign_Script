@@ -439,6 +439,12 @@ public static class SequenceStructureTrial
             foreach(var entry in prepared.AddedExecutions)
                 log.AppendLine("add execution payload: model="+entry.ModelId+" shape="+entry.ShapeId
                     +" geometry(X,Y,Length)="+entry.Geometry+" relation order="+PumlBuild.Json(entry.RelationSources));
+            foreach(var frame in prepared.AddedFragments)
+                log.AppendLine("add fragment payload: model="+frame.ModelId+" shape="+frame.ShapeId
+                    +" geometry(X,Y,Width,Height)="+frame.Geometry+" relation order="+PumlBuild.Json(frame.RelationSources));
+            foreach(var branch in prepared.AddedOperands)
+                log.AppendLine("add operand payload: model="+branch.ModelId+" shape="+branch.ShapeId
+                    +" position="+branch.Position+" owner="+branch.OwnerId);
             Import(project,prepared.ReconnectJson,log);
             Verify(expectedReconnect,Rounded(project,rootId,fresh,newShapes),"接続変更後",log);
             log.AppendLine("receiver reconnection count: "+prepared.ReconnectCount
@@ -511,7 +517,8 @@ public static class SequenceStructureTrial
             +" / 参加者追加 "+prepared.AddedParticipants.Length+"件 / 参加者削除 "+prepared.DeleteParticipantIds.Length+"件"
             +" / メッセージ削除 "+prepared.DeleteMessageIds.Length+"件"
             +" / メッセージ追加 "+prepared.AddedMessages.Length+"件"
-            +" / フラグメント関連の削除 "+prepared.DeleteFrameIds.Length+"件";
+            +" / フラグメント関連の削除 "+prepared.DeleteFrameIds.Length+"件"
+            +" / フラグメント追加 "+prepared.AddedFragments.Length+"件 / オペランド追加 "+prepared.AddedOperands.Length+"件";
         log.AppendLine(summary);
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
         catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}

@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.69";
+    public const string Title = "シーケンス生成実験 / 0.8.70";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -1363,6 +1363,12 @@ public static class SequenceStructureTrial
             foreach(var entry in prepared.AddedExecutions)
                 log.AppendLine("add execution payload: model="+entry.ModelId+" shape="+entry.ShapeId
                     +" geometry(X,Y,Length)="+entry.Geometry+" relation order="+PumlBuild.Json(entry.RelationSources));
+            foreach(var frame in prepared.AddedFragments)
+                log.AppendLine("add fragment payload: model="+frame.ModelId+" shape="+frame.ShapeId
+                    +" geometry(X,Y,Width,Height)="+frame.Geometry+" relation order="+PumlBuild.Json(frame.RelationSources));
+            foreach(var branch in prepared.AddedOperands)
+                log.AppendLine("add operand payload: model="+branch.ModelId+" shape="+branch.ShapeId
+                    +" position="+branch.Position+" owner="+branch.OwnerId);
             Import(project,prepared.ReconnectJson,log);
             Verify(expectedReconnect,Rounded(project,rootId,fresh,newShapes),"接続変更後",log);
             log.AppendLine("receiver reconnection count: "+prepared.ReconnectCount
@@ -1435,7 +1441,8 @@ public static class SequenceStructureTrial
             +" / 参加者追加 "+prepared.AddedParticipants.Length+"件 / 参加者削除 "+prepared.DeleteParticipantIds.Length+"件"
             +" / メッセージ削除 "+prepared.DeleteMessageIds.Length+"件"
             +" / メッセージ追加 "+prepared.AddedMessages.Length+"件"
-            +" / フラグメント関連の削除 "+prepared.DeleteFrameIds.Length+"件";
+            +" / フラグメント関連の削除 "+prepared.DeleteFrameIds.Length+"件"
+            +" / フラグメント追加 "+prepared.AddedFragments.Length+"件 / オペランド追加 "+prepared.AddedOperands.Length+"件";
         log.AppendLine(summary);
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
         catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}
@@ -4815,7 +4822,9 @@ public sealed class SequenceTrialState
             string id=r["Id"].StringValue(),source=r["SourceId"].StringValue(),target=r["TargetId"].StringValue();
             if(prepared.AddedExecutions.Any(a=>a.RelationIds.Contains(id))
                 || prepared.AddedParticipants.Any(a=>a.RelationId==id)
-                || prepared.AddedMessages.Any(a=>a.RelationIds.Contains(id)))continue;
+                || prepared.AddedMessages.Any(a=>a.RelationIds.Contains(id))
+                || prepared.AddedFragments.Any(a=>a.RelationIds.Contains(id))
+                || prepared.AddedOperands.Any(a=>a.RelationIds.Contains(id)))continue;
             if(!result.Relations.ContainsKey(id) || result.Relations[id][1]!=target || !result.Ports.ContainsKey(target))throw new InvalidOperationException("S230: 変更前の受信関連が一致しません。");
             // SourceIndex belongs to the source endpoint collection, not to the relationship identity.
             // Omitted indices append on import. An explicit index inserts at that position.

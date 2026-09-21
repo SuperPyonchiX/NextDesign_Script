@@ -2060,7 +2060,9 @@ public sealed class SequenceTrialState
             string id=r["Id"].StringValue(),source=r["SourceId"].StringValue(),target=r["TargetId"].StringValue();
             if(prepared.AddedExecutions.Any(a=>a.RelationIds.Contains(id))
                 || prepared.AddedParticipants.Any(a=>a.RelationId==id)
-                || prepared.AddedMessages.Any(a=>a.RelationIds.Contains(id)))continue;
+                || prepared.AddedMessages.Any(a=>a.RelationIds.Contains(id))
+                || prepared.AddedFragments.Any(a=>a.RelationIds.Contains(id))
+                || prepared.AddedOperands.Any(a=>a.RelationIds.Contains(id)))continue;
             if(!result.Relations.ContainsKey(id) || result.Relations[id][1]!=target || !result.Ports.ContainsKey(target))throw new InvalidOperationException("S230: 変更前の受信関連が一致しません。");
             // SourceIndex belongs to the source endpoint collection, not to the relationship identity.
             // Omitted indices append on import. An explicit index inserts at that position.
