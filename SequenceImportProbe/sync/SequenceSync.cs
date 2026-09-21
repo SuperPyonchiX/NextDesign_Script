@@ -347,6 +347,21 @@ public sealed class SyncPlan
                 inherit.Add(new string[]{map[a.Id],role,source[0]});
             }
         }
+        // An input that leaves a bar unwritten says nothing about what nests inside it
+        // either, so a kept bar takes its nesting from the diagram as well. If the input
+        // does mention that outer bar and still drops the link, the change is real.
+        foreach(var a in desired.Elements.Where(e=>e.Kind=="execution" && map.ContainsKey(e.Id)))
+        {
+            if(a.Links.ContainsKey("outer"))continue;
+            SequenceElement before;
+            if(!old.TryGetValue(map[a.Id],out before))continue;
+            string[] source;
+            if(!before.Links.TryGetValue("outer",out source) || source.Length!=1 || map.ContainsValue(source[0]))continue;
+            SequenceElement bar;
+            if(!old.TryGetValue(source[0],out bar) || bar.Kind!="execution")continue;
+            if(!link(bar,"participant").SequenceEqual(link(before,"participant")))continue;
+            inherit.Add(new string[]{map[a.Id],"outer",source[0]});
+        }
         Func<string,bool> stays=id=>map.ContainsValue(id) || carry.Contains(id);
         foreach(var row in inherit.ToArray())
         {
@@ -749,9 +764,6 @@ public sealed class SequenceStructurePreflight
         string root=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
         if(added.Parent!=root)return "追加するフラグメントの所有先が相互作用ではありません。入れ子のフラグメントは対象外です。";
         if(added.Links.Count>0)return "追加するフラグメントに未対応の接続があります。";
-        foreach(string kind in new[]{"fragment","operand"})
-            if(!current.Elements.Any(e=>e.Kind==kind))
-                return "図に"+kind+"がないため、追加する型と図形の見本が取れません。";
         var inside=new List<SequenceElement>();var pending=new List<string>{added.Id};
         for(int i=0;i<pending.Count;i++)
         {
@@ -766,11 +778,8 @@ public sealed class SequenceStructurePreflight
                 return "追加するフラグメントの中に"+child.Kind+"があるため対象外です。オペランド・メッセージ・実行区間だけを扱います。";
             if(!adding.Contains(child.Id))return "追加するフラグメントの中に、この計画で追加しない要素があります。";
         }
-        // Every relation the new frame needs has to have a template: the frame's own
-        // ownership, its operands, the lifelines it spans, and a message inside an operand.
-        if(!current.Elements.Any(e=>e.Kind=="message" && e.Parent!=null
-            && current.Elements.Any(o=>o.Id==e.Parent && o.Kind=="operand")))
-            return "図にオペランド内のメッセージがないため、所属関連の見本が取れません。";
+        // A frame needs at least one lane to span.
+        if(!current.Elements.Any(e=>e.Kind=="participant"))return "図に参加者がないため枠を配置できません。";
         var operands=inside.Where(e=>e.Kind=="operand" && e.Parent==added.Id).ToArray();
         if(operands.Length==0)return "追加するフラグメントにオペランドがありません。";
         // The product cannot lay out a frame that encloses no message.
@@ -1108,18 +1117,42 @@ public sealed class SequenceAddedExecution
     public string[] RelationIds=new string[0], RelationSources=new string[0], TemplateRelationIds=new string[0];
 }
 
+// What a frame needs when the diagram holds none to copy: the metaclasses, the
+// operator values, and for every relation its metaclass, whether it is owned, and
+// the pair of field ids the readback compares. The SDK side resolves all of it.
+public sealed class SequenceFrameTypes
+{
+    public string Fragment, Operand;
+    public Dictionary<string,string> Operators=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+    // Each row is {metaclass id, "Embed" or "Ref", field signature}.
+    public string[] Owns, Branches, Crossing, OperandMessage;
+    public bool Complete()
+    {
+        return !string.IsNullOrEmpty(Fragment) && !string.IsNullOrEmpty(Operand)
+            && new[]{Owns,Branches,Crossing,OperandMessage}.All(r=>r!=null && r.Length==3 && !string.IsNullOrEmpty(r[0]));
+    }
+    public string ToJson()
+    {
+        return PumlBuild.Json(PumlBuild.Obj("Fragment",Fragment,"Operand",Operand,
+            "Operators",Operators.ToDictionary(p=>p.Key,p=>(object)p.Value),
+            "Owns",Owns,"Branches",Branches,"Crossing",Crossing,"OperandMessage",OperandMessage));
+    }
+}
+
 // A frame and its operands. The frame shape carries its text after the numbers and an
 // operand shape carries its guard, matching how the SDK side reads them back.
 public sealed class SequenceAddedFragment
 {
     public string ModelId, Metaclass, Name, OwnerId, ShapeId, TemplateShapeId, Geometry, Text;
-    public string[] RelationIds=new string[0], RelationSources=new string[0], RelationTargets=new string[0], TemplateRelationIds=new string[0];
+    public string[] RelationIds=new string[0], RelationSources=new string[0], RelationTargets=new string[0],
+        TemplateRelationIds=new string[0], RelationFields=new string[0];
 }
 
 public sealed class SequenceAddedOperand
 {
     public string ModelId, Metaclass, Name, OwnerId, ShapeId, TemplateShapeId, Geometry, Guard, Position;
-    public string[] RelationIds=new string[0], RelationSources=new string[0], TemplateRelationIds=new string[0];
+    public string[] RelationIds=new string[0], RelationSources=new string[0], TemplateRelationIds=new string[0],
+        RelationFields=new string[0];
 }
 
 // Prepared files are diagnostic artifacts; they are never imported by this command.
@@ -1146,6 +1179,8 @@ public sealed class SequenceStructurePreparation
     static void Require(bool condition,string reason)
     { if(!condition)throw new InvalidOperationException("S220: "+reason); }
     public static SequenceStructurePreparation Build(string exported,string editorId,SequenceDocument current,SyncPlan plan)
+    { return Build(exported,editorId,current,plan,null); }
+    public static SequenceStructurePreparation Build(string exported,string editorId,SequenceDocument current,SyncPlan plan,SequenceFrameTypes types)
     {
         var gate=SequenceStructurePreflight.Check(current,plan);
         Require(gate.Candidate,"未対応の変更があるか、構造更新の候補がありません。");
@@ -1225,21 +1260,19 @@ public sealed class SequenceStructurePreparation
         foreach(string id in affected)Require(shapes.Count(sh=>V(sh,"ModelId")==id)==1,"変更対象の図形を一意に取得できません。");
         foreach(var other in Array(source,"Editors").Where(e=>V(e,"Id")!=editorId))
             Require(!Mentions(other,affected),"変更対象を別のエディタも参照しています。");
-        SequenceJson frameTemplate=null;string frameTemplateModel=null,operandTemplateModel=null;
+        // A frame is built from the resolved metaclasses, not copied, so a diagram with no
+        // frame at all can still get one. An existing frame is used only for its rectangle,
+        // which is measured evidence of how wide a frame over these lanes should be.
+        SequenceJson frameTemplate=null;
         if(gate.AddFragments.Count>0)
         {
-            var sampleFrames=entities.Where(e=>V(e,"EntityType")=="CombinedFragment").ToArray();
-            Require(sampleFrames.Length>0,"退避データにフラグメントの見本がありません。");
-            frameTemplateModel=V(sampleFrames[0],"Id");
-            var frameShapes=editor.Shapes().Where(sh=>V(sh,"ModelId")==frameTemplateModel).ToArray();
-            Require(frameShapes.Length==1,"フラグメントの見本図形を一意に取得できません。");
-            frameTemplate=frameShapes[0];
-            var sampleOperands=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"___CombinedFragment_InteractionOperand"
-                && V(r,"SourceId")==frameTemplateModel).ToArray();
-            Require(sampleOperands.Length>0,"オペランドの見本を取得できません。");
-            operandTemplateModel=V(sampleOperands[0],"TargetId");
+            Require(types!=null && types.Complete(),"フラグメントの型情報が解決できていません。");
+            var sampleFrames=entities.Where(e=>V(e,"MetamodelId")==types.Fragment).Select(e=>V(e,"Id")).ToArray();
+            var frameShapes=editor.Shapes().Where(sh=>sampleFrames.Contains(V(sh,"ModelId"))
+                && sh["X"]!=null && sh["Width"]!=null).ToArray();
+            if(frameShapes.Length>0)frameTemplate=frameShapes[0];
         }
-        var layout=gate.AddFragments.Count>0?FrameLayout(gate,plan,editor,frameTemplate)
+        var layout=gate.AddFragments.Count>0?FrameLayout(gate,plan,editor,frameTemplate,current)
             :new Dictionary<string,Dictionary<string,double>>(StringComparer.Ordinal);
         var additions=new List<SequenceAddedExecution>();
         var newEntities=new List<SequenceJson>();
@@ -1305,90 +1338,61 @@ public sealed class SequenceStructurePreparation
         var branches=new List<SequenceAddedOperand>();
         var newFrameShapes=new List<SequenceJson>();
         var newOperandShapes=new List<SequenceJson>();
+        Func<string[],string,string,string,SequenceJson> relate=(row,relationId,from,to)=>
+            SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",relationId,"RelationType",row[1],
+                "MetamodelId",row[0],"SourceId",from,"TargetId",to)));
         foreach(string id in gate.AddFragments)
         {
             var wanted=after[id];
             Require(layout.ContainsKey(id),"追加するフラグメントの配置を決められません。");
-            var ownerLink=find("___Interaction_CombinedFragment",root,frameTemplateModel);
-            var entity=SequenceJson.Parse(byId[frameTemplateModel].ToJsonString());
-            entity.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(id));
             string name=wanted.Text??"";
-            entity.Properties["Name"]=SequenceJson.Parse(SequencePayload.Q(name));
-            if(entity["Fields"]!=null && entity["Fields"].Properties!=null)
-            {
-                if(entity["Fields"]["Name"]!=null)entity["Fields"].Properties["Name"]=SequenceJson.Parse(SequencePayload.Q(name));
-                string operatorName;
-                Require(wanted.Attributes.TryGetValue("operator",out operatorName),"追加するフラグメントに演算子がありません。");
-                Require(entity["Fields"]["Operator"]!=null,"フラグメントの見本に演算子がありません。");
-            }
-            newEntities.Add(entity);
+            string operatorName;
+            Require(wanted.Attributes.TryGetValue("operator",out operatorName),"追加するフラグメントに演算子がありません。");
+            string operatorValue;
+            Require(types.Operators.TryGetValue(operatorName,out operatorValue),
+                "この図のプロファイルに演算子 "+operatorName+" がありません。");
+            newEntities.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",id,"EntityType","CombinedFragment",
+                "MetamodelId",types.Fragment,"Name",name,"Fields",PumlBuild.Obj("Name",name,"Operator",operatorValue)))));
             var relationIds=new List<string>();var relationSources=new List<string>();
-            var relationTargets=new List<string>();var templateIds=new List<string>();
+            var relationTargets=new List<string>();var relationFields=new List<string>();
             // Ownership first, then the lanes the frame spans, as the generator writes them.
-            var wiring=new List<SequenceJson>{ownerLink};
-            wiring.AddRange(relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"CrossingFragmentCoveredLifeline"
-                && V(r,"SourceId")==frameTemplateModel));
-            Require(wiring.Count>1,"フラグメントがまたぐライフラインの関連の見本がありません。");
-            foreach(var origin in wiring)
+            var wiring=new List<string[][]>{new[]{types.Owns,new[]{root,id}}};
+            foreach(var lane in current.Elements.Where(e=>e.Kind=="participant"))
+                wiring.Add(new[]{types.Crossing,new[]{id,lane.Id}});
+            foreach(var pair in wiring)
             {
-                var copy=SequenceJson.Parse(origin.ToJsonString());
                 string relationId=Guid.NewGuid().ToString();
-                copy.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(relationId));
-                bool owned=V(origin,"MetamodelId")==SequencePayload.Prefix+"___Interaction_CombinedFragment";
-                copy.Properties[owned?"TargetId":"SourceId"]=SequenceJson.Parse(SequencePayload.Q(id));
-                copy.Properties.Remove("SourceIndex");copy.Properties.Remove("TargetIndex");
-                newRelations.Add(copy);
-                relationIds.Add(relationId);relationSources.Add(V(copy,"SourceId"));
-                relationTargets.Add(V(copy,"TargetId"));templateIds.Add(V(origin,"Id"));
+                newRelations.Add(relate(pair[0],relationId,pair[1][0],pair[1][1]));
+                relationIds.Add(relationId);relationSources.Add(pair[1][0]);
+                relationTargets.Add(pair[1][1]);relationFields.Add(pair[0][2]);
             }
             string shapeId=Guid.NewGuid().ToString();
-            var shape=SequenceJson.Parse(frameTemplate.ToJsonString());
-            shape.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(shapeId));
-            shape.Properties["ModelId"]=SequenceJson.Parse(SequencePayload.Q(id));
-            foreach(var pair in layout[id])
-            {
-                Require(shape[pair.Key]!=null,"フラグメントの図形に"+pair.Key+"がありません。");
-                shape.Properties[pair.Key]=SequenceJson.Parse(Number(pair.Value));
-            }
-            newFrameShapes.Add(shape);
-            frames.Add(new SequenceAddedFragment{ModelId=id,Metaclass=V(entity,"MetamodelId"),Name=name,OwnerId=root,
-                ShapeId=shapeId,TemplateShapeId=V(frameTemplate,"Id"),Text=name,
-                Geometry=PumlBuild.Json(new[]{Number(layout[id]["X"]),Number(layout[id]["Y"]),
-                    Number(layout[id]["Width"]),Number(layout[id]["Height"])}),
+            var box=layout[id];
+            newFrameShapes.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,
+                "X",Number(box["X"]),"Y",Number(box["Y"]),"Width",Number(box["Width"]),"Height",Number(box["Height"])))));
+            frames.Add(new SequenceAddedFragment{ModelId=id,Metaclass=types.Fragment,Name=name,OwnerId=root,
+                ShapeId=shapeId,TemplateShapeId=frameTemplate==null?"":V(frameTemplate,"Id"),Text=name,
+                Geometry=PumlBuild.Json(new[]{Number(box["X"]),Number(box["Y"]),Number(box["Width"]),Number(box["Height"])}),
                 RelationIds=relationIds.ToArray(),RelationSources=relationSources.ToArray(),
-                RelationTargets=relationTargets.ToArray(),TemplateRelationIds=templateIds.ToArray()});
+                RelationTargets=relationTargets.ToArray(),RelationFields=relationFields.ToArray()});
         }
         foreach(string id in gate.AddOperands)
         {
             var wanted=after[id];
             Require(layout.ContainsKey(id),"追加するオペランドの配置を決められません。");
-            Require(wanted.Parent!=null && gate.AddFragments.Contains(wanted.Parent),"追加するオペランドの所有先がこの計画のフラグメントではありません。");
-            var ownerLink=find("___CombinedFragment_InteractionOperand",frameTemplateModel,operandTemplateModel);
-            var entity=SequenceJson.Parse(byId[operandTemplateModel].ToJsonString());
-            entity.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(id));
+            Require(wanted.Parent!=null && gate.AddFragments.Contains(wanted.Parent),
+                "追加するオペランドの所有先がこの計画のフラグメントではありません。");
             string guard=wanted.Text??"";
-            if(entity["Fields"]!=null && entity["Fields"].Properties!=null && entity["Fields"]["Guard"]!=null)
-                entity["Fields"].Properties["Guard"]=SequenceJson.Parse(SequencePayload.Q(guard));
-            newEntities.Add(entity);
-            var copy=SequenceJson.Parse(ownerLink.ToJsonString());
+            newEntities.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",id,"EntityType","InteractionOperand",
+                "MetamodelId",types.Operand,"Name","","Fields",PumlBuild.Obj("Name","","Guard",guard)))));
             string relationId=Guid.NewGuid().ToString();
-            copy.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(relationId));
-            copy.Properties["SourceId"]=SequenceJson.Parse(SequencePayload.Q(wanted.Parent));
-            copy.Properties["TargetId"]=SequenceJson.Parse(SequencePayload.Q(id));
-            copy.Properties.Remove("SourceIndex");copy.Properties.Remove("TargetIndex");
-            newRelations.Add(copy);
-            var operandShapes=editor.Shapes().Where(sh=>V(sh,"ModelId")==operandTemplateModel).ToArray();
-            Require(operandShapes.Length==1,"オペランドの見本図形を一意に取得できません。");
+            newRelations.Add(relate(types.Branches,relationId,wanted.Parent,id));
             string shapeId=Guid.NewGuid().ToString();
-            var shape=SequenceJson.Parse(operandShapes[0].ToJsonString());
-            shape.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(shapeId));
-            shape.Properties["ModelId"]=SequenceJson.Parse(SequencePayload.Q(id));
-            Require(shape["Position"]!=null,"オペランドの図形に位置がありません。");
-            shape.Properties["Position"]=SequenceJson.Parse(Number(layout[id]["Position"]));
-            newOperandShapes.Add(shape);
-            branches.Add(new SequenceAddedOperand{ModelId=id,Metaclass=V(entity,"MetamodelId"),Name="",OwnerId=wanted.Parent,
-                ShapeId=shapeId,TemplateShapeId=V(operandShapes[0],"Id"),Guard=guard,Position=Number(layout[id]["Position"]),
-                RelationIds=new[]{relationId},RelationSources=new[]{wanted.Parent},TemplateRelationIds=new[]{V(ownerLink,"Id")}});
+            string position=Number(layout[id]["Position"]);
+            newOperandShapes.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,"Position",position))));
+            branches.Add(new SequenceAddedOperand{ModelId=id,Metaclass=types.Operand,Name="",OwnerId=wanted.Parent,
+                ShapeId=shapeId,TemplateShapeId="",Guard=guard,Position=position,
+                RelationIds=new[]{relationId},RelationSources=new[]{wanted.Parent},RelationFields=new[]{types.Branches[2]}});
         }
         var wires=new List<SequenceAddedMessage>();
         var newMessageShapes=new List<SequenceJson>();
@@ -1441,11 +1445,16 @@ public sealed class SequenceStructurePreparation
             if(wanted.Parent!=root)wiring.Add(new[]{"OperandTargetMessage",wanted.Parent});
             foreach(var pair in wiring)
             {
-                var origin=pair[0]=="OperandTargetMessage"
-                    ?relations.First(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"OperandTargetMessage")
-                    :find(pair[0],pair[0]=="___Interaction_Message"?root:V(find(pair[0],null,template),"SourceId"),template);
-                var copy=SequenceJson.Parse(origin.ToJsonString());
                 string relationId=Guid.NewGuid().ToString();
+                if(pair[0]=="OperandTargetMessage")
+                {
+                    Require(types!=null && types.Complete(),"オペランド所属の型情報が解決できていません。");
+                    newRelations.Add(relate(types.OperandMessage,relationId,pair[1],id));
+                    relationIds.Add(relationId);relationSources.Add(pair[1]);templateIds.Add("");
+                    continue;
+                }
+                var origin=find(pair[0],pair[0]=="___Interaction_Message"?root:V(find(pair[0],null,template),"SourceId"),template);
+                var copy=SequenceJson.Parse(origin.ToJsonString());
                 copy.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(relationId));
                 copy.Properties["SourceId"]=SequenceJson.Parse(SequencePayload.Q(pair[1]));
                 copy.Properties["TargetId"]=SequenceJson.Parse(SequencePayload.Q(id));
@@ -1595,7 +1604,7 @@ public sealed class SequenceStructurePreparation
     // where the frame puts it. Resolving those one at a time would be circular. The steps
     // are the ones the generator uses when it builds a diagram from scratch.
     internal static Dictionary<string,Dictionary<string,double>> FrameLayout(SequenceStructurePreflight gate,
-        SyncPlan plan,SequenceEditorDocument editor,SequenceJson frameTemplate)
+        SyncPlan plan,SequenceEditorDocument editor,SequenceJson frameTemplate,SequenceDocument current)
     {
         var layout=new Dictionary<string,Dictionary<string,double>>(StringComparer.Ordinal);
         if(gate.AddFragments.Count==0)return layout;
@@ -1611,7 +1620,18 @@ public sealed class SequenceStructurePreparation
                 if(shape[key]!=null)bottom=Math.Max(bottom,Read(shape,"Y")+Read(shape,key));
             floor=Math.Max(floor,bottom);
         }
-        double x=Read(frameTemplate,"X"),width=Read(frameTemplate,"Width");
+        double x,width;
+        if(frameTemplate!=null) {x=Read(frameTemplate,"X");width=Read(frameTemplate,"Width");}
+        else
+        {
+            // No frame to measure: span every lane, the way a frame covers them all.
+            var lanes=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
+            var laneShapes=editor.Shapes().Where(sh=>lanes.Contains(SequenceEditorDocument.Value(sh,"ModelId"))
+                && sh["X"]!=null && sh["Width"]!=null).ToArray();
+            if(laneShapes.Length==0)throw new InvalidOperationException("S220: 参加者の図形がないため枠の幅を決められません。");
+            double left=laneShapes.Min(sh=>Read(sh,"X")),right=laneShapes.Max(sh=>Read(sh,"X")+Read(sh,"Width"));
+            x=left-16;width=right-left+32;
+        }
         double at=floor+MessageSpacing;
         var order=SequenceStructurePreflight.Flatten(plan.Expected);
         foreach(string frameId in order.Where(gate.AddFragments.Contains))
@@ -1937,7 +1957,7 @@ public sealed class SequenceTrialState
             result.Models[frame.ModelId]=PumlBuild.Json(new[]{frame.Metaclass,frame.Name,frame.OwnerId,"False"});
             for(int i=0;i<frame.RelationIds.Length;i++)
             {
-                string field=result.Field(frame.TemplateRelationIds[i]);
+                string field=frame.RelationFields[i];
                 if(field.Length==0)throw new InvalidOperationException("S230: 追加するフラグメントの関連の種別情報が不足しています。");
                 int index=result.Relations.Count(pair=>pair.Value[0]==frame.RelationSources[i] && result.Field(pair.Key)==field);
                 result.Relations[frame.RelationIds[i]]=new[]{frame.RelationSources[i],frame.RelationTargets[i],
@@ -1953,7 +1973,7 @@ public sealed class SequenceTrialState
             foreach(var branch in prepared.AddedOperands.Where(o=>o.OwnerId==frame.ModelId))
             {
                 result.Models[branch.ModelId]=PumlBuild.Json(new[]{branch.Metaclass,branch.Name,branch.OwnerId,"False"});
-                string field=result.Field(branch.TemplateRelationIds[0]);
+                string field=branch.RelationFields[0];
                 if(field.Length==0)throw new InvalidOperationException("S230: 追加するオペランドの関連の種別情報が不足しています。");
                 int index=result.Relations.Count(pair=>pair.Value[0]==branch.OwnerId && result.Field(pair.Key)==field);
                 result.Relations[branch.RelationIds[0]]=new[]{branch.OwnerId,branch.ModelId,

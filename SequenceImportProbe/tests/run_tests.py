@@ -67,7 +67,9 @@ public static class PayloadTest {
    if(bareFramePlan.CarriedExecutions.Count!=bareFrameModel.Elements.Count(e=>e.Kind=="execution"))
        throw new Exception("a bar inside a frame was not carried: "+bareFramePlan.ToJson());
 
-   var frameAddModel=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
+   // The diagram holds no frame at all, so nothing can be copied: every part of the new
+   // frame is built from the resolved metaclasses.
+   var frameAddModel=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-after.puml")));
    var frameAddInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-frameadd-after.puml")));
    var frameAddPlan=SyncPlan.Build(frameAddModel,frameAddInput,()=>Guid.NewGuid().ToString());
    var frameAddGate=SequenceStructurePreflight.Check(frameAddModel,frameAddPlan);
@@ -75,12 +77,17 @@ public static class PayloadTest {
        || frameAddGate.AddMessages.Count!=1 || frameAddGate.AddExecutions.Count!=2)
        throw new Exception("appended frame must be one frame, one operand, one message and two bars: "
            +frameAddPlan.ToJson()+frameAddGate.ToJson());
-   // Wrapping messages that already exist moves them into the frame; that is a different change.
-   var frameWrapModel=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-after.puml")));
-   var frameWrapPlan=SyncPlan.Build(frameWrapModel,frameAddInput,()=>Guid.NewGuid().ToString());
-   var frameWrapGate=SequenceStructurePreflight.Check(frameWrapModel,frameWrapPlan);
-   if(frameWrapGate.Candidate || frameWrapGate.AddFragments.Count!=0)
-       throw new Exception("a frame was accepted without a sample to copy: "+frameWrapGate.ToJson());
+   // The same input against a diagram that already holds that frame changes nothing.
+   var frameKeptModel=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
+   var frameKeptPlan=SyncPlan.Build(frameKeptModel,frameAddInput,()=>Guid.NewGuid().ToString());
+   if(frameKeptPlan.Changes.Count!=0)
+       throw new Exception("an existing frame was not recognised: "+frameKeptPlan.ToJson());
+   // Putting messages that already exist inside a frame moves them; that is a different change.
+   var frameWrapInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-framewrap-after.puml")));
+   var frameWrapGate=SequenceStructurePreflight.Check(frameAddModel,
+       SyncPlan.Build(frameAddModel,frameWrapInput,()=>Guid.NewGuid().ToString()));
+   if(frameWrapGate.Candidate)
+       throw new Exception("wrapping existing messages was accepted: "+frameWrapGate.ToJson());
 
    var reconnectBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-before.puml")));
    var reconnectAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-after.puml")));

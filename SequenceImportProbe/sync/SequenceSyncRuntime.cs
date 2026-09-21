@@ -243,7 +243,16 @@ public static class SequenceSyncRuntime
                         if(ex.Message.IndexOf("保存",StringComparison.Ordinal)<0)throw;
                         throw new InvalidOperationException(UnsavedAdvice,ex);
                     }
-                    var preparation=SequenceStructurePreparation.Build(exported,diagram.Id,current.Document,plan);
+                    SequenceFrameTypes frameTypes=null;
+                    if(preflight.AddFragments.Count>0)
+                    {
+                        // Resolve the metaclasses only when a frame is actually being added,
+                        // so a diagram without them still runs every other change.
+                        try {frameTypes=PumlRuntime.FrameTypes(diagram,project);}
+                        catch(Exception ex) {throw new InvalidOperationException("S220: フラグメントの型を解決できません: "+ex.Message,ex);}
+                        log.AppendLine("frame types: "+frameTypes.ToJson());
+                    }
+                    var preparation=SequenceStructurePreparation.Build(exported,diagram.Id,current.Document,plan,frameTypes);
                     var raw=SequenceJson.Parse(exported);
                     var exportedRelations=new HashSet<string>(raw["Relations"].Items.Select(r=>SequenceEditorDocument.Value(r,"Id")));
                     foreach(string id in preflight.DeleteExecutions.Concat(preflight.ReconnectMessages))

@@ -1,13 +1,8 @@
 @startuml
 participant A
 participant B
+alt ready
 A -> B : first()
 B --> A : firstDone()
-alt ready
-activate A
-A -> B : guarded()
-activate B
-deactivate B
-deactivate A
 end
 @enduml
