@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.72";
+    public const string Title = "シーケンス生成実験 / 0.8.73";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -4722,7 +4722,14 @@ public sealed class SequenceTrialState
             }
             catch(Exception) {output.Append(chunk);}
         }
-        return output.ToString();
+        // A lifeline puts its timeline length after the arrays, bare, so round that too.
+        string rounded=output.ToString();
+        int last=rounded.LastIndexOf(']');
+        string tail=last<0?rounded:rounded.Substring(last+1);
+        double length;
+        if(tail.Length>0 && double.TryParse(tail,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out length))
+            rounded=rounded.Substring(0,last+1)+Math.Round(length,3).ToString("R",System.Globalization.CultureInfo.InvariantCulture);
+        return rounded;
     }
     public void Round(IEnumerable<string> shapeIds)
     {

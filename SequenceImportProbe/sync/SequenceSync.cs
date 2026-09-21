@@ -1954,7 +1954,14 @@ public sealed class SequenceTrialState
             }
             catch(Exception) {output.Append(chunk);}
         }
-        return output.ToString();
+        // A lifeline puts its timeline length after the arrays, bare, so round that too.
+        string rounded=output.ToString();
+        int last=rounded.LastIndexOf(']');
+        string tail=last<0?rounded:rounded.Substring(last+1);
+        double length;
+        if(tail.Length>0 && double.TryParse(tail,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out length))
+            rounded=rounded.Substring(0,last+1)+Math.Round(length,3).ToString("R",System.Globalization.CultureInfo.InvariantCulture);
+        return rounded;
     }
     public void Round(IEnumerable<string> shapeIds)
     {
