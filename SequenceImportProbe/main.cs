@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.60";
+    public const string Title = "シーケンス生成実験 / 0.8.61";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -3648,6 +3648,12 @@ public sealed class SequenceStructurePreparation
             // the move append, which is what the product does.
             changed.Add(copy);changedIds.Add(V(link,"Id"));
         }
+        // A relation with both ends leaving is going away too, so it never blocks. That
+        // covers the links a frame holds to the messages inside it.
+        var leaving=new HashSet<string>(gate.DeleteExecutions.Concat(gate.DeleteParticipants)
+            .Concat(gate.DeleteMessages).Concat(gate.DeleteFragments).Concat(gate.DeleteOperands));
+        Func<SequenceJson,string,bool> inside=(relation,id)=>
+            leaving.Contains(V(relation,"SourceId")) && leaving.Contains(V(relation,"TargetId"));
         foreach(string id in gate.DeleteExecutions)
         {
             checkPort(id,before[id].Links["participant"].Single());
@@ -3656,7 +3662,7 @@ public sealed class SequenceStructurePreparation
                 if(changedIds.Contains(V(relation,"Id")))continue;
                 bool owned=V(relation,"TargetId")==id && (V(relation,"MetamodelId")==SequencePayload.Prefix+"___Interaction_ExecutionSpecification"
                     || V(relation,"MetamodelId")==SequencePayload.Prefix+"OwnedExecutionSpecification");
-                Require(owned,"削除する実行区間に未対応の関連が残っています。");
+                Require(owned || inside(relation,id),"削除する実行区間に未対応の関連が残っています。");
             }
         }
         var affected=new HashSet<string>(gate.DeleteExecutions.Concat(gate.ReconnectMessages));
@@ -3823,7 +3829,8 @@ public sealed class SequenceStructurePreparation
         {
             Require(byId.ContainsKey(pair[0]) && V(byId[pair[0]],"EntityType")==pair[2],"削除対象が退避データ内の"+pair[2]+"ではありません。");
             foreach(var relation in relations.Where(r=>V(r,"SourceId")==pair[0] || V(r,"TargetId")==pair[0]))
-                Require(V(relation,"TargetId")==pair[0] && V(relation,"MetamodelId")==SequencePayload.Prefix+pair[1],
+                Require(inside(relation,pair[0])
+                    || (V(relation,"TargetId")==pair[0] && V(relation,"MetamodelId")==SequencePayload.Prefix+pair[1]),
                     "削除する"+pair[2]+"に未対応の関連が残っています。");
             Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==pair[0])==1,"削除する"+pair[2]+"の図形を一意に取得できません。");
         }
@@ -3832,8 +3839,9 @@ public sealed class SequenceStructurePreparation
             Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="Message","削除対象が退避データ内のメッセージではありません。");
             var allowed=new[]{"___Interaction_Message","SendMessage","ReceiveMessage"};
             foreach(var relation in relations.Where(r=>V(r,"SourceId")==id || V(r,"TargetId")==id))
-                Require(V(relation,"TargetId")==id
-                    && allowed.Any(kind=>V(relation,"MetamodelId")==SequencePayload.Prefix+kind),
+                Require(inside(relation,id)
+                    || (V(relation,"TargetId")==id
+                        && allowed.Any(kind=>V(relation,"MetamodelId")==SequencePayload.Prefix+kind)),
                     "削除するメッセージに未対応の関連が残っています。");
             Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==id)==1,"削除するメッセージの図形を一意に取得できません。");
         }
