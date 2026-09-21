@@ -1,4 +1,24 @@
-# クラス図同期実験 0.5.1
+# クラス図同期実験 0.5.2
+
+## 0.5.2: 型モデルの新規作成
+
+属性・引数の型に、プロジェクトに無い名前を書いた場合、これまでは C220 で停止していた。0.5.2 では所有先クラスの型定義フィールドに名前だけの型モデルを作って参照する。DeSIDE の型定義は 10 種（`ImplementationDataType` / `StructureType` / `PointerType` / `NumericalType` / `StringType` / …）あり入力からは決まらないので、既定は `ImplementationDataType`。別の種類にしたいときは型名の後ろに `<<StructureType>>` のように書く（比較では無視される）。
+
+```
+- m_Extra : NewType                      → ImplementationDataType "NewType" を作る
+- m_Point : Point <<StructureType>>      → StructureType "Point" を作る
++ Run(cfg : Config <<PointerType>>)      → 引数の型も同様
+```
+
+メタクラスは同じフィールドの既存の型定義と同じもの（無ければフィールドの型クラス）。同じ実行で同じ名前を複数回使っても 1 件だけ作る。既存の同名の型があれば作らず参照する（同名複数は停止）。所有先クラスにそのフィールドが無ければ、使えるフィールド名を列挙して停止する。
+
+参照されている操作の削除は 0.5.1 の方針のまま停止する（参照元はシーケンス図のメッセージと実機確認）。
+
+### 実機手順（0.5.2）
+
+1. 原本のコピーで 17 行目の型を `std::vector<ConvertErrCodeType>` から `NewType` に変えて「更新を試行して戻す」。診断の `type 'NewType' not found: will create ...` と `created type ...` の行。
+2. 別のコピーで `    - m_Point : Point <<StructureType>>` を足して試行。`created type StructureType` になるか。
+3. 通ったら確定 → フォームで型が入っているか、クラス配下に型定義が増えているか → Ctrl+Z / Ctrl+Y → 保存して開き直し → 差分 0 件。
 
 ## 0.5.1: 参照されているメンバの削除停止に参照元を出す
 

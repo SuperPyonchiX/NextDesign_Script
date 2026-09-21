@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.5.1";
+    public const string Version = "0.5.2";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -695,15 +695,68 @@ public static class ClassSyncRuntime
         log.AppendLine("restored: SDK read-back equals the pre-trial state");
     }
     // One resolved edit: the member model plus, for a type change, the old and new type models.
-    class ResolvedEdit { public IModel Model; public ClassMemberEdit Edit; public IModel OldType, NewType; public string VisibilityValue; public ArgumentPlan Arguments; }
+    class ResolvedEdit { public IModel Model; public ClassMemberEdit Edit; public IModel OldType; public TypeTarget NewType; public string VisibilityValue; public ArgumentPlan Arguments; }
+    // A type to reference: an existing model, or one to create under the owner class's
+    // type-definition field on first use. Created models are shared by name within a run.
+    class TypeTarget
+    {
+        public IModel Existing, Owner; public IField Field; public IClass Class; public string Name;
+        public IModel Model;
+        public IModel Materialize(StringBuilder log)
+        {
+            if(Model!=null)return Model;
+            if(Existing!=null) { Model=Existing;return Model; }
+            var created=Owner.AddNewModel(Field,Class);
+            if(created==null)throw new InvalidOperationException("C230: 型 '"+Name+"' を作成できませんでした。");
+            created.SetField("Name",Name);
+            if(ClassText.Inline(ClassText.Normalize(created.Name))!=Name)throw new InvalidOperationException("C230: 作成した型の名前の読戻しが一致しません。");
+            log.AppendLine("created type "+created.ClassName+" id="+created.Id+" name='"+Name+"' under "+Owner.ClassName+" '"+Owner.Name+"' field="+Field.Name);
+            Model=created;return Model;
+        }
+    }
+    static Dictionary<string,TypeTarget> typeTargets=new Dictionary<string,TypeTarget>(StringComparer.Ordinal);
+    // Find a type model by name (preferring ones owned near the class), or plan to create it.
+    static TypeTarget ResolveType(IProject project,IModel ownerClass,string typeName,string typeKind,string typeClassName,ClassSyncOptions options,ref List<IModel> everything,StringBuilder log)
+    {
+        if(everything==null)everything=Tree(project.DesignModel).ToList();
+        var candidates=everything.Where(m=>!m.IsProxy && !m.IsDeleted && IsA(m,typeClassName) && ClassText.Inline(ClassText.Normalize(m.Name))==typeName).ToList();
+        if(candidates.Count>1)
+        {
+            var owners=new List<string>();var at=ownerClass;int guard=0;
+            while(at!=null && guard++<32) { owners.Add(at.Id);at=at.Owner; }
+            foreach(string ownerId in owners)
+            {
+                var near=candidates.Where(m=>{var o=m.Owner;int g=0;while(o!=null && g++<32){if(o.Id==ownerId)return true;o=o.Owner;}return false;}).ToList();
+                if(near.Count>0) { candidates=near;break; }
+            }
+        }
+        if(candidates.Count>1)throw new InvalidOperationException("C220: 型 '"+typeName+"' に一致するモデルが "+candidates.Count+" 件あり、一意に決まりません。");
+        if(candidates.Count==1)return new TypeTarget{Existing=candidates[0],Name=typeName};
+        string key=ownerClass.Id+"|"+typeName;
+        TypeTarget planned;
+        if(typeTargets.TryGetValue(key,out planned))return planned;
+        string kind=typeKind.Length>0?typeKind:options.DefaultTypeKind;
+        var field=FieldOf(ownerClass,kind);
+        if(field==null || !field.IsEmbedded || field.TypeClass==null)
+        {
+            var available=ownerClass.Metaclass.GetFields().Cast<IField>().Where(f=>f.IsEmbedded && f.TypeClass!=null && f.Type.EndsWith("Type",StringComparison.Ordinal)).Select(f=>f.Name).ToArray();
+            throw new InvalidOperationException("C220: 型 '"+typeName+"' はプロジェクトに無く、"+ownerClass.ClassName+" に型定義フィールド '"+kind+"' もありません。使えるフィールド: "+string.Join(", ",available));
+        }
+        // Reuse the metaclass of an existing definition in that field when there is one.
+        var sibling=ownerClass.GetFieldValues(field.Name).Cast<object>().OfType<IModel>().FirstOrDefault(m=>!m.IsDeleted);
+        planned=new TypeTarget{Owner=ownerClass,Field=field,Class=sibling!=null?sibling.Metaclass:field.TypeClass,Name=typeName};
+        typeTargets[key]=planned;
+        log.AppendLine("type '"+typeName+"' not found: will create "+planned.Class.FullName+" in "+ownerClass.ClassName+" '"+ownerClass.Name+"'."+field.Name);
+        return planned;
+    }
     // How to make an operation's Parameter children match a list of names: the metaclass to
     // create (from an existing argument anywhere in the project, else the field's type class)
     // and the owning field. Types on arguments are resolved by name like attribute types.
-    class ArgumentPlan { public IField Field; public IClass ArgumentClass; public string[] Names, Types; public IModel[] TypeModels; }
+    class ArgumentPlan { public IField Field; public IClass ArgumentClass; public string[] Names, Types; public TypeTarget[] TypeModels; }
     static ArgumentPlan PlanArguments(IProject project,IModel operation,IModel ownerClass,string parameters,ClassSyncOptions options,ref List<IModel> everything,StringBuilder log)
     {
-        var names=ClassTextPreflight.ParameterNames(parameters);var types=ClassTextPreflight.ParameterTypes(parameters);
-        var plan=new ArgumentPlan{Names=names,Types=types,TypeModels=new IModel[names.Length]};
+        var names=ClassTextPreflight.ParameterNames(parameters);var types=ClassTextPreflight.ParameterTypes(parameters);var kinds=ClassTextPreflight.ParameterTypeKinds(parameters);
+        var plan=new ArgumentPlan{Names=names,Types=types,TypeModels=new TypeTarget[names.Length]};
         if(names.Length==0)return plan;
         var field=options.ParameterFieldNames.Select(n=>FieldOf(operation,n)).FirstOrDefault(f=>f!=null && f.IsEmbedded);
         if(field==null)throw new InvalidOperationException("C220: 操作に引数の所有フィールドがありません。");
@@ -728,10 +781,7 @@ public static class ClassSyncRuntime
             if(everything==null)everything=Tree(project.DesignModel).ToList();
             var typeField=sibling!=null?options.TypeFieldNames.Select(n=>FieldOf(sibling,n)).FirstOrDefault(f=>f!=null && f.IsReference):null;
             string typeClass=typeField!=null?typeField.Type:"Type";
-            var candidates=everything.Where(m=>!m.IsProxy && IsA(m,typeClass) && ClassText.Inline(ClassText.Normalize(m.Name))==types[i]).ToList();
-            if(candidates.Count>1) { var near=candidates.Where(m=>{var o=m.Owner;int g=0;while(o!=null && g++<32){if(o.Id==ownerClass.Id)return true;o=o.Owner;}return false;}).ToList();if(near.Count>0)candidates=near; }
-            if(candidates.Count!=1)throw new InvalidOperationException("C220: 引数 '"+names[i]+"' の型 '"+types[i]+"' に一致するモデルが "+candidates.Count+" 件です。");
-            plan.TypeModels[i]=candidates[0];
+            plan.TypeModels[i]=ResolveType(project,ownerClass,types[i],kinds[i],typeClass,options,ref everything,log);
         }
         log.AppendLine("arguments: field="+field.Name+" class="+plan.ArgumentClass.FullName+" names=["+string.Join(", ",names)+"]");
         return plan;
@@ -771,7 +821,7 @@ public static class ClassSyncRuntime
                 if(plan.TypeModels[i]!=null)
                 {
                     var tf=options.TypeFieldNames.Select(n=>FieldOf(created,n)).FirstOrDefault(f=>f!=null && f.IsReference);
-                    if(tf!=null)created.Relate(tf.Name,plan.TypeModels[i]);
+                    if(tf!=null)created.Relate(tf.Name,plan.TypeModels[i].Materialize(log));
                 }
                 log.AppendLine("created argument "+created.ClassName+" '"+plan.Names[i]+"' at "+i);
             }
@@ -780,7 +830,7 @@ public static class ClassSyncRuntime
         if(!after.SequenceEqual(plan.Names))throw new InvalidOperationException("C230: 引数の読戻しが一致しません: ["+string.Join(", ",after)+"]");
     }
     class ResolvedLink { public IModel From, To; public ClassLinkChange Change; public string RelationId="", PartnerField=""; }
-    class ResolvedMember { public IModel Owner, Member, TypeModel, InsertBefore; public ClassMemberChange Change; public string Field, ClassName, VisibilityValue, TypeField; public IField OwningField; public IClass MemberClass; public string Parameters; }
+    class ResolvedMember { public IModel Owner, Member, InsertBefore; public TypeTarget TypeTarget; public ClassMemberChange Change; public string Field, ClassName, VisibilityValue, TypeField; public IField OwningField; public IClass MemberClass; public string Parameters; }
     static IEnumerable<IModel> Tree(IModel root)
     {
         var stack=new Stack<IModel>();stack.Push(root);
@@ -924,7 +974,7 @@ public static class ClassSyncRuntime
     static string RunTextUpdate(IApplication app,IProject project,IEditor editor,ClassDiagramSnapshot snapshot,ClassDocument desired,ClassTextPreflight preflight,bool retain,StringBuilder log)
     {
         string editorId=editor.Id;string originalJson=snapshot.Document.ToJson();
-        var options=new ClassSyncOptions();
+        var options=new ClassSyncOptions();typeTargets.Clear();
         var targets=new List<ResolvedEdit>();
         List<IModel> everything=null;
         foreach(var edit in preflight.Edits)
@@ -959,23 +1009,10 @@ public static class ClassSyncRuntime
                 resolved.OldType=currentTargets.FirstOrDefault();
                 string currentName=resolved.OldType==null?"":ClassText.Inline(ClassText.Normalize(resolved.OldType.Name));
                 if(currentName!=edit.OldType)throw new InvalidOperationException("C220: 型の現在値 '"+currentName+"' が読取りと一致しません。");
-                if(everything==null)everything=Tree(project.DesignModel).ToList();
-                var candidates=everything.Where(m=>!m.IsProxy && IsA(m,field.Type) && ClassText.Inline(ClassText.Normalize(m.Name))==edit.NewType).ToList();
-                if(candidates.Count>1)
-                {
-                    // Prefer a type owned by the member's own class, then by any ancestor of it.
-                    var owners=new List<string>();var at=model.Owner;int guard=0;
-                    while(at!=null && guard++<32) { owners.Add(at.Id);at=at.Owner; }
-                    foreach(string ownerId in owners)
-                    {
-                        var near=candidates.Where(m=>{var o=m.Owner;int g=0;while(o!=null && g++<32){if(o.Id==ownerId)return true;o=o.Owner;}return false;}).ToList();
-                        if(near.Count>0) { candidates=near;break; }
-                    }
-                }
-                if(candidates.Count==0)throw new InvalidOperationException("C220: 型 '"+edit.NewType+"' に一致する "+field.Type+" 系のモデルがありません。型モデルの新規作成は扱いません。");
-                if(candidates.Count>1)throw new InvalidOperationException("C220: 型 '"+edit.NewType+"' に一致するモデルが "+candidates.Count+" 件あり、一意に決まりません。");
-                resolved.NewType=candidates[0];
-                log.AppendLine("type field="+field.Name+" ("+field.Type+") old="+(resolved.OldType==null?"(none)":resolved.OldType.Id+" "+resolved.OldType.ClassName)+" new="+resolved.NewType.Id+" "+resolved.NewType.ClassName+" owner="+(resolved.NewType.Owner==null?"":resolved.NewType.Owner.Name));
+                var ownerClass=model.Owner;
+                if(ownerClass==null)throw new InvalidOperationException("C220: メンバの所有先を取得できません。");
+                resolved.NewType=ResolveType(project,ownerClass,edit.NewType,edit.TypeKind,field.Type,options,ref everything,log);
+                log.AppendLine("type field="+field.Name+" ("+field.Type+") old="+(resolved.OldType==null?"(none)":resolved.OldType.Id+" "+resolved.OldType.ClassName)+" new="+(resolved.NewType.Existing!=null?resolved.NewType.Existing.Id+" "+resolved.NewType.Existing.ClassName:"(create) "+resolved.NewType.Class.Name));
             }
             if(edit.ParametersChanged)
             {
@@ -1023,11 +1060,7 @@ public static class ClassSyncRuntime
                     if(everything==null)everything=Tree(project.DesignModel).ToList();
                     var typeField=sibling!=null?options.TypeFieldNames.Select(n=>FieldOf(sibling,n)).FirstOrDefault(f=>f!=null && f.IsReference):null;
                     string typeClass=typeField!=null?typeField.Type:"Type";
-                    var candidates=everything.Where(m=>!m.IsProxy && IsA(m,typeClass) && ClassText.Inline(ClassText.Normalize(m.Name))==change.Type).ToList();
-                    if(candidates.Count>1) { var near=candidates.Where(m=>{var o=m.Owner;int g=0;while(o!=null && g++<32){if(o.Id==owner.Id)return true;o=o.Owner;}return false;}).ToList();if(near.Count>0)candidates=near; }
-                    if(candidates.Count==0)throw new InvalidOperationException("C220: 型 '"+change.Type+"' に一致する "+typeClass+" 系のモデルがありません。型モデルの新規作成は扱いません。");
-                    if(candidates.Count>1)throw new InvalidOperationException("C220: 型 '"+change.Type+"' に一致するモデルが "+candidates.Count+" 件あり、一意に決まりません。");
-                    resolved.TypeModel=candidates[0];resolved.TypeField=typeField!=null?typeField.Name:options.TypeFieldNames[0];
+                    resolved.TypeTarget=ResolveType(project,owner,change.Type,change.TypeKind,typeClass,options,ref everything,log);resolved.TypeField=typeField!=null?typeField.Name:options.TypeFieldNames[0];
                 }
                 if(change.InsertBeforeId!=null)
                 {
@@ -1036,7 +1069,7 @@ public static class ClassSyncRuntime
                     if(resolved.InsertBefore==null || resolved.InsertBefore.IsDeleted)log.AppendLine("insert position: following member not resolved, appending at the end");
                 }
                 resolved.Parameters=change.Parameters;
-                log.AppendLine("member target: add "+change.Kind+" '"+change.Text+"' under "+owner.ClassName+" '"+owner.Name+"' field="+fieldName+" class="+resolved.ClassName+(resolved.TypeModel!=null?" type="+resolved.TypeModel.Id:"")+(resolved.InsertBefore!=null?" before="+resolved.InsertBefore.Name:" at end")+(change.Kind=="operation" && !string.IsNullOrEmpty(change.Parameters)?" params=("+change.Parameters+")":""));
+                log.AppendLine("member target: add "+change.Kind+" '"+change.Text+"' under "+owner.ClassName+" '"+owner.Name+"' field="+fieldName+" class="+resolved.ClassName+(resolved.TypeTarget!=null?" type="+(resolved.TypeTarget.Existing!=null?resolved.TypeTarget.Existing.Id:"(create)"):"")+(resolved.InsertBefore!=null?" before="+resolved.InsertBefore.Name:" at end")+(change.Kind=="operation" && !string.IsNullOrEmpty(change.Parameters)?" params=("+change.Parameters+")":""));
             }
             else
             {
@@ -1165,10 +1198,11 @@ public static class ClassSyncRuntime
                 {
                     stage="型の更新";
                     var field=options.TypeFieldNames.Select(n=>FieldOf(model,n)).First(f=>f!=null && f.IsReference);
+                    var newType=t.NewType.Materialize(log);
                     if(t.OldType!=null)model.UnRelate(field.Name,t.OldType);
-                    model.Relate(field.Name,t.NewType);
+                    model.Relate(field.Name,newType);
                     var after=model.GetFieldValues(field.Name).Cast<object>().OfType<IModel>().ToList();
-                    if(after.Count!=1 || after[0].Id!=t.NewType.Id)throw new InvalidOperationException("C230: 型の読戻しが一致しません（"+after.Count+"件）。");
+                    if(after.Count!=1 || after[0].Id!=newType.Id)throw new InvalidOperationException("C230: 型の読戻しが一致しません（"+after.Count+"件）。");
                 }
             }
             log.AppendLine("applied "+targets.Count+" member edits: read-back matched");
@@ -1206,7 +1240,7 @@ public static class ClassSyncRuntime
                         var sf=options.StaticFieldNames.Select(n=>FieldOf(created,n)).FirstOrDefault(f=>f!=null && !f.IsReference);
                         if(sf!=null)created.SetField(sf.Name,true);
                     }
-                    if(m.TypeModel!=null)created.Relate(m.TypeField,m.TypeModel);
+                    if(m.TypeTarget!=null)created.Relate(m.TypeField,m.TypeTarget.Materialize(log));
                     if(m.Change.Kind=="operation" && !string.IsNullOrEmpty(m.Parameters))
                     {
                         // Arguments are children of the new operation; their metaclass comes from
@@ -1616,6 +1650,10 @@ public sealed class ClassSyncOptions
     public bool EmitStereotypes = true;
     public bool EmitUnknownStereotype = true;
     public string DefaultLink = "-->";
+    // Type definitions live in owning fields of the class named after their metaclass (K046).
+    // A type that does not exist is created in this field unless the input names another
+    // kind with "Type <<StructureType>>".
+    public string DefaultTypeKind = "ImplementationDataType";
     public string EmbeddedLink = "*--";
     public string FallbackLink = "--";
     public Dictionary<string,string> KeywordMap = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase)
@@ -1819,6 +1857,11 @@ public sealed class ClassPumlParser
             }
             int colon=rest.IndexOf(" : ",StringComparison.Ordinal);
             if(colon>=0) { type=rest.Substring(colon+3).Trim();rest=rest.Substring(0,colon).TrimEnd(); }
+            // "Type <<StructureType>>" names the type-definition metaclass to create when the
+            // type does not exist yet; it is stripped from the compared type text.
+            string typeKind="";
+            var kindMatch=Regex.Match(type,@"^(.*?)\s*<<([^>]+)>>$");
+            if(kindMatch.Success) { type=kindMatch.Groups[1].Value.Trim();typeKind=kindMatch.Groups[2].Value.Trim(); }
             if(rest.Length==0)throw Error(n,"メンバ名がありません。");
             bool bare=visibility.Length==0 && !isStatic && !isAbstract && type.Length==0 && multiplicity.Length==0 && defaultValue.Length==0;
             if(bare && owner.Keyword=="enum") { element.Kind="literal";element.Text=rest; }
@@ -1827,6 +1870,7 @@ public sealed class ClassPumlParser
                 element.Kind="attribute";element.Text=rest;
                 element.Attributes["visibility"]=visibility;element.Attributes["static"]=isStatic?"true":"";
                 element.Attributes["type"]=type;element.Attributes["multiplicity"]=multiplicity;element.Attributes["default"]=defaultValue;
+                if(typeKind.Length>0)element.Attributes["typeKind"]=typeKind;
             }
         }
         doc.Elements.Add(element);
@@ -1997,7 +2041,7 @@ public sealed class ClassSyncPlan
         return ClassJson.Json(ClassJson.Obj("Changes",Changes.Select(c=>ClassJson.Obj("Action",c.Action,"Kind",c.Kind,"Id",c.Id,"Line",c.Line,"Detail",c.Detail)).ToArray(),
             "Identities",Identities.ToDictionary(p=>p.Key,p=>(object)p.Value),"Expected",Expected==null?null:(object)Expected.ToJson()));
     }
-    static readonly string[] Ignored = { "alias", "field", "arrow" };
+    static readonly string[] Ignored = { "alias", "field", "arrow", "typeKind" };
     // A member whose name contains parentheses reads as an operation from text although the
     // model calls it an attribute. The rendered line is what PlantUML carries, so members are
     // compared by that line and attribute/operation/literal are one kind for matching.
@@ -2189,7 +2233,7 @@ public sealed class ClassSyncPlan
 // type, each as an old/new pair. Empty flags mean the value is unchanged.
 public sealed class ClassMemberEdit
 {
-    public string CurrentId, Kind, OldText, NewText, OldVisibility, NewVisibility, OldType, NewType, OldParameters, NewParameters;
+    public string CurrentId, Kind, OldText, NewText, OldVisibility, NewVisibility, OldType, NewType, OldParameters, NewParameters, TypeKind="";
     public int Line;
     public bool NameChanged, VisibilityChanged, TypeChanged, ParametersChanged;
     public string Describe()
@@ -2213,7 +2257,7 @@ public sealed class ClassLinkChange { public string Action, FromId, ToId, Field,
 // One attribute or operation to create under a class, or one existing member to delete.
 public sealed class ClassMemberChange
 {
-    public string Action, Kind, OwnerId, OwnerAlias, CurrentId, Text, Visibility, Type, Parameters;
+    public string Action, Kind, OwnerId, OwnerAlias, CurrentId, Text, Visibility, Type, Parameters, TypeKind="";
     // For adds: the current id of the first retained sibling of the same kind that follows in the input, or null for the end.
     public string InsertBeforeId;
     public bool IsStatic;
@@ -2244,6 +2288,14 @@ public sealed class ClassTextPreflight
         return parameters.Split(',').Select(x=>x.Trim()).Where(x=>x.Length>0).Select(x=>{int colon=x.IndexOf(" : ",StringComparison.Ordinal);return colon>=0?x.Substring(0,colon).Trim():x;}).ToArray();
     }
     public static string[] ParameterTypes(string parameters)
+    {
+        return ParameterTypesRaw(parameters).Select(x=>Regex.Replace(x,@"\s*<<[^>]+>>$","")).ToArray();
+    }
+    public static string[] ParameterTypeKinds(string parameters)
+    {
+        return ParameterTypesRaw(parameters).Select(x=>{var m=Regex.Match(x,@"<<([^>]+)>>$");return m.Success?m.Groups[1].Value.Trim():"";}).ToArray();
+    }
+    static string[] ParameterTypesRaw(string parameters)
     {
         if(string.IsNullOrEmpty(parameters))return new string[0];
         return parameters.Split(',').Select(x=>x.Trim()).Where(x=>x.Length>0).Select(x=>{int colon=x.IndexOf(" : ",StringComparison.Ordinal);return colon>=0?x.Substring(colon+3).Trim():"";}).ToArray();
@@ -2294,7 +2346,7 @@ public sealed class ClassTextPreflight
                     if(member.Attr("type").Contains(", ")) { result.Reasons.Add("add attribute"+where+": 複数の型を持つ属性は扱えません"); continue; }
                     string memberKind=c.Kind;
                     var following=plan.Expected.Elements.Where(e=>e.Parent==member.Parent && e.Kind==memberKind && e.Order>member.Order && old.ContainsKey(e.Id)).OrderBy(e=>e.Order).FirstOrDefault();
-                    result.Members.Add(new ClassMemberChange{Action="add",Kind=c.Kind,OwnerId=owner.Id,OwnerAlias=owner.Attr("alias"),Text=member.Text,Visibility=member.Attr("visibility"),Type=member.Attr("type"),Parameters=member.Attr("parameters"),IsStatic=member.Attr("static")=="true",Line=c.Line,InsertBeforeId=following==null?null:following.Id});
+                    result.Members.Add(new ClassMemberChange{Action="add",Kind=c.Kind,OwnerId=owner.Id,OwnerAlias=owner.Attr("alias"),Text=member.Text,Visibility=member.Attr("visibility"),Type=member.Attr("type"),Parameters=member.Attr("parameters"),IsStatic=member.Attr("static")=="true",Line=c.Line,InsertBeforeId=following==null?null:following.Id,TypeKind=member.Attr("typeKind")});
                     continue;
                 }
                 if(c.Action=="delete" && old.TryGetValue(c.Id,out member))
@@ -2315,7 +2367,7 @@ public sealed class ClassTextPreflight
             if(unsupported.Length>0) { result.Reasons.Add("update "+c.Kind+where+" ["+c.Detail+"]: "+string.Join(",",unsupported)+" の変更は扱えません"); continue; }
             var edit=new ClassMemberEdit{CurrentId=c.Id,Kind=c.Kind,Line=c.Line,OldText=before.Text,NewText=after.Text,
                 OldVisibility=before.Attr("visibility"),NewVisibility=after.Attr("visibility"),OldType=before.Attr("type"),NewType=after.Attr("type"),
-                OldParameters=before.Attr("parameters"),NewParameters=after.Attr("parameters"),
+                OldParameters=before.Attr("parameters"),NewParameters=after.Attr("parameters"),TypeKind=after.Attr("typeKind"),
                 NameChanged=keys.Contains("name"),VisibilityChanged=keys.Contains("visibility"),TypeChanged=keys.Contains("type"),ParametersChanged=keys.Contains("parameters")};
             string problem=null;
             if(edit.ParametersChanged && ParameterNames(edit.NewParameters).Any(n=>n.Length==0 || n.Contains("\\n")))problem="引数名が空か改行を含みます";

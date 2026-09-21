@@ -245,6 +245,10 @@ public sealed class ClassSyncOptions
     public bool EmitStereotypes = true;
     public bool EmitUnknownStereotype = true;
     public string DefaultLink = "-->";
+    // Type definitions live in owning fields of the class named after their metaclass (K046).
+    // A type that does not exist is created in this field unless the input names another
+    // kind with "Type <<StructureType>>".
+    public string DefaultTypeKind = "ImplementationDataType";
     public string EmbeddedLink = "*--";
     public string FallbackLink = "--";
     public Dictionary<string,string> KeywordMap = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase)
@@ -448,6 +452,11 @@ public sealed class ClassPumlParser
             }
             int colon=rest.IndexOf(" : ",StringComparison.Ordinal);
             if(colon>=0) { type=rest.Substring(colon+3).Trim();rest=rest.Substring(0,colon).TrimEnd(); }
+            // "Type <<StructureType>>" names the type-definition metaclass to create when the
+            // type does not exist yet; it is stripped from the compared type text.
+            string typeKind="";
+            var kindMatch=Regex.Match(type,@"^(.*?)\s*<<([^>]+)>>$");
+            if(kindMatch.Success) { type=kindMatch.Groups[1].Value.Trim();typeKind=kindMatch.Groups[2].Value.Trim(); }
             if(rest.Length==0)throw Error(n,"メンバ名がありません。");
             bool bare=visibility.Length==0 && !isStatic && !isAbstract && type.Length==0 && multiplicity.Length==0 && defaultValue.Length==0;
             if(bare && owner.Keyword=="enum") { element.Kind="literal";element.Text=rest; }
@@ -456,6 +465,7 @@ public sealed class ClassPumlParser
                 element.Kind="attribute";element.Text=rest;
                 element.Attributes["visibility"]=visibility;element.Attributes["static"]=isStatic?"true":"";
                 element.Attributes["type"]=type;element.Attributes["multiplicity"]=multiplicity;element.Attributes["default"]=defaultValue;
+                if(typeKind.Length>0)element.Attributes["typeKind"]=typeKind;
             }
         }
         doc.Elements.Add(element);
@@ -626,7 +636,7 @@ public sealed class ClassSyncPlan
         return ClassJson.Json(ClassJson.Obj("Changes",Changes.Select(c=>ClassJson.Obj("Action",c.Action,"Kind",c.Kind,"Id",c.Id,"Line",c.Line,"Detail",c.Detail)).ToArray(),
             "Identities",Identities.ToDictionary(p=>p.Key,p=>(object)p.Value),"Expected",Expected==null?null:(object)Expected.ToJson()));
     }
-    static readonly string[] Ignored = { "alias", "field", "arrow" };
+    static readonly string[] Ignored = { "alias", "field", "arrow", "typeKind" };
     // A member whose name contains parentheses reads as an operation from text although the
     // model calls it an attribute. The rendered line is what PlantUML carries, so members are
     // compared by that line and attribute/operation/literal are one kind for matching.
@@ -818,7 +828,7 @@ public sealed class ClassSyncPlan
 // type, each as an old/new pair. Empty flags mean the value is unchanged.
 public sealed class ClassMemberEdit
 {
-    public string CurrentId, Kind, OldText, NewText, OldVisibility, NewVisibility, OldType, NewType, OldParameters, NewParameters;
+    public string CurrentId, Kind, OldText, NewText, OldVisibility, NewVisibility, OldType, NewType, OldParameters, NewParameters, TypeKind="";
     public int Line;
     public bool NameChanged, VisibilityChanged, TypeChanged, ParametersChanged;
     public string Describe()
@@ -842,7 +852,7 @@ public sealed class ClassLinkChange { public string Action, FromId, ToId, Field,
 // One attribute or operation to create under a class, or one existing member to delete.
 public sealed class ClassMemberChange
 {
-    public string Action, Kind, OwnerId, OwnerAlias, CurrentId, Text, Visibility, Type, Parameters;
+    public string Action, Kind, OwnerId, OwnerAlias, CurrentId, Text, Visibility, Type, Parameters, TypeKind="";
     // For adds: the current id of the first retained sibling of the same kind that follows in the input, or null for the end.
     public string InsertBeforeId;
     public bool IsStatic;
@@ -873,6 +883,14 @@ public sealed class ClassTextPreflight
         return parameters.Split(',').Select(x=>x.Trim()).Where(x=>x.Length>0).Select(x=>{int colon=x.IndexOf(" : ",StringComparison.Ordinal);return colon>=0?x.Substring(0,colon).Trim():x;}).ToArray();
     }
     public static string[] ParameterTypes(string parameters)
+    {
+        return ParameterTypesRaw(parameters).Select(x=>Regex.Replace(x,@"\s*<<[^>]+>>$","")).ToArray();
+    }
+    public static string[] ParameterTypeKinds(string parameters)
+    {
+        return ParameterTypesRaw(parameters).Select(x=>{var m=Regex.Match(x,@"<<([^>]+)>>$");return m.Success?m.Groups[1].Value.Trim():"";}).ToArray();
+    }
+    static string[] ParameterTypesRaw(string parameters)
     {
         if(string.IsNullOrEmpty(parameters))return new string[0];
         return parameters.Split(',').Select(x=>x.Trim()).Where(x=>x.Length>0).Select(x=>{int colon=x.IndexOf(" : ",StringComparison.Ordinal);return colon>=0?x.Substring(colon+3).Trim():"";}).ToArray();
@@ -923,7 +941,7 @@ public sealed class ClassTextPreflight
                     if(member.Attr("type").Contains(", ")) { result.Reasons.Add("add attribute"+where+": 複数の型を持つ属性は扱えません"); continue; }
                     string memberKind=c.Kind;
                     var following=plan.Expected.Elements.Where(e=>e.Parent==member.Parent && e.Kind==memberKind && e.Order>member.Order && old.ContainsKey(e.Id)).OrderBy(e=>e.Order).FirstOrDefault();
-                    result.Members.Add(new ClassMemberChange{Action="add",Kind=c.Kind,OwnerId=owner.Id,OwnerAlias=owner.Attr("alias"),Text=member.Text,Visibility=member.Attr("visibility"),Type=member.Attr("type"),Parameters=member.Attr("parameters"),IsStatic=member.Attr("static")=="true",Line=c.Line,InsertBeforeId=following==null?null:following.Id});
+                    result.Members.Add(new ClassMemberChange{Action="add",Kind=c.Kind,OwnerId=owner.Id,OwnerAlias=owner.Attr("alias"),Text=member.Text,Visibility=member.Attr("visibility"),Type=member.Attr("type"),Parameters=member.Attr("parameters"),IsStatic=member.Attr("static")=="true",Line=c.Line,InsertBeforeId=following==null?null:following.Id,TypeKind=member.Attr("typeKind")});
                     continue;
                 }
                 if(c.Action=="delete" && old.TryGetValue(c.Id,out member))
@@ -944,7 +962,7 @@ public sealed class ClassTextPreflight
             if(unsupported.Length>0) { result.Reasons.Add("update "+c.Kind+where+" ["+c.Detail+"]: "+string.Join(",",unsupported)+" の変更は扱えません"); continue; }
             var edit=new ClassMemberEdit{CurrentId=c.Id,Kind=c.Kind,Line=c.Line,OldText=before.Text,NewText=after.Text,
                 OldVisibility=before.Attr("visibility"),NewVisibility=after.Attr("visibility"),OldType=before.Attr("type"),NewType=after.Attr("type"),
-                OldParameters=before.Attr("parameters"),NewParameters=after.Attr("parameters"),
+                OldParameters=before.Attr("parameters"),NewParameters=after.Attr("parameters"),TypeKind=after.Attr("typeKind"),
                 NameChanged=keys.Contains("name"),VisibilityChanged=keys.Contains("visibility"),TypeChanged=keys.Contains("type"),ParametersChanged=keys.Contains("parameters")};
             string problem=null;
             if(edit.ParametersChanged && ParameterNames(edit.NewParameters).Any(n=>n.Length==0 || n.Contains("\\n")))problem="引数名が空か改行を含みます";

@@ -188,6 +188,16 @@ public static class ClassSyncTests
         Check(!addDefaultGate.Candidate && addDefaultGate.Reasons.Count == 1, "attribute with default stops: " + addDefaultGate.Summary());
         Check(!ClassTextPreflight.Check(baseline, Load(samples, "add-class.puml"), added).Candidate, "a new class still stops");
 
+        // "<<Kind>>" after a type names the definition to create; it never counts as a difference.
+        var kinded = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("- state : int [0..1] = 0", "- state : int <<StructureType>> [0..1] = 0"));
+        var kindedState = kinded.Elements.Single(e => e.Kind == "attribute" && e.Text == "state");
+        Check(kindedState.Attr("type") == "int" && kindedState.Attr("typeKind") == "StructureType", "type kind parsed: " + kindedState.Attr("type") + "/" + kindedState.Attr("typeKind"));
+        Check(Plan(baseline, kinded).Changes.Count == 0, "type kind alone is not a difference: " + Describe(Plan(baseline, kinded)));
+        var kindedNew = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("- state : int [0..1] = 0", "- state : Point <<StructureType>> [0..1] = 0"));
+        var kindedGate = ClassTextPreflight.Check(baseline, kindedNew, Plan(baseline, kindedNew));
+        Check(kindedGate.Candidate && kindedGate.Edits.Count == 1 && kindedGate.Edits[0].TypeChanged && kindedGate.Edits[0].NewType == "Point" && kindedGate.Edits[0].TypeKind == "StructureType", "type kind carried to the edit: " + kindedGate.Summary());
+        Check(string.Join("|", ClassTextPreflight.ParameterTypes("a : T <<PointerType>>, b")) == "T|" && string.Join("|", ClassTextPreflight.ParameterTypeKinds("a : T <<PointerType>>, b")) == "PointerType|", "parameter type kinds");
+
         // Summary and reasons are counts and line numbers only.
         string summary = ClassAudit.Summary(added, 2);
         Check(summary.Contains("差分候補 3件") && summary.Contains("class") && !summary.Contains("Logger"), "summary text: " + summary);
