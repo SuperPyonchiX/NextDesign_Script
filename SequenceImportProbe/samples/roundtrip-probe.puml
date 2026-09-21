@@ -2,9 +2,8 @@
 participant A
 participant B
 activate A
-A -> B : first()
+A -> B : call()
 activate B
-B --> A : firstDone()
 deactivate B
 deactivate A
 @enduml
