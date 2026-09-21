@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.3.1";
+    public const string Version = "0.3.2";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -724,6 +724,35 @@ public static class ClassSyncRuntime
     {
         try { var d=app.Workspace.CurrentEditor as IDiagram;return d==null?-1:d.Connectors.Cast<object>().Count(); } catch(Exception) { return -1; }
     }
+    static HashSet<string> ConnectorIds(IApplication app)
+    {
+        var ids=new HashSet<string>(StringComparer.Ordinal);
+        try { var d=app.Workspace.CurrentEditor as IDiagram;if(d!=null)foreach(var c in d.Connectors) { var s=c as IShape;if(s!=null)ids.Add(s.Id); } } catch(Exception) { }
+        return ids;
+    }
+    // What the product drew for a connector that appeared during this run: both ends, their
+    // positions and the shape flags, so an invisible line can be told from a missing one.
+    static void DescribeNewConnectors(IApplication app,HashSet<string> before,StringBuilder log)
+    {
+        try
+        {
+            var d=app.Workspace.CurrentEditor as IDiagram;if(d==null)return;
+            foreach(var c in d.Connectors)
+            {
+                var connector=c as IConnector;if(connector==null || before.Contains(connector.Id))continue;
+                var from=connector.StartPoint;var to=connector.EndPoint;
+                var fromModel=ClassDiagramKind.ModelOf(from);var toModel=ClassDiagramKind.ModelOf(to);
+                var own=ClassDiagramKind.ModelOf(connector);
+                string lineType;try { lineType=connector.LineType; } catch(Exception) { lineType="?"; }
+                bool visible;try { visible=connector.IsVisible; } catch(Exception) { visible=false; }
+                log.AppendLine("new connector "+connector.Id+": "+(fromModel==null?"?":fromModel.Name)+" -> "+(toModel==null?"?":toModel.Name)
+                    +" model="+(own==null?"(none)":own.ClassName)+" lineType="+lineType+" visible="+visible
+                    +" from@("+(from==null?"?":from.LocationX+","+from.LocationY)+") to@("+(to==null?"?":to.LocationX+","+to.LocationY)+")"
+                    +" bends="+(connector.GetBends()==null?0:connector.GetBends().Cast<object>().Count()));
+            }
+        }
+        catch(Exception ex) { log.AppendLine("new connector description failed: "+ex.Message); }
+    }
     static IField FieldOf(IModel m,string name) { return m.Metaclass.GetFields().Cast<IField>().FirstOrDefault(f=>f.Name==name); }
     // Text update: member name, visibility and (attributes) type. A type is a reference to an
     // existing type model, resolved by name before anything is written; nothing is created.
@@ -870,7 +899,7 @@ public static class ClassSyncRuntime
                 }
             }
             log.AppendLine("applied "+targets.Count+" member edits: read-back matched");
-            int connectorsBefore=CountConnectors(app);
+            int connectorsBefore=CountConnectors(app);var connectorIdsBefore=ConnectorIds(app);
             foreach(var l in links)
             {
                 stage=l.Change.Action=="add"?"関連の追加":"関連の削除";
@@ -896,7 +925,7 @@ public static class ClassSyncRuntime
                 }
                 catch(Exception ex) { log.AppendLine("GetRelationsOf after write failed: "+ex.Message); }
             }
-            if(links.Count>0)log.AppendLine("connectors on the diagram: "+connectorsBefore+" -> "+CountConnectors(app));
+            if(links.Count>0) { log.AppendLine("connectors on the diagram: "+connectorsBefore+" -> "+CountConnectors(app));DescribeNewConnectors(app,connectorIdsBefore,log); }
             stage="更新後の照合";
             VerifyAgainst(app,editorId,effective,"更新後",log);
         };
