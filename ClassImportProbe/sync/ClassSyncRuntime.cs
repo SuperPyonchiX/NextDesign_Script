@@ -610,7 +610,13 @@ public static class ClassSyncRuntime
         var after=ClassDiagramSnapshot.Read((IDiagram)editor,new ClassSyncOptions(),log).Document;
         var residual=ClassSyncPlan.Build(after,desired,()=>Guid.NewGuid().ToString());
         foreach(var c in residual.Changes)log.AppendLine(stage+" residual: "+c.Action+" "+c.Kind+" line="+c.Line+" detail="+c.Detail);
-        if(residual.Changes.Count>0)throw new InvalidOperationException("C230: "+stage+": 読戻しで残差 "+residual.Changes.Count+"件（診断ファイル参照）");
+        if(residual.Changes.Count>0)
+        {
+            // Link residuals are shown as PlantUML lines: a paired field on the other side
+            // appears or disappears with its partner, so the input must list both lines.
+            var lines=residual.Changes.Where(c=>c.Kind=="link").Take(6).Select(c=>(c.Action=="add"?"入力にあり図にない: ":"図にあり入力にない: ")+c.Detail).ToArray();
+            throw new InvalidOperationException("C230: "+stage+": 読戻しで残差 "+residual.Changes.Count+"件（診断ファイル参照）"+(lines.Length>0?"\n"+string.Join("\n",lines):""));
+        }
         log.AppendLine(stage+": SDK read-back matches the input");
     }
     static void VerifyRestored(IApplication app,string editorId,string originalJson,StringBuilder log)
@@ -623,6 +629,7 @@ public static class ClassSyncRuntime
     }
     // One resolved edit: the member model plus, for a type change, the old and new type models.
     class ResolvedEdit { public IModel Model; public ClassMemberEdit Edit; public IModel OldType, NewType; public string VisibilityValue; }
+    class ResolvedLink { public IModel From, To; public ClassLinkChange Change; public string RelationId="", PartnerField=""; }
     static IEnumerable<IModel> Tree(IModel root)
     {
         var stack=new Stack<IModel>();stack.Push(root);
@@ -640,6 +647,10 @@ public static class ClassSyncRuntime
         var cls=m.Metaclass;if(cls==null)return false;
         if(cls.Name==className)return true;
         try { return cls.GetAllSuperClasses().Cast<IClass>().Any(c=>c.Name==className); } catch(Exception) { return false; }
+    }
+    static int CountConnectors(IApplication app)
+    {
+        try { var d=app.Workspace.CurrentEditor as IDiagram;return d==null?-1:d.Connectors.Cast<object>().Count(); } catch(Exception) { return -1; }
     }
     static IField FieldOf(IModel m,string name) { return m.Metaclass.GetFields().Cast<IField>().FirstOrDefault(f=>f.Name==name); }
     // Text update: member name, visibility and (attributes) type. A type is a reference to an
@@ -704,8 +715,45 @@ public static class ClassSyncRuntime
             log.AppendLine("edit target: model="+modelId+" class="+model.ClassName+" "+edit.Describe());
             targets.Add(resolved);
         }
-        string summary="名前 "+preflight.NameCount+" / 可視性 "+preflight.VisibilityCount+" / 型 "+preflight.TypeCount;
-        string confirmation=(retain?"コピーのプロジェクトで実行してください。\n属性・操作 "+targets.Count+"件（"+summary+"）を更新し、読戻しが一致したときだけ確定します。":"コピーのプロジェクトで実行してください。\n属性・操作 "+targets.Count+"件（"+summary+"）を更新し、読戻しを照合した後に必ず取り消します。")
+        // Links: resolve both end models and the reference field on the source class. A delete
+        // also looks up the relationship to learn the paired field on the other side, so the
+        // input can be checked for the partner line before anything is written.
+        var links=new List<ResolvedLink>();
+        foreach(var change in preflight.Links)
+        {
+            string fromId,toId;
+            if(!snapshot.ModelIds.TryGetValue(change.FromId,out fromId) || !snapshot.ModelIds.TryGetValue(change.ToId,out toId))throw new InvalidOperationException("C220: 関連の両端のモデルIDを特定できません。");
+            var from=project.GetModelById(fromId);var to=project.GetModelById(toId);
+            if(from==null || to==null || from.IsDeleted || to.IsDeleted || from.IsProxy || to.IsProxy || !from.IsEditable)throw new InvalidOperationException("C220: 関連の両端に編集不可のモデルがあります。");
+            var field=FieldOf(from,change.Field);
+            if(field==null || !field.IsReference)throw new InvalidOperationException("C220: "+from.ClassName+" に参照フィールド '"+change.Field+"' がありません。");
+            if(!IsA(to,field.Type))throw new InvalidOperationException("C220: '"+change.Field+"' の型 "+field.Type+" に "+to.ClassName+" は入りません。");
+            var present=from.GetFieldValues(change.Field).Cast<object>().OfType<IModel>().Any(m=>m.Id==toId);
+            var resolved=new ResolvedLink{From=from,To=to,Change=change};
+            if(change.Action=="add")
+            {
+                if(present)throw new InvalidOperationException("C220: 追加する関連 "+change.FromAlias+" -> "+change.ToAlias+" : "+change.Field+" は既に存在します。");
+                if(field.UpperBound>=0 && from.GetFieldValues(change.Field).Cast<object>().Count()>=field.UpperBound)throw new InvalidOperationException("C220: '"+change.Field+"' の多重度の上限に達しています。");
+            }
+            else
+            {
+                if(!present)throw new InvalidOperationException("C220: 削除する関連 "+change.FromAlias+" -> "+change.ToAlias+" : "+change.Field+" が図のモデルにありません。");
+                IRelationship relation=null;
+                try { relation=from.GetRelationsOf(to).Cast<IRelationship>().FirstOrDefault(x=>(x.SourceField!=null && x.SourceField.Name==change.Field) || (x.TargetField!=null && x.TargetField.Name==change.Field)); } catch(Exception ex) { log.AppendLine("GetRelationsOf failed: "+ex.Message); }
+                if(relation!=null)
+                {
+                    var partner=relation.SourceField!=null && relation.SourceField.Name==change.Field?relation.TargetField:relation.SourceField;
+                    resolved.RelationId=relation.Id;resolved.PartnerField=partner==null?"":partner.Name;
+                    log.AppendLine("delete link relation="+relation.Id+" class="+(ClassDiagramKind.ModelOf(relation)==null?"?":"")+" fields="+change.Field+"/"+resolved.PartnerField+" twoWay="+relation.IsTwoWay);
+                    // If the input still lists the partner line, the read-back will report it as a
+                    // residual and the trial rolls back; the message names the line to remove.
+                }
+            }
+            log.AppendLine("link target: "+change.Action+" "+from.ClassName+" '"+from.Name+"' -["+change.Field+" : "+field.Type+"]-> "+to.ClassName+" '"+to.Name+"'");
+            links.Add(resolved);
+        }
+        string summary="名前 "+preflight.NameCount+" / 可視性 "+preflight.VisibilityCount+" / 型 "+preflight.TypeCount+" / 関連追加 "+preflight.LinkAddCount+" / 関連削除 "+preflight.LinkDeleteCount;
+        string confirmation=(retain?"コピーのプロジェクトで実行してください。\nメンバ "+targets.Count+"件・関連 "+links.Count+"件（"+summary+"）を更新し、読戻しが一致したときだけ確定します。":"コピーのプロジェクトで実行してください。\nメンバ "+targets.Count+"件・関連 "+links.Count+"件（"+summary+"）を更新し、読戻しを照合した後に必ず取り消します。")
             +"\n自動保存はしません。Undo/Redo と保存再読込は手動で確認してください。";
         if(!app.Window.UI.ShowConfirmDialog(confirmation,ClassExperiment.Title))return "本文更新: 中止（確認で取消）";
         if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=editorId
@@ -743,6 +791,22 @@ public static class ClassSyncRuntime
                 }
             }
             log.AppendLine("applied "+targets.Count+" member edits: read-back matched");
+            int connectorsBefore=CountConnectors(app);
+            foreach(var l in links)
+            {
+                stage=l.Change.Action=="add"?"関連の追加":"関連の削除";
+                if(l.Change.Action=="add")l.From.Relate(l.Change.Field,l.To);else l.From.UnRelate(l.Change.Field,l.To);
+                bool present=l.From.GetFieldValues(l.Change.Field).Cast<object>().OfType<IModel>().Any(m=>m.Id==l.To.Id);
+                if(present!=(l.Change.Action=="add"))throw new InvalidOperationException("C230: 関連の読戻しが一致しません: "+l.Change.FromAlias+" -> "+l.Change.ToAlias+" : "+l.Change.Field);
+                // Observe what the product did on the other side and on the canvas.
+                try
+                {
+                    var relations=l.From.GetRelationsOf(l.To).Cast<IRelationship>().Select(x=>x.Id+" "+(x.SourceField==null?"-":x.SourceField.Name)+"/"+(x.TargetField==null?"-":x.TargetField.Name)).ToArray();
+                    log.AppendLine("after "+l.Change.Action+": relations "+l.From.Name+"->"+l.To.Name+" = ["+string.Join(", ",relations)+"]");
+                }
+                catch(Exception ex) { log.AppendLine("GetRelationsOf after write failed: "+ex.Message); }
+            }
+            if(links.Count>0)log.AppendLine("connectors on the diagram: "+connectorsBefore+" -> "+CountConnectors(app));
             stage="更新後の照合";
             VerifyAgainst(app,editorId,desired,"更新後",log);
         };
@@ -776,6 +840,7 @@ public static class ClassSyncRuntime
         foreach(var error in new[]{trial.ApplyError,trial.RollbackError,trial.VerifyError})if(error!=null)log.AppendLine(error.ToString());
         Refresh(app,log);
         lines.Add("一時適用と照合: "+(trial.Applied?"一致":"失敗 ("+stage+")"));
+        if(links.Count>0)lines.Add("関連 追加 "+preflight.LinkAddCount+" / 削除 "+preflight.LinkDeleteCount+"（コネクタ数の変化は診断ファイル）");
         lines.Add("取消API: "+(trial.RollbackReturned?"正常終了":"失敗"));
         lines.Add("復元照合: "+(trial.Restored?"一致":"未確認または不一致。保存せずにコピーを開き直してください"));
         return "本文更新の試行 (UPDATE-C000)\n"+string.Join("\n",lines.ToArray());
@@ -831,7 +896,7 @@ public static class ClassSyncRuntime
             log.AppendLine("Scope: "+(project==null?"":project.Id)+" / "+editor.ModelId+" / "+editor.Id);
             if(trial)
             {
-                if(!preflight.Candidate)throw new InvalidOperationException("C231: このボタンで反映できるのは属性・操作の改名だけです。\n"+preflight.Summary());
+                if(!preflight.Candidate)throw new InvalidOperationException("C231: このボタンで反映できるのは属性・操作の名前・可視性・型と、既存クラス間の関連の追加削除だけです。\n"+preflight.Summary());
                 if(project==null)throw new InvalidOperationException("C220: プロジェクトを取得できません。");
                 ClassExperiment.Summary=RunTextUpdate(app,project,editor,snapshot,desired,preflight,retain,log);
                 screenshot=ClassExperiment.Summary+"\f会社PC内の試行診断\n"+log.ToString();

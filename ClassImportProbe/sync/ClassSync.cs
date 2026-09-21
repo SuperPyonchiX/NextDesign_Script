@@ -831,11 +831,18 @@ public sealed class ClassMemberEdit
 // Preflight for the text-update step: accept a plan only when every change is a member update
 // limited to name, visibility and (attributes) type. Any other change is a stop reason, so
 // nothing is written for a plan the step cannot fully apply.
+// One reference link the update step may add or remove: the current class ids of both ends,
+// the field name on the source class, and the input line (adds only).
+public sealed class ClassLinkChange { public string Action, FromId, ToId, Field, FromAlias, ToAlias; public int Line; }
+
 public sealed class ClassTextPreflight
 {
     public List<ClassMemberEdit> Edits = new List<ClassMemberEdit>();
+    public List<ClassLinkChange> Links = new List<ClassLinkChange>();
     public List<string> Reasons = new List<string>();
-    public bool Candidate { get { return Reasons.Count==0 && Edits.Count>0; } }
+    public bool Candidate { get { return Reasons.Count==0 && (Edits.Count>0 || Links.Count>0); } }
+    public int LinkAddCount { get { return Links.Count(l=>l.Action=="add"); } }
+    public int LinkDeleteCount { get { return Links.Count(l=>l.Action=="delete"); } }
     public int NameCount { get { return Edits.Count(e=>e.NameChanged); } }
     public int VisibilityCount { get { return Edits.Count(e=>e.VisibilityChanged); } }
     public int TypeCount { get { return Edits.Count(e=>e.TypeChanged); } }
@@ -849,6 +856,29 @@ public sealed class ClassTextPreflight
         foreach(var c in plan.Changes)
         {
             string where=c.Line>0?" 入力"+c.Line+"行":"";
+            if(c.Kind=="link")
+            {
+                // A link is a reference field on the source class. Adds need both ends to be
+                // classes that already exist; deletes need a field-backed link (connector-only
+                // lines carry no field). Multiplicity comes from the field, so it cannot change.
+                ClassElement link;
+                if(c.Action=="add" && target.TryGetValue(c.Id,out link))
+                {
+                    ClassElement from,to;
+                    if(link.Text.Length==0) { result.Reasons.Add("add link"+where+": ロール名（フィールド名）のない関連は扱えません"); continue; }
+                    if(!old.TryGetValue(link.Link("from")??"",out from) || !old.TryGetValue(link.Link("to")??"",out to)) { result.Reasons.Add("add link"+where+": 両端が既存のクラスではありません"); continue; }
+                    result.Links.Add(new ClassLinkChange{Action="add",FromId=from.Id,ToId=to.Id,Field=link.Text,FromAlias=from.Attr("alias"),ToAlias=to.Attr("alias"),Line=c.Line});
+                    continue;
+                }
+                if(c.Action=="delete" && old.TryGetValue(c.Id,out link))
+                {
+                    if(link.Attr("field").Length==0) { result.Reasons.Add("delete link ("+link.Attr("arrow")+" "+link.Text+"): フィールドに対応しない線は扱えません"); continue; }
+                    var from=old[link.Link("from")];var to=old[link.Link("to")];
+                    result.Links.Add(new ClassLinkChange{Action="delete",FromId=from.Id,ToId=to.Id,Field=link.Attr("field"),FromAlias=from.Attr("alias"),ToAlias=to.Attr("alias")});
+                    continue;
+                }
+                result.Reasons.Add(c.Action+" link"+where+" ["+c.Detail+"]: 関連の"+(c.Action=="update"?"多重度・ロール名の変更":"この変更")+"は扱えません"); continue;
+            }
             if(c.Action!="update") { result.Reasons.Add(c.Action+" "+c.Kind+where+": 本文更新では扱えません"); continue; }
             if(c.Kind!="attribute" && c.Kind!="operation") { result.Reasons.Add("update "+c.Kind+where+": 属性・操作以外の更新は扱えません"); continue; }
             ClassElement before,after;
@@ -875,7 +905,7 @@ public sealed class ClassTextPreflight
     {
         var sb=new StringBuilder();
         sb.Append("本文更新の事前判定: ").Append(Candidate?"候補あり":"停止").Append('\n');
-        sb.Append("対象 ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append("） / 停止理由 ").Append(Reasons.Count).Append("件\n");
+        sb.Append("メンバ ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append("） / 関連 追加 ").Append(LinkAddCount).Append(" 削除 ").Append(LinkDeleteCount).Append(" / 停止理由 ").Append(Reasons.Count).Append("件\n");
         foreach(var r in Reasons)sb.Append("  ").Append(r).Append('\n');
         return sb.ToString().TrimEnd();
     }

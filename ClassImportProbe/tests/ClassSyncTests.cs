@@ -88,7 +88,34 @@ public static class ClassSyncTests
         Check(baseline.Elements.Any(e => e.Id == renameGate.Edits[0].CurrentId && e.Text == "state"), "rename preflight identity");
         var sameGate = ClassTextPreflight.Check(baseline, baseline, same);
         Check(!sameGate.Candidate && sameGate.Reasons.Count == 1, "no-change preflight: " + sameGate.Summary());
-        foreach (var name in new[] { "add-class.puml", "delete-link.puml", "reorder-member.puml", "move-class.puml" })
+        // Links between existing classes pass the preflight as adds or deletes; anything else stops.
+        var linkDelete = ClassTextPreflight.Check(baseline, Load(samples, "delete-link.puml"), deleted);
+        Check(linkDelete.Candidate && linkDelete.Links.Count == 1 && linkDelete.Links[0].Action == "delete" && linkDelete.Links[0].Field == "Uses" && linkDelete.Links[0].FromAlias == "Controller" && linkDelete.Links[0].ToAlias == "Mode", "link delete preflight: " + linkDelete.Summary());
+        var linkAdd = ClassTextPreflight.Check(Load(samples, "delete-link.puml"), baseline, restored);
+        Check(linkAdd.Candidate && linkAdd.Links.Count == 1 && linkAdd.Links[0].Action == "add" && linkAdd.Links[0].Field == "Uses" && linkAdd.Links[0].Line == 26, "link add preflight: " + linkAdd.Summary());
+        var newClassLink = ClassTextPreflight.Check(baseline, Load(samples, "add-class.puml"), added);
+        Check(!newClassLink.Candidate && newClassLink.Links.Count == 0 && newClassLink.Reasons.Any(x => x.Contains("既存のクラス")), "link to a new class stops: " + newClassLink.Summary());
+        var multGate = ClassTextPreflight.Check(baseline, ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("\"0..*\" IDriver", "\"1..*\" IDriver")), mult);
+        Check(!multGate.Candidate && multGate.Reasons.Count == 1 && multGate.Reasons[0].Contains("多重度"), "multiplicity change stops: " + multGate.Summary());
+        var anonymous = ClassDocument.Parse("@startuml\nclass \"A\" as A\nclass \"B\" as B\n\nA --> B\n\n@enduml\n");
+        var anonymousGone = ClassDocument.Parse("@startuml\nclass \"A\" as A\nclass \"B\" as B\n@enduml\n");
+        var anonymousGate = ClassTextPreflight.Check(anonymous, anonymousGone, Plan(anonymous, anonymousGone));
+        Check(!anonymousGate.Candidate && anonymousGate.Reasons.Count == 1, "an unlabeled line parsed from text has no field to remove: " + anonymousGate.Summary());
+        anonymous.Elements.Single(e => e.Kind == "link").Attributes["field"] = "___anonymous___owner_related_to_x";
+        var systemFieldGate = ClassTextPreflight.Check(anonymous, anonymousGone, Plan(anonymous, anonymousGone));
+        Check(systemFieldGate.Candidate && systemFieldGate.Links.Count == 1 && systemFieldGate.Links[0].Field == "___anonymous___owner_related_to_x", "a snapshot line keeps its system field name for the delete: " + systemFieldGate.Summary());
+        var connectorOnly = ClassDocument.Parse("@startuml\nclass \"A\" as A\nclass \"B\" as B\n\nA -- B : line\n\n@enduml\n");
+        connectorOnly.Elements.Single(e => e.Kind == "link").Attributes["field"] = "";
+        var connectorGate = ClassTextPreflight.Check(connectorOnly, anonymousGone, Plan(connectorOnly, anonymousGone));
+        Check(!connectorGate.Candidate && connectorGate.Reasons.Count == 1 && connectorGate.Reasons[0].Contains("フィールドに対応しない"), "connector-only line stops: " + connectorGate.Summary());
+        var unlabeledAdd = ClassTextPreflight.Check(anonymousGone, anonymous, Plan(anonymousGone, anonymous));
+        Check(!unlabeledAdd.Candidate && unlabeledAdd.Reasons.Count == 1 && unlabeledAdd.Reasons[0].Contains("ロール名"), "unlabeled add stops: " + unlabeledAdd.Summary());
+        var renameAndLink = Load(samples, "delete-link.puml");
+        renameAndLink.Elements.Single(e => e.Kind == "attribute" && e.Text == "state").Text = "status";
+        var bothGate2 = ClassTextPreflight.Check(baseline, renameAndLink, Plan(baseline, renameAndLink));
+        Check(bothGate2.Candidate && bothGate2.Edits.Count == 1 && bothGate2.Links.Count == 1, "rename and link delete together: " + bothGate2.Summary());
+
+        foreach (var name in new[] { "add-class.puml", "reorder-member.puml", "move-class.puml" })
         {
             var doc = Load(samples, name);
             var gate = ClassTextPreflight.Check(baseline, doc, Plan(baseline, doc));
@@ -112,7 +139,7 @@ public static class ClassSyncTests
         var noSymbolGate = ClassTextPreflight.Check(baseline, noSymbol, Plan(baseline, noSymbol));
         Check(!noSymbolGate.Candidate && noSymbolGate.Reasons.Count == 1, "removing the visibility symbol stops: " + noSymbolGate.Summary());
         var mixed = Load(samples, "rename-attribute.puml");
-        mixed.Elements.Single(e => e.Kind == "link" && e.Text == "Uses").Text = "Depends";
+        mixed.Elements.Single(e => e.Kind == "link" && e.Text == "Uses").Attributes["toMultiplicity"] = "1";
         var mixedGate = ClassTextPreflight.Check(baseline, mixed, Plan(baseline, mixed));
         Check(!mixedGate.Candidate && mixedGate.Edits.Count == 1 && mixedGate.Reasons.Count == 1, "mixed plan stops as a whole: " + mixedGate.Summary());
         var classRenameGate = ClassTextPreflight.Check(baseline, ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("\"制御部\"", "\"制御装置\"")), classRename);
