@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.5.3";
+    public const string Version = "0.5.4";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -1868,7 +1868,11 @@ public sealed class ClassPumlParser
         {
             element.Kind="operation";
             element.Text=operation.Groups["name"].Value.Trim();
-            element.Attributes["parameters"]=operation.Groups["params"].Value.Trim();
+            // The exporter prints argument names only (K019), so names are what is compared;
+            // "name : Type <<Kind>>" keeps its types for writing in a separate, ignored attribute.
+            string rawParameters=operation.Groups["params"].Value.Trim();
+            element.Attributes["parameters"]=string.Join(", ",ClassTextPreflight.ParameterNames(rawParameters));
+            if(rawParameters!=element.Attributes["parameters"])element.Attributes["parameterTypes"]=rawParameters;
             string returnType=operation.Groups["ret"].Success?operation.Groups["ret"].Value.Trim():"";
             element.Attributes["visibility"]=visibility;element.Attributes["static"]=isStatic?"true":"";
             element.Attributes["abstract"]=isAbstract?"true":"";element.Attributes["returnType"]=returnType;
@@ -2014,7 +2018,7 @@ public static class ClassPumlWriter
         if(m.Kind=="operation")
         {
             if(m.Attr("abstract")=="true")sb.Append("{abstract} ");
-            sb.Append(m.Text).Append('(').Append(m.Attr("parameters")).Append(')');
+            sb.Append(m.Text).Append('(').Append(m.Attr("parameterTypes").Length>0?m.Attr("parameterTypes"):m.Attr("parameters")).Append(')');
             if(m.Attr("returnType").Length>0)sb.Append(" : ").Append(m.Attr("returnType"));
             return sb.ToString();
         }
@@ -2069,7 +2073,7 @@ public sealed class ClassSyncPlan
         return ClassJson.Json(ClassJson.Obj("Changes",Changes.Select(c=>ClassJson.Obj("Action",c.Action,"Kind",c.Kind,"Id",c.Id,"Line",c.Line,"Detail",c.Detail)).ToArray(),
             "Identities",Identities.ToDictionary(p=>p.Key,p=>(object)p.Value),"Expected",Expected==null?null:(object)Expected.ToJson()));
     }
-    static readonly string[] Ignored = { "alias", "field", "arrow", "typeKind" };
+    static readonly string[] Ignored = { "alias", "field", "arrow", "typeKind", "parameterTypes" };
     // A member whose name contains parentheses reads as an operation from text although the
     // model calls it an attribute. The rendered line is what PlantUML carries, so members are
     // compared by that line and attribute/operation/literal are one kind for matching.
@@ -2374,7 +2378,7 @@ public sealed class ClassTextPreflight
                     if(member.Attr("type").Contains(", ")) { result.Reasons.Add("add attribute"+where+": 複数の型を持つ属性は扱えません"); continue; }
                     string memberKind=c.Kind;
                     var following=plan.Expected.Elements.Where(e=>e.Parent==member.Parent && e.Kind==memberKind && e.Order>member.Order && old.ContainsKey(e.Id)).OrderBy(e=>e.Order).FirstOrDefault();
-                    result.Members.Add(new ClassMemberChange{Action="add",Kind=c.Kind,OwnerId=owner.Id,OwnerAlias=owner.Attr("alias"),Text=member.Text,Visibility=member.Attr("visibility"),Type=member.Attr("type"),Parameters=member.Attr("parameters"),IsStatic=member.Attr("static")=="true",Line=c.Line,InsertBeforeId=following==null?null:following.Id,TypeKind=member.Attr("typeKind")});
+                    result.Members.Add(new ClassMemberChange{Action="add",Kind=c.Kind,OwnerId=owner.Id,OwnerAlias=owner.Attr("alias"),Text=member.Text,Visibility=member.Attr("visibility"),Type=member.Attr("type"),Parameters=member.Attr("parameterTypes").Length>0?member.Attr("parameterTypes"):member.Attr("parameters"),IsStatic=member.Attr("static")=="true",Line=c.Line,InsertBeforeId=following==null?null:following.Id,TypeKind=member.Attr("typeKind")});
                     continue;
                 }
                 if(c.Action=="delete" && old.TryGetValue(c.Id,out member))
@@ -2395,7 +2399,7 @@ public sealed class ClassTextPreflight
             if(unsupported.Length>0) { result.Reasons.Add("update "+c.Kind+where+" ["+c.Detail+"]: "+string.Join(",",unsupported)+" の変更は扱えません"); continue; }
             var edit=new ClassMemberEdit{CurrentId=c.Id,Kind=c.Kind,Line=c.Line,OldText=before.Text,NewText=after.Text,
                 OldVisibility=before.Attr("visibility"),NewVisibility=after.Attr("visibility"),OldType=before.Attr("type"),NewType=after.Attr("type"),
-                OldParameters=before.Attr("parameters"),NewParameters=after.Attr("parameters"),TypeKind=after.Attr("typeKind"),
+                OldParameters=before.Attr("parameters"),NewParameters=after.Attr("parameterTypes").Length>0?after.Attr("parameterTypes"):after.Attr("parameters"),TypeKind=after.Attr("typeKind"),
                 NameChanged=keys.Contains("name"),VisibilityChanged=keys.Contains("visibility"),TypeChanged=keys.Contains("type"),ParametersChanged=keys.Contains("parameters")};
             string problem=null;
             if(edit.ParametersChanged && ParameterNames(edit.NewParameters).Any(n=>n.Length==0 || n.Contains("\\n")))problem="引数名が空か改行を含みます";

@@ -29,7 +29,7 @@ public static class ClassPumlTests
         var count = round.Elements.Single(e => e.Kind == "attribute" && e.Text == "count");
         Check(count.Attr("static") == "true" && count.Attr("visibility") == "+", "static attribute");
         var start = round.Elements.Single(e => e.Kind == "operation" && e.Text == "start");
-        Check(start.Attr("parameters") == "mode : int" && start.Attr("returnType") == "bool" && start.Attr("visibility") == "+", "operation fields");
+        Check(start.Attr("parameters") == "mode" && start.Attr("parameterTypes") == "mode : int" && start.Attr("returnType") == "bool" && start.Attr("visibility") == "+", "operation fields");
         var stop = round.Elements.Single(e => e.Kind == "operation" && e.Text == "stop");
         Check(stop.Attr("parameters") == "" && stop.Attr("returnType") == "" && stop.Attr("visibility") == "#", "bare operation");
         var controller = round.Elements.Single(e => e.Kind == "class" && e.Text == "制御部");

@@ -176,6 +176,9 @@ public static class ClassSyncTests
         var addOpArgs = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    # stop()\n", "    # stop()\n    + reset(mode, force : bool)\n"));
         var addOpArgsGate = ClassTextPreflight.Check(baseline, addOpArgs, Plan(baseline, addOpArgs));
         Check(addOpArgsGate.Candidate && addOpArgsGate.Members.Count == 1 && addOpArgsGate.Members[0].Parameters == "mode, force : bool", "operation with arguments passes: " + addOpArgsGate.Summary());
+        Check(addOpArgs.Elements.Single(e => e.Kind == "operation" && e.Text == "reset").Attr("parameters") == "mode, force", "compared parameters are names only");
+        var typedArgsSame = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("start(mode : int)", "start(mode : long <<PointerType>>)"));
+        Check(Plan(baseline, typedArgsSame).Changes.Count == 0, "argument type text is not a difference: " + Describe(Plan(baseline, typedArgsSame)));
         Check(string.Join("|", ClassTextPreflight.ParameterNames("mode, force : bool")) == "mode|force" && string.Join("|", ClassTextPreflight.ParameterTypes("mode, force : bool")) == "|bool", "parameter parsing");
         var renameArg = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("start(mode : int)", "start(mode2 : int)"));
         var renameArgGate = ClassTextPreflight.Check(baseline, renameArg, Plan(baseline, renameArg));
