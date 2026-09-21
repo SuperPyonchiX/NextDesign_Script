@@ -6,7 +6,6 @@ A -> B : first()
 activate B
 B --> A : firstDone()
 deactivate B
-deactivate A
 alt ready
 activate A
 A -> B : guarded()
@@ -21,4 +20,5 @@ activate B
 deactivate B
 deactivate A
 end
+deactivate A
 @enduml

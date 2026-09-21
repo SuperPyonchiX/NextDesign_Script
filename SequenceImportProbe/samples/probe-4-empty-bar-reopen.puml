@@ -2,16 +2,10 @@
 participant A
 participant B
 activate A
-A -> B : first()
-activate B
-B --> A : firstDone()
-deactivate B
-alt ready
-activate A
-A -> B : guarded()
+A -> B : m1
 activate B
 deactivate B
-deactivate A
-end
+activate B
+deactivate B
 deactivate A
 @enduml

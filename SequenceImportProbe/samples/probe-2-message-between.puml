@@ -1,0 +1,12 @@
+@startuml
+participant A
+participant B
+activate A
+A -> B : m1
+deactivate A
+A -> B : between
+alt x
+activate A
+A -> B : m2
+end
+@enduml

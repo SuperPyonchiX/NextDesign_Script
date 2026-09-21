@@ -2,11 +2,9 @@
 participant A
 participant B
 activate A
-A -> B : work()
+A -> B : m1
 activate B
-B --> A : done()
-activate B
-deactivate B
+B --> A : m2
 deactivate B
 deactivate A
 @enduml
