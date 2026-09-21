@@ -56,6 +56,14 @@ public static class PayloadTest {
    if(SyncPlan.Build(bareBatchPlan.Expected,bareBatchInput,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("omitted activations are not idempotent");
 
+   var bareFrameModel=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
+   var bareFrameInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"omitted-fragment.puml")));
+   var bareFramePlan=SyncPlan.Build(bareFrameModel,bareFrameInput,()=>Guid.NewGuid().ToString());
+   if(bareFramePlan.Changes.Count!=0 || bareFramePlan.InheritRefusals.Count!=0)
+       throw new Exception("omitted activations inside a frame are not a no-op: "+bareFramePlan.ToJson());
+   if(bareFramePlan.CarriedExecutions.Count!=bareFrameModel.Elements.Count(e=>e.Kind=="execution"))
+       throw new Exception("a bar inside a frame was not carried: "+bareFramePlan.ToJson());
+
    var reconnectBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-before.puml")));
    var reconnectAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-after.puml")));
    var reconnectPlan=SyncPlan.Build(reconnectBefore,reconnectAfter,()=>Guid.NewGuid().ToString());
