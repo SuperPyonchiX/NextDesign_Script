@@ -1606,7 +1606,7 @@ public sealed class SequenceStructurePreparation
         }
         return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),ReconnectCount=changed.Count,
             EditorAfterDeleteJson=Deleted(editor,newShapes,newLaneShapes,newMessageShapes,
-                newFrameShapes,newOperandShapes,gate.DeleteExecutions,
+                newFrameShapes,newOperandShapes,stretched,gate.DeleteExecutions,
                 gate.DeleteParticipants.Concat(gate.DeleteMessages)
                     .Concat(gate.DeleteFragments).Concat(gate.DeleteOperands).ToList()),
             DeleteIds=gate.DeleteExecutions.ToArray(),
@@ -1780,7 +1780,7 @@ public sealed class SequenceStructurePreparation
     internal const double MessageSpacing=50;
     static string Deleted(SequenceEditorDocument editor,List<SequenceJson> addedShapes,List<SequenceJson> addedLanes,
         List<SequenceJson> addedWires,List<SequenceJson> addedFrames,List<SequenceJson> addedBranches,
-        List<string> removed,List<string> removedLanes)
+        List<SequenceStretchedLifeline> stretched,List<string> removed,List<string> removedLanes)
     {
         var json=SequenceJson.Parse(editor.ImportJson());
         var view=json["Editors"].Items.Single();
@@ -1798,6 +1798,15 @@ public sealed class SequenceStructurePreparation
         };
         append("ExecutionSpecifications",addedShapes);append("Lifelines",addedLanes);append("Messages",addedWires);
         append("Fragments",addedFrames);append("Operands",addedBranches);
+        // This editor is rebuilt from the original export, so the stretched timelines have
+        // to be written here as well or the delete stage puts the old lengths back.
+        if(stretched.Count>0)
+        {
+            var lanes=Collection(view,"Lifelines");
+            foreach(var lane in stretched)
+                foreach(var node in lanes.Items.Where(n=>SequenceEditorDocument.Value(n,"Id")==lane.ShapeId))
+                    node.Properties["LaneLength"]=SequenceJson.Parse(lane.Length);
+        }
         return json.ToJsonString();
     }
     static bool Mentions(SequenceJson node,HashSet<string> ids)
