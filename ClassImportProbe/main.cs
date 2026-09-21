@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.6.3";
+    public const string Version = "0.6.4";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -1510,11 +1510,22 @@ public static class ClassSyncRuntime
             foreach(var c in classes.Where(x=>x.Change.Action=="delete"))
             {
                 stage="クラスの削除";
-                string id=c.Model.Id;int nodesBefore=((IDiagram)app.Workspace.CurrentEditor).Nodes.Cast<object>().Count();
-                c.Model.Delete();
+                string id=c.Model.Id;var dd=(IDiagram)app.Workspace.CurrentEditor;int nodesBefore=dd.Nodes.Cast<object>().Count();
+                // Deleting the model alone may leave its node behind as a shape without a model
+                // (K057). Delete through the shape with deleteModel=true, which removes both; when
+                // the class has no node on this diagram, delete the model directly.
+                var ownNodes=dd.Nodes.Cast<object>().OfType<INode>().Where(n=>{var m=ClassDiagramKind.ModelOf(n);return m!=null && m.Id==id;}).ToList();
+                if(ownNodes.Count>0)
+                {
+                    foreach(var n in ownNodes) { try { n.Delete(true); } catch(Exception ex) { log.AppendLine("shape delete failed: "+ex.Message); } }
+                }
+                var stillThere=project.GetModelById(id);
+                if(stillThere!=null && !stillThere.IsDeleted)c.Model.Delete();
                 var check=project.GetModelById(id);
                 if(check!=null && !check.IsDeleted)throw new InvalidOperationException("C230: クラスの削除が反映されていません。");
-                log.AppendLine("deleted class id="+id+" nodes "+nodesBefore+" -> "+((IDiagram)app.Workspace.CurrentEditor).Nodes.Cast<object>().Count());
+                int nodesAfter=dd.Nodes.Cast<object>().Count();
+                int orphan=dd.Nodes.Cast<object>().OfType<INode>().Count(n=>{var m=ClassDiagramKind.ModelOf(n);return m==null || m.IsDeleted;});
+                log.AppendLine("deleted class id="+id+" via "+(ownNodes.Count>0?"shape":"model")+" nodes "+nodesBefore+" -> "+nodesAfter+" orphan nodes="+orphan);
             }
             if(links.Count>0 || classes.Any(x=>x.Change.Action=="add"))
             {
