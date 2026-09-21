@@ -10,7 +10,7 @@
 // ClassImportProbe/main.cs の ClassExperiment と同じ名前・同じメンバ。ダイアログは出さず出力ウィンドウへ書く。
 public static class ClassExperiment
 {
-    public const string Version = "0.7.1";
+    public const string Version = "0.7.2";
     public const string Title = "クラス図同期 (NdMcp) / " + Version;
     public static string Summary = "";
     public static string Details = "";

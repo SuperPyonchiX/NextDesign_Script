@@ -336,7 +336,35 @@ public sealed class ClassPumlParser
 {
     static readonly Regex ClassLine=new Regex(@"^(?<kw>abstract\s+class|class|interface|enum|entity|struct|package|component|annotation|abstract)\s+(?:""(?<qname>[^""]*)""|(?<name>[^\s""{<]+))(?:\s+as\s+(?<alias>[^\s{<]+))?(?:\s*<<(?<st>[^>]*)>>)?\s*(?<open>\{)?\s*$");
     static readonly Regex LinkLine=new Regex(@"^(?<from>[A-Za-z0-9_]+)\s+(?:""(?<fm>[^""]*)""\s+)?(?<arrow>(?:<\||<|o|\*)?[-.]+(?:\|>|>|o|\*)?)\s+(?:""(?<tm>[^""]*)""\s+)?(?<to>[A-Za-z0-9_]+)\s*(?::\s*(?<label>.*?))?\s*$");
-    static readonly Regex OperationLine=new Regex(@"^(?<name>[^(:]*[^\s(:])\((?<params>.*)\)(?:\s*:\s*(?<ret>(?!.*(?: \[| = )).*))?$");
+    // An operation is name(params)[ : ret]. The parameter list ends at the parenthesis that
+    // balances the first "(", so a return type such as decltype(f(a,b)) keeps its own
+    // parentheses out of the parameters (K061). Anything else is an attribute.
+    sealed class OperationParts { public string Name, Parameters, ReturnType; }
+    static OperationParts SplitOperation(string rest)
+    {
+        int open=rest.IndexOf('(');
+        if(open<=0)return null;
+        // The exporter never puts a space before "(": "Idle (default)" is a bare name.
+        string name=rest.Substring(0,open);
+        if(char.IsWhiteSpace(name[name.Length-1]) || name.IndexOf(':')>=0)return null;
+        int depth=0,close=-1;
+        for(int i=open;i<rest.Length;i++)
+        {
+            if(rest[i]=='(')depth++;
+            else if(rest[i]==')' && --depth==0) { close=i;break; }
+        }
+        if(close<0)return null;
+        string tail=rest.Substring(close+1);
+        string returnType="";
+        if(tail.Trim().Length>0)
+        {
+            var m=Regex.Match(tail,@"^\s*:\s*(?<ret>.*)$");
+            if(!m.Success)return null;
+            returnType=m.Groups["ret"].Value.Trim();
+            if(returnType.Contains(" [") || returnType.Contains(" = "))return null;
+        }
+        return new OperationParts{Name=name,Parameters=rest.Substring(open+1,close-open-1),ReturnType=returnType};
+    }
     class Frame { public string Kind, Id, Keyword; }
     class Pending { public int Line; public string From, To, Arrow, FromMult, ToMult, Label; }
     ClassDocument doc; int order;
@@ -430,17 +458,17 @@ public sealed class ClassPumlParser
         var element=new ClassElement{Id="m"+doc.Elements.Count,Parent=owner.Id,Order=order++,Line=n};
         // The exporter writes operations as name(params)[ : ret]. Anything else with
         // parentheses (a type such as "uint8 (raw)", a name with brackets) is an attribute.
-        var operation=OperationLine.Match(rest);
-        if(operation.Success)
+        var operation=SplitOperation(rest);
+        if(operation!=null)
         {
             element.Kind="operation";
-            element.Text=operation.Groups["name"].Value.Trim();
+            element.Text=operation.Name;
             // The exporter prints argument names only (K019), so names are what is compared;
             // "name : Type <<Kind>>" keeps its types for writing in a separate, ignored attribute.
-            string rawParameters=operation.Groups["params"].Value.Trim();
+            string rawParameters=operation.Parameters.Trim();
             element.Attributes["parameters"]=string.Join(", ",ClassTextPreflight.ParameterNames(rawParameters));
             if(rawParameters!=element.Attributes["parameters"])element.Attributes["parameterTypes"]=rawParameters;
-            string returnType=operation.Groups["ret"].Success?operation.Groups["ret"].Value.Trim():"";
+            string returnType=operation.ReturnType;
             element.Attributes["visibility"]=visibility;element.Attributes["static"]=isStatic?"true":"";
             element.Attributes["abstract"]=isAbstract?"true":"";element.Attributes["returnType"]=returnType;
         }

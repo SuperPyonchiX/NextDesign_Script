@@ -1,4 +1,8 @@
-# クラス図同期実験 0.7.1
+# クラス図同期実験 0.7.2
+
+## 0.7.2: 括弧を含む戻り値
+
+NdMcp 0.2.0 の実機（`/class-sync/current` → 無編集で `/class-sync/preview`）で、`+ Connect(a, b) : decltype(Skeleton::Connect(a,b))` のように戻り値に括弧を含む操作 8 件が「引数の更新」として出た。操作行の正規表現が引数を最後の `)` まで貪欲に取っていたため。最初の `(` と対応する `)` までを引数とし、その後ろの `: 戻り値` に括弧があってもそのまま戻り値にする。`uint8 (raw)` のような括弧付きの型や `width (mm)` のような括弧付き属性名の扱いは変えない。
 
 `sync/ClassSync.cs` と `sync/ClassSyncRuntime.cs` は NdMcp 0.2.0 にも転記される（`python NdMcp/tools/build_main.py`）。ここを直したら NdMcp 側も再生成する。MCP からの使い方は [NdMcp/README.md](../NdMcp/README.md) を参照。
 

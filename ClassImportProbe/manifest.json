@@ -2,7 +2,7 @@
   "name": "ClassImportProbe",
   "displayName": "クラス図同期実験",
   "description": "PlantUMLを正本にして既存クラス図を差分更新する拡張。",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",

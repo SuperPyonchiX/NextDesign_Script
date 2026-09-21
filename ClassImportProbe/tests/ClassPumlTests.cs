@@ -32,6 +32,13 @@ public static class ClassPumlTests
         Check(start.Attr("parameters") == "mode" && start.Attr("parameterTypes") == "mode : int" && start.Attr("returnType") == "bool" && start.Attr("visibility") == "+", "operation fields");
         var stop = round.Elements.Single(e => e.Kind == "operation" && e.Text == "stop");
         Check(stop.Attr("parameters") == "" && stop.Attr("returnType") == "" && stop.Attr("visibility") == "#", "bare operation");
+        // A return type with its own parentheses (decltype) must not swallow the parameter list (K061).
+        var declType = new ClassPumlParser().Parse("@startuml\nclass \"A\" as A {\n  + Connect(transportInfo, appName) : decltype(Skeleton::Connect(transportInfo,appName))\n  + Raw(x) : uint8 (raw)\n  + width (mm) : int\n}\n@enduml\n");
+        var connect = declType.Elements.Single(e => e.Kind == "operation" && e.Text == "Connect");
+        Check(connect.Attr("parameters") == "transportInfo, appName" && connect.Attr("returnType") == "decltype(Skeleton::Connect(transportInfo,appName))" && connect.Attr("parameterTypes") == "", "decltype return type");
+        Check(ClassPumlWriter.Render(connect) == "+ Connect(transportInfo, appName) : decltype(Skeleton::Connect(transportInfo,appName))", "decltype round trip");
+        Check(declType.Elements.Single(e => e.Kind == "operation" && e.Text == "Raw").Attr("returnType") == "uint8 (raw)", "parenthesised return type");
+        Check(declType.Elements.Single(e => e.Text == "width (mm)").Kind == "attribute", "space before the parenthesis keeps an attribute");
         var controller = round.Elements.Single(e => e.Kind == "class" && e.Text == "制御部");
         Check(controller.Attr("alias") == "Controller" && controller.Attr("keyword") == "class" && round.Elements.Single(e => e.Id == controller.Parent).Kind == "package", "class placement");
         Check(round.Elements.Single(e => e.Kind == "class" && e.Text == "Base").Attr("keyword") == "abstract class", "abstract keyword");
