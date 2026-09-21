@@ -678,7 +678,24 @@ public static class ClassSyncRuntime
                 if(near.Count>0) { candidates=near;break; }
             }
         }
-        if(candidates.Count>1)throw new InvalidOperationException("C220: 型 '"+typeName+"' に一致するモデルが "+candidates.Count+" 件あり、一意に決まりません。");
+        if(candidates.Count>1)
+        {
+            // Several same-named definitions (a primitive like "int" defined per class, K053).
+            // Prefer one a sibling class in the same owner already references, then the one
+            // owned highest in the tree; only stop when even that is ambiguous.
+            var referenced=candidates.Where(m=>m.GetRelationsWhere((rel,f)=>rel.Target!=null && rel.Target.Id==m.Id && rel.IsReference).Cast<IRelationship>()
+                .Any(rel=>{var src=rel.Source;int g=0;while(src!=null && g++<32){if(src.Owner!=null && ownerClass.Owner!=null && src.Owner.Id==ownerClass.Owner.Id)return true;src=src.Owner;}return false;})).ToList();
+            if(referenced.Count>0)candidates=referenced;
+            if(candidates.Count>1)
+            {
+                Func<IModel,int> depth=m=>{int d=0;var o=m.Owner;while(o!=null && d<64){d++;o=o.Owner;}return d;};
+                int shallowest=candidates.Min(depth);
+                var top=candidates.Where(m=>depth(m)==shallowest).ToList();
+                if(top.Count==1)candidates=top;
+                else { log.AppendLine("type '"+typeName+"': "+candidates.Count+" candidates at the same depth; taking the first by owner name"); candidates=top.OrderBy(m=>m.Owner==null?"":m.Owner.Name,StringComparer.Ordinal).ThenBy(m=>m.Id,StringComparer.Ordinal).Take(1).ToList(); }
+            }
+            log.AppendLine("type '"+typeName+"' resolved among several: "+candidates[0].Id+" owner="+(candidates[0].Owner==null?"":candidates[0].Owner.ClassName+" '"+candidates[0].Owner.Name+"'"));
+        }
         if(candidates.Count==1)return new TypeTarget{Existing=candidates[0],Name=typeName};
         string key=ownerClass.Id+"|"+typeName;
         TypeTarget planned;
