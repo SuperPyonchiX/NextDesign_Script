@@ -675,12 +675,20 @@ public static class ClassSyncRuntime
         foreach(var c in d.Connectors.Cast<object>().ToList())
         {
             var shape=c as IConnector;if(shape==null || before.Contains(shape.Id))continue;
+            // SetVisible(true) reads back true but the saved editor keeps IsVisible=false and
+            // nothing is drawn (K032). Go through the diagram's own show operation instead,
+            // and record every flag the SDK exposes before and after for the next comparison.
             bool visible;try { visible=shape.IsVisible; } catch(Exception) { visible=true; }
-            if(visible)continue;
-            shape.SetVisible(true);
+            log.AppendLine("connector "+shape.Id+" before: IsVisible="+visible);
+            try { d.ShowShape(shape); } catch(Exception ex) { log.AppendLine("ShowShape failed: "+ex.Message); }
             bool after;try { after=shape.IsVisible; } catch(Exception) { after=false; }
-            if(!after) { try { d.ShowShape(shape); } catch(Exception ex) { log.AppendLine("ShowShape failed: "+ex.Message); } try { after=shape.IsVisible; } catch(Exception) { after=false; } }
-            log.AppendLine("connector "+shape.Id+" SetVisible(true): IsVisible="+after);
+            log.AppendLine("connector "+shape.Id+" ShowShape: IsVisible="+after);
+            if(!after)
+            {
+                shape.SetVisible(true);
+                try { after=shape.IsVisible; } catch(Exception) { after=false; }
+                log.AppendLine("connector "+shape.Id+" SetVisible(true): IsVisible="+after);
+            }
             if(!after)throw new InvalidOperationException("C230: 追加した関連のコネクタを表示にできません。");
             shown++;
         }

@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.3.3";
+    public const string Version = "0.3.4";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -727,12 +727,20 @@ public static class ClassSyncRuntime
         foreach(var c in d.Connectors.Cast<object>().ToList())
         {
             var shape=c as IConnector;if(shape==null || before.Contains(shape.Id))continue;
+            // SetVisible(true) reads back true but the saved editor keeps IsVisible=false and
+            // nothing is drawn (K032). Go through the diagram's own show operation instead,
+            // and record every flag the SDK exposes before and after for the next comparison.
             bool visible;try { visible=shape.IsVisible; } catch(Exception) { visible=true; }
-            if(visible)continue;
-            shape.SetVisible(true);
+            log.AppendLine("connector "+shape.Id+" before: IsVisible="+visible);
+            try { d.ShowShape(shape); } catch(Exception ex) { log.AppendLine("ShowShape failed: "+ex.Message); }
             bool after;try { after=shape.IsVisible; } catch(Exception) { after=false; }
-            if(!after) { try { d.ShowShape(shape); } catch(Exception ex) { log.AppendLine("ShowShape failed: "+ex.Message); } try { after=shape.IsVisible; } catch(Exception) { after=false; } }
-            log.AppendLine("connector "+shape.Id+" SetVisible(true): IsVisible="+after);
+            log.AppendLine("connector "+shape.Id+" ShowShape: IsVisible="+after);
+            if(!after)
+            {
+                shape.SetVisible(true);
+                try { after=shape.IsVisible; } catch(Exception) { after=false; }
+                log.AppendLine("connector "+shape.Id+" SetVisible(true): IsVisible="+after);
+            }
             if(!after)throw new InvalidOperationException("C230: 追加した関連のコネクタを表示にできません。");
             shown++;
         }

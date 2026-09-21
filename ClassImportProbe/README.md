@@ -1,4 +1,8 @@
-# クラス図同期実験 0.3.3
+# クラス図同期実験 0.3.4
+
+## 0.3.4: 表示の操作を ShowShape に切り替え
+
+0.3.3 の `SetVisible(true)` は SDK の読戻しでは真になったが、確定・保存後の Editor JSON では `IsVisible: false` のままで線は描かれなかった。手動で引いた線との差は `IsVisible` だけ（`DefinitionId`・Style・Labels は同じ）。新規コネクタには `IDiagram.ShowShape` を先に呼び、それでも偽なら `SetVisible(true)` を試す。どちらで真になったかを診断に残す。
 
 ## 0.3.3: 追加した関連の線を表示にする
 
