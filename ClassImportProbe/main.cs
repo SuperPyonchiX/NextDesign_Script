@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.5.2";
+    public const string Version = "0.5.3";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -701,7 +701,7 @@ public static class ClassSyncRuntime
     class TypeTarget
     {
         public IModel Existing, Owner; public IField Field; public IClass Class; public string Name;
-        public IModel Model;
+        public IModel Model; public bool Created;
         public IModel Materialize(StringBuilder log)
         {
             if(Model!=null)return Model;
@@ -711,7 +711,7 @@ public static class ClassSyncRuntime
             created.SetField("Name",Name);
             if(ClassText.Inline(ClassText.Normalize(created.Name))!=Name)throw new InvalidOperationException("C230: 作成した型の名前の読戻しが一致しません。");
             log.AppendLine("created type "+created.ClassName+" id="+created.Id+" name='"+Name+"' under "+Owner.ClassName+" '"+Owner.Name+"' field="+Field.Name);
-            Model=created;return Model;
+            Model=created;Created=true;return Model;
         }
     }
     static Dictionary<string,TypeTarget> typeTargets=new Dictionary<string,TypeTarget>(StringComparer.Ordinal);
@@ -850,6 +850,33 @@ public static class ClassSyncRuntime
         try { return cls.GetAllSuperClasses().Cast<IClass>().Any(c=>c.Name==className); } catch(Exception) { return false; }
     }
     static ClassElement ClassByAlias(ClassDocument doc,string alias) { return doc.Elements.FirstOrDefault(e=>e.Kind=="class" && e.Attr("alias")==alias); }
+    // A type definition created under a class is a child the exporter prints as a bare
+    // attribute line (K019/K048). The expected document gets that line so the read-back
+    // matches; it lands after the class's other members, like the export order.
+    static void AddCreatedTypeLines(ClassDocument doc,ClassDiagramSnapshot snapshot,StringBuilder log)
+    {
+        foreach(var target in typeTargets.Values.Where(x=>x.Created && x.Owner!=null))
+        {
+            var ownerElement=snapshot.ModelIds.Where(p=>p.Value==target.Owner.Id).Select(p=>p.Key).FirstOrDefault();
+            if(ownerElement==null) { log.AppendLine("created type owner is not on the diagram; no implied line: "+target.Name);continue; }
+            var owner=doc.Elements.FirstOrDefault(e=>e.Kind=="class" && e.Id!=null && snapshotOwnerMatches(e,ownerElement,doc,snapshot));
+            if(owner==null) { log.AppendLine("created type owner class not found in the expected input: "+target.Name);continue; }
+            if(doc.Elements.Any(e=>ClassDocument.MemberKinds.Contains(e.Kind) && e.Parent==owner.Id && e.Text==target.Name && e.Kind!="operation"))continue;
+            int order=doc.Elements.Where(e=>e.Parent==owner.Id).Select(e=>e.Order).DefaultIfEmpty(owner.Order).Max()+1;
+            foreach(var e in doc.Elements.Where(e=>e.Order>=order))e.Order++;
+            var line=new ClassElement{Id="impliedtype"+doc.Elements.Count,Kind="attribute",Parent=owner.Id,Text=ClassText.Inline(target.Name),Order=order};
+            foreach(var key in new[]{"visibility","static","type","multiplicity","default"})line.Attributes[key]="";
+            doc.Elements.Add(line);
+            log.AppendLine("implied type line added to the expected input: "+owner.Text+" :: "+target.Name);
+        }
+    }
+    // The expected document is the parsed input, whose class ids are "c:<alias>"; the
+    // snapshot uses the same alias scheme, so the owner is found by alias.
+    static bool snapshotOwnerMatches(ClassElement candidate,string snapshotElementId,ClassDocument doc,ClassDiagramSnapshot snapshot)
+    {
+        var snap=snapshot.Document.Elements.FirstOrDefault(e=>e.Id==snapshotElementId);
+        return snap!=null && candidate.Attr("alias")==snap.Attr("alias");
+    }
     static bool RemovePartnerLine(ClassDocument doc,string fromAlias,string toAlias,string field)
     {
         var from=ClassByAlias(doc,fromAlias);var to=ClassByAlias(doc,toAlias);
@@ -1298,6 +1325,7 @@ public static class ClassSyncRuntime
                 if(unit!=null)ReapplyEditorWithVisibleConnectors(app,project,unit,connectorIdsBefore,log);
             }
             stage="更新後の照合";
+            if(typeTargets.Values.Any(x=>x.Created)) { AddCreatedTypeLines(effective,snapshot,log);appendedMembers=true; }
             VerifyAgainst(app,editorId,effective,"更新後",log,appendedMembers);
         };
         Action rollback=delegate {stage="取消";transaction.Rollback();};
