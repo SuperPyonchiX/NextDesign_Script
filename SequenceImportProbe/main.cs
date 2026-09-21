@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.62";
+    public const string Title = "シーケンス生成実験 / 0.8.63";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -3837,8 +3837,12 @@ public sealed class SequenceStructurePreparation
         {
             Require(byId.ContainsKey(pair[0]) && V(byId[pair[0]],"EntityType")==pair[2],"削除対象が退避データ内の"+pair[2]+"ではありません。");
             foreach(var relation in relations.Where(r=>V(r,"SourceId")==pair[0] || V(r,"TargetId")==pair[0]))
+                // A frame points at the lanes it spans. Removing the frame drops that
+                // reference and leaves the lane itself untouched.
                 Require(inside(relation,pair[0])
-                    || (V(relation,"TargetId")==pair[0] && V(relation,"MetamodelId")==SequencePayload.Prefix+pair[1]),
+                    || (V(relation,"TargetId")==pair[0] && V(relation,"MetamodelId")==SequencePayload.Prefix+pair[1])
+                    || (V(relation,"SourceId")==pair[0]
+                        && V(relation,"MetamodelId")==SequencePayload.Prefix+"CrossingFragmentCoveredLifeline"),
                     "削除する"+pair[2]+"に未対応の関連が残っています。"+describe(relation,pair[0]));
             Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==pair[0])==1,"削除する"+pair[2]+"の図形を一意に取得できません。");
         }
