@@ -1520,6 +1520,9 @@ public sealed class ClassSyncOptions
         { "Whole", "--*" }, { "Parts", "*--" },
         { "Related", "-->" }, { "RelateFrom", "<--" },
         { "Children", "o--" },
+        // Dependency fields observed on 2026-09-21 (K037). The deployed exporter has no entry
+        // for them and prints "-->"; arrows are not compared, so this only shapes _current.puml.
+        { "Supplier", "..>" }, { "Client", "<.." },
     };
     public Dictionary<string,string> VisibilityMap = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase)
     {
