@@ -668,6 +668,24 @@ public static class ClassSyncRuntime
         e.Links["from"]=new[]{from.Id};e.Links["to"]=new[]{to.Id};
         doc.Elements.Add(e);return true;
     }
+    static void ShowNewConnectors(IApplication app,HashSet<string> before,StringBuilder log)
+    {
+        var d=app.Workspace.CurrentEditor as IDiagram;if(d==null)return;
+        int shown=0;
+        foreach(var c in d.Connectors.Cast<object>().ToList())
+        {
+            var shape=c as IConnector;if(shape==null || before.Contains(shape.Id))continue;
+            bool visible;try { visible=shape.IsVisible; } catch(Exception) { visible=true; }
+            if(visible)continue;
+            shape.SetVisible(true);
+            bool after;try { after=shape.IsVisible; } catch(Exception) { after=false; }
+            if(!after) { try { d.ShowShape(shape); } catch(Exception ex) { log.AppendLine("ShowShape failed: "+ex.Message); } try { after=shape.IsVisible; } catch(Exception) { after=false; } }
+            log.AppendLine("connector "+shape.Id+" SetVisible(true): IsVisible="+after);
+            if(!after)throw new InvalidOperationException("C230: 追加した関連のコネクタを表示にできません。");
+            shown++;
+        }
+        if(shown>0)log.AppendLine("connectors shown: "+shown);
+    }
     static int CountConnectors(IApplication app)
     {
         try { var d=app.Workspace.CurrentEditor as IDiagram;return d==null?-1:d.Connectors.Cast<object>().Count(); } catch(Exception) { return -1; }
@@ -873,7 +891,16 @@ public static class ClassSyncRuntime
                 }
                 catch(Exception ex) { log.AppendLine("GetRelationsOf after write failed: "+ex.Message); }
             }
-            if(links.Count>0) { log.AppendLine("connectors on the diagram: "+connectorsBefore+" -> "+CountConnectors(app));DescribeNewConnectors(app,connectorIdsBefore,log); }
+            if(links.Count>0)
+            {
+                log.AppendLine("connectors on the diagram: "+connectorsBefore+" -> "+CountConnectors(app));
+                DescribeNewConnectors(app,connectorIdsBefore,log);
+                // The product creates the connector for a new relationship with IsVisible=false
+                // (K029); the model is right and only the flag hides the line. Show it and
+                // verify the flag reads back true.
+                stage="コネクタの表示";
+                ShowNewConnectors(app,connectorIdsBefore,log);
+            }
             stage="更新後の照合";
             VerifyAgainst(app,editorId,effective,"更新後",log);
         };
@@ -907,7 +934,7 @@ public static class ClassSyncRuntime
         foreach(var error in new[]{trial.ApplyError,trial.RollbackError,trial.VerifyError})if(error!=null)log.AppendLine(error.ToString());
         Refresh(app,log);
         lines.Add("一時適用と照合: "+(trial.Applied?"一致":"失敗 ("+stage+")"));
-        if(links.Count>0)lines.Add("関連 追加 "+preflight.LinkAddCount+" / 削除 "+preflight.LinkDeleteCount+"（コネクタ数の変化は診断ファイル）");
+        if(links.Count>0)lines.Add("関連 追加 "+preflight.LinkAddCount+" / 削除 "+preflight.LinkDeleteCount+"（コネクタの中身は診断ファイル）");
         lines.Add("取消API: "+(trial.RollbackReturned?"正常終了":"失敗"));
         lines.Add("復元照合: "+(trial.Restored?"一致":"未確認または不一致。保存せずにコピーを開き直してください"));
         return "本文更新の試行 (UPDATE-C000)\n"+string.Join("\n",lines.ToArray());
