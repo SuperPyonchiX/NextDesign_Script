@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.71";
+    public const string Title = "シーケンス生成実験 / 0.8.72";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -1324,7 +1324,9 @@ public static class SequenceStructureTrial
             .Concat(prepared.AddedParticipants.Select(a=>a.ShapeId))
             .Concat(prepared.AddedMessages.Select(a=>a.ShapeId))
             .Concat(prepared.AddedFragments.Select(a=>a.ShapeId))
-            .Concat(prepared.AddedOperands.Select(a=>a.ShapeId)).ToArray();
+            .Concat(prepared.AddedOperands.Select(a=>a.ShapeId))
+            // Written this run too, so the same rounding applies to them.
+            .Concat(prepared.StretchedLifelines.Select(a=>a.ShapeId)).ToArray();
         var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
             .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).ToArray();
         var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
@@ -1369,6 +1371,9 @@ public static class SequenceStructureTrial
             foreach(var branch in prepared.AddedOperands)
                 log.AppendLine("add operand payload: model="+branch.ModelId+" shape="+branch.ShapeId
                     +" position="+branch.Position+" owner="+branch.OwnerId);
+            foreach(var lane in prepared.StretchedLifelines)
+                log.AppendLine("stretch lifeline payload: model="+lane.ModelId+" shape="+lane.ShapeId
+                    +" timeline="+lane.Length);
             Import(project,prepared.ReconnectJson,log);
             Verify(expectedReconnect,Rounded(project,rootId,fresh,newShapes),"接続変更後",log);
             log.AppendLine("receiver reconnection count: "+prepared.ReconnectCount
@@ -1442,7 +1447,8 @@ public static class SequenceStructureTrial
             +" / メッセージ削除 "+prepared.DeleteMessageIds.Length+"件"
             +" / メッセージ追加 "+prepared.AddedMessages.Length+"件"
             +" / フラグメント関連の削除 "+prepared.DeleteFrameIds.Length+"件"
-            +" / フラグメント追加 "+prepared.AddedFragments.Length+"件 / オペランド追加 "+prepared.AddedOperands.Length+"件";
+            +" / フラグメント追加 "+prepared.AddedFragments.Length+"件 / オペランド追加 "+prepared.AddedOperands.Length+"件"
+            +" / タイムラインを伸ばした参加者 "+prepared.StretchedLifelines.Length+"件";
         log.AppendLine(summary);
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
         catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}
@@ -3918,6 +3924,13 @@ public sealed class SequenceAddedOperand
         RelationFields=new string[0];
 }
 
+// A lifeline whose timeline was stretched so it still reaches the bottom of the
+// diagram. Only its length changes; everything else about the lane is left alone.
+public sealed class SequenceStretchedLifeline
+{
+    public string ModelId, ShapeId, Length;
+}
+
 // Prepared files are diagnostic artifacts; they are never imported by this command.
 public sealed class SequenceStructurePreparation
 {
@@ -3930,6 +3943,7 @@ public sealed class SequenceStructurePreparation
     public SequenceAddedMessage[] AddedMessages=new SequenceAddedMessage[0];
     public SequenceAddedFragment[] AddedFragments=new SequenceAddedFragment[0];
     public SequenceAddedOperand[] AddedOperands=new SequenceAddedOperand[0];
+    public SequenceStretchedLifeline[] StretchedLifelines=new SequenceStretchedLifeline[0];
     public string[] DeleteParticipantIds=new string[0];
     public string[] DeleteMessageIds=new string[0];
     public string[] DeleteFrameIds=new string[0];
@@ -4332,6 +4346,20 @@ public sealed class SequenceStructurePreparation
             Require(wireArray!=null && wireArray.Items!=null,"エディタにメッセージの図形配列がありません。");
             wireArray.Items.AddRange(newMessageShapes);
         }
+        var stretched=new List<SequenceStretchedLifeline>();
+        if(layout.ContainsKey("") && layout[""]["Growth"]>0)
+        {
+            double growth=layout[""]["Growth"];
+            var timelines=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
+            foreach(var shape in editor.Shapes().Where(sh=>timelines.Contains(V(sh,"ModelId"))))
+            {
+                Require(shape["LaneLength"]!=null,"参加者の図形にタイムラインの長さがありません。");
+                string length=Number(Read(shape,"LaneLength")+growth);
+                foreach(var node in patch["Editors"].Items.Single()["Lifelines"].Items.Where(n=>V(n,"Id")==V(shape,"Id")))
+                    node.Properties["LaneLength"]=SequenceJson.Parse(length);
+                stretched.Add(new SequenceStretchedLifeline{ModelId=V(shape,"ModelId"),ShapeId=V(shape,"Id"),Length=length});
+            }
+        }
         foreach(var pair in new[]{new object[]{"Fragments",newFrameShapes},new object[]{"Operands",newOperandShapes}})
         {
             var frameShapeList=(List<SequenceJson>)pair[1];
@@ -4352,6 +4380,7 @@ public sealed class SequenceStructurePreparation
             DeleteIds=gate.DeleteExecutions.ToArray(),
             AddedExecutions=additions.ToArray(),AddedParticipants=lanes.ToArray(),AddedMessages=wires.ToArray(),
             AddedFragments=frames.ToArray(),AddedOperands=branches.ToArray(),
+            StretchedLifelines=stretched.ToArray(),
             DeleteParticipantIds=gate.DeleteParticipants.ToArray(),DeleteMessageIds=gate.DeleteMessages.ToArray(),
             DeleteFrameIds=gate.DeleteFragments.Concat(gate.DeleteOperands).ToArray(),
             ReceiveRelationIds=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage").Select(r=>V(r,"Id")).ToArray()};
@@ -4436,6 +4465,10 @@ public sealed class SequenceStructurePreparation
             layout[frameId]=frame;
             at=y+16;
         }
+        // How much taller the diagram got. The lifelines have to follow, or their timeline
+        // stops above the frame. The empty key cannot collide with an element id.
+        var span=new Dictionary<string,double>();span["Growth"]=Math.Max(0,at-floor);
+        layout[""]=span;
         // Bars inside the block span the messages they touch.
         foreach(string barId in gate.AddExecutions)
         {
@@ -4756,6 +4789,16 @@ public sealed class SequenceTrialState
             string[] pattern;
             if(!result.Ports.TryGetValue(wire.TemplateModelId,out pattern))throw new InvalidOperationException("S230: メッセージの見本の送受信がありません。");
             result.Ports[wire.ModelId]=new[]{wire.SendPort,wire.ReceivePort,wire.Sender,wire.Receiver,pattern[4]};
+        }
+        // Only the timeline length changes on a stretched lane; the rectangle stays.
+        foreach(var lane in prepared.StretchedLifelines)
+        {
+            string measured;
+            if(!result.Shapes.TryGetValue(lane.ShapeId,out measured))
+                throw new InvalidOperationException("S230: 伸ばす参加者の図形がありません。");
+            int close=measured.LastIndexOf(']');
+            if(close<0)throw new InvalidOperationException("S230: 参加者の図形の形が想定と違います。");
+            result.Shapes[lane.ShapeId]=measured.Substring(0,close+1)+lane.Length;
         }
         // A frame carries its text after the rectangle, and an operand its guard and
         // position, matching how the SDK side reads both back.

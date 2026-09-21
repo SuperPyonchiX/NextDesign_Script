@@ -400,7 +400,9 @@ public static class SequenceStructureTrial
             .Concat(prepared.AddedParticipants.Select(a=>a.ShapeId))
             .Concat(prepared.AddedMessages.Select(a=>a.ShapeId))
             .Concat(prepared.AddedFragments.Select(a=>a.ShapeId))
-            .Concat(prepared.AddedOperands.Select(a=>a.ShapeId)).ToArray();
+            .Concat(prepared.AddedOperands.Select(a=>a.ShapeId))
+            // Written this run too, so the same rounding applies to them.
+            .Concat(prepared.StretchedLifelines.Select(a=>a.ShapeId)).ToArray();
         var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
             .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).ToArray();
         var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
@@ -445,6 +447,9 @@ public static class SequenceStructureTrial
             foreach(var branch in prepared.AddedOperands)
                 log.AppendLine("add operand payload: model="+branch.ModelId+" shape="+branch.ShapeId
                     +" position="+branch.Position+" owner="+branch.OwnerId);
+            foreach(var lane in prepared.StretchedLifelines)
+                log.AppendLine("stretch lifeline payload: model="+lane.ModelId+" shape="+lane.ShapeId
+                    +" timeline="+lane.Length);
             Import(project,prepared.ReconnectJson,log);
             Verify(expectedReconnect,Rounded(project,rootId,fresh,newShapes),"接続変更後",log);
             log.AppendLine("receiver reconnection count: "+prepared.ReconnectCount
@@ -518,7 +523,8 @@ public static class SequenceStructureTrial
             +" / メッセージ削除 "+prepared.DeleteMessageIds.Length+"件"
             +" / メッセージ追加 "+prepared.AddedMessages.Length+"件"
             +" / フラグメント関連の削除 "+prepared.DeleteFrameIds.Length+"件"
-            +" / フラグメント追加 "+prepared.AddedFragments.Length+"件 / オペランド追加 "+prepared.AddedOperands.Length+"件";
+            +" / フラグメント追加 "+prepared.AddedFragments.Length+"件 / オペランド追加 "+prepared.AddedOperands.Length+"件"
+            +" / タイムラインを伸ばした参加者 "+prepared.StretchedLifelines.Length+"件";
         log.AppendLine(summary);
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
         catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}
