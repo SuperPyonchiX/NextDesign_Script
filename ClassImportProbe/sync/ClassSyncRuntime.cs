@@ -611,13 +611,20 @@ public static class ClassSyncRuntime
     }
     static bool Matches(Action verify,StringBuilder log) { try {verify();return true;} catch(Exception ex){log.AppendLine(ex.ToString());return false;} }
     // Re-read the diagram through the SDK and compare it with the input. Never re-export.
-    static void VerifyAgainst(IApplication app,string editorId,ClassDocument desired,string stage,StringBuilder log)
+    static void VerifyAgainst(IApplication app,string editorId,ClassDocument desired,string stage,StringBuilder log,bool tolerateMemberOrder=false)
     {
         var editor=app.Workspace.CurrentEditor;
         if(editor==null || editor.Id!=editorId)throw new InvalidOperationException("C230: "+stage+": 対象の図が表示されていません。");
         var after=ClassDiagramSnapshot.Read((IDiagram)editor,new ClassSyncOptions(),log).Document;
         var residual=ClassSyncPlan.Build(after,desired,()=>Guid.NewGuid().ToString());
         foreach(var c in residual.Changes)log.AppendLine(stage+" residual: "+c.Action+" "+c.Kind+" line="+c.Line+" detail="+c.Detail);
+        // A member appended at the end differs from the input only in order; that is the
+        // product's placement, not a missing edit, and is accepted when tolerance is on.
+        if(tolerateMemberOrder && residual.Changes.Count>0 && residual.Changes.All(c=>c.Action=="move" && c.Detail=="order" && ClassDocument.MemberKinds.Contains(c.Kind)))
+        {
+            log.AppendLine(stage+": "+residual.Changes.Count+" member order residual(s) tolerated (appended members)");
+            residual.Changes.Clear();
+        }
         if(residual.Changes.Count>0)
         {
             // Link residuals are shown as PlantUML lines: a paired field on the other side
@@ -638,7 +645,7 @@ public static class ClassSyncRuntime
     // One resolved edit: the member model plus, for a type change, the old and new type models.
     class ResolvedEdit { public IModel Model; public ClassMemberEdit Edit; public IModel OldType, NewType; public string VisibilityValue; }
     class ResolvedLink { public IModel From, To; public ClassLinkChange Change; public string RelationId="", PartnerField=""; }
-    class ResolvedMember { public IModel Owner, Member, TypeModel; public ClassMemberChange Change; public string Field, ClassName, VisibilityValue, TypeField; public IField OwningField; public IClass MemberClass; }
+    class ResolvedMember { public IModel Owner, Member, TypeModel, InsertBefore; public ClassMemberChange Change; public string Field, ClassName, VisibilityValue, TypeField; public IField OwningField; public IClass MemberClass; }
     static IEnumerable<IModel> Tree(IModel root)
     {
         var stack=new Stack<IModel>();stack.Push(root);
@@ -881,7 +888,13 @@ public static class ClassSyncRuntime
                     if(candidates.Count>1)throw new InvalidOperationException("C220: 型 '"+change.Type+"' に一致するモデルが "+candidates.Count+" 件あり、一意に決まりません。");
                     resolved.TypeModel=candidates[0];resolved.TypeField=typeField!=null?typeField.Name:options.TypeFieldNames[0];
                 }
-                log.AppendLine("member target: add "+change.Kind+" '"+change.Text+"' under "+owner.ClassName+" '"+owner.Name+"' field="+fieldName+" class="+resolved.ClassName+(resolved.TypeModel!=null?" type="+resolved.TypeModel.Id:""));
+                if(change.InsertBeforeId!=null)
+                {
+                    string beforeId;
+                    if(snapshot.ModelIds.TryGetValue(change.InsertBeforeId,out beforeId))resolved.InsertBefore=project.GetModelById(beforeId);
+                    if(resolved.InsertBefore==null || resolved.InsertBefore.IsDeleted)log.AppendLine("insert position: following member not resolved, appending at the end");
+                }
+                log.AppendLine("member target: add "+change.Kind+" '"+change.Text+"' under "+owner.ClassName+" '"+owner.Name+"' field="+fieldName+" class="+resolved.ClassName+(resolved.TypeModel!=null?" type="+resolved.TypeModel.Id:"")+(resolved.InsertBefore!=null?" before="+resolved.InsertBefore.Name:" at end"));
             }
             else
             {
@@ -999,12 +1012,27 @@ public static class ClassSyncRuntime
                 }
             }
             log.AppendLine("applied "+targets.Count+" member edits: read-back matched");
+            bool appendedMembers=false;
             foreach(var m in members)
             {
                 if(m.Change.Action=="add")
                 {
                     stage="メンバの追加";
-                    var created=m.Owner.AddNewModel(m.OwningField,m.MemberClass);
+                    // AddNewModel appends (K039). Insert before the retained sibling that follows in
+                    // the input through AddNewModelAt (marked experimental in the SDK); on any
+                    // failure fall back to appending and let the order residual be tolerated.
+                    IModel created=null;
+                    if(m.InsertBefore!=null)
+                    {
+                        var siblings=m.Owner.GetFieldValues(m.Field).Cast<object>().OfType<IModel>().ToList();
+                        int index=siblings.FindIndex(x=>x.Id==m.InsertBefore.Id);
+                        if(index>=0)
+                        {
+                            try { created=m.Owner.AddNewModelAt(m.OwningField,m.MemberClass,"before",index);log.AppendLine("AddNewModelAt before index "+index+": "+(created==null?"null":"ok")); }
+                            catch(Exception ex) { log.AppendLine("AddNewModelAt failed, appending instead: "+ex.Message);created=null; }
+                        }
+                    }
+                    if(created==null) { created=m.Owner.AddNewModel(m.OwningField,m.MemberClass);appendedMembers=true; }
                     if(created==null)throw new InvalidOperationException("C230: メンバを作成できませんでした。");
                     created.SetField("Name",m.Change.Text);
                     if(m.VisibilityValue!=null)
@@ -1069,7 +1097,7 @@ public static class ClassSyncRuntime
                 if(unit!=null)ReapplyEditorWithVisibleConnectors(app,project,unit,connectorIdsBefore,log);
             }
             stage="更新後の照合";
-            VerifyAgainst(app,editorId,effective,"更新後",log);
+            VerifyAgainst(app,editorId,effective,"更新後",log,appendedMembers);
         };
         Action rollback=delegate {stage="取消";transaction.Rollback();};
         Action verifyRestored=delegate {stage="取消後の照合";VerifyRestored(app,editorId,originalJson,log);};

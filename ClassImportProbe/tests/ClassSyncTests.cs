@@ -164,6 +164,10 @@ public static class ClassSyncTests
         var addAttr = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    + {static} count : int\n", "    + {static} count : int\n    - extra : long\n"));
         var addAttrGate = ClassTextPreflight.Check(baseline, addAttr, Plan(baseline, addAttr));
         Check(addAttrGate.Candidate && addAttrGate.Members.Count == 1 && addAttrGate.Members[0].Action == "add" && addAttrGate.Members[0].Kind == "attribute" && addAttrGate.Members[0].Text == "extra" && addAttrGate.Members[0].Type == "long" && addAttrGate.Members[0].Visibility == "-" && addAttrGate.Members[0].OwnerAlias == "Controller" && addAttrGate.Members[0].Line == 9, "attribute add preflight: " + addAttrGate.Summary());
+        Check(addAttrGate.Members[0].InsertBeforeId == null, "attribute appended after the last attribute has no insert position: " + addAttrGate.Members[0].InsertBeforeId);
+        var addFirst = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    - state : int [0..1] = 0\n", "    - first : long\n    - state : int [0..1] = 0\n"));
+        var addFirstGate = ClassTextPreflight.Check(baseline, addFirst, Plan(baseline, addFirst));
+        Check(addFirstGate.Candidate && addFirstGate.Members.Count == 1 && addFirstGate.Members[0].InsertBeforeId != null && baseline.Elements.Single(e => e.Id == addFirstGate.Members[0].InsertBeforeId).Text == "state", "attribute inserted before state: " + addFirstGate.Summary());
         var delAttrGate = ClassTextPreflight.Check(addAttr, baseline, Plan(addAttr, baseline));
         Check(delAttrGate.Candidate && delAttrGate.Members.Count == 1 && delAttrGate.Members[0].Action == "delete" && delAttrGate.Members[0].Text == "extra" && addAttr.Elements.Any(e => e.Id == delAttrGate.Members[0].CurrentId), "attribute delete preflight: " + delAttrGate.Summary());
         var addOp = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    # stop()\n", "    # stop()\n    + reset()\n"));

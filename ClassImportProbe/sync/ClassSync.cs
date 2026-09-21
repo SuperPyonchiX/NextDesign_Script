@@ -842,6 +842,8 @@ public sealed class ClassLinkChange { public string Action, FromId, ToId, Field,
 public sealed class ClassMemberChange
 {
     public string Action, Kind, OwnerId, OwnerAlias, CurrentId, Text, Visibility, Type, Parameters;
+    // For adds: the current id of the first retained sibling of the same kind that follows in the input, or null for the end.
+    public string InsertBeforeId;
     public bool IsStatic;
     public int Line;
 }
@@ -905,7 +907,9 @@ public sealed class ClassTextPreflight
                     if(c.Kind=="operation" && member.Attr("returnType").Length>0) { result.Reasons.Add("add operation"+where+": 戻り値付きの操作の追加は扱えません"); continue; }
                     if(c.Kind=="attribute" && (member.Attr("multiplicity").Length>0 || member.Attr("default").Length>0)) { result.Reasons.Add("add attribute"+where+": 多重度・既定値付きの属性の追加は扱えません"); continue; }
                     if(member.Attr("type").Contains(", ")) { result.Reasons.Add("add attribute"+where+": 複数の型を持つ属性は扱えません"); continue; }
-                    result.Members.Add(new ClassMemberChange{Action="add",Kind=c.Kind,OwnerId=owner.Id,OwnerAlias=owner.Attr("alias"),Text=member.Text,Visibility=member.Attr("visibility"),Type=member.Attr("type"),Parameters=member.Attr("parameters"),IsStatic=member.Attr("static")=="true",Line=c.Line});
+                    string memberKind=c.Kind;
+                    var following=plan.Expected.Elements.Where(e=>e.Parent==member.Parent && e.Kind==memberKind && e.Order>member.Order && old.ContainsKey(e.Id)).OrderBy(e=>e.Order).FirstOrDefault();
+                    result.Members.Add(new ClassMemberChange{Action="add",Kind=c.Kind,OwnerId=owner.Id,OwnerAlias=owner.Attr("alias"),Text=member.Text,Visibility=member.Attr("visibility"),Type=member.Attr("type"),Parameters=member.Attr("parameters"),IsStatic=member.Attr("static")=="true",Line=c.Line,InsertBeforeId=following==null?null:following.Id});
                     continue;
                 }
                 if(c.Action=="delete" && old.TryGetValue(c.Id,out member))
