@@ -6,12 +6,16 @@ is written. A bar that encloses no message runs into this as soon as the next ba
 on the same participant opens. The exporter never writes such a pair; only
 hand-written samples did, and PlantUML would not render them.
 
-Run from the repository root. Not wired into run_tests.py yet: one sample still
-fails while the rule is being confirmed on a real PlantUML renderer.
+Confirmed on PlantUML 1.2024.3: reopening a bar this way errors with
+"Activate/Deactivate already done", and writing a message in between fixes it.
+An activate before any message is fine.
+
+Run from the repository root; run_tests.py calls check() as part of the suite.
 """
-import pathlib, re, sys
+import pathlib, re
 
 MESSAGE = re.compile(r'^\s*[^\s:]+\s*(->>?|-->>?|<<?-|<<--)\s*[^\s:]+')
+
 
 def offences(path):
     found = []
@@ -27,18 +31,21 @@ def offences(path):
             continue
         if len(parts) == 2 and parts[0] == 'activate':
             if parts[1] in closed:
-                found.append((number, raw.strip()))
+                found.append((number, line))
             continue
     return found
 
-root = pathlib.Path('SequenceImportProbe/samples')
-bad = 0
-for path in sorted(root.glob('*.puml')):
-    rows = offences(path)
-    if rows:
-        bad += 1
-        print(path.name)
-        for number, text in rows:
-            print('  L%d %s' % (number, text))
-print('samples PlantUML would refuse: %d' % bad)
-sys.exit(0)
+
+def check(root):
+    samples = sorted(pathlib.Path(root).glob('*.puml'))
+    bad = []
+    for path in samples:
+        for number, text in offences(path):
+            bad.append('%s L%d %s' % (path.name, number, text))
+    if bad:
+        raise SystemExit('PlantUML would refuse these samples:\n  ' + '\n  '.join(bad))
+    return len(samples)
+
+
+if __name__ == '__main__':
+    print('samples PlantUML accepts: %d' % check('SequenceImportProbe/samples'))

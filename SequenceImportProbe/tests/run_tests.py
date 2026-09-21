@@ -15,6 +15,9 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--sdk-root', type=Path)
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
+
+import lint_samples
+print('PASS: samples PlantUML accepts: %d' % lint_samples.check(root / 'samples'))
 subprocess.run([os.sys.executable, str(root/'sync/bundle.py'), '--check'], check=True)
 source = (root / 'main.cs').read_text(encoding='utf-8-sig')
 test_workspace = root.parent / 'work'
