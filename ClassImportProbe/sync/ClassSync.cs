@@ -835,12 +835,23 @@ public sealed class ClassMemberEdit
 // the field name on the source class, and the input line (adds only).
 public sealed class ClassLinkChange { public string Action, FromId, ToId, Field, FromAlias, ToAlias; public int Line; }
 
+// One attribute or operation to create under a class, or one existing member to delete.
+public sealed class ClassMemberChange
+{
+    public string Action, Kind, OwnerId, OwnerAlias, CurrentId, Text, Visibility, Type, Parameters;
+    public bool IsStatic;
+    public int Line;
+}
+
 public sealed class ClassTextPreflight
 {
     public List<ClassMemberEdit> Edits = new List<ClassMemberEdit>();
     public List<ClassLinkChange> Links = new List<ClassLinkChange>();
+    public List<ClassMemberChange> Members = new List<ClassMemberChange>();
     public List<string> Reasons = new List<string>();
-    public bool Candidate { get { return Reasons.Count==0 && (Edits.Count>0 || Links.Count>0); } }
+    public bool Candidate { get { return Reasons.Count==0 && (Edits.Count>0 || Links.Count>0 || Members.Count>0); } }
+    public int MemberAddCount { get { return Members.Count(m=>m.Action=="add"); } }
+    public int MemberDeleteCount { get { return Members.Count(m=>m.Action=="delete"); } }
     public int LinkAddCount { get { return Links.Count(l=>l.Action=="add"); } }
     public int LinkDeleteCount { get { return Links.Count(l=>l.Action=="delete"); } }
     public int NameCount { get { return Edits.Count(e=>e.NameChanged); } }
@@ -879,6 +890,29 @@ public sealed class ClassTextPreflight
                 }
                 result.Reasons.Add(c.Action+" link"+where+" ["+c.Detail+"]: 関連の"+(c.Action=="update"?"多重度・ロール名の変更":"この変更")+"は扱えません"); continue;
             }
+            if((c.Action=="add" || c.Action=="delete") && (c.Kind=="attribute" || c.Kind=="operation"))
+            {
+                ClassElement member;
+                if(c.Action=="add" && target.TryGetValue(c.Id,out member))
+                {
+                    ClassElement owner;
+                    if(!old.TryGetValue(member.Parent??"",out owner)) { result.Reasons.Add("add "+c.Kind+where+": 所有先のクラスが既存ではありません"); continue; }
+                    if(member.Text.Length==0 || member.Text.Contains("\\n")) { result.Reasons.Add("add "+c.Kind+where+": 空または改行を含む名前は扱えません"); continue; }
+                    if(c.Kind=="operation" && member.Attr("parameters").Length>0) { result.Reasons.Add("add operation"+where+": 引数付きの操作の追加は扱えません（引数は別モデル）"); continue; }
+                    if(c.Kind=="operation" && member.Attr("returnType").Length>0) { result.Reasons.Add("add operation"+where+": 戻り値付きの操作の追加は扱えません"); continue; }
+                    if(c.Kind=="attribute" && (member.Attr("multiplicity").Length>0 || member.Attr("default").Length>0)) { result.Reasons.Add("add attribute"+where+": 多重度・既定値付きの属性の追加は扱えません"); continue; }
+                    if(member.Attr("type").Contains(", ")) { result.Reasons.Add("add attribute"+where+": 複数の型を持つ属性は扱えません"); continue; }
+                    result.Members.Add(new ClassMemberChange{Action="add",Kind=c.Kind,OwnerId=owner.Id,OwnerAlias=owner.Attr("alias"),Text=member.Text,Visibility=member.Attr("visibility"),Type=member.Attr("type"),Parameters=member.Attr("parameters"),IsStatic=member.Attr("static")=="true",Line=c.Line});
+                    continue;
+                }
+                if(c.Action=="delete" && old.TryGetValue(c.Id,out member))
+                {
+                    var owner=old[member.Parent];
+                    result.Members.Add(new ClassMemberChange{Action="delete",Kind=c.Kind,OwnerId=owner.Id,OwnerAlias=owner.Attr("alias"),CurrentId=member.Id,Text=member.Text});
+                    continue;
+                }
+                result.Reasons.Add(c.Action+" "+c.Kind+where+": 対応する要素を特定できません"); continue;
+            }
             if(c.Action!="update") { result.Reasons.Add(c.Action+" "+c.Kind+where+": 本文更新では扱えません"); continue; }
             if(c.Kind!="attribute" && c.Kind!="operation") { result.Reasons.Add("update "+c.Kind+where+": 属性・操作以外の更新は扱えません"); continue; }
             ClassElement before,after;
@@ -905,7 +939,7 @@ public sealed class ClassTextPreflight
     {
         var sb=new StringBuilder();
         sb.Append("本文更新の事前判定: ").Append(Candidate?"候補あり":"停止").Append('\n');
-        sb.Append("メンバ ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append("） / 関連 追加 ").Append(LinkAddCount).Append(" 削除 ").Append(LinkDeleteCount).Append(" / 停止理由 ").Append(Reasons.Count).Append("件\n");
+        sb.Append("メンバ ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append("） / メンバ追加 ").Append(MemberAddCount).Append(" 削除 ").Append(MemberDeleteCount).Append(" / 関連 追加 ").Append(LinkAddCount).Append(" 削除 ").Append(LinkDeleteCount).Append(" / 停止理由 ").Append(Reasons.Count).Append("件\n");
         foreach(var r in Reasons)sb.Append("  ").Append(r).Append('\n');
         return sb.ToString().TrimEnd();
     }

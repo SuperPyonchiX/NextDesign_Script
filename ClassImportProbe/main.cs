@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.3.6";
+    public const string Version = "0.4.0";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -690,6 +690,7 @@ public static class ClassSyncRuntime
     // One resolved edit: the member model plus, for a type change, the old and new type models.
     class ResolvedEdit { public IModel Model; public ClassMemberEdit Edit; public IModel OldType, NewType; public string VisibilityValue; }
     class ResolvedLink { public IModel From, To; public ClassLinkChange Change; public string RelationId="", PartnerField=""; }
+    class ResolvedMember { public IModel Owner, Member, TypeModel; public ClassMemberChange Change; public string Field, ClassName, VisibilityValue, TypeField; }
     static IEnumerable<IModel> Tree(IModel root)
     {
         var stack=new Stack<IModel>();stack.Push(root);
@@ -892,6 +893,59 @@ public static class ClassSyncRuntime
         // Links: resolve both end models and the reference field on the source class. A delete
         // also looks up the relationship to learn the paired field on the other side, so the
         // input can be checked for the partner line before anything is written.
+        // Members: the owner class and, for adds, the owning field and the metaclass to create
+        // (Property under Attribute, Method under Operation as observed on this profile, K008)
+        // plus the type model when a type is written. Deletes need the live member model.
+        var members=new List<ResolvedMember>();
+        foreach(var change in preflight.Members)
+        {
+            string ownerId;
+            if(!snapshot.ModelIds.TryGetValue(change.OwnerId,out ownerId))throw new InvalidOperationException("C220: メンバの所有先のモデルIDを特定できません。");
+            var owner=project.GetModelById(ownerId);
+            if(owner==null || owner.IsDeleted || owner.IsProxy || !owner.IsEditable)throw new InvalidOperationException("C220: メンバの所有先が編集できません。");
+            var resolved=new ResolvedMember{Owner=owner,Change=change};
+            if(change.Action=="add")
+            {
+                string fieldName=change.Kind=="attribute"?"Attribute":"Operation";
+                var field=FieldOf(owner,fieldName);
+                if(field==null || !field.IsEmbedded)throw new InvalidOperationException("C220: "+owner.ClassName+" に所有フィールド '"+fieldName+"' がありません。");
+                // Reuse the metaclass of an existing sibling of the same kind so the profile's
+                // concrete class (Property / Method) is not guessed; fall back to the field type.
+                var sibling=owner.GetFieldValues(fieldName).Cast<object>().OfType<IModel>().FirstOrDefault(m=>!m.IsDeleted);
+                resolved.Field=fieldName;resolved.ClassName=sibling!=null?sibling.ClassName:field.Type;
+                if(owner.GetFieldValues(fieldName).Cast<object>().OfType<IModel>().Any(m=>!m.IsDeleted && ClassText.Inline(ClassText.Normalize(m.Name))==change.Text))
+                    throw new InvalidOperationException("C220: 同じ名前のメンバ '"+change.Text+"' が既にあります。");
+                if(change.Visibility.Length>0 && !options.VisibilityValues.TryGetValue(change.Visibility,out resolved.VisibilityValue))throw new InvalidOperationException("C220: 可視性の記号 '"+change.Visibility+"' に対応する値がありません。");
+                if(change.Kind=="attribute" && change.Type.Length>0)
+                {
+                    if(everything==null)everything=Tree(project.DesignModel).ToList();
+                    var typeField=sibling!=null?options.TypeFieldNames.Select(n=>FieldOf(sibling,n)).FirstOrDefault(f=>f!=null && f.IsReference):null;
+                    string typeClass=typeField!=null?typeField.Type:"Type";
+                    var candidates=everything.Where(m=>!m.IsProxy && IsA(m,typeClass) && ClassText.Inline(ClassText.Normalize(m.Name))==change.Type).ToList();
+                    if(candidates.Count>1) { var near=candidates.Where(m=>{var o=m.Owner;int g=0;while(o!=null && g++<32){if(o.Id==owner.Id)return true;o=o.Owner;}return false;}).ToList();if(near.Count>0)candidates=near; }
+                    if(candidates.Count==0)throw new InvalidOperationException("C220: 型 '"+change.Type+"' に一致する "+typeClass+" 系のモデルがありません。型モデルの新規作成は扱いません。");
+                    if(candidates.Count>1)throw new InvalidOperationException("C220: 型 '"+change.Type+"' に一致するモデルが "+candidates.Count+" 件あり、一意に決まりません。");
+                    resolved.TypeModel=candidates[0];resolved.TypeField=typeField!=null?typeField.Name:options.TypeFieldNames[0];
+                }
+                log.AppendLine("member target: add "+change.Kind+" '"+change.Text+"' under "+owner.ClassName+" '"+owner.Name+"' field="+fieldName+" class="+resolved.ClassName+(resolved.TypeModel!=null?" type="+resolved.TypeModel.Id:""));
+            }
+            else
+            {
+                string memberId;
+                if(!snapshot.ModelIds.TryGetValue(change.CurrentId,out memberId))throw new InvalidOperationException("C220: 削除するメンバのモデルIDを特定できません。");
+                var member=project.GetModelById(memberId);
+                if(member==null || member.IsDeleted || member.IsProxy || !member.IsEditable)throw new InvalidOperationException("C220: 削除するメンバが編集できません。");
+                if(ClassText.Inline(ClassText.Normalize(member.Name))!=change.Text)throw new InvalidOperationException("C220: 削除するメンバの名前が読取りと一致しません。");
+                // A type definition child (StructureType etc.) may be referenced as the type of
+                // other members; refuse when anything outside the member itself points at it.
+                var incoming=member.GetRelationsWhere((rel,f)=>rel.Target!=null && rel.Target.Id==member.Id && rel.IsReference).Cast<IRelationship>().ToList();
+                if(incoming.Count>0)throw new InvalidOperationException("C220: メンバ '"+change.Text+"' は "+incoming.Count+" 件の参照先になっているため削除しません。");
+                if(member.GetChildren().Cast<IModel>().Any(m=>!m.IsDeleted))throw new InvalidOperationException("C220: メンバ '"+change.Text+"' は子モデルを持つため削除しません。");
+                resolved.Member=member;
+                log.AppendLine("member target: delete "+change.Kind+" '"+change.Text+"' model="+memberId+" class="+member.ClassName);
+            }
+            members.Add(resolved);
+        }
         var links=new List<ResolvedLink>();
         // The expected document: the input plus what the product does on the other side of a
         // two-field relationship. Partner lines are dropped for deletes here and added after
@@ -933,7 +987,7 @@ public static class ClassSyncRuntime
             log.AppendLine("link target: "+change.Action+" "+from.ClassName+" '"+from.Name+"' -["+change.Field+" : "+field.Type+"]-> "+to.ClassName+" '"+to.Name+"'");
             links.Add(resolved);
         }
-        string summary="名前 "+preflight.NameCount+" / 可視性 "+preflight.VisibilityCount+" / 型 "+preflight.TypeCount+" / 関連追加 "+preflight.LinkAddCount+" / 関連削除 "+preflight.LinkDeleteCount;
+        string summary="名前 "+preflight.NameCount+" / 可視性 "+preflight.VisibilityCount+" / 型 "+preflight.TypeCount+" / メンバ追加 "+preflight.MemberAddCount+" / メンバ削除 "+preflight.MemberDeleteCount+" / 関連追加 "+preflight.LinkAddCount+" / 関連削除 "+preflight.LinkDeleteCount;
         string confirmation=(retain?"コピーのプロジェクトで実行してください。\nメンバ "+targets.Count+"件・関連 "+links.Count+"件（"+summary+"）を更新し、読戻しが一致したときだけ確定します。":"コピーのプロジェクトで実行してください。\nメンバ "+targets.Count+"件・関連 "+links.Count+"件（"+summary+"）を更新し、読戻しを照合した後に必ず取り消します。")
             +"\n自動保存はしません。Undo/Redo と保存再読込は手動で確認してください。";
         // A new relationship gets a connector the product keeps hidden in the saved editor
@@ -991,6 +1045,39 @@ public static class ClassSyncRuntime
                 }
             }
             log.AppendLine("applied "+targets.Count+" member edits: read-back matched");
+            foreach(var m in members)
+            {
+                if(m.Change.Action=="add")
+                {
+                    stage="メンバの追加";
+                    var created=m.Owner.AddNewModel(m.Field,m.ClassName,false);
+                    if(created==null)throw new InvalidOperationException("C230: メンバを作成できませんでした。");
+                    created.SetField("Name",m.Change.Text);
+                    if(m.VisibilityValue!=null)
+                    {
+                        var vf=options.VisibilityFieldNames.Select(n=>FieldOf(created,n)).FirstOrDefault(f=>f!=null && !f.IsReference);
+                        if(vf==null)throw new InvalidOperationException("C230: 作成したメンバに可視性フィールドがありません。");
+                        created.SetField(vf.Name,m.VisibilityValue);
+                    }
+                    if(m.Change.IsStatic)
+                    {
+                        var sf=options.StaticFieldNames.Select(n=>FieldOf(created,n)).FirstOrDefault(f=>f!=null && !f.IsReference);
+                        if(sf!=null)created.SetField(sf.Name,true);
+                    }
+                    if(m.TypeModel!=null)created.Relate(m.TypeField,m.TypeModel);
+                    log.AppendLine("created "+created.ClassName+" id="+created.Id+" name='"+created.Name+"' owner="+(created.Owner==null?"?":created.Owner.Name));
+                }
+                else
+                {
+                    stage="メンバの削除";
+                    string id=m.Member.Id;
+                    m.Member.Delete();
+                    var check=project.GetModelById(id);
+                    if(check!=null && !check.IsDeleted)throw new InvalidOperationException("C230: メンバの削除が反映されていません。");
+                    log.AppendLine("deleted member id="+id);
+                }
+            }
+            if(members.Count>0)log.AppendLine("applied "+members.Count+" member additions/deletions");
             int connectorsBefore=CountConnectors(app);var connectorIdsBefore=ConnectorIds(app);
             foreach(var l in links)
             {
@@ -1060,6 +1147,7 @@ public static class ClassSyncRuntime
         foreach(var error in new[]{trial.ApplyError,trial.RollbackError,trial.VerifyError})if(error!=null)log.AppendLine(error.ToString());
         Refresh(app,log);
         lines.Add("一時適用と照合: "+(trial.Applied?"一致":"失敗 ("+stage+")"));
+        if(members.Count>0)lines.Add("メンバ 追加 "+preflight.MemberAddCount+" / 削除 "+preflight.MemberDeleteCount);
         if(links.Count>0)lines.Add("関連 追加 "+preflight.LinkAddCount+" / 削除 "+preflight.LinkDeleteCount+(preflight.LinkAddCount>0?"（線の表示は確定時に付けます）":""));
         lines.Add("取消API: "+(trial.RollbackReturned?"正常終了":"失敗"));
         lines.Add("復元照合: "+(trial.Restored?"一致":"未確認または不一致。保存せずにコピーを開き直してください"));
@@ -1116,7 +1204,7 @@ public static class ClassSyncRuntime
             log.AppendLine("Scope: "+(project==null?"":project.Id)+" / "+editor.ModelId+" / "+editor.Id);
             if(trial)
             {
-                if(!preflight.Candidate)throw new InvalidOperationException("C231: このボタンで反映できるのは属性・操作の名前・可視性・型と、既存クラス間の関連の追加削除だけです。\n"+preflight.Summary());
+                if(!preflight.Candidate)throw new InvalidOperationException("C231: このボタンで反映できるのは属性・操作の名前・可視性・型、属性・操作の追加削除（引数なし）、既存クラス間の関連の追加削除だけです。\n"+preflight.Summary());
                 if(project==null)throw new InvalidOperationException("C220: プロジェクトを取得できません。");
                 ClassExperiment.Summary=RunTextUpdate(app,project,editor,snapshot,desired,preflight,retain,log);
                 screenshot=ClassExperiment.Summary+"\f会社PC内の試行診断\n"+log.ToString();
@@ -1969,12 +2057,23 @@ public sealed class ClassMemberEdit
 // the field name on the source class, and the input line (adds only).
 public sealed class ClassLinkChange { public string Action, FromId, ToId, Field, FromAlias, ToAlias; public int Line; }
 
+// One attribute or operation to create under a class, or one existing member to delete.
+public sealed class ClassMemberChange
+{
+    public string Action, Kind, OwnerId, OwnerAlias, CurrentId, Text, Visibility, Type, Parameters;
+    public bool IsStatic;
+    public int Line;
+}
+
 public sealed class ClassTextPreflight
 {
     public List<ClassMemberEdit> Edits = new List<ClassMemberEdit>();
     public List<ClassLinkChange> Links = new List<ClassLinkChange>();
+    public List<ClassMemberChange> Members = new List<ClassMemberChange>();
     public List<string> Reasons = new List<string>();
-    public bool Candidate { get { return Reasons.Count==0 && (Edits.Count>0 || Links.Count>0); } }
+    public bool Candidate { get { return Reasons.Count==0 && (Edits.Count>0 || Links.Count>0 || Members.Count>0); } }
+    public int MemberAddCount { get { return Members.Count(m=>m.Action=="add"); } }
+    public int MemberDeleteCount { get { return Members.Count(m=>m.Action=="delete"); } }
     public int LinkAddCount { get { return Links.Count(l=>l.Action=="add"); } }
     public int LinkDeleteCount { get { return Links.Count(l=>l.Action=="delete"); } }
     public int NameCount { get { return Edits.Count(e=>e.NameChanged); } }
@@ -2013,6 +2112,29 @@ public sealed class ClassTextPreflight
                 }
                 result.Reasons.Add(c.Action+" link"+where+" ["+c.Detail+"]: 関連の"+(c.Action=="update"?"多重度・ロール名の変更":"この変更")+"は扱えません"); continue;
             }
+            if((c.Action=="add" || c.Action=="delete") && (c.Kind=="attribute" || c.Kind=="operation"))
+            {
+                ClassElement member;
+                if(c.Action=="add" && target.TryGetValue(c.Id,out member))
+                {
+                    ClassElement owner;
+                    if(!old.TryGetValue(member.Parent??"",out owner)) { result.Reasons.Add("add "+c.Kind+where+": 所有先のクラスが既存ではありません"); continue; }
+                    if(member.Text.Length==0 || member.Text.Contains("\\n")) { result.Reasons.Add("add "+c.Kind+where+": 空または改行を含む名前は扱えません"); continue; }
+                    if(c.Kind=="operation" && member.Attr("parameters").Length>0) { result.Reasons.Add("add operation"+where+": 引数付きの操作の追加は扱えません（引数は別モデル）"); continue; }
+                    if(c.Kind=="operation" && member.Attr("returnType").Length>0) { result.Reasons.Add("add operation"+where+": 戻り値付きの操作の追加は扱えません"); continue; }
+                    if(c.Kind=="attribute" && (member.Attr("multiplicity").Length>0 || member.Attr("default").Length>0)) { result.Reasons.Add("add attribute"+where+": 多重度・既定値付きの属性の追加は扱えません"); continue; }
+                    if(member.Attr("type").Contains(", ")) { result.Reasons.Add("add attribute"+where+": 複数の型を持つ属性は扱えません"); continue; }
+                    result.Members.Add(new ClassMemberChange{Action="add",Kind=c.Kind,OwnerId=owner.Id,OwnerAlias=owner.Attr("alias"),Text=member.Text,Visibility=member.Attr("visibility"),Type=member.Attr("type"),Parameters=member.Attr("parameters"),IsStatic=member.Attr("static")=="true",Line=c.Line});
+                    continue;
+                }
+                if(c.Action=="delete" && old.TryGetValue(c.Id,out member))
+                {
+                    var owner=old[member.Parent];
+                    result.Members.Add(new ClassMemberChange{Action="delete",Kind=c.Kind,OwnerId=owner.Id,OwnerAlias=owner.Attr("alias"),CurrentId=member.Id,Text=member.Text});
+                    continue;
+                }
+                result.Reasons.Add(c.Action+" "+c.Kind+where+": 対応する要素を特定できません"); continue;
+            }
             if(c.Action!="update") { result.Reasons.Add(c.Action+" "+c.Kind+where+": 本文更新では扱えません"); continue; }
             if(c.Kind!="attribute" && c.Kind!="operation") { result.Reasons.Add("update "+c.Kind+where+": 属性・操作以外の更新は扱えません"); continue; }
             ClassElement before,after;
@@ -2039,7 +2161,7 @@ public sealed class ClassTextPreflight
     {
         var sb=new StringBuilder();
         sb.Append("本文更新の事前判定: ").Append(Candidate?"候補あり":"停止").Append('\n');
-        sb.Append("メンバ ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append("） / 関連 追加 ").Append(LinkAddCount).Append(" 削除 ").Append(LinkDeleteCount).Append(" / 停止理由 ").Append(Reasons.Count).Append("件\n");
+        sb.Append("メンバ ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append("） / メンバ追加 ").Append(MemberAddCount).Append(" 削除 ").Append(MemberDeleteCount).Append(" / 関連 追加 ").Append(LinkAddCount).Append(" 削除 ").Append(LinkDeleteCount).Append(" / 停止理由 ").Append(Reasons.Count).Append("件\n");
         foreach(var r in Reasons)sb.Append("  ").Append(r).Append('\n');
         return sb.ToString().TrimEnd();
     }

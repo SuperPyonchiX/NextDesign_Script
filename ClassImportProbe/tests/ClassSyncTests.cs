@@ -159,6 +159,24 @@ public static class ClassSyncTests
         ct.Run(() => order.Add("apply"), () => order.Add("commit"), () => order.Add("rollback"), () => order.Add("verify"));
         Check(ct.Committed && string.Join(",", order.ToArray()) == "apply,commit", "committed trial does not roll back");
 
+        // Member adds and deletes pass the preflight when the owner exists; arguments, return
+        // types, multiplicity and default values stop.
+        var addAttr = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    + {static} count : int\n", "    + {static} count : int\n    - extra : long\n"));
+        var addAttrGate = ClassTextPreflight.Check(baseline, addAttr, Plan(baseline, addAttr));
+        Check(addAttrGate.Candidate && addAttrGate.Members.Count == 1 && addAttrGate.Members[0].Action == "add" && addAttrGate.Members[0].Kind == "attribute" && addAttrGate.Members[0].Text == "extra" && addAttrGate.Members[0].Type == "long" && addAttrGate.Members[0].Visibility == "-" && addAttrGate.Members[0].OwnerAlias == "Controller" && addAttrGate.Members[0].Line == 9, "attribute add preflight: " + addAttrGate.Summary());
+        var delAttrGate = ClassTextPreflight.Check(addAttr, baseline, Plan(addAttr, baseline));
+        Check(delAttrGate.Candidate && delAttrGate.Members.Count == 1 && delAttrGate.Members[0].Action == "delete" && delAttrGate.Members[0].Text == "extra" && addAttr.Elements.Any(e => e.Id == delAttrGate.Members[0].CurrentId), "attribute delete preflight: " + delAttrGate.Summary());
+        var addOp = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    # stop()\n", "    # stop()\n    + reset()\n"));
+        var addOpGate = ClassTextPreflight.Check(baseline, addOp, Plan(baseline, addOp));
+        Check(addOpGate.Candidate && addOpGate.Members.Count == 1 && addOpGate.Members[0].Kind == "operation" && addOpGate.Members[0].Text == "reset", "operation add preflight: " + addOpGate.Summary());
+        var addOpArgs = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    # stop()\n", "    # stop()\n    + reset(mode : int)\n"));
+        var addOpArgsGate = ClassTextPreflight.Check(baseline, addOpArgs, Plan(baseline, addOpArgs));
+        Check(!addOpArgsGate.Candidate && addOpArgsGate.Reasons.Count == 1 && addOpArgsGate.Reasons[0].Contains("引数"), "operation with arguments stops: " + addOpArgsGate.Summary());
+        var addDefault = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    + {static} count : int\n", "    + {static} count : int\n    - extra : long = 1\n"));
+        var addDefaultGate = ClassTextPreflight.Check(baseline, addDefault, Plan(baseline, addDefault));
+        Check(!addDefaultGate.Candidate && addDefaultGate.Reasons.Count == 1, "attribute with default stops: " + addDefaultGate.Summary());
+        Check(!ClassTextPreflight.Check(baseline, Load(samples, "add-class.puml"), added).Candidate, "a new class still stops");
+
         // Summary and reasons are counts and line numbers only.
         string summary = ClassAudit.Summary(added, 2);
         Check(summary.Contains("差分候補 3件") && summary.Contains("class") && !summary.Contains("Logger"), "summary text: " + summary);
