@@ -100,7 +100,10 @@ public static class ClassSyncTests
         var removedClass = ClassTextPreflight.Check(Load(samples, "add-class.puml"), baseline, removed);
         Check(removedClass.Candidate && removedClass.Classes.Count == 1 && removedClass.Classes[0].Action == "delete" && removedClass.Members.Count == 0 && removedClass.Links.Count == 0, "class delete takes its members and links: " + removedClass.Summary());
         var renamedClass = ClassTextPreflight.Check(baseline, ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("\"制御部\"", "\"制御装置\"")), classRename);
-        Check(!renamedClass.Candidate && renamedClass.Reasons.Count == 1 && renamedClass.Reasons[0].Contains("改名"), "class rename stops: " + renamedClass.Summary());
+        Check(renamedClass.Candidate && renamedClass.Edits.Count == 1 && renamedClass.Edits[0].Kind == "class" && renamedClass.Edits[0].NameChanged && renamedClass.Edits[0].NewText == "制御装置", "class rename passes: " + renamedClass.Summary());
+        var rekeyed = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("class \"制御部\"", "abstract class \"制御部\""));
+        var rekeyedGate = ClassTextPreflight.Check(baseline, rekeyed, Plan(baseline, rekeyed));
+        Check(!rekeyedGate.Candidate && rekeyedGate.Reasons.Count == 1 && rekeyedGate.Reasons[0].Contains("キーワード"), "keyword change stops: " + rekeyedGate.Summary());
         var lonely = ClassDocument.Parse("@startuml\nclass \"A\" as A\n@enduml\n");
         var lonelyGate = ClassTextPreflight.Check(ClassDocument.Parse("@startuml\n@enduml\n"), lonely, Plan(ClassDocument.Parse("@startuml\n@enduml\n"), lonely));
         Check(!lonelyGate.Candidate && lonelyGate.Reasons.Count == 1 && lonelyGate.Reasons[0].Contains("既存のクラスがなく"), "new class without a sibling stops: " + lonelyGate.Summary());
@@ -140,10 +143,19 @@ public static class ClassSyncTests
         Check(bothGate.Candidate && bothGate.Edits.Count == 1 && bothGate.Edits[0].NameChanged && bothGate.Edits[0].VisibilityChanged && bothGate.Edits[0].TypeChanged, "name, visibility and type together: " + bothGate.Summary());
         var defaultValue = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("[0..1] = 0", "[0..1] = 1"));
         var defaultGate = ClassTextPreflight.Check(baseline, defaultValue, Plan(baseline, defaultValue));
-        Check(!defaultGate.Candidate && defaultGate.Reasons.Count == 1 && defaultGate.Reasons[0].Contains("default"), "default value is out of scope: " + defaultGate.Summary());
-        var returnType = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("start(mode : int) : bool", "start(mode : int) : int"));
+        Check(defaultGate.Candidate && defaultGate.Edits.Count == 1 && defaultGate.Edits[0].DefaultChanged && defaultGate.Edits[0].NewDefault == "1", "default value update: " + defaultGate.Summary());
+        var returnType = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("start(mode : int) : bool", "start(mode : int) : int <<NumericalType>>"));
         var returnGate = ClassTextPreflight.Check(baseline, returnType, Plan(baseline, returnType));
-        Check(!returnGate.Candidate && returnGate.Reasons.Count == 1 && returnGate.Reasons[0].Contains("returnType"), "operation return type is out of scope: " + returnGate.Summary());
+        Check(returnGate.Candidate && returnGate.Edits.Count == 1 && returnGate.Edits[0].ReturnTypeChanged && returnGate.Edits[0].NewReturnType == "int" && returnGate.Edits[0].ReturnTypeKind == "NumericalType", "return type update: " + returnGate.Summary());
+        // One-sided attributes: an input without a return type or multiplicity never differs from a diagram that has one.
+        var silent = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("start(mode : int) : bool", "start(mode : int)").Replace(" [0..1] = 0", " = 0"));
+        Check(Plan(baseline, silent).Changes.Count == 0, "silent return type and multiplicity are not differences: " + Describe(Plan(baseline, silent)));
+        Check(Plan(silent, baseline).Changes.Count == 2 && Plan(silent, baseline).Changes.All(c => c.Action == "update"), "stated return type and multiplicity are differences: " + Describe(Plan(silent, baseline)));
+        var statedGate = ClassTextPreflight.Check(silent, baseline, Plan(silent, baseline));
+        Check(statedGate.Candidate && statedGate.Edits.Count(e => e.MultiplicityChanged && e.NewMultiplicity == "0..1") == 1 && statedGate.Edits.Count(e => e.ReturnTypeChanged && e.NewReturnType == "bool") == 1, "multiplicity and return type edits: " + statedGate.Summary());
+        var badMult = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("[0..1]", "[many]"));
+        var badMultGate = ClassTextPreflight.Check(baseline, badMult, Plan(baseline, badMult));
+        Check(!badMultGate.Candidate && badMultGate.Reasons.Count == 1 && badMultGate.Reasons[0].Contains("多重度"), "malformed multiplicity stops: " + badMultGate.Summary());
         var noSymbol = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    - state : int", "    state : int"));
         var noSymbolGate = ClassTextPreflight.Check(baseline, noSymbol, Plan(baseline, noSymbol));
         Check(!noSymbolGate.Candidate && noSymbolGate.Reasons.Count == 1, "removing the visibility symbol stops: " + noSymbolGate.Summary());
@@ -193,9 +205,12 @@ public static class ClassSyncTests
         var dupArg = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("start(mode : int)", "start(a, a)"));
         var dupArgGate = ClassTextPreflight.Check(baseline, dupArg, Plan(baseline, dupArg));
         Check(!dupArgGate.Candidate && dupArgGate.Reasons.Count == 1 && dupArgGate.Reasons[0].Contains("同じ名前"), "duplicate argument names stop: " + dupArgGate.Summary());
-        var addDefault = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    + {static} count : int\n", "    + {static} count : int\n    - extra : long = 1\n"));
+        var addDefault = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    + {static} count : int\n", "    + {static} count : int\n    - extra : long [1..*] = 1\n"));
         var addDefaultGate = ClassTextPreflight.Check(baseline, addDefault, Plan(baseline, addDefault));
-        Check(!addDefaultGate.Candidate && addDefaultGate.Reasons.Count == 1, "attribute with default stops: " + addDefaultGate.Summary());
+        Check(addDefaultGate.Candidate && addDefaultGate.Members.Count == 1 && addDefaultGate.Members[0].Multiplicity == "1..*" && addDefaultGate.Members[0].Default == "1", "attribute with multiplicity and default: " + addDefaultGate.Summary());
+        var addReturn = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    # stop()\n", "    # stop()\n    + tick() : int\n"));
+        var addReturnGate = ClassTextPreflight.Check(baseline, addReturn, Plan(baseline, addReturn));
+        Check(addReturnGate.Candidate && addReturnGate.Members.Count == 1 && addReturnGate.Members[0].ReturnType == "int", "operation with return type: " + addReturnGate.Summary());
 
         // "<<Kind>>" after a type names the definition to create; it never counts as a difference.
         var kinded = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("- state : int [0..1] = 0", "- state : int <<StructureType>> [0..1] = 0"));

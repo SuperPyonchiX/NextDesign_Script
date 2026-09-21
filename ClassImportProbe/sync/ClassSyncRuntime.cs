@@ -168,7 +168,13 @@ public sealed class ClassDiagramSnapshot
                 e.Kind="operation";
                 e.Attributes["visibility"]=VisibilityOf(child);e.Attributes["static"]=BoolField(child,o.StaticFieldNames)?"true":"";
                 e.Attributes["abstract"]=BoolField(child,o.AbstractFieldNames)?"true":"";
-                e.Attributes["parameters"]=ClassText.Inline(ParametersOf(child));e.Attributes["returnType"]=ClassText.Inline(TextOf(child,o.ReturnTypeFieldNames));
+                e.Attributes["parameters"]=ClassText.Inline(ParametersOf(child));
+                // The exporter never prints a return type on this profile; it lives in the
+                // operation's Type reference (K010). Read it so an input that states one can
+                // be compared; the comparison ignores it when the input is silent.
+                string returnType=ClassText.Inline(TextOf(child,o.ReturnTypeFieldNames));
+                if(returnType.Length==0)returnType=ClassText.Inline(TextOf(child,o.TypeFieldNames));
+                e.Attributes["returnType"]=returnType;
                 operations.Add(e);
             }
             else if(kind=="literal") { e.Kind="literal";attributes.Add(e); }
@@ -177,7 +183,9 @@ public sealed class ClassDiagramSnapshot
                 e.Kind="attribute";
                 e.Attributes["visibility"]=VisibilityOf(child);e.Attributes["static"]=BoolField(child,o.StaticFieldNames)?"true":"";
                 e.Attributes["type"]=ClassText.Inline(TextOf(child,o.TypeFieldNames));
-                e.Attributes["multiplicity"]=o.EmitMultiplicity?ClassText.Inline(TextOf(child,o.MultiplicityFieldNames)):"";
+                string multiplicity=ClassText.Inline(TextOf(child,o.MultiplicityFieldNames));
+                if(multiplicity.Length==0)multiplicity=BoundsOf(child);
+                e.Attributes["multiplicity"]=multiplicity;
                 e.Attributes["default"]=ClassText.Inline(TextOf(child,o.DefaultValueFieldNames));
                 attributes.Add(e);
             }
@@ -227,6 +235,16 @@ public sealed class ClassDiagramSnapshot
         if(raw.Length==0)return "";
         string symbol;
         return o.VisibilityMap.TryGetValue(raw,out symbol)?symbol:"";
+    }
+    // LowerBound / UpperBound (K009) as "a..b"; "*" for an unbounded upper; "" when unset.
+    public static string BoundsOf(IModel m)
+    {
+        string lower=TextOf(m,new List<string>{"LowerBound"}),upper=TextOf(m,new List<string>{"UpperBound"});
+        if(lower.Length==0 && upper.Length==0)return "";
+        if(upper=="-1")upper="*";
+        if(lower.Length==0)lower="0";
+        if(upper.Length==0)upper="*";
+        return lower==upper?lower:lower+".."+upper;
     }
     public static string TextOf(IModel m,List<string> candidates)
     {
@@ -655,7 +673,7 @@ public static class ClassSyncRuntime
         log.AppendLine("restored: SDK read-back equals the pre-trial state");
     }
     // One resolved edit: the member model plus, for a type change, the old and new type models.
-    class ResolvedEdit { public IModel Model; public ClassMemberEdit Edit; public IModel OldType; public TypeTarget NewType; public string VisibilityValue; public ArgumentPlan Arguments; }
+    class ResolvedEdit { public IModel Model; public ClassMemberEdit Edit; public IModel OldType; public TypeTarget NewType, ReturnType; public string VisibilityValue; public ArgumentPlan Arguments; }
     // A type to reference: an existing model, or one to create under the owner class's
     // type-definition field on first use. Created models are shared by name within a run.
     class TypeTarget
@@ -810,7 +828,7 @@ public static class ClassSyncRuntime
     // A class to create (owner and owning field taken from its sibling, node placed next to
     // the sibling's node) or to delete.
     class ResolvedClass { public ClassChangeItem Change; public IModel Owner, Sibling, Model; public IField OwningField; public IClass Class; public INode SiblingNode, Node; }
-    class ResolvedMember { public IModel Owner, Member, InsertBefore; public TypeTarget TypeTarget; public ClassMemberChange Change; public string Field, ClassName, VisibilityValue, TypeField; public IField OwningField; public IClass MemberClass; public string Parameters; }
+    class ResolvedMember { public IModel Owner, Member, InsertBefore; public TypeTarget TypeTarget, ReturnType; public ClassMemberChange Change; public string Field, ClassName, VisibilityValue, TypeField; public IField OwningField; public IClass MemberClass; public string Parameters; }
     static IEnumerable<IModel> Tree(IModel root)
     {
         var stack=new Stack<IModel>();stack.Push(root);
@@ -996,6 +1014,18 @@ public static class ClassSyncRuntime
         }
         if(shown>0)log.AppendLine("connectors shown: "+shown);
     }
+    // "a..b" / "a" / "*" into LowerBound / UpperBound (-1 for *), verified by BoundsOf.
+    static void WriteBounds(IModel model,string multiplicity,StringBuilder log)
+    {
+        string lower,upper;int dots=multiplicity.IndexOf("..",StringComparison.Ordinal);
+        if(dots>=0) { lower=multiplicity.Substring(0,dots);upper=multiplicity.Substring(dots+2); } else { lower=multiplicity;upper=multiplicity; }
+        int lo=lower=="*"?0:int.Parse(lower,System.Globalization.CultureInfo.InvariantCulture);
+        int hi=upper=="*"?-1:int.Parse(upper,System.Globalization.CultureInfo.InvariantCulture);
+        model.SetField("LowerBound",lo);model.SetField("UpperBound",hi);
+        string readBack=ClassDiagramSnapshot.BoundsOf(model);
+        log.AppendLine("bounds written: "+lo+".."+hi+" read-back='"+readBack+"'");
+        if(readBack!=multiplicity)throw new InvalidOperationException("C230: 多重度の読戻しが一致しません: '"+readBack+"'");
+    }
     static int CountConnectors(IApplication app)
     {
         try { var d=Current(app) as IDiagram;return d==null?-1:d.Connectors.Cast<object>().Count(); } catch(Exception) { return -1; }
@@ -1083,6 +1113,15 @@ public static class ClassSyncRuntime
                 if(ownerClass==null)throw new InvalidOperationException("C220: 操作の所有先を取得できません。");
                 resolved.Arguments=PlanArguments(project,model,ownerClass,edit.NewParameters,options,ref everything,log);
             }
+            if(edit.ReturnTypeChanged)
+            {
+                var ownerClass=model.Owner;
+                var field=options.ReturnTypeFieldNames.Concat(options.TypeFieldNames).Select(n=>FieldOf(model,n)).FirstOrDefault(f=>f!=null && f.IsReference);
+                if(field==null || ownerClass==null)throw new InvalidOperationException("C220: 操作に戻り値の参照フィールドがありません。");
+                resolved.ReturnType=ResolveType(project,ownerClass,edit.NewReturnType,edit.ReturnTypeKind,field.Type,options,ref everything,log);
+            }
+            if(edit.MultiplicityChanged && (FieldOf(model,"LowerBound")==null || FieldOf(model,"UpperBound")==null))throw new InvalidOperationException("C220: 属性に LowerBound / UpperBound がありません。");
+            if(edit.DefaultChanged && options.DefaultValueFieldNames.Select(n=>FieldOf(model,n)).All(f=>f==null || f.IsReference))throw new InvalidOperationException("C220: 属性に既定値のフィールドがありません。");
             log.AppendLine("edit target: model="+modelId+" class="+model.ClassName+" "+edit.Describe());
             targets.Add(resolved);
         }
@@ -1182,6 +1221,12 @@ public static class ClassSyncRuntime
                 if(owner.GetFieldValues(fieldName).Cast<object>().OfType<IModel>().Any(m=>!m.IsDeleted && ClassText.Inline(ClassText.Normalize(m.Name))==change.Text))
                     throw new InvalidOperationException("C220: 同じ名前のメンバ '"+change.Text+"' が既にあります。");
                 if(change.Visibility.Length>0 && !options.VisibilityValues.TryGetValue(change.Visibility,out resolved.VisibilityValue))throw new InvalidOperationException("C220: 可視性の記号 '"+change.Visibility+"' に対応する値がありません。");
+                if(change.Kind=="operation" && change.ReturnType.Length>0)
+                {
+                    var typeField=sibling!=null?options.ReturnTypeFieldNames.Concat(options.TypeFieldNames).Select(n=>FieldOf(sibling,n)).FirstOrDefault(f=>f!=null && f.IsReference):null;
+                    string typeClass=typeField!=null?typeField.Type:"Type";
+                    resolved.ReturnType=ResolveType(project,owner,change.ReturnType,change.ReturnTypeKind,typeClass,options,ref everything,log);
+                }
                 if(change.Kind=="attribute" && change.Type.Length>0)
                 {
                     if(everything==null)everything=Tree(project.DesignModel).ToList();
@@ -1374,6 +1419,25 @@ public static class ClassSyncRuntime
                     stage="引数の更新";
                     ApplyArguments(model,t.Arguments,options,log);
                 }
+                if(edit.ReturnTypeChanged)
+                {
+                    stage="戻り値の更新";
+                    var field=options.ReturnTypeFieldNames.Concat(options.TypeFieldNames).Select(n=>FieldOf(model,n)).First(f=>f!=null && f.IsReference);
+                    var newType=t.ReturnType.Materialize(log);
+                    foreach(var oldType in model.GetFieldValues(field.Name).Cast<object>().OfType<IModel>().ToList())model.UnRelate(field.Name,oldType);
+                    model.Relate(field.Name,newType);
+                    var after=model.GetFieldValues(field.Name).Cast<object>().OfType<IModel>().ToList();
+                    if(after.Count!=1 || after[0].Id!=newType.Id)throw new InvalidOperationException("C230: 戻り値の読戻しが一致しません（"+after.Count+"件）。");
+                }
+                if(edit.MultiplicityChanged) { stage="多重度の更新";WriteBounds(model,edit.NewMultiplicity,log); }
+                if(edit.DefaultChanged)
+                {
+                    stage="既定値の更新";
+                    var field=options.DefaultValueFieldNames.Select(n=>FieldOf(model,n)).First(f=>f!=null && !f.IsReference);
+                    model.SetField(field.Name,edit.NewDefault);
+                    string readBack=ClassText.Inline(ClassText.Normalize(model.GetFieldString(field.Name)));
+                    if(readBack!=edit.NewDefault)throw new InvalidOperationException("C230: 既定値の読戻しが一致しません: '"+readBack+"'");
+                }
                 if(edit.TypeChanged)
                 {
                     stage="型の更新";
@@ -1421,6 +1485,19 @@ public static class ClassSyncRuntime
                         if(sf!=null)created.SetField(sf.Name,true);
                     }
                     if(m.TypeTarget!=null)created.Relate(m.TypeField,m.TypeTarget.Materialize(log));
+                    if(m.ReturnType!=null)
+                    {
+                        var rf=options.ReturnTypeFieldNames.Concat(options.TypeFieldNames).Select(n=>FieldOf(created,n)).FirstOrDefault(f=>f!=null && f.IsReference);
+                        if(rf==null)throw new InvalidOperationException("C230: 作成した操作に戻り値の参照フィールドがありません。");
+                        created.Relate(rf.Name,m.ReturnType.Materialize(log));
+                    }
+                    if(m.Change.Kind=="attribute" && m.Change.Multiplicity.Length>0)WriteBounds(created,m.Change.Multiplicity,log);
+                    if(m.Change.Kind=="attribute" && m.Change.Default.Length>0)
+                    {
+                        var df=options.DefaultValueFieldNames.Select(n=>FieldOf(created,n)).FirstOrDefault(f=>f!=null && !f.IsReference);
+                        if(df==null)throw new InvalidOperationException("C230: 作成した属性に既定値のフィールドがありません。");
+                        created.SetField(df.Name,m.Change.Default);
+                    }
                     if(m.Change.Kind=="operation" && !string.IsNullOrEmpty(m.Parameters))
                     {
                         // Arguments are children of the new operation; their metaclass comes from
@@ -1605,7 +1682,7 @@ public static class ClassSyncRuntime
                 if(plan.Changes.Count==0) { outcome.Summary="差分候補なし。図は変更していません。";outcome.Succeeded=true; }
                 else
                 {
-                    if(!preflight.Candidate)throw new InvalidOperationException("C231: 反映できるのは、クラスの追加削除、属性・操作の追加削除と名前・可視性・型・引数の変更、関連の追加削除です。クラスの改名・所有先の変更、package の追加削除は扱えません。\n"+preflight.Summary());
+                    if(!preflight.Candidate)throw new InvalidOperationException("C231: 反映できるのは、クラスの追加削除と改名、属性・操作の追加削除と名前・可視性・型・引数・戻り値・多重度・既定値の変更、関連の追加削除です。クラスのキーワード・所有先の変更、package の追加削除は扱えません。\n"+preflight.Summary());
                     if(project==null)throw new InvalidOperationException("C220: プロジェクトを取得できません。");
                     string result=RunTextUpdate(app,project,editor,snapshot,desired,preflight,retain,log,confirm);
                     outcome.Summary=result;

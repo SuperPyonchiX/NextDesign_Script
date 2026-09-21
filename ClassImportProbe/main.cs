@@ -19,7 +19,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.7.0";
+    public const string Version = "0.7.1";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -221,7 +221,13 @@ public sealed class ClassDiagramSnapshot
                 e.Kind="operation";
                 e.Attributes["visibility"]=VisibilityOf(child);e.Attributes["static"]=BoolField(child,o.StaticFieldNames)?"true":"";
                 e.Attributes["abstract"]=BoolField(child,o.AbstractFieldNames)?"true":"";
-                e.Attributes["parameters"]=ClassText.Inline(ParametersOf(child));e.Attributes["returnType"]=ClassText.Inline(TextOf(child,o.ReturnTypeFieldNames));
+                e.Attributes["parameters"]=ClassText.Inline(ParametersOf(child));
+                // The exporter never prints a return type on this profile; it lives in the
+                // operation's Type reference (K010). Read it so an input that states one can
+                // be compared; the comparison ignores it when the input is silent.
+                string returnType=ClassText.Inline(TextOf(child,o.ReturnTypeFieldNames));
+                if(returnType.Length==0)returnType=ClassText.Inline(TextOf(child,o.TypeFieldNames));
+                e.Attributes["returnType"]=returnType;
                 operations.Add(e);
             }
             else if(kind=="literal") { e.Kind="literal";attributes.Add(e); }
@@ -230,7 +236,9 @@ public sealed class ClassDiagramSnapshot
                 e.Kind="attribute";
                 e.Attributes["visibility"]=VisibilityOf(child);e.Attributes["static"]=BoolField(child,o.StaticFieldNames)?"true":"";
                 e.Attributes["type"]=ClassText.Inline(TextOf(child,o.TypeFieldNames));
-                e.Attributes["multiplicity"]=o.EmitMultiplicity?ClassText.Inline(TextOf(child,o.MultiplicityFieldNames)):"";
+                string multiplicity=ClassText.Inline(TextOf(child,o.MultiplicityFieldNames));
+                if(multiplicity.Length==0)multiplicity=BoundsOf(child);
+                e.Attributes["multiplicity"]=multiplicity;
                 e.Attributes["default"]=ClassText.Inline(TextOf(child,o.DefaultValueFieldNames));
                 attributes.Add(e);
             }
@@ -280,6 +288,16 @@ public sealed class ClassDiagramSnapshot
         if(raw.Length==0)return "";
         string symbol;
         return o.VisibilityMap.TryGetValue(raw,out symbol)?symbol:"";
+    }
+    // LowerBound / UpperBound (K009) as "a..b"; "*" for an unbounded upper; "" when unset.
+    public static string BoundsOf(IModel m)
+    {
+        string lower=TextOf(m,new List<string>{"LowerBound"}),upper=TextOf(m,new List<string>{"UpperBound"});
+        if(lower.Length==0 && upper.Length==0)return "";
+        if(upper=="-1")upper="*";
+        if(lower.Length==0)lower="0";
+        if(upper.Length==0)upper="*";
+        return lower==upper?lower:lower+".."+upper;
     }
     public static string TextOf(IModel m,List<string> candidates)
     {
@@ -708,7 +726,7 @@ public static class ClassSyncRuntime
         log.AppendLine("restored: SDK read-back equals the pre-trial state");
     }
     // One resolved edit: the member model plus, for a type change, the old and new type models.
-    class ResolvedEdit { public IModel Model; public ClassMemberEdit Edit; public IModel OldType; public TypeTarget NewType; public string VisibilityValue; public ArgumentPlan Arguments; }
+    class ResolvedEdit { public IModel Model; public ClassMemberEdit Edit; public IModel OldType; public TypeTarget NewType, ReturnType; public string VisibilityValue; public ArgumentPlan Arguments; }
     // A type to reference: an existing model, or one to create under the owner class's
     // type-definition field on first use. Created models are shared by name within a run.
     class TypeTarget
@@ -863,7 +881,7 @@ public static class ClassSyncRuntime
     // A class to create (owner and owning field taken from its sibling, node placed next to
     // the sibling's node) or to delete.
     class ResolvedClass { public ClassChangeItem Change; public IModel Owner, Sibling, Model; public IField OwningField; public IClass Class; public INode SiblingNode, Node; }
-    class ResolvedMember { public IModel Owner, Member, InsertBefore; public TypeTarget TypeTarget; public ClassMemberChange Change; public string Field, ClassName, VisibilityValue, TypeField; public IField OwningField; public IClass MemberClass; public string Parameters; }
+    class ResolvedMember { public IModel Owner, Member, InsertBefore; public TypeTarget TypeTarget, ReturnType; public ClassMemberChange Change; public string Field, ClassName, VisibilityValue, TypeField; public IField OwningField; public IClass MemberClass; public string Parameters; }
     static IEnumerable<IModel> Tree(IModel root)
     {
         var stack=new Stack<IModel>();stack.Push(root);
@@ -1049,6 +1067,18 @@ public static class ClassSyncRuntime
         }
         if(shown>0)log.AppendLine("connectors shown: "+shown);
     }
+    // "a..b" / "a" / "*" into LowerBound / UpperBound (-1 for *), verified by BoundsOf.
+    static void WriteBounds(IModel model,string multiplicity,StringBuilder log)
+    {
+        string lower,upper;int dots=multiplicity.IndexOf("..",StringComparison.Ordinal);
+        if(dots>=0) { lower=multiplicity.Substring(0,dots);upper=multiplicity.Substring(dots+2); } else { lower=multiplicity;upper=multiplicity; }
+        int lo=lower=="*"?0:int.Parse(lower,System.Globalization.CultureInfo.InvariantCulture);
+        int hi=upper=="*"?-1:int.Parse(upper,System.Globalization.CultureInfo.InvariantCulture);
+        model.SetField("LowerBound",lo);model.SetField("UpperBound",hi);
+        string readBack=ClassDiagramSnapshot.BoundsOf(model);
+        log.AppendLine("bounds written: "+lo+".."+hi+" read-back='"+readBack+"'");
+        if(readBack!=multiplicity)throw new InvalidOperationException("C230: 多重度の読戻しが一致しません: '"+readBack+"'");
+    }
     static int CountConnectors(IApplication app)
     {
         try { var d=Current(app) as IDiagram;return d==null?-1:d.Connectors.Cast<object>().Count(); } catch(Exception) { return -1; }
@@ -1136,6 +1166,15 @@ public static class ClassSyncRuntime
                 if(ownerClass==null)throw new InvalidOperationException("C220: 操作の所有先を取得できません。");
                 resolved.Arguments=PlanArguments(project,model,ownerClass,edit.NewParameters,options,ref everything,log);
             }
+            if(edit.ReturnTypeChanged)
+            {
+                var ownerClass=model.Owner;
+                var field=options.ReturnTypeFieldNames.Concat(options.TypeFieldNames).Select(n=>FieldOf(model,n)).FirstOrDefault(f=>f!=null && f.IsReference);
+                if(field==null || ownerClass==null)throw new InvalidOperationException("C220: 操作に戻り値の参照フィールドがありません。");
+                resolved.ReturnType=ResolveType(project,ownerClass,edit.NewReturnType,edit.ReturnTypeKind,field.Type,options,ref everything,log);
+            }
+            if(edit.MultiplicityChanged && (FieldOf(model,"LowerBound")==null || FieldOf(model,"UpperBound")==null))throw new InvalidOperationException("C220: 属性に LowerBound / UpperBound がありません。");
+            if(edit.DefaultChanged && options.DefaultValueFieldNames.Select(n=>FieldOf(model,n)).All(f=>f==null || f.IsReference))throw new InvalidOperationException("C220: 属性に既定値のフィールドがありません。");
             log.AppendLine("edit target: model="+modelId+" class="+model.ClassName+" "+edit.Describe());
             targets.Add(resolved);
         }
@@ -1235,6 +1274,12 @@ public static class ClassSyncRuntime
                 if(owner.GetFieldValues(fieldName).Cast<object>().OfType<IModel>().Any(m=>!m.IsDeleted && ClassText.Inline(ClassText.Normalize(m.Name))==change.Text))
                     throw new InvalidOperationException("C220: 同じ名前のメンバ '"+change.Text+"' が既にあります。");
                 if(change.Visibility.Length>0 && !options.VisibilityValues.TryGetValue(change.Visibility,out resolved.VisibilityValue))throw new InvalidOperationException("C220: 可視性の記号 '"+change.Visibility+"' に対応する値がありません。");
+                if(change.Kind=="operation" && change.ReturnType.Length>0)
+                {
+                    var typeField=sibling!=null?options.ReturnTypeFieldNames.Concat(options.TypeFieldNames).Select(n=>FieldOf(sibling,n)).FirstOrDefault(f=>f!=null && f.IsReference):null;
+                    string typeClass=typeField!=null?typeField.Type:"Type";
+                    resolved.ReturnType=ResolveType(project,owner,change.ReturnType,change.ReturnTypeKind,typeClass,options,ref everything,log);
+                }
                 if(change.Kind=="attribute" && change.Type.Length>0)
                 {
                     if(everything==null)everything=Tree(project.DesignModel).ToList();
@@ -1427,6 +1472,25 @@ public static class ClassSyncRuntime
                     stage="引数の更新";
                     ApplyArguments(model,t.Arguments,options,log);
                 }
+                if(edit.ReturnTypeChanged)
+                {
+                    stage="戻り値の更新";
+                    var field=options.ReturnTypeFieldNames.Concat(options.TypeFieldNames).Select(n=>FieldOf(model,n)).First(f=>f!=null && f.IsReference);
+                    var newType=t.ReturnType.Materialize(log);
+                    foreach(var oldType in model.GetFieldValues(field.Name).Cast<object>().OfType<IModel>().ToList())model.UnRelate(field.Name,oldType);
+                    model.Relate(field.Name,newType);
+                    var after=model.GetFieldValues(field.Name).Cast<object>().OfType<IModel>().ToList();
+                    if(after.Count!=1 || after[0].Id!=newType.Id)throw new InvalidOperationException("C230: 戻り値の読戻しが一致しません（"+after.Count+"件）。");
+                }
+                if(edit.MultiplicityChanged) { stage="多重度の更新";WriteBounds(model,edit.NewMultiplicity,log); }
+                if(edit.DefaultChanged)
+                {
+                    stage="既定値の更新";
+                    var field=options.DefaultValueFieldNames.Select(n=>FieldOf(model,n)).First(f=>f!=null && !f.IsReference);
+                    model.SetField(field.Name,edit.NewDefault);
+                    string readBack=ClassText.Inline(ClassText.Normalize(model.GetFieldString(field.Name)));
+                    if(readBack!=edit.NewDefault)throw new InvalidOperationException("C230: 既定値の読戻しが一致しません: '"+readBack+"'");
+                }
                 if(edit.TypeChanged)
                 {
                     stage="型の更新";
@@ -1474,6 +1538,19 @@ public static class ClassSyncRuntime
                         if(sf!=null)created.SetField(sf.Name,true);
                     }
                     if(m.TypeTarget!=null)created.Relate(m.TypeField,m.TypeTarget.Materialize(log));
+                    if(m.ReturnType!=null)
+                    {
+                        var rf=options.ReturnTypeFieldNames.Concat(options.TypeFieldNames).Select(n=>FieldOf(created,n)).FirstOrDefault(f=>f!=null && f.IsReference);
+                        if(rf==null)throw new InvalidOperationException("C230: 作成した操作に戻り値の参照フィールドがありません。");
+                        created.Relate(rf.Name,m.ReturnType.Materialize(log));
+                    }
+                    if(m.Change.Kind=="attribute" && m.Change.Multiplicity.Length>0)WriteBounds(created,m.Change.Multiplicity,log);
+                    if(m.Change.Kind=="attribute" && m.Change.Default.Length>0)
+                    {
+                        var df=options.DefaultValueFieldNames.Select(n=>FieldOf(created,n)).FirstOrDefault(f=>f!=null && !f.IsReference);
+                        if(df==null)throw new InvalidOperationException("C230: 作成した属性に既定値のフィールドがありません。");
+                        created.SetField(df.Name,m.Change.Default);
+                    }
                     if(m.Change.Kind=="operation" && !string.IsNullOrEmpty(m.Parameters))
                     {
                         // Arguments are children of the new operation; their metaclass comes from
@@ -1658,7 +1735,7 @@ public static class ClassSyncRuntime
                 if(plan.Changes.Count==0) { outcome.Summary="差分候補なし。図は変更していません。";outcome.Succeeded=true; }
                 else
                 {
-                    if(!preflight.Candidate)throw new InvalidOperationException("C231: 反映できるのは、クラスの追加削除、属性・操作の追加削除と名前・可視性・型・引数の変更、関連の追加削除です。クラスの改名・所有先の変更、package の追加削除は扱えません。\n"+preflight.Summary());
+                    if(!preflight.Candidate)throw new InvalidOperationException("C231: 反映できるのは、クラスの追加削除と改名、属性・操作の追加削除と名前・可視性・型・引数・戻り値・多重度・既定値の変更、関連の追加削除です。クラスのキーワード・所有先の変更、package の追加削除は扱えません。\n"+preflight.Summary());
                     if(project==null)throw new InvalidOperationException("C220: プロジェクトを取得できません。");
                     string result=RunTextUpdate(app,project,editor,snapshot,desired,preflight,retain,log,confirm);
                     outcome.Summary=result;
@@ -2290,7 +2367,8 @@ public static class ClassPumlWriter
         }
         foreach(var child in children)WriteNode(sb,doc,index,child,depth);
     }
-    public static string Render(ClassElement m)
+    public static string Render(ClassElement m) { return Render(m,false); }
+    public static string Render(ClassElement m,bool forComparison)
     {
         if(m.Kind=="literal")return m.Text;
         var sb=new StringBuilder();
@@ -2300,12 +2378,12 @@ public static class ClassPumlWriter
         {
             if(m.Attr("abstract")=="true")sb.Append("{abstract} ");
             sb.Append(m.Text).Append('(').Append(m.Attr("parameterTypes").Length>0?m.Attr("parameterTypes"):m.Attr("parameters")).Append(')');
-            if(m.Attr("returnType").Length>0)sb.Append(" : ").Append(m.Attr("returnType"));
+            if(!forComparison && m.Attr("returnType").Length>0)sb.Append(" : ").Append(m.Attr("returnType"));
             return sb.ToString();
         }
         sb.Append(m.Text);
         if(m.Attr("type").Length>0)sb.Append(" : ").Append(m.Attr("type"));
-        if(m.Attr("multiplicity").Length>0)sb.Append(" [").Append(m.Attr("multiplicity")).Append(']');
+        if(!forComparison && m.Attr("multiplicity").Length>0)sb.Append(" [").Append(m.Attr("multiplicity")).Append(']');
         if(m.Attr("default").Length>0)sb.Append(" = ").Append(m.Attr("default"));
         return sb.ToString();
     }
@@ -2355,6 +2433,8 @@ public sealed class ClassSyncPlan
             "Identities",Identities.ToDictionary(p=>p.Key,p=>(object)p.Value),"Expected",Expected==null?null:(object)Expected.ToJson()));
     }
     static readonly string[] Ignored = { "alias", "field", "arrow", "typeKind", "parameterTypes" };
+    // Attributes the exporter never prints (K009/K010): compared only when the input states them.
+    static readonly string[] OneSided = { "returnType", "multiplicity" };
     // A member whose name contains parentheses reads as an operation from text although the
     // model calls it an attribute. The rendered line is what PlantUML carries, so members are
     // compared by that line and attribute/operation/literal are one kind for matching.
@@ -2362,7 +2442,7 @@ public sealed class ClassSyncPlan
     static string KindKey(ClassElement e) { return IsMember(e)?"member":e.Kind; }
     static string Properties(ClassElement e)
     {
-        if(IsMember(e))return "member|"+ClassPumlWriter.Render(e);
+        if(IsMember(e))return "member|"+ClassPumlWriter.Render(e,true);
         return e.Kind+"|"+e.Text+"|"+string.Join("|",e.Attributes.Where(p=>!Ignored.Contains(p.Key)).OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>p.Key+"="+p.Value));
     }
     static string Anchor(ClassElement e) { return e.Kind=="class"?e.Kind+"|"+e.Text+"|"+e.Attr("keyword"):KindKey(e)+"|"+e.Text; }
@@ -2392,11 +2472,24 @@ public sealed class ClassSyncPlan
     static string Differences(ClassElement before,ClassElement after)
     {
         var keys=new List<string>();
-        if(IsMember(before) && IsMember(after) && ClassPumlWriter.Render(before)==ClassPumlWriter.Render(after))return "";
-        if(before.Text!=after.Text)keys.Add("name");
-        if(before.Kind!=after.Kind)keys.Add("kind");
-        foreach(var key in before.Attributes.Keys.Union(after.Attributes.Keys).Where(k=>!Ignored.Contains(k)).OrderBy(k=>k,StringComparer.Ordinal))
-            if(before.Attr(key)!=after.Attr(key))keys.Add(key);
+        // Same kind: compare the line without the one-sided parts. Different kinds (an attribute
+        // whose name holds parentheses read back as an operation): the full line must match,
+        // since the attribute's type and the operation's return type are the same text there.
+        bool sameLine=IsMember(before) && IsMember(after) && (before.Kind==after.Kind
+            ? ClassPumlWriter.Render(before,true)==ClassPumlWriter.Render(after,true)
+            : ClassPumlWriter.Render(before)==ClassPumlWriter.Render(after));
+        if(!sameLine)
+        {
+            if(before.Text!=after.Text)keys.Add("name");
+            if(before.Kind!=after.Kind)keys.Add("kind");
+            foreach(var key in before.Attributes.Keys.Union(after.Attributes.Keys).Where(k=>!Ignored.Contains(k) && !OneSided.Contains(k)).OrderBy(k=>k,StringComparer.Ordinal))
+                if(before.Attr(key)!=after.Attr(key))keys.Add(key);
+        }
+        // One-sided values only matter between members of the same kind; a cross-kind pair
+        // whose full lines match carries the same text as type and return type already.
+        if(!(sameLine && before.Kind!=after.Kind))
+            foreach(var key in OneSided)
+                if(after.Attr(key).Length>0 && before.Attr(key)!=after.Attr(key))keys.Add(key);
         if(LinkKey(before,null)!=LinkKey(after,null))keys.Add("ends");
         return string.Join(",",keys);
     }
@@ -2546,9 +2639,9 @@ public sealed class ClassSyncPlan
 // type, each as an old/new pair. Empty flags mean the value is unchanged.
 public sealed class ClassMemberEdit
 {
-    public string CurrentId, Kind, OldText, NewText, OldVisibility, NewVisibility, OldType, NewType, OldParameters, NewParameters, TypeKind="";
+    public string CurrentId, Kind, OldText, NewText, OldVisibility, NewVisibility, OldType, NewType, OldParameters, NewParameters, TypeKind="", NewReturnType="", NewMultiplicity="", NewDefault="", ReturnTypeKind="";
     public int Line;
-    public bool NameChanged, VisibilityChanged, TypeChanged, ParametersChanged;
+    public bool NameChanged, VisibilityChanged, TypeChanged, ParametersChanged, ReturnTypeChanged, MultiplicityChanged, DefaultChanged;
     public string Describe()
     {
         var parts=new List<string>();
@@ -2556,6 +2649,9 @@ public sealed class ClassMemberEdit
         if(VisibilityChanged)parts.Add("visibility '"+OldVisibility+"'->'"+NewVisibility+"'");
         if(TypeChanged)parts.Add("type '"+OldType+"'->'"+NewType+"'");
         if(ParametersChanged)parts.Add("parameters '"+OldParameters+"'->'"+NewParameters+"'");
+        if(ReturnTypeChanged)parts.Add("returnType ->'"+NewReturnType+"'");
+        if(MultiplicityChanged)parts.Add("multiplicity ->'"+NewMultiplicity+"'");
+        if(DefaultChanged)parts.Add("default ->'"+NewDefault+"'");
         return Kind+" "+string.Join(", ",parts.ToArray());
     }
 }
@@ -2570,7 +2666,7 @@ public sealed class ClassLinkChange { public string Action, FromId, ToId, Field,
 // One attribute or operation to create under a class, or one existing member to delete.
 public sealed class ClassMemberChange
 {
-    public string Action, Kind, OwnerId, OwnerAlias, CurrentId, Text, Visibility, Type, Parameters, TypeKind="";
+    public string Action, Kind, OwnerId, OwnerAlias, CurrentId, Text, Visibility, Type, Parameters, TypeKind="", ReturnType="", ReturnTypeKind="", Multiplicity="", Default="";
     // For adds: the current id of the first retained sibling of the same kind that follows in the input, or null for the end.
     public string InsertBeforeId;
     public bool IsStatic;
@@ -2604,10 +2700,14 @@ public sealed class ClassTextPreflight
     public int NameCount { get { return Edits.Count(e=>e.NameChanged); } }
     public int VisibilityCount { get { return Edits.Count(e=>e.VisibilityChanged); } }
     public int TypeCount { get { return Edits.Count(e=>e.TypeChanged); } }
-    static readonly string[] AttributeKeys = { "name", "visibility", "type" };
-    static readonly string[] OperationKeys = { "name", "visibility", "parameters" };
+    static readonly string[] AttributeKeys = { "name", "visibility", "type", "multiplicity", "default" };
+    static readonly string[] OperationKeys = { "name", "visibility", "parameters", "returnType" };
     // The exporter prints an operation's parameters as the argument names joined by ", "
     // (K019); a hand-written "name : Type" keeps the type after the colon.
+    // "int <<Kind>>" on a return type: the kind names the definition to create.
+    public static string StripKind(string type) { return Regex.Replace(type??"",@"\s*<<[^>]+>>$",""); }
+    public static string KindOf(string type) { var m=Regex.Match(type??"",@"<<([^>]+)>>$");return m.Success?m.Groups[1].Value.Trim():""; }
+    public static bool IsMultiplicity(string text) { return Regex.IsMatch(text??"",@"^(\d+|\*)(\.\.(\d+|\*))?$"); }
     public static string[] ParameterNames(string parameters)
     {
         if(string.IsNullOrEmpty(parameters))return new string[0];
@@ -2669,7 +2769,16 @@ public sealed class ClassTextPreflight
             {
                 if((c.Action=="add" && pendingClasses.Contains(c.Id)) || (c.Action=="delete" && deletedClasses.Contains(c.Id)))continue;
                 if(c.Action=="add" || c.Action=="delete")continue; // reason already recorded
-                if(c.Action=="update") { result.Reasons.Add("update class"+where+" ["+c.Detail+"]: クラスの改名・キーワード変更は扱えません"); continue; }
+                if(c.Action=="update")
+                {
+                    ClassElement classBefore,classAfter;
+                    var classKeys=c.Detail.Split(new[]{','},StringSplitOptions.RemoveEmptyEntries);
+                    if(classKeys.Any(k=>k!="name")) { result.Reasons.Add("update class"+where+" ["+c.Detail+"]: クラスのキーワード・ステレオタイプの変更は扱えません"); continue; }
+                    if(!old.TryGetValue(c.Id,out classBefore) || !target.TryGetValue(c.Id,out classAfter)) { result.Reasons.Add("update class"+where+": 対応する要素を特定できません"); continue; }
+                    if(classAfter.Text.Length==0 || classAfter.Text.Contains("\\n")) { result.Reasons.Add("update class"+where+": 空または改行を含む名前は扱えません"); continue; }
+                    result.Edits.Add(new ClassMemberEdit{CurrentId=c.Id,Kind="class",Line=c.Line,OldText=classBefore.Text,NewText=classAfter.Text,NameChanged=true});
+                    continue;
+                }
                 result.Reasons.Add(c.Action+" class"+where+": 扱えません"); continue;
             }
             // Members and links that belong to a deleted class go with it and need no separate write.
@@ -2718,14 +2827,15 @@ public sealed class ClassTextPreflight
                     string ownerKey=member.Parent??"";
                     if(!old.TryGetValue(ownerKey,out owner) && !(pendingClasses.Contains(ownerKey) && target.TryGetValue(ownerKey,out owner))) { result.Reasons.Add("add "+c.Kind+where+": 所有先のクラスが既存または追加するクラスではありません"); continue; }
                     if(member.Text.Length==0 || member.Text.Contains("\\n")) { result.Reasons.Add("add "+c.Kind+where+": 空または改行を含む名前は扱えません"); continue; }
-                    if(c.Kind=="operation" && member.Attr("returnType").Length>0) { result.Reasons.Add("add operation"+where+": 戻り値付きの操作の追加は扱えません"); continue; }
+
                     if(c.Kind=="operation" && ParameterNames(member.Attr("parameters")).Any(n=>n.Length==0 || n.Contains("\\n"))) { result.Reasons.Add("add operation"+where+": 引数名が空か改行を含みます"); continue; }
                     if(c.Kind=="operation" && ParameterNames(member.Attr("parameters")).Distinct().Count()!=ParameterNames(member.Attr("parameters")).Length) { result.Reasons.Add("add operation"+where+": 同じ名前の引数があります"); continue; }
-                    if(c.Kind=="attribute" && (member.Attr("multiplicity").Length>0 || member.Attr("default").Length>0)) { result.Reasons.Add("add attribute"+where+": 多重度・既定値付きの属性の追加は扱えません"); continue; }
+                    if(c.Kind=="attribute" && member.Attr("multiplicity").Length>0 && !IsMultiplicity(member.Attr("multiplicity"))) { result.Reasons.Add("add attribute"+where+": 多重度は 1、0..1、0..*、1..* のように書いてください"); continue; }
                     if(member.Attr("type").Contains(", ")) { result.Reasons.Add("add attribute"+where+": 複数の型を持つ属性は扱えません"); continue; }
                     string memberKind=c.Kind;
                     var following=plan.Expected.Elements.Where(e=>e.Parent==member.Parent && e.Kind==memberKind && e.Order>member.Order && old.ContainsKey(e.Id)).OrderBy(e=>e.Order).FirstOrDefault();
-                    result.Members.Add(new ClassMemberChange{Action="add",Kind=c.Kind,OwnerId=owner.Id,OwnerAlias=owner.Attr("alias"),Text=member.Text,Visibility=member.Attr("visibility"),Type=member.Attr("type"),Parameters=member.Attr("parameterTypes").Length>0?member.Attr("parameterTypes"):member.Attr("parameters"),IsStatic=member.Attr("static")=="true",Line=c.Line,InsertBeforeId=following==null?null:following.Id,TypeKind=member.Attr("typeKind")});
+                    result.Members.Add(new ClassMemberChange{Action="add",Kind=c.Kind,OwnerId=owner.Id,OwnerAlias=owner.Attr("alias"),Text=member.Text,Visibility=member.Attr("visibility"),Type=member.Attr("type"),Parameters=member.Attr("parameterTypes").Length>0?member.Attr("parameterTypes"):member.Attr("parameters"),IsStatic=member.Attr("static")=="true",Line=c.Line,InsertBeforeId=following==null?null:following.Id,TypeKind=member.Attr("typeKind"),
+                        ReturnType=StripKind(member.Attr("returnType")),ReturnTypeKind=KindOf(member.Attr("returnType")),Multiplicity=member.Attr("multiplicity"),Default=member.Attr("default")});
                     continue;
                 }
                 if(c.Action=="delete" && old.TryGetValue(c.Id,out member))
@@ -2747,7 +2857,9 @@ public sealed class ClassTextPreflight
             var edit=new ClassMemberEdit{CurrentId=c.Id,Kind=c.Kind,Line=c.Line,OldText=before.Text,NewText=after.Text,
                 OldVisibility=before.Attr("visibility"),NewVisibility=after.Attr("visibility"),OldType=before.Attr("type"),NewType=after.Attr("type"),
                 OldParameters=before.Attr("parameters"),NewParameters=after.Attr("parameterTypes").Length>0?after.Attr("parameterTypes"):after.Attr("parameters"),TypeKind=after.Attr("typeKind"),
-                NameChanged=keys.Contains("name"),VisibilityChanged=keys.Contains("visibility"),TypeChanged=keys.Contains("type"),ParametersChanged=keys.Contains("parameters")};
+                NameChanged=keys.Contains("name"),VisibilityChanged=keys.Contains("visibility"),TypeChanged=keys.Contains("type"),ParametersChanged=keys.Contains("parameters"),
+                ReturnTypeChanged=keys.Contains("returnType"),MultiplicityChanged=keys.Contains("multiplicity"),DefaultChanged=keys.Contains("default"),
+                NewReturnType=StripKind(after.Attr("returnType")),ReturnTypeKind=KindOf(after.Attr("returnType")),NewMultiplicity=after.Attr("multiplicity"),NewDefault=after.Attr("default")};
             string problem=null;
             if(edit.ParametersChanged && ParameterNames(edit.NewParameters).Any(n=>n.Length==0 || n.Contains("\\n")))problem="引数名が空か改行を含みます";
             else if(edit.ParametersChanged && ParameterNames(edit.NewParameters).Distinct().Count()!=ParameterNames(edit.NewParameters).Length)problem="同じ名前の引数があります";
@@ -2755,6 +2867,7 @@ public sealed class ClassTextPreflight
             else if(edit.VisibilityChanged && edit.NewVisibility.Length==0)problem="可視性の記号を消す変更は扱えません";
             else if(edit.TypeChanged && edit.NewType.Length==0)problem="型を空にする変更は扱えません";
             else if(edit.TypeChanged && edit.NewType.Contains(", "))problem="複数の型を持つ属性は扱えません";
+            else if(edit.MultiplicityChanged && !IsMultiplicity(edit.NewMultiplicity))problem="多重度は 1、0..1、0..*、1..* のように書いてください";
             if(problem!=null) { result.Reasons.Add("update "+c.Kind+where+" ["+c.Detail+"]: "+problem); continue; }
             result.Edits.Add(edit);
         }
@@ -2765,7 +2878,7 @@ public sealed class ClassTextPreflight
     {
         var sb=new StringBuilder();
         sb.Append("本文更新の事前判定: ").Append(Candidate?"候補あり":"停止").Append('\n');
-        sb.Append("メンバ ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append(" / 引数 ").Append(Edits.Count(e=>e.ParametersChanged)).Append("） / クラス追加 ").Append(ClassAddCount).Append(" 削除 ").Append(ClassDeleteCount).Append(" / メンバ追加 ").Append(MemberAddCount).Append(" 削除 ").Append(MemberDeleteCount).Append(" / 関連 追加 ").Append(LinkAddCount).Append(" 削除 ").Append(LinkDeleteCount).Append(" / 停止理由 ").Append(Reasons.Count).Append("件\n");
+        sb.Append("メンバ ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append(" / 引数 ").Append(Edits.Count(e=>e.ParametersChanged)).Append(" / 戻り値 ").Append(Edits.Count(e=>e.ReturnTypeChanged)).Append(" / 多重度 ").Append(Edits.Count(e=>e.MultiplicityChanged)).Append(" / 既定値 ").Append(Edits.Count(e=>e.DefaultChanged)).Append("） / クラス追加 ").Append(ClassAddCount).Append(" 削除 ").Append(ClassDeleteCount).Append(" / メンバ追加 ").Append(MemberAddCount).Append(" 削除 ").Append(MemberDeleteCount).Append(" / 関連 追加 ").Append(LinkAddCount).Append(" 削除 ").Append(LinkDeleteCount).Append(" / 停止理由 ").Append(Reasons.Count).Append("件\n");
         foreach(var r in Reasons)sb.Append("  ").Append(r).Append('\n');
         return sb.ToString().TrimEnd();
     }
