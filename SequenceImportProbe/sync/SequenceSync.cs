@@ -956,6 +956,14 @@ public sealed class SequenceStructurePreparation
             .Concat(gate.DeleteMessages).Concat(gate.DeleteFragments).Concat(gate.DeleteOperands));
         Func<SequenceJson,string,bool> inside=(relation,id)=>
             leaving.Contains(V(relation,"SourceId")) && leaving.Contains(V(relation,"TargetId"));
+        // Name the relation that blocked a deletion. Guessing which one it is has cost
+        // several runs; the message can simply say.
+        Func<SequenceJson,string,string> describe=(relation,id)=>{
+            string other=V(relation,"SourceId")==id?V(relation,"TargetId"):V(relation,"SourceId");
+            string kind=byId.ContainsKey(other)?V(byId[other],"EntityType"):"不明";
+            return " 関連="+V(relation,"MetamodelId")+" 向き="+(V(relation,"TargetId")==id?"相手→対象":"対象→相手")
+                +" 相手の型="+kind+(leaving.Contains(other)?"（削除対象）":"（残る）");
+        };
         foreach(string id in gate.DeleteExecutions)
         {
             checkPort(id,before[id].Links["participant"].Single());
@@ -964,7 +972,7 @@ public sealed class SequenceStructurePreparation
                 if(changedIds.Contains(V(relation,"Id")))continue;
                 bool owned=V(relation,"TargetId")==id && (V(relation,"MetamodelId")==SequencePayload.Prefix+"___Interaction_ExecutionSpecification"
                     || V(relation,"MetamodelId")==SequencePayload.Prefix+"OwnedExecutionSpecification");
-                Require(owned || inside(relation,id),"削除する実行区間に未対応の関連が残っています。");
+                Require(owned || inside(relation,id),"削除する実行区間に未対応の関連が残っています。"+describe(relation,id));
             }
         }
         var affected=new HashSet<string>(gate.DeleteExecutions.Concat(gate.ReconnectMessages));
@@ -1133,7 +1141,7 @@ public sealed class SequenceStructurePreparation
             foreach(var relation in relations.Where(r=>V(r,"SourceId")==pair[0] || V(r,"TargetId")==pair[0]))
                 Require(inside(relation,pair[0])
                     || (V(relation,"TargetId")==pair[0] && V(relation,"MetamodelId")==SequencePayload.Prefix+pair[1]),
-                    "削除する"+pair[2]+"に未対応の関連が残っています。");
+                    "削除する"+pair[2]+"に未対応の関連が残っています。"+describe(relation,pair[0]));
             Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==pair[0])==1,"削除する"+pair[2]+"の図形を一意に取得できません。");
         }
         foreach(string id in gate.DeleteMessages)
@@ -1144,15 +1152,16 @@ public sealed class SequenceStructurePreparation
                 Require(inside(relation,id)
                     || (V(relation,"TargetId")==id
                         && allowed.Any(kind=>V(relation,"MetamodelId")==SequencePayload.Prefix+kind)),
-                    "削除するメッセージに未対応の関連が残っています。");
+                    "削除するメッセージに未対応の関連が残っています。"+describe(relation,id));
             Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==id)==1,"削除するメッセージの図形を一意に取得できません。");
         }
         foreach(string id in gate.DeleteParticipants)
         {
             Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="Lifeline","削除対象が退避データ内の参加者ではありません。");
             foreach(var relation in relations.Where(r=>V(r,"SourceId")==id || V(r,"TargetId")==id))
-                Require(V(relation,"TargetId")==id && V(relation,"MetamodelId")==SequencePayload.Prefix+"___Interaction_Lifeline",
-                    "削除する参加者に未対応の関連が残っています。");
+                Require(inside(relation,id)
+                    || (V(relation,"TargetId")==id && V(relation,"MetamodelId")==SequencePayload.Prefix+"___Interaction_Lifeline"),
+                    "削除する参加者に未対応の関連が残っています。"+describe(relation,id));
             Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==id)==1,"削除する参加者の図形を一意に取得できません。");
         }
         var patch=SequenceJson.Parse(editor.ImportJson());
