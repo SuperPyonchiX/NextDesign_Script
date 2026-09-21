@@ -5873,10 +5873,10 @@ public static class ModelApi
 }
 
 // ============================================================
-//  ここから ClassImportProbe/sync の転記（tools/build_main.py が生成）
+//  ここから PlantUmlTool/src の転記（tools/build_main.py が生成）
 // ============================================================
 
-// BEGIN TRANSCRIBED ClassSyncRuntime.cs
+// BEGIN TRANSCRIBED 61-class-sync-runtime.cs
 // SDK-facing runtime: read the active class diagram, probe its metamodel, compare with
 // PlantUML. Nothing here writes to the project.
 public static class ClassDiagramKind
@@ -7603,9 +7603,9 @@ public static class ClassSyncRuntime
         ClassExperiment.Show(app);
     }
 }
-// END TRANSCRIBED ClassSyncRuntime.cs
+// END TRANSCRIBED 61-class-sync-runtime.cs
 
-// BEGIN TRANSCRIBED ClassSync.cs
+// BEGIN TRANSCRIBED 60-class-sync.cs
 // Pure class-diagram synchronization core. No SDK or filesystem dependencies.
 // IDs in these documents are local parser keys, never Next Design model IDs.
 public sealed class ClassElement
@@ -8809,7 +8809,7 @@ public static class ClassAudit
     }
     static string Pad(string s,int width) { int length=0;foreach(var ch in s)length+=ch<128?1:2;return s+new string(' ',Math.Max(0,width-length)); }
 }
-// END TRANSCRIBED ClassSync.cs
+// END TRANSCRIBED 60-class-sync.cs
 
 // ============================================================
 //  Part C / クラス図の PlantUML 同期 API（NdMcp 固有部。src/classsync.cs）

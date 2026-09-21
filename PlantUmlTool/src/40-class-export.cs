@@ -795,12 +795,18 @@ public class ClassDiagramCollector
 // ------------------------------------------------------------
 //  出力：PlantUML テキストの組み立て
 // ------------------------------------------------------------
+// 2.2.0: 本文は同期側の読取り（ClassDiagramSnapshot）と書出し（ClassPumlWriter）で作る。
+// 「差分を検証」「PlantUMLを反映」が比較に使うのと同じ経路なので、出力した直後の
+// ファイルは差分 0 件になることが構成上保証される。旧 ClassDiagramCollector /
+// WriteNodes / WriteLinks は状態遷移図が共有する TextOf 等のために残しているが、
+// クラス図の出力には使わない。
 public class ClassPlantUmlExporter
 {
     private readonly IDiagram _d;
     private readonly ClassPlantUmlOptions _o;
     private readonly StringBuilder _sb = new StringBuilder();
     private ClassDiagramCollector _c;
+    private ClassDiagramSnapshot _snapshot;
 
     public ClassPlantUmlExporter(IDiagram diagram, ClassPlantUmlOptions options)
     {
@@ -810,11 +816,11 @@ public class ClassPlantUmlExporter
 
     public List<string> Warnings
     {
-        get { return _c != null ? _c.Warnings : new List<string>(); }
+        get { return _snapshot != null ? _snapshot.Limitations : new List<string>(); }
     }
 
-    public int NodeCount { get { return _c != null ? _c.Nodes.Count : 0; } }
-    public int LinkCount { get { return _c != null ? _c.Links.Count : 0; } }
+    public int NodeCount { get { return _snapshot != null ? _snapshot.Document.Elements.Count(e => e.Kind == "class") : 0; } }
+    public int LinkCount { get { return _snapshot != null ? _snapshot.Document.Elements.Count(e => e.Kind == "link") : 0; } }
 
     public string DiagramName()
     {
@@ -829,6 +835,22 @@ public class ClassPlantUmlExporter
     }
 
     public string Export()
+    {
+        var log = new StringBuilder();
+        _snapshot = ClassDiagramSnapshot.Read(_d, new ClassSyncOptions(), log);
+        var text = ClassPumlWriter.Write(_snapshot.Document);
+        // ヘッダだけオプションを反映する（本文は同期側と同一に保つ）
+        var lines = new List<string>(text.Split('\n'));
+        var insertAt = 1;
+        if (!string.IsNullOrEmpty(_o.Theme)) lines.Insert(insertAt++, "!theme " + _o.Theme);
+        if (_o.EmitTimestamp) lines.Insert(insertAt++, "' generated at " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+        if (!_o.IncludeTitle) lines.RemoveAll(l => l.StartsWith("title ", StringComparison.Ordinal));
+        if (!_o.HideEmptyMembers) lines.Remove("hide empty members");
+        return string.Join(_o.NewLine, lines.ToArray());
+    }
+
+    // 旧経路（ClassDiagramCollector 直結）。比較用に残す。リボンからは呼ばれない
+    public string ExportLegacy()
     {
         _c = new ClassDiagramCollector(_d, _o);
         _c.Collect();

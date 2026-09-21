@@ -24,7 +24,8 @@ def wrap_handlers(source: str) -> str:
         out.append(line)
         if inside:
             depth += line.count("{") - line.count("}")
-            if depth == 0 and line.strip() == "}":
+            if depth == 0 and "{" in line or depth == 0 and line.strip() == "}":
+                # The handler's braces are balanced (single-line body or closing line).
                 out.append("}")
                 inside = False
     return "\n".join(out)

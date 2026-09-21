@@ -41,7 +41,8 @@
 7. 0.5.0〜0.6.5: 残りの構造差分（すべて実機成功）。(a) 引数付き操作の追加と既存操作の引数の改名・追加は**確定まで実機成功（K044）**。参照されている操作の削除は停止（意図どおり）。優先順は (a) 引数付き操作の追加（`Parameter` 配下に Argument を作る）、(b) 型モデルの新規作成は 3 種とも試行・確定が実機成功（K048〜K051）、(c) クラスの追加は、モデル作成と `AddNodeShape` による可視ノードまで実機成功（K053）。同名型の選択（0.6.1）、製品が張る匿名参照の補完と新クラスのメンバのメタクラス（0.6.2）を修正。**クラス追加の確定（図に箱が出る）・削除・保存再読込後の差分 0 件まで実機成功（K056）。** 矢印形の違う再出力でも差分 0 件（K057）。**0.6.4 のノードごと削除で孤立ノード 0、関連付きの追加と削除の確定も成功（K058）。** **図の外（シーケンス図のライフライン）から参照される既存クラスの削除は書込み前に停止することを実機確認（K060）。** 計画にあった全項目が実機で確認済み。
 8. 0.7.0: 通常操作「PlantUMLを反映」を追加（実装済み、実機待ち）。本体を `ClassSyncRuntime.Run` に切り出し、MCP から呼べる形にした。
 9. 0.7.1: クラスの改名、操作の戻り値（`Type` 参照、片側比較）、属性の多重度（`LowerBound/UpperBound`、片側比較）・既定値（`Default`）。実装済み、実機待ち。
-10. NdMcp 0.2.0: クラス図更新の API を追加（実装済み、実機待ち）。`ClassSync.cs` / `ClassSyncRuntime.cs` を `build_main.py` で転記し、`GET /class-sync/editors|current`、`POST /class-sync/preview|trial|apply` と MCP ツール `nd_class_diagram_*` を用意した。修正は ClassImportProbe 側で行い、NdMcp は再生成するだけにする。
+10. NdMcp 0.2.0: クラス図更新の API を追加。**実機で editors / current / preview / trial / apply（図を閉じた状態、クラス追加・関連追加を含む）まで成功（2026-09-22、K061〜K063）。**`ClassSync.cs` / `ClassSyncRuntime.cs` を `build_main.py` で転記し、`GET /class-sync/editors|current`、`POST /class-sync/preview|trial|apply` と MCP ツール `nd_class_diagram_*` を用意した。修正は ClassImportProbe 側で行い、NdMcp は再生成するだけにする。
+11. PlantUmlTool 2.2.0 への統合（2026-09-22、実機待ち）: 同期本体を `PlantUmlTool/src/60-class-sync.cs` / `61-class-sync-runtime.cs` に移し、リボン「反映（クラス図）」を追加。クラス図の出力を同期側の Snapshot + Writer に切り替え、出力→無編集比較が 0 件になることを構成で保証する。NdMcp と ClassImportProbe はここから転記。シーケンス図は SequenceImportProbe の検証完了後に同じ形で統合し、状態遷移図はその後に新規で作る。Probe 2 拡張は統合後に削除する。
 
 ### 2026-09-21 時点の到達点（同日夜に更新）
 

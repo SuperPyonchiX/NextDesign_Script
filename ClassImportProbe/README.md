@@ -4,7 +4,7 @@
 
 NdMcp 0.2.0 の実機（`/class-sync/current` → 無編集で `/class-sync/preview`）で、`+ Connect(a, b) : decltype(Skeleton::Connect(a,b))` のように戻り値に括弧を含む操作 8 件が「引数の更新」として出た。操作行の正規表現が引数を最後の `)` まで貪欲に取っていたため。最初の `(` と対応する `)` までを引数とし、その後ろの `: 戻り値` に括弧があってもそのまま戻り値にする。`uint8 (raw)` のような括弧付きの型や `width (mm)` のような括弧付き属性名の扱いは変えない。
 
-`sync/ClassSync.cs` と `sync/ClassSyncRuntime.cs` は NdMcp 0.2.0 にも転記される（`python NdMcp/tools/build_main.py`）。ここを直したら NdMcp 側も再生成する。MCP からの使い方は [NdMcp/README.md](../NdMcp/README.md) を参照。
+**同期本体は PlantUmlTool 2.2.0 に統合した。** 正本は `PlantUmlTool/src/60-class-sync.cs` / `61-class-sync-runtime.cs` で、この拡張の `main.cs` は `python ClassImportProbe/sync/bundle.py` でそこから埋め込む。テストと samples も `PlantUmlTool/tests/` に移した。PlantUmlTool の「反映（クラス図）」で同じ操作ができるようになったら、この拡張は削除する予定（版履歴と実機手順の記録として README は残す）。MCP からの使い方は [NdMcp/README.md](../NdMcp/README.md) を参照。
 
 ## 0.7.1: クラスの改名、戻り値、多重度、既定値
 

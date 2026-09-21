@@ -1,8 +1,8 @@
 {
   "name": "PlantUmlTool",
   "displayName": "PlantUML 連携",
-  "description": "シーケンス図・クラス図・状態遷移図を PlantUML 形式で出力します。PlantUML からの取り込みは未提供です。",
-  "version": "2.1.3",
+  "description": "シーケンス図・クラス図・状態遷移図を PlantUML 形式で出力し、編集した PlantUML をクラス図へ反映します。",
+  "version": "2.2.0",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -36,6 +36,48 @@
                   "imageSmall": "resources/exportall16.png",
                   "imageLarge": "resources/exportall32.png",
                   "command": "PlantUmlTool.ExportAll"
+                }
+              ]
+            },
+            {
+              "id": "PlantUmlTool.SyncGroup",
+              "label": "反映（クラス図）",
+              "controls": [
+                {
+                  "id": "PlantUmlTool.PreviewClassSyncButton",
+                  "type": "Button",
+                  "label": "差分を検証",
+                  "description": "表示中のクラス図と PlantUML ファイルを比較し、追加・削除・更新の候補を表示します。図は変更しません。",
+                  "imageSmall": "resources/probeclass16.png",
+                  "imageLarge": "resources/probeclass32.png",
+                  "command": "PlantUmlTool.PreviewClassSync"
+                },
+                {
+                  "id": "PlantUmlTool.ApplyClassSyncButton",
+                  "type": "Button",
+                  "label": "PlantUMLを反映",
+                  "description": "PlantUML ファイルの内容を表示中のクラス図とモデルに反映します（確定。Undo できます）。",
+                  "imageSmall": "resources/import16.png",
+                  "imageLarge": "resources/import32.png",
+                  "command": "PlantUmlTool.ApplyClassSync"
+                },
+                {
+                  "id": "PlantUmlTool.TrialClassSyncButton",
+                  "type": "Button",
+                  "label": "試行して戻す",
+                  "description": "反映を一時的に適用して照合し、必ず取り消します。反映前の確認用です。",
+                  "imageSmall": "resources/importall16.png",
+                  "imageLarge": "resources/importall32.png",
+                  "command": "PlantUmlTool.TrialClassSync"
+                },
+                {
+                  "id": "PlantUmlTool.ClassSyncDetailsButton",
+                  "type": "Button",
+                  "label": "診断表示",
+                  "description": "直前の検証・反映の詳細（変更候補の内訳、要照合項目、停止理由）を表示します。",
+                  "imageSmall": "resources/probe16.png",
+                  "imageLarge": "resources/probe32.png",
+                  "command": "PlantUmlTool.ClassSyncDetails"
                 }
               ]
             },
@@ -99,6 +141,34 @@
         "title": "クラス図調査",
         "group": "plantuml",
         "execFunc": "ProbeClassDiagram",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "PlantUmlTool.PreviewClassSync",
+        "title": "差分を検証",
+        "group": "plantuml",
+        "execFunc": "PreviewClassSync",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "PlantUmlTool.ApplyClassSync",
+        "title": "PlantUMLを反映",
+        "group": "plantuml",
+        "execFunc": "ApplyClassSync",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "PlantUmlTool.TrialClassSync",
+        "title": "試行して戻す",
+        "group": "plantuml",
+        "execFunc": "TrialClassSync",
+        "canExecWhen": { "uiState": "ProjectOpened" }
+      },
+      {
+        "id": "PlantUmlTool.ClassSyncDetails",
+        "title": "診断表示",
+        "group": "plantuml",
+        "execFunc": "ShowClassSyncDetails",
         "canExecWhen": { "uiState": "ProjectOpened" }
       }
     ]
