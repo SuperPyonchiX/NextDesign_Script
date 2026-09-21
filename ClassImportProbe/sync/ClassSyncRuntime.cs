@@ -1529,7 +1529,7 @@ public static class ClassSyncRuntime
     }
     public static void Preview(IApplication app,bool trial=false,bool retain=false)
     {
-        var log=new StringBuilder();string report=null;string screenshot=null;string currentPuml=null;
+        var log=new StringBuilder();string report=null;string screenshot=null;string currentPuml=null;string snapshotNote=null;
         trial=trial||retain;
         try
         {
@@ -1556,8 +1556,11 @@ public static class ClassSyncRuntime
                 }
                 throw;
             }
-            foreach(var ignored in parser.Ignored)log.AppendLine("表示指定を無視: "+ignored);
+            foreach(var ignored in parser.Ignored)log.AppendLine("無視した行: "+ignored);
+            var skippedLinks=parser.Ignored.Where(x=>x.Contains("宣言のない別名")).ToList();
+            if(skippedLinks.Count>0)snapshotNote="宣言のない別名の関連行 "+skippedLinks.Count+" 件を無視（クラスの削除に伴う）";
             var snapshot=ClassDiagramSnapshot.Read(diagram,new ClassSyncOptions(),log);
+            if(snapshotNote!=null)snapshot.Limitations.Add(snapshotNote);
             var current=snapshot.Document;
             var plan=ClassSyncPlan.Build(current,desired,()=>Guid.NewGuid().ToString());
             currentPuml=ClassPumlWriter.Write(current);

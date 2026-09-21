@@ -478,8 +478,17 @@ public sealed class ClassPumlParser
     void ResolveLink(Pending p)
     {
         ClassElement from,to;
-        if(!aliases.TryGetValue(p.From,out from))throw Error(p.Line,"未宣言の別名です: "+p.From);
-        if(!aliases.TryGetValue(p.To,out to))throw Error(p.Line,"未宣言の別名です: "+p.To);
+        // A line whose end is not declared usually means its class declaration was removed
+        // to delete the class while its link lines stayed. The class's links go with it, so
+        // such lines are skipped (and listed) rather than rejected.
+        bool fromOk=aliases.TryGetValue(p.From,out from),toOk=aliases.TryGetValue(p.To,out to);
+        if(!fromOk || !toOk)
+        {
+            string missing=!fromOk?p.From:p.To;
+            if(!Regex.IsMatch(missing,@"^[A-Za-z0-9_]+$"))throw Error(p.Line,"未宣言の別名です: "+missing);
+            Ignored.Add(p.Line+": 宣言のない別名 "+missing+" の関連行（クラスの削除に伴い無視）");
+            return;
+        }
         bool generalization=p.Arrow=="--|>" || p.Arrow=="..|>" || p.Arrow=="<|--" || p.Arrow=="<|..";
         // The exporter joins labels as "a / b"; when the first direction is an anonymous field the
         // line reads ": / b" after trimming, which still means two directions.

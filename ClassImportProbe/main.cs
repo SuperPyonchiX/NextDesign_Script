@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.6.4";
+    public const string Version = "0.6.5";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -1581,7 +1581,7 @@ public static class ClassSyncRuntime
     }
     public static void Preview(IApplication app,bool trial=false,bool retain=false)
     {
-        var log=new StringBuilder();string report=null;string screenshot=null;string currentPuml=null;
+        var log=new StringBuilder();string report=null;string screenshot=null;string currentPuml=null;string snapshotNote=null;
         trial=trial||retain;
         try
         {
@@ -1608,8 +1608,11 @@ public static class ClassSyncRuntime
                 }
                 throw;
             }
-            foreach(var ignored in parser.Ignored)log.AppendLine("表示指定を無視: "+ignored);
+            foreach(var ignored in parser.Ignored)log.AppendLine("無視した行: "+ignored);
+            var skippedLinks=parser.Ignored.Where(x=>x.Contains("宣言のない別名")).ToList();
+            if(skippedLinks.Count>0)snapshotNote="宣言のない別名の関連行 "+skippedLinks.Count+" 件を無視（クラスの削除に伴う）";
             var snapshot=ClassDiagramSnapshot.Read(diagram,new ClassSyncOptions(),log);
+            if(snapshotNote!=null)snapshot.Limitations.Add(snapshotNote);
             var current=snapshot.Document;
             var plan=ClassSyncPlan.Build(current,desired,()=>Guid.NewGuid().ToString());
             currentPuml=ClassPumlWriter.Write(current);
@@ -2126,8 +2129,17 @@ public sealed class ClassPumlParser
     void ResolveLink(Pending p)
     {
         ClassElement from,to;
-        if(!aliases.TryGetValue(p.From,out from))throw Error(p.Line,"未宣言の別名です: "+p.From);
-        if(!aliases.TryGetValue(p.To,out to))throw Error(p.Line,"未宣言の別名です: "+p.To);
+        // A line whose end is not declared usually means its class declaration was removed
+        // to delete the class while its link lines stayed. The class's links go with it, so
+        // such lines are skipped (and listed) rather than rejected.
+        bool fromOk=aliases.TryGetValue(p.From,out from),toOk=aliases.TryGetValue(p.To,out to);
+        if(!fromOk || !toOk)
+        {
+            string missing=!fromOk?p.From:p.To;
+            if(!Regex.IsMatch(missing,@"^[A-Za-z0-9_]+$"))throw Error(p.Line,"未宣言の別名です: "+missing);
+            Ignored.Add(p.Line+": 宣言のない別名 "+missing+" の関連行（クラスの削除に伴い無視）");
+            return;
+        }
         bool generalization=p.Arrow=="--|>" || p.Arrow=="..|>" || p.Arrow=="<|--" || p.Arrow=="<|..";
         // The exporter joins labels as "a / b"; when the first direction is an anonymous field the
         // line reads ": / b" after trimming, which still means two directions.

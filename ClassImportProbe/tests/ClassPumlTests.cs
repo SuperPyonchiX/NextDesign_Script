@@ -82,7 +82,10 @@ public static class ClassPumlTests
         Check(ClassPumlWriter.Write(parens) == ClassPumlWriter.Write(ClassDocument.Parse(ClassPumlWriter.Write(parens))), "parentheses round trip");
 
         // Unknown lines and undeclared aliases stop with the input line number.
-        Expect("@startuml\nclass \"A\" as A\nA --> B\n@enduml\n", "3行目");
+        // A link to an undeclared alias is skipped and reported, not rejected (the class was removed).
+        var removedParser = new ClassPumlParser();
+        var removedDoc = removedParser.Parse("@startuml\nclass \"A\" as A\nA --> B\n@enduml\n");
+        Check(removedDoc.Elements.Count(e => e.Kind == "link") == 0 && removedParser.Ignored.Count == 1 && removedParser.Ignored[0].Contains("B"), "undeclared alias line skipped: " + string.Join("|", removedParser.Ignored.ToArray()));
         Expect("@startuml\nclass \"A\" as A\nfoo bar\n@enduml\n", "3行目");
         Expect("@startuml\nclass \"A\" as A {\n+ x : int\n", "閉じ括弧");
         Expect("@startuml\nclass \"A\" as A\nclass \"B\" as A\n@enduml\n", "重複");
