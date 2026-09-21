@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.57";
+    public const string Title = "シーケンス生成実験 / 0.8.58";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -80,7 +80,7 @@ public static class SequenceExperiment
             if (owner == null || ownerField == null || !owner.IsEditable || owner.IsDeleted || owner.IsProxy)
                 throw new InvalidOperationException("E102: 新しい図を置く親モデルを取得できないか、編集できません。");
             if (!app.Window.UI.ShowConfirmDialog(structureProbe ? "コピーのプロジェクトで実行してください。\n一時図の受信先変更と実行区間の削除・再作成を検証し、最後にすべて取り消します。\n削除中だけSDKの編集可否検査を一時停止します。自動保存はしません。" : replaceExisting ? "コピーのプロジェクトで実行してください。\n現在の図をPlantUMLの内容で置き換えます。図自体のIDは維持します。\n配下の要素と手作業の配置は作り直します。子要素と外部モデルとの関連は引き継ぎません。自動保存はしません。" : deltaProbe ? "コピーのプロジェクトで実行してください。\n一時図で名前変更・メッセージ1件の差分追加と削除を検証し、最後に取り消します。\n削除中だけSDKの編集可否検査を一時停止する実験です。既存図は更新せず、自動保存もしません。" : updateProbe ? "コピーのプロジェクトで実行してください。\n一時図を作り、同じIDでメッセージ名を再取り込みします。\n最後に一時図を含む操作を取り消します。既存図を更新する検証ではありません。\n自動保存はしません。" : "実プロジェクトのコピーを開いていますか？\n新しい検証用シーケンス図を同じ親に追加する実験です。\n既存図の内容は入力にコピーしません。自動保存しません。\n失敗時はトランザクションの取消を試みますが、実機での復元動作は未確認です。", Title)) return;
-            var folder = app.Window.UI.ShowSelectFolderDialog("会社PC内の実験結果の保存先");
+            var folder = app.Window.UI.ShowSelectFolderDialog("実験結果の保存先");
             if (string.IsNullOrEmpty(folder)) return;
             directory = Path.Combine(folder, "sequence_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + Guid.NewGuid().ToString("N").Substring(0,8));
             Directory.CreateDirectory(directory);
@@ -303,7 +303,7 @@ public static class SequenceExperiment
         {
             // Commit/Rollback are explicit terminal operations. Do not call Dispose:
             // with autoCommit=false it may attempt another rollback after completion.
-            Details = "会社PC内の診断情報（モデルID・属性名を含む場合があります）\n" + detail.ToString();
+            Details = "診断情報\n" + detail.ToString();
             if (directory != null)
             {
                 detail.AppendLine("newRoot=" + rootId + "; committed=" + committed + "; rollbackReturned=" + rolledBack);
@@ -757,14 +757,19 @@ public static class PumlRuntime
             Learn(diagram,"複合フラグメント",c); p.Resolved.Add("複合フラグメント\t"+c.Id+"\t"+c.FullName);
             p.Types["CombinedFragment"]=c.Id; classes.Add(c);
             var declaredOperand=Child(p,c,"Operands","Operands","___CombinedFragment_InteractionOperand");
-            var operand=Resolve(diagram,new[]{"InteractionOperand","Operand","Operands"},
-                diagram.Fragments.Where(f=>f.Model.Metaclass.Id==c.Id).SelectMany(f=>f.Operands).Select(o=>o.Model),
-                declaredOperand!=null && declaredOperand.IsAbstract
-                    ?(Anywhere(project,declaredOperand) ?? Sibling(c,declaredOperand)
-                        ?? Pin(c,declaredOperand,"分岐") ?? Remembered(diagram,c,declaredOperand,"分岐") ?? Descend(project,declaredOperand,"分岐"))
-                    :declaredOperand,"分岐");
-            Learn(diagram,"分岐",operand); p.Resolved.Add("分岐\t"+operand.Id+"\t"+operand.FullName);
-            p.Types["InteractionOperand"]=operand.Id; classes.Add(operand);
+            // The operand is not a class of its own: the product names it after the
+            // interaction class with a suffix, which is why no class list ever held it.
+            string operandId=source[0].Id+"_Operand";
+            var sampleOperands=diagram.Fragments.Where(f=>f.Model.Metaclass.Id==c.Id).SelectMany(f=>f.Operands).Select(o=>o.Model).ToArray();
+            var operand=sampleOperands.Length>0?Resolve(diagram,new[]{"InteractionOperand","Operand","Operands"},sampleOperands,
+                    declaredOperand!=null && declaredOperand.IsAbstract
+                        ?(Anywhere(project,declaredOperand) ?? Sibling(c,declaredOperand)
+                            ?? Pin(c,declaredOperand,"分岐") ?? Remembered(diagram,c,declaredOperand,"分岐"))
+                        :declaredOperand,"分岐")
+                :null;
+            if(operand!=null)operandId=operand.Id;
+            p.Resolved.Add("分岐\t"+operandId+"\t"+(operand==null?"（相互作用の型から導出）":operand.FullName));
+            p.Types["InteractionOperand"]=operandId; if(operand!=null)classes.Add(operand);
             foreach(var op in plan.All().Where(n=>n.Kind=="fragment").Select(n=>n.Operator).Distinct())p.Operators[op]=Literal(c,"Operator",op);
         }
         if(plan.All().Any(n=>n.Kind=="ref"))
@@ -1151,7 +1156,7 @@ public static class SequenceSyncRuntime
                     if(trial)
                     {
                         SequenceExperiment.Summary=SequenceStructureTrial.Run(app,project,diagram,preparation,plan,exported,directory,log,retain,reconnectCommit);
-                        screenshot=SequenceExperiment.Summary+"\f会社PC内の試行診断\n"+log.ToString();
+                        screenshot=SequenceExperiment.Summary+"\f試行診断\n"+log.ToString();
                     }
                 }
             }

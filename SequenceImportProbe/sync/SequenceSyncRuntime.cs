@@ -274,7 +274,7 @@ public static class SequenceSyncRuntime
                     if(trial)
                     {
                         SequenceExperiment.Summary=SequenceStructureTrial.Run(app,project,diagram,preparation,plan,exported,directory,log,retain,reconnectCommit);
-                        screenshot=SequenceExperiment.Summary+"\f会社PC内の試行診断\n"+log.ToString();
+                        screenshot=SequenceExperiment.Summary+"\f試行診断\n"+log.ToString();
                     }
                 }
             }
