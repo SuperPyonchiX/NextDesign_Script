@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.3.4";
+    public const string Version = "0.3.5";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -405,7 +405,14 @@ public sealed class ClassDiagramSnapshot
 // Read-only observation of the persisted shape structure for later write-back design.
 public static class ClassEditorCapture
 {
-    public static string Read(IProject project,IModel model,IEditor diagram,StringBuilder log)
+    public sealed class Unit { public string Schema; public ClassJsonNode Editor; }
+    // Editor node plus the unit's schema version, for building an Editors-only re-import.
+    public static Unit ReadUnit(IProject project,IModel model,IEditor diagram,StringBuilder log)
+    {
+        var raw=ClassJsonNode.Parse(Read(project,model,diagram,log,true));
+        return new Unit{Schema=ClassJsonNode.Value(raw,"SchemaVersion"),Editor=raw["Editor"]};
+    }
+    public static string Read(IProject project,IModel model,IEditor diagram,StringBuilder log,bool withSchema=false)
     {
         string directory=Path.Combine(Path.GetTempPath(),"ClassEditor-"+Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -424,6 +431,7 @@ public static class ClassEditorCapture
             var nodes=mine["Nodes"];var connectors=mine["Connectors"];
             log.AppendLine("Editor JSON: ViewType="+(ClassJsonNode.Value(mine,"ViewType")??"?")+" Nodes="+(nodes!=null && nodes.Items!=null?nodes.Items.Count:0)
                 +" Connectors="+(connectors!=null && connectors.Items!=null?connectors.Items.Count:0)+" keys="+string.Join(",",mine.Properties.Keys));
+            if(withSchema)return "{\"SchemaVersion\":"+ClassJson.Q(ClassJsonNode.Value(exported,"SchemaVersion")??"")+",\"Editor\":"+mine.ToJsonString()+"}";
             return mine.ToJsonString();
         }
         finally
@@ -720,6 +728,45 @@ public static class ClassSyncRuntime
         e.Links["from"]=new[]{from.Id};e.Links["to"]=new[]{to.Id};
         doc.Elements.Add(e);return true;
     }
+    // Build the captured editor plus one entry per connector that appeared during this run,
+    // cloned from an existing connector (same DefinitionId, Style and Labels) with the new
+    // connector's own Id, model and ends and IsVisible=true, then re-apply Editors only.
+    static void ReapplyEditorWithVisibleConnectors(IApplication app,IProject project,ClassEditorCapture.Unit unit,HashSet<string> before,StringBuilder log)
+    {
+        var d=app.Workspace.CurrentEditor as IDiagram;if(d==null)throw new InvalidOperationException("C230: 図が表示されていません。");
+        var connectors=unit.Editor["Connectors"];
+        var template=connectors.Items[0];
+        int added=0;
+        foreach(var c in d.Connectors.Cast<object>().ToList())
+        {
+            var shape=c as IConnector;if(shape==null || before.Contains(shape.Id))continue;
+            var own=ClassDiagramKind.ModelOf(shape);
+            if(own==null || shape.StartPoint==null || shape.EndPoint==null)throw new InvalidOperationException("C230: 追加されたコネクタのモデルまたは両端を取得できません。");
+            var clone=ClassJsonNode.Parse(template.ToJsonString());
+            clone.Properties["Id"]=new ClassJsonNode{Raw=ClassJson.Q(shape.Id)};
+            clone.Properties["ModelId"]=new ClassJsonNode{Raw=ClassJson.Q(own.Id)};
+            clone.Properties["SourceId"]=new ClassJsonNode{Raw=ClassJson.Q(shape.StartPoint.Id)};
+            clone.Properties["TargetId"]=new ClassJsonNode{Raw=ClassJson.Q(shape.EndPoint.Id)};
+            clone.Properties["Visible"]=new ClassJsonNode{Raw="true"};
+            clone.Properties["IsVisible"]=new ClassJsonNode{Raw="true"};
+            clone.Properties.Remove("Bends");
+            connectors.Items.Add(clone);added++;
+            log.AppendLine("connector entry for re-import: id="+shape.Id+" model="+own.ClassName+" "+shape.StartPoint.Id+" -> "+shape.EndPoint.Id+" (template "+ClassJsonNode.Value(template,"Id")+")");
+        }
+        if(added==0) { log.AppendLine("no new connector to re-apply");return; }
+        int countBefore=CountConnectors(app);
+        string json="{\"Type\":\"Model\",\"SchemaVersion\":"+ClassJson.Q(unit.Schema)+",\"TopElementId\":"+ClassJson.Q(ClassJsonNode.Value(unit.Editor,"ModelId")??"")
+            +",\"Entities\":[],\"Relations\":[],\"Editors\":["+unit.Editor.ToJsonString()+"]}";
+        var result=project.ImportUnitFromJson(json,null,null);
+        if(result==null)throw new InvalidOperationException("C230: エディタ再反映の結果がありません。");
+        log.AppendLine("editor re-import: "+result.State);
+        foreach(var e in result.Errors)log.AppendLine(e.Kind+": "+e.Message);
+        if(result.State!="success" || result.Errors.Any(e=>e.Kind!=UnitImportErrorKind.Info))throw new InvalidOperationException("C230: エディタ再反映が失敗または警告を返しました。");
+        int countAfter=CountConnectors(app);
+        log.AppendLine("connectors after re-import: "+countBefore+" -> "+countAfter);
+        if(countAfter!=countBefore)throw new InvalidOperationException("C230: エディタ再反映でコネクタ数が変わりました（"+countBefore+" -> "+countAfter+"）。同じIDで上書きされていません。");
+        DescribeNewConnectors(app,before,log);
+    }
     static void ShowNewConnectors(IApplication app,HashSet<string> before,StringBuilder log)
     {
         var d=app.Workspace.CurrentEditor as IDiagram;if(d==null)return;
@@ -889,6 +936,22 @@ public static class ClassSyncRuntime
         string summary="名前 "+preflight.NameCount+" / 可視性 "+preflight.VisibilityCount+" / 型 "+preflight.TypeCount+" / 関連追加 "+preflight.LinkAddCount+" / 関連削除 "+preflight.LinkDeleteCount;
         string confirmation=(retain?"コピーのプロジェクトで実行してください。\nメンバ "+targets.Count+"件・関連 "+links.Count+"件（"+summary+"）を更新し、読戻しが一致したときだけ確定します。":"コピーのプロジェクトで実行してください。\nメンバ "+targets.Count+"件・関連 "+links.Count+"件（"+summary+"）を更新し、読戻しを照合した後に必ず取り消します。")
             +"\n自動保存はしません。Undo/Redo と保存再読込は手動で確認してください。";
+        // A new relationship gets a connector the product keeps hidden in the saved editor
+        // (K032/K033); SDK flags do not reach it. The fix re-applies the editor with that
+        // connector marked visible, which needs the editor exported before any change
+        // (ExportModelUnit refuses a dirty project, K055).
+        ClassEditorCapture.Unit unit=null;
+        if(preflight.LinkAddCount>0)
+        {
+            var diagramModel=ClassDiagramKind.ModelOf(editor);
+            if(diagramModel==null || string.IsNullOrEmpty(project.Path))throw new InvalidOperationException("C220: 保存済みのプロジェクトで実行してください。");
+            if(project.HasUnsavedChanges())throw new InvalidOperationException("C220: 関連の追加には更新前の図の退避が必要です。プロジェクトを保存してから実行してください（自動保存はしません）。");
+            unit=ClassEditorCapture.ReadUnit(project,diagramModel,editor,log);
+            if(unit.Editor==null || string.IsNullOrEmpty(unit.Schema))throw new InvalidOperationException("C220: 図の Editor JSON を退避できません。");
+            var existing=unit.Editor["Connectors"];
+            if(existing==null || existing.Items==null || existing.Items.Count==0)throw new InvalidOperationException("C220: 図に既存の線がないため、線の雛形を取れません。");
+            log.AppendLine("editor captured for re-import: schema="+unit.Schema+" connectors="+existing.Items.Count);
+        }
         if(!app.Window.UI.ShowConfirmDialog(confirmation,ClassExperiment.Title))return "本文更新: 中止（確認で取消）";
         if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=editorId
             || ClassDiagramSnapshot.Read((IDiagram)app.Workspace.CurrentEditor,new ClassSyncOptions(),new StringBuilder()).Document.ToJson()!=originalJson)
@@ -959,7 +1022,7 @@ public static class ClassSyncRuntime
                 // (K029); the model is right and only the flag hides the line. Show it and
                 // verify the flag reads back true.
                 stage="コネクタの表示";
-                ShowNewConnectors(app,connectorIdsBefore,log);
+                if(unit!=null)ReapplyEditorWithVisibleConnectors(app,project,unit,connectorIdsBefore,log);
             }
             stage="更新後の照合";
             VerifyAgainst(app,editorId,effective,"更新後",log);
