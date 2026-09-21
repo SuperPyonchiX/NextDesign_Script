@@ -12,7 +12,7 @@
 
 - クラス図は `EditorType == "ERDiagram"`（一部 `"TreeDiagram"`）で型付きアクセサがない。`IDiagram.Nodes / Connectors` とモデル側のメタクラス・フィールドで意味を取る。読取り経路は PlantUmlTool の出力処理と同じ規則を写した。
 - 実機プロファイルのクラス図メタモデル（属性・操作・関連のフィールド名）は未記録。対応表は推測から始め、「クラス図調査」の実測で埋める。実測値はローカル知識へ保存し、この文書には書かない。
-- Editor JSON では属性・操作がノードの `Compartments[].Items[].ModelId` として載る（公式サンプルの観測）。実機の形は「クラス図調査」の退避で確認する。
+- Editor JSON の `Compartments` は実機では区画の表示状態だけで、メンバごとの図形を持たない（公式サンプルの `Items[].ModelId` はこのプロファイルに無い）。属性・操作の追加削除はモデル操作だけで図に反映される見込み（未検証）。
 - ImportUnitFromJson・関連の順序番号・Undo/Redo・エディタ再描画の規則はシーケンス図で観測済みだが、すべて `SequenceDiagram` エディタでの観測。ERDiagram で同じかは検証する。
 
 ## 0.1.0で実装した範囲
