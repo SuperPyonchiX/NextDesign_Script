@@ -2,8 +2,9 @@
 //  NdMcp / main.cs  (Next Design V3.x スクリプト拡張)
 //
 //  ★ このファイルは tools/build_main.py が生成する。直接編集しない。
-//     編集対象: src/header.cs / src/server.cs（サーバー本体）
+//     編集対象: src/header.cs / src/server.cs（サーバー本体）/ src/classsync.cs（クラス図同期の窓口）
 //               AgentReview/main.cs の Part 0 / 4 / 7 / 8（エクスポータ。転記元）
+//               ClassImportProbe/sync/ClassSync.cs, ClassSyncRuntime.cs（クラス図同期。転記元）
 //
 //  Next Design のモデルを MCP（Model Context Protocol）クライアントから
 //  読めるようにするための、Next Design 側のサーバー。
@@ -16,7 +17,7 @@
 //    - リクエストはスレッドプールで受け、ND API を触る処理は
 //      SynchronizationContext.Send() で UI スレッドへ戻してから実行する
 //    - 応答は JSON（手書きの Json ライタ。GET + クエリ文字列のみなので JSON パーサは不要）
-//    - 読み取り専用。モデルへの書き込み API は持たない
+//    - モデル読み出しは読み取り専用。書き込みは /class-sync/trial と /class-sync/apply だけ
 //
 //  API（すべて GET。path= はモデルパス、id= はモデル ID。両方空ならプロジェクト）:
 //    /ping                        生存確認（ND API 非依存）
@@ -28,6 +29,13 @@
 //    /markdown?path=&id=          サブツリーを design.md 形式の Markdown で返す
 //    /export?path=&id=&out=       design.md + diagrams\*.puml + _index.md をフォルダへ書き出す
 //
+//  クラス図同期（ClassImportProbe の同期本体を転記。この API だけがモデルへ書き込む）:
+//    GET  /class-sync/editors?path=&id=          モデルに紐づく図の一覧
+//    GET  /class-sync/current?path=&id=&editor=  クラス図を PlantUML（PlantUmlTool 互換の書式）で返す
+//    POST /class-sync/preview  {path|id, editor?, plantuml|file}  比較のみ
+//    POST /class-sync/trial    {path|id, editor?, plantuml|file}  一時適用して照合し、必ず取り消す
+//    POST /class-sync/apply    {path|id, editor?, plantuml|file}  確定する（Undo 可）
+//
 //  設定: %USERPROFILE%\.nd-mcp\config.ini（port= / exportDir=）
 //  ログ: %USERPROFILE%\.nd-mcp\server.log
 // ============================================================
@@ -38,6 +46,7 @@ using NextDesign.Extension;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;

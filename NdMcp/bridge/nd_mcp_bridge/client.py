@@ -30,8 +30,18 @@ class NdClient:
         url = self.base_url + path
         if query:
             url += "?" + urllib.parse.urlencode(query, encoding="utf-8")
+        return self._send(urllib.request.Request(url), timeout)
+
+    def post(self, path: str, body: dict, timeout: float | None = None) -> dict:
+        """JSON 本文を POST する（クラス図同期など、クエリ文字列に収まらない入力向け）。"""
+        data = json.dumps({k: v for k, v in body.items() if v not in (None, "")}, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(self.base_url + path, data=data, method="POST",
+                                         headers={"Content-Type": "application/json; charset=utf-8"})
+        return self._send(request, timeout)
+
+    def _send(self, request: urllib.request.Request, timeout: float | None) -> dict:
         try:
-            with urllib.request.urlopen(url, timeout=timeout or self.timeout) as res:
+            with urllib.request.urlopen(request, timeout=timeout or self.timeout) as res:
                 return json.loads(res.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")

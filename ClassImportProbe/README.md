@@ -1,5 +1,7 @@
 # クラス図同期実験 0.7.1
 
+`sync/ClassSync.cs` と `sync/ClassSyncRuntime.cs` は NdMcp 0.2.0 にも転記される（`python NdMcp/tools/build_main.py`）。ここを直したら NdMcp 側も再生成する。MCP からの使い方は [NdMcp/README.md](../NdMcp/README.md) を参照。
+
 ## 0.7.1: クラスの改名、戻り値、多重度、既定値
 
 | 差分 | 書き方 | 比較 |

@@ -340,7 +340,7 @@ public class NdMcpHttpError : Exception
 
 public static class NdMcpServer
 {
-    public const string Version = "0.1.2";
+    public const string Version = "0.2.0";
 
     public static int Port = 3560;
     public static string ExportDir;
@@ -432,9 +432,10 @@ public static class NdMcpServer
 
     private static object Route(HttpListenerRequest request)
     {
-        if (request.HttpMethod != "GET") throw new NdMcpHttpError(405, "GET のみ対応しています");
         var path = request.Url.AbsolutePath;
         var q = request.QueryString;
+        if (path.StartsWith("/class-sync/", StringComparison.Ordinal)) return RouteClassSync(request, path, q);
+        if (request.HttpMethod != "GET") throw new NdMcpHttpError(405, "GET のみ対応しています");
 
         if (path == "/ping")
         {
@@ -472,6 +473,56 @@ public static class NdMcpServer
             default: throw new NdMcpHttpError(404, "不明なパス: " + path);
         }
         return OnUiThread(work);
+    }
+
+    // クラス図同期。読み出しは GET、比較・反映は JSON 本文（path / id / editor / plantuml）の POST。
+    private static object RouteClassSync(HttpListenerRequest request, string path, NameValueCollection q)
+    {
+        Func<IApplication, object> work;
+        if (path == "/class-sync/current" || path == "/class-sync/editors")
+        {
+            if (request.HttpMethod != "GET") throw new NdMcpHttpError(405, path + " は GET のみ対応しています");
+            var modelPath = q["path"] ?? "";
+            var modelId = q["id"] ?? "";
+            if (path == "/class-sync/editors") work = app => ClassSyncApi.Editors(app, modelPath, modelId);
+            else { var editorId = q["editor"] ?? ""; work = app => ClassSyncApi.Current(app, modelPath, modelId, editorId); }
+            return OnUiThread(work);
+        }
+        var mode = path.Substring("/class-sync/".Length);
+        if (mode != "preview" && mode != "trial" && mode != "apply") throw new NdMcpHttpError(404, "不明なパス: " + path);
+        if (request.HttpMethod != "POST") throw new NdMcpHttpError(405, path + " は POST のみ対応しています");
+        var body = ReadBody(request);
+        ClassJsonNode json;
+        try { json = ClassJsonNode.Parse(body); }
+        catch (Exception e) { throw new NdMcpHttpError(400, "本文が JSON として読めません: " + e.Message); }
+        if (json == null || json.Properties == null) throw new NdMcpHttpError(400, "本文は JSON オブジェクトにしてください");
+        var bodyPath = ClassJsonNode.Value(json, "path") ?? "";
+        var bodyId = ClassJsonNode.Value(json, "id") ?? "";
+        var bodyEditor = ClassJsonNode.Value(json, "editor") ?? "";
+        var plantuml = ClassJsonNode.Value(json, "plantuml") ?? "";
+        if (plantuml.Length == 0)
+        {
+            // 大きな図はファイルで渡せる（このPC上のパス）。
+            var file = ClassJsonNode.Value(json, "file") ?? "";
+            if (file.Length == 0) throw new NdMcpHttpError(400, "plantuml（本文）か file（このPC上の .puml パス）を指定してください");
+            try
+            {
+                if (new FileInfo(file).Length > ClassSyncApi.MaxPumlLength) throw new NdMcpHttpError(400, "file は 300KB 以下にしてください");
+                plantuml = File.ReadAllText(file, new UTF8Encoding(false, true));
+            }
+            catch (NdMcpHttpError) { throw; }
+            catch (Exception e) { throw new NdMcpHttpError(400, "file を読めません: " + e.Message); }
+        }
+        work = app => ClassSyncApi.Sync(app, bodyPath, bodyId, bodyEditor, plantuml, mode);
+        return OnUiThread(work);
+    }
+
+    private static string ReadBody(HttpListenerRequest request)
+    {
+        if (!request.HasEntityBody) return "";
+        if (request.ContentLength64 > 2L * 1024 * 1024) throw new NdMcpHttpError(413, "本文は 2MB 以下にしてください");
+        using (var reader = new StreamReader(request.InputStream, new UTF8Encoding(false, true)))
+            return reader.ReadToEnd();
     }
 
     private static object OnUiThread(Func<IApplication, object> work)
@@ -516,6 +567,10 @@ public static class NdMcpServer
                 "GET /tree?path=&id=&depth=2", "GET /model?path=&id=",
                 "GET /search?q=&metaclass=&limit=50", "GET /markdown?path=&id=",
                 "GET /export?path=&id=&out=",
+                "GET /class-sync/editors?path=&id=", "GET /class-sync/current?path=&id=&editor=",
+                "POST /class-sync/preview {path|id, editor?, plantuml|file}",
+                "POST /class-sync/trial {path|id, editor?, plantuml|file}",
+                "POST /class-sync/apply {path|id, editor?, plantuml|file}",
             });
     }
 
@@ -662,6 +717,9 @@ public static class ModelApi
     }
 
     // path / id からモデルを引く。両方空ならプロジェクト。id 優先
+    // クラス図同期 API からも使う（同じ解決規則）。
+    public static IModel ResolveModel(IApplication app, string path, string id) { return Resolve(app, path, id); }
+
     private static IModel Resolve(IApplication app, string path, string id)
     {
         var project = RequireProject(app);
@@ -817,7 +875,7 @@ public static class ModelApi
         return dot >= 0 ? full.Substring(dot + 1) : full;
     }
 
-    private static string PathOf(IModel m)
+    public static string PathOf(IModel m)
     {
         if (m == null) return "";
         string path = null;

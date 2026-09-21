@@ -5,6 +5,8 @@ Next Design のスクリプト拡張はエントリポイントが1ファイル�
   src/header.cs（ファイルヘッダと using）
   AgentReview/main.cs の Part 0 / 4 / 7 / 8（共通ヘルパ・Markdown 出力・PlantUML 出力）
   src/server.cs（HTTP サーバー本体）
+  ClassImportProbe/sync/ClassSyncRuntime.cs, ClassSync.cs（クラス図の PlantUML 同期。転記元）
+  src/classsync.cs（同期 API の窓口と ClassExperiment の代替）
 をこの順に連結して main.cs を生成する。転記元は AgentReview 側で実機検証済みのコードなので、
 エクスポータの修正は AgentReview で行い、本スクリプトで再生成する。
 
@@ -19,6 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 REPO = ROOT.parent
 AGENT_REVIEW = REPO / "AgentReview" / "main.cs"
+CLASS_SYNC = [REPO / "ClassImportProbe" / "sync" / "ClassSyncRuntime.cs", REPO / "ClassImportProbe" / "sync" / "ClassSync.cs"]
 OUT = ROOT / "main.cs"
 
 # 転記する Part（ヘッダ行の「Part N /」で切り出す）。順序は転記順
@@ -80,6 +83,18 @@ def build() -> str:
     chunks.append("\npublic static class DesignArtifactWriter\n{\n" + writer + "\n}")
     chunks.append("")
     chunks.append(server.rstrip("\n"))
+    # クラス図同期は ClassImportProbe で実機検証済みのコードをそのまま転記する。修正は ClassImportProbe 側で行う。
+    chunks.append("")
+    chunks.append(SEPARATOR)
+    chunks.append("//  ここから ClassImportProbe/sync の転記（tools/build_main.py が生成）")
+    chunks.append(SEPARATOR)
+    for source in CLASS_SYNC:
+        chunks.append("")
+        chunks.append("// BEGIN TRANSCRIBED " + source.name)
+        chunks.append(source.read_text(encoding="utf-8-sig").rstrip("\n"))
+        chunks.append("// END TRANSCRIBED " + source.name)
+    chunks.append("")
+    chunks.append((ROOT / "src" / "classsync.cs").read_text(encoding="utf-8").rstrip("\n"))
     chunks.append("")
     return "\n".join(chunks)
 
