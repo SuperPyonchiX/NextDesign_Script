@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.63";
+    public const string Title = "シーケンス生成実験 / 0.8.64";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -1256,6 +1256,9 @@ public static class SequenceStructureTrial
             +prepared.DeleteFrameIds.Length+reconnectCount;
         Func<SequenceChange,bool> supported=c=>
             (c.Action=="delete" && c.Kind=="execution")
+            // Boundary anchors shifting with a deletion write nothing. The preflight only
+            // lets a plan through when that is all an execution update amounts to.
+            || (c.Action=="update" && c.Kind=="execution")
             || (reconnectCommit && c.Action=="update" && c.Kind=="message")
             || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message"))
             || (reconnectCommit && c.Action=="delete"

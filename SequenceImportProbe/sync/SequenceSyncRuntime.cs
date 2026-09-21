@@ -374,6 +374,9 @@ public static class SequenceStructureTrial
             +prepared.DeleteFrameIds.Length+reconnectCount;
         Func<SequenceChange,bool> supported=c=>
             (c.Action=="delete" && c.Kind=="execution")
+            // Boundary anchors shifting with a deletion write nothing. The preflight only
+            // lets a plan through when that is all an execution update amounts to.
+            || (c.Action=="update" && c.Kind=="execution")
             || (reconnectCommit && c.Action=="update" && c.Kind=="message")
             || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message"))
             || (reconnectCommit && c.Action=="delete"
