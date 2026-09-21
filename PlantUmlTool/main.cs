@@ -2,6 +2,9 @@
 //  Next Design エクステンション : PlantUML 連携（出力 / 取り込み）
 //  エントリポイント（C# スクリプト / Next Design V3.x）
 //
+//  ★ このファイルは tools/build_main.py が src/*.cs をファイル名順に連結して生成する。
+//     直接編集しない。編集対象は src/ 配下（構成の各 Part がそのままファイルになっている）。
+//
 //  構成:
 //    Part 0  出力エンジン  PlantUmlOptions / PlantUmlText / SeqEvent /
 //                          OpenFragment / SequencePlantUmlExporter
@@ -18,7 +21,7 @@
 //                          StatePlantUmlExporter / StateExportRunner
 //
 //  制約:
-//    - main に指定できるファイルは1つだけ。分割できない
+//    - main に指定できるファイルは1つだけ。src/ を分割して書き、生成物を配置する
 //    - 変換エンジンはグローバルオブジェクト（App / UI / Output）に触らない。
 //      クラス内からは参照できないため、IApplication を引数で受け取る
 //    - デバッガは使えない。Output.WriteLine が唯一の手がかりになる

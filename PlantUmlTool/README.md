@@ -211,6 +211,23 @@ Next Design には `ClassDiagram` というエディタ種別が**存在しな�
 
 ## 開発
 
+`main.cs` は生成物。`src/*.cs` をファイル名順に連結したもので、編集は `src/` 側で行う。
+
+| ファイル | 内容 |
+|---|---|
+| `src/00-header.cs` | ヘッダコメントと using |
+| `src/10-sequence-export.cs` | シーケンス図の出力（Part 0） |
+| `src/20-sequence-import-legacy.cs` | 旧シーケンス取り込み（Part 1〜5）。リボンから到達しない。`MetaProbe` だけ「メタモデル調査」が使う |
+| `src/30-handlers.cs` | コマンドハンドラ（Part 6） |
+| `src/40-class-export.cs` | クラス図の出力（Part 7） |
+| `src/50-state-export.cs` | 状態遷移図の出力（Part 8） |
+
+```
+python PlantUmlTool/tools/build_main.py            # main.cs を再生成
+python PlantUmlTool/tools/build_main.py --check    # main.cs が src/ と一致するか
+python PlantUmlTool/tests/compile_sdk.py --sdk-root work/sequence-api-research   # 公式 SDK に対するコンパイル検査
+```
+
 `manifest.json` を変更したら、配置する前に必ず検証を通すこと。マニフェストの誤りは
 Next Design 自体をエラーなしで起動不能にする。
 
