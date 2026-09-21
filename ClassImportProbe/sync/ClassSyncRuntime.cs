@@ -889,12 +889,15 @@ public static class ClassSyncRuntime
         // connector marked visible, which needs the editor exported before any change
         // (ExportModelUnit refuses a dirty project, K055).
         ClassEditorCapture.Unit unit=null;
-        if(preflight.LinkAddCount>0)
+        // The editor re-import does not come back on Rollback (K034), so the trial only
+        // proves the relationship write; the visible line is applied on commit alone.
+        if(preflight.LinkAddCount>0 && retain)
         {
             var diagramModel=ClassDiagramKind.ModelOf(editor);
             if(diagramModel==null || string.IsNullOrEmpty(project.Path))throw new InvalidOperationException("C220: 保存済みのプロジェクトで実行してください。");
             if(project.HasUnsavedChanges())throw new InvalidOperationException("C220: 関連の追加には更新前の図の退避が必要です。プロジェクトを保存してから実行してください（自動保存はしません）。");
-            unit=ClassEditorCapture.ReadUnit(project,diagramModel,editor,log);
+            try { unit=ClassEditorCapture.ReadUnit(project,diagramModel,editor,log); }
+            catch(Exception ex) { throw new InvalidOperationException("C220: 更新前の図を退避できません。保存済みの状態で実行してください（未保存扱いのときはコピーを開き直してください）。\n"+ex.Message); }
             if(unit.Editor==null || string.IsNullOrEmpty(unit.Schema))throw new InvalidOperationException("C220: 図の Editor JSON を退避できません。");
             var existing=unit.Editor["Connectors"];
             if(existing==null || existing.Items==null || existing.Items.Count==0)throw new InvalidOperationException("C220: 図に既存の線がないため、線の雛形を取れません。");
@@ -1005,7 +1008,7 @@ public static class ClassSyncRuntime
         foreach(var error in new[]{trial.ApplyError,trial.RollbackError,trial.VerifyError})if(error!=null)log.AppendLine(error.ToString());
         Refresh(app,log);
         lines.Add("一時適用と照合: "+(trial.Applied?"一致":"失敗 ("+stage+")"));
-        if(links.Count>0)lines.Add("関連 追加 "+preflight.LinkAddCount+" / 削除 "+preflight.LinkDeleteCount+"（コネクタの中身は診断ファイル）");
+        if(links.Count>0)lines.Add("関連 追加 "+preflight.LinkAddCount+" / 削除 "+preflight.LinkDeleteCount+(preflight.LinkAddCount>0?"（線の表示は確定時に付けます）":""));
         lines.Add("取消API: "+(trial.RollbackReturned?"正常終了":"失敗"));
         lines.Add("復元照合: "+(trial.Restored?"一致":"未確認または不一致。保存せずにコピーを開き直してください"));
         return "本文更新の試行 (UPDATE-C000)\n"+string.Join("\n",lines.ToArray());
