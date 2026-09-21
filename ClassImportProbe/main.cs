@@ -18,7 +18,7 @@ public void ShowClassDetails(ICommandContext context, ICommandParams parameters)
 
 public static class ClassExperiment
 {
-    public const string Version = "0.4.2";
+    public const string Version = "0.5.0";
     public const string Title = "クラス図同期実験 / " + Version;
     public static string Summary = "クラス図を開き「クラス図調査」または「差分を検証」を押してください。";
     public static string Details = "まだ実行していません。";
@@ -695,9 +695,92 @@ public static class ClassSyncRuntime
         log.AppendLine("restored: SDK read-back equals the pre-trial state");
     }
     // One resolved edit: the member model plus, for a type change, the old and new type models.
-    class ResolvedEdit { public IModel Model; public ClassMemberEdit Edit; public IModel OldType, NewType; public string VisibilityValue; }
+    class ResolvedEdit { public IModel Model; public ClassMemberEdit Edit; public IModel OldType, NewType; public string VisibilityValue; public ArgumentPlan Arguments; }
+    // How to make an operation's Parameter children match a list of names: the metaclass to
+    // create (from an existing argument anywhere in the project, else the field's type class)
+    // and the owning field. Types on arguments are resolved by name like attribute types.
+    class ArgumentPlan { public IField Field; public IClass ArgumentClass; public string[] Names, Types; public IModel[] TypeModels; }
+    static ArgumentPlan PlanArguments(IProject project,IModel operation,IModel ownerClass,string parameters,ClassSyncOptions options,ref List<IModel> everything,StringBuilder log)
+    {
+        var names=ClassTextPreflight.ParameterNames(parameters);var types=ClassTextPreflight.ParameterTypes(parameters);
+        var plan=new ArgumentPlan{Names=names,Types=types,TypeModels=new IModel[names.Length]};
+        if(names.Length==0)return plan;
+        var field=options.ParameterFieldNames.Select(n=>FieldOf(operation,n)).FirstOrDefault(f=>f!=null && f.IsEmbedded);
+        if(field==null)throw new InvalidOperationException("C220: 操作に引数の所有フィールドがありません。");
+        plan.Field=field;
+        var sibling=operation.GetFieldValues(field.Name).Cast<object>().OfType<IModel>().FirstOrDefault(m=>!m.IsDeleted);
+        if(sibling==null)
+        {
+            // Another operation of the same class, then any operation of this metaclass in the project.
+            var owners=new List<IModel>();owners.AddRange(ownerClass.GetChildren().Cast<IModel>().Where(m=>!m.IsDeleted && m.Metaclass!=null && m.Metaclass.Id==operation.Metaclass.Id));
+            foreach(var o in owners) { sibling=o.GetFieldValues(field.Name).Cast<object>().OfType<IModel>().FirstOrDefault(m=>!m.IsDeleted);if(sibling!=null)break; }
+        }
+        if(sibling==null)
+        {
+            if(everything==null)everything=Tree(project.DesignModel).ToList();
+            sibling=everything.Where(m=>!m.IsProxy && m.Owner!=null && m.Metaclass!=null && m.Owner.Metaclass!=null && m.Owner.Metaclass.Id==operation.Metaclass.Id).FirstOrDefault(m=>{IField f;try { f=m.GetOwnerField(); } catch(Exception) { return false; }return f!=null && f.Name==field.Name;});
+        }
+        plan.ArgumentClass=sibling!=null?sibling.Metaclass:field.TypeClass;
+        if(plan.ArgumentClass==null)throw new InvalidOperationException("C220: 引数のメタクラスを特定できません。");
+        for(int i=0;i<names.Length;i++)
+        {
+            if(types[i].Length==0)continue;
+            if(everything==null)everything=Tree(project.DesignModel).ToList();
+            var typeField=sibling!=null?options.TypeFieldNames.Select(n=>FieldOf(sibling,n)).FirstOrDefault(f=>f!=null && f.IsReference):null;
+            string typeClass=typeField!=null?typeField.Type:"Type";
+            var candidates=everything.Where(m=>!m.IsProxy && IsA(m,typeClass) && ClassText.Inline(ClassText.Normalize(m.Name))==types[i]).ToList();
+            if(candidates.Count>1) { var near=candidates.Where(m=>{var o=m.Owner;int g=0;while(o!=null && g++<32){if(o.Id==ownerClass.Id)return true;o=o.Owner;}return false;}).ToList();if(near.Count>0)candidates=near; }
+            if(candidates.Count!=1)throw new InvalidOperationException("C220: 引数 '"+names[i]+"' の型 '"+types[i]+"' に一致するモデルが "+candidates.Count+" 件です。");
+            plan.TypeModels[i]=candidates[0];
+        }
+        log.AppendLine("arguments: field="+field.Name+" class="+plan.ArgumentClass.FullName+" names=["+string.Join(", ",names)+"]");
+        return plan;
+    }
+    // Make the Parameter children equal to plan.Names in order: rename in place when the count
+    // is unchanged (the exporter carries names only), otherwise delete the extras and append
+    // the missing ones, then re-read and compare.
+    static void ApplyArguments(IModel operation,ArgumentPlan plan,ClassSyncOptions options,StringBuilder log)
+    {
+        if(plan.Field==null)
+        {
+            // No parameters wanted: delete whatever is there.
+            var field0=options.ParameterFieldNames.Select(n=>FieldOf(operation,n)).FirstOrDefault(f=>f!=null && f.IsEmbedded);
+            if(field0==null)return;
+            foreach(var a in operation.GetFieldValues(field0.Name).Cast<object>().OfType<IModel>().Where(m=>!m.IsDeleted).ToList())a.Delete();
+            return;
+        }
+        var existing=operation.GetFieldValues(plan.Field.Name).Cast<object>().OfType<IModel>().Where(m=>!m.IsDeleted).ToList();
+        if(existing.Count==plan.Names.Length)
+        {
+            for(int i=0;i<existing.Count;i++)if(ClassText.Inline(ClassText.Normalize(existing[i].Name))!=plan.Names[i])existing[i].SetField("Name",plan.Names[i]);
+        }
+        else
+        {
+            var wanted=new HashSet<string>(plan.Names,StringComparer.Ordinal);
+            foreach(var a in existing.Where(m=>!wanted.Contains(ClassText.Inline(ClassText.Normalize(m.Name)))).ToList())a.Delete();
+            var present=new HashSet<string>(operation.GetFieldValues(plan.Field.Name).Cast<object>().OfType<IModel>().Where(m=>!m.IsDeleted).Select(m=>ClassText.Inline(ClassText.Normalize(m.Name))),StringComparer.Ordinal);
+            for(int i=0;i<plan.Names.Length;i++)
+            {
+                if(present.Contains(plan.Names[i]))continue;
+                IModel created=null;
+                var now=operation.GetFieldValues(plan.Field.Name).Cast<object>().OfType<IModel>().Where(m=>!m.IsDeleted).ToList();
+                if(i<now.Count) { try { created=operation.AddNewModelAt(plan.Field,plan.ArgumentClass,"before",i); } catch(Exception ex) { log.AppendLine("AddNewModelAt for argument failed, appending: "+ex.Message);created=null; } }
+                if(created==null)created=operation.AddNewModel(plan.Field,plan.ArgumentClass);
+                if(created==null)throw new InvalidOperationException("C230: 引数を作成できませんでした。");
+                created.SetField("Name",plan.Names[i]);
+                if(plan.TypeModels[i]!=null)
+                {
+                    var tf=options.TypeFieldNames.Select(n=>FieldOf(created,n)).FirstOrDefault(f=>f!=null && f.IsReference);
+                    if(tf!=null)created.Relate(tf.Name,plan.TypeModels[i]);
+                }
+                log.AppendLine("created argument "+created.ClassName+" '"+plan.Names[i]+"' at "+i);
+            }
+        }
+        var after=operation.GetFieldValues(plan.Field.Name).Cast<object>().OfType<IModel>().Where(m=>!m.IsDeleted).Select(m=>ClassText.Inline(ClassText.Normalize(m.Name))).ToArray();
+        if(!after.SequenceEqual(plan.Names))throw new InvalidOperationException("C230: 引数の読戻しが一致しません: ["+string.Join(", ",after)+"]");
+    }
     class ResolvedLink { public IModel From, To; public ClassLinkChange Change; public string RelationId="", PartnerField=""; }
-    class ResolvedMember { public IModel Owner, Member, TypeModel, InsertBefore; public ClassMemberChange Change; public string Field, ClassName, VisibilityValue, TypeField; public IField OwningField; public IClass MemberClass; }
+    class ResolvedMember { public IModel Owner, Member, TypeModel, InsertBefore; public ClassMemberChange Change; public string Field, ClassName, VisibilityValue, TypeField; public IField OwningField; public IClass MemberClass; public string Parameters; }
     static IEnumerable<IModel> Tree(IModel root)
     {
         var stack=new Stack<IModel>();stack.Push(root);
@@ -894,6 +977,12 @@ public static class ClassSyncRuntime
                 resolved.NewType=candidates[0];
                 log.AppendLine("type field="+field.Name+" ("+field.Type+") old="+(resolved.OldType==null?"(none)":resolved.OldType.Id+" "+resolved.OldType.ClassName)+" new="+resolved.NewType.Id+" "+resolved.NewType.ClassName+" owner="+(resolved.NewType.Owner==null?"":resolved.NewType.Owner.Name));
             }
+            if(edit.ParametersChanged)
+            {
+                var ownerClass=model.Owner;
+                if(ownerClass==null)throw new InvalidOperationException("C220: 操作の所有先を取得できません。");
+                resolved.Arguments=PlanArguments(project,model,ownerClass,edit.NewParameters,options,ref everything,log);
+            }
             log.AppendLine("edit target: model="+modelId+" class="+model.ClassName+" "+edit.Describe());
             targets.Add(resolved);
         }
@@ -946,7 +1035,8 @@ public static class ClassSyncRuntime
                     if(snapshot.ModelIds.TryGetValue(change.InsertBeforeId,out beforeId))resolved.InsertBefore=project.GetModelById(beforeId);
                     if(resolved.InsertBefore==null || resolved.InsertBefore.IsDeleted)log.AppendLine("insert position: following member not resolved, appending at the end");
                 }
-                log.AppendLine("member target: add "+change.Kind+" '"+change.Text+"' under "+owner.ClassName+" '"+owner.Name+"' field="+fieldName+" class="+resolved.ClassName+(resolved.TypeModel!=null?" type="+resolved.TypeModel.Id:"")+(resolved.InsertBefore!=null?" before="+resolved.InsertBefore.Name:" at end"));
+                resolved.Parameters=change.Parameters;
+                log.AppendLine("member target: add "+change.Kind+" '"+change.Text+"' under "+owner.ClassName+" '"+owner.Name+"' field="+fieldName+" class="+resolved.ClassName+(resolved.TypeModel!=null?" type="+resolved.TypeModel.Id:"")+(resolved.InsertBefore!=null?" before="+resolved.InsertBefore.Name:" at end")+(change.Kind=="operation" && !string.IsNullOrEmpty(change.Parameters)?" params=("+change.Parameters+")":""));
             }
             else
             {
@@ -959,7 +1049,9 @@ public static class ClassSyncRuntime
                 // other members; refuse when anything outside the member itself points at it.
                 var incoming=member.GetRelationsWhere((rel,f)=>rel.Target!=null && rel.Target.Id==member.Id && rel.IsReference).Cast<IRelationship>().ToList();
                 if(incoming.Count>0)throw new InvalidOperationException("C220: メンバ '"+change.Text+"' は "+incoming.Count+" 件の参照先になっているため削除しません。");
-                if(member.GetChildren().Cast<IModel>().Any(m=>!m.IsDeleted))throw new InvalidOperationException("C220: メンバ '"+change.Text+"' は子モデルを持つため削除しません。");
+                // An operation owns its arguments and they go with it; anything else with
+                // children (a type definition with members) stays.
+                if(change.Kind!="operation" && member.GetChildren().Cast<IModel>().Any(m=>!m.IsDeleted))throw new InvalidOperationException("C220: メンバ '"+change.Text+"' は子モデルを持つため削除しません。");
                 resolved.Member=member;
                 log.AppendLine("member target: delete "+change.Kind+" '"+change.Text+"' model="+memberId+" class="+member.ClassName);
             }
@@ -1053,6 +1145,11 @@ public static class ClassSyncRuntime
                     string readBack=ClassDiagramSnapshot.TextOf(model,new List<string>{field.Name});string symbol;
                     if(!options.VisibilityMap.TryGetValue(readBack,out symbol) || symbol!=edit.NewVisibility)throw new InvalidOperationException("C230: 可視性の読戻しが一致しません: '"+readBack+"'");
                 }
+                if(edit.ParametersChanged)
+                {
+                    stage="引数の更新";
+                    ApplyArguments(model,t.Arguments,options,log);
+                }
                 if(edit.TypeChanged)
                 {
                     stage="型の更新";
@@ -1099,6 +1196,13 @@ public static class ClassSyncRuntime
                         if(sf!=null)created.SetField(sf.Name,true);
                     }
                     if(m.TypeModel!=null)created.Relate(m.TypeField,m.TypeModel);
+                    if(m.Change.Kind=="operation" && !string.IsNullOrEmpty(m.Parameters))
+                    {
+                        // Arguments are children of the new operation; their metaclass comes from
+                        // any existing argument, so this is resolved only now that the parent exists.
+                        var argumentPlan=PlanArguments(project,created,m.Owner,m.Parameters,options,ref everything,log);
+                        ApplyArguments(created,argumentPlan,options,log);
+                    }
                     log.AppendLine("created "+created.ClassName+" id="+created.Id+" name='"+created.Name+"' owner="+(created.Owner==null?"?":created.Owner.Name));
                 }
                 else
@@ -1238,7 +1342,7 @@ public static class ClassSyncRuntime
             log.AppendLine("Scope: "+(project==null?"":project.Id)+" / "+editor.ModelId+" / "+editor.Id);
             if(trial)
             {
-                if(!preflight.Candidate)throw new InvalidOperationException("C231: このボタンで反映できるのは属性・操作の名前・可視性・型、属性・操作の追加削除（引数なし）、既存クラス間の関連の追加削除だけです。\n"+preflight.Summary());
+                if(!preflight.Candidate)throw new InvalidOperationException("C231: このボタンで反映できるのは属性・操作の名前・可視性・型・引数、属性・操作の追加削除、既存クラス間の関連の追加削除だけです。\n"+preflight.Summary());
                 if(project==null)throw new InvalidOperationException("C220: プロジェクトを取得できません。");
                 ClassExperiment.Summary=RunTextUpdate(app,project,editor,snapshot,desired,preflight,retain,log);
                 screenshot=ClassExperiment.Summary+"\f会社PC内の試行診断\n"+log.ToString();
@@ -2074,15 +2178,16 @@ public sealed class ClassSyncPlan
 // type, each as an old/new pair. Empty flags mean the value is unchanged.
 public sealed class ClassMemberEdit
 {
-    public string CurrentId, Kind, OldText, NewText, OldVisibility, NewVisibility, OldType, NewType;
+    public string CurrentId, Kind, OldText, NewText, OldVisibility, NewVisibility, OldType, NewType, OldParameters, NewParameters;
     public int Line;
-    public bool NameChanged, VisibilityChanged, TypeChanged;
+    public bool NameChanged, VisibilityChanged, TypeChanged, ParametersChanged;
     public string Describe()
     {
         var parts=new List<string>();
         if(NameChanged)parts.Add("name '"+OldText+"'->'"+NewText+"'");
         if(VisibilityChanged)parts.Add("visibility '"+OldVisibility+"'->'"+NewVisibility+"'");
         if(TypeChanged)parts.Add("type '"+OldType+"'->'"+NewType+"'");
+        if(ParametersChanged)parts.Add("parameters '"+OldParameters+"'->'"+NewParameters+"'");
         return Kind+" "+string.Join(", ",parts.ToArray());
     }
 }
@@ -2119,7 +2224,19 @@ public sealed class ClassTextPreflight
     public int VisibilityCount { get { return Edits.Count(e=>e.VisibilityChanged); } }
     public int TypeCount { get { return Edits.Count(e=>e.TypeChanged); } }
     static readonly string[] AttributeKeys = { "name", "visibility", "type" };
-    static readonly string[] OperationKeys = { "name", "visibility" };
+    static readonly string[] OperationKeys = { "name", "visibility", "parameters" };
+    // The exporter prints an operation's parameters as the argument names joined by ", "
+    // (K019); a hand-written "name : Type" keeps the type after the colon.
+    public static string[] ParameterNames(string parameters)
+    {
+        if(string.IsNullOrEmpty(parameters))return new string[0];
+        return parameters.Split(',').Select(x=>x.Trim()).Where(x=>x.Length>0).Select(x=>{int colon=x.IndexOf(" : ",StringComparison.Ordinal);return colon>=0?x.Substring(0,colon).Trim():x;}).ToArray();
+    }
+    public static string[] ParameterTypes(string parameters)
+    {
+        if(string.IsNullOrEmpty(parameters))return new string[0];
+        return parameters.Split(',').Select(x=>x.Trim()).Where(x=>x.Length>0).Select(x=>{int colon=x.IndexOf(" : ",StringComparison.Ordinal);return colon>=0?x.Substring(colon+3).Trim():"";}).ToArray();
+    }
     public static ClassTextPreflight Check(ClassDocument current,ClassDocument desired,ClassSyncPlan plan)
     {
         var result=new ClassTextPreflight();
@@ -2159,8 +2276,9 @@ public sealed class ClassTextPreflight
                     ClassElement owner;
                     if(!old.TryGetValue(member.Parent??"",out owner)) { result.Reasons.Add("add "+c.Kind+where+": 所有先のクラスが既存ではありません"); continue; }
                     if(member.Text.Length==0 || member.Text.Contains("\\n")) { result.Reasons.Add("add "+c.Kind+where+": 空または改行を含む名前は扱えません"); continue; }
-                    if(c.Kind=="operation" && member.Attr("parameters").Length>0) { result.Reasons.Add("add operation"+where+": 引数付きの操作の追加は扱えません（引数は別モデル）"); continue; }
                     if(c.Kind=="operation" && member.Attr("returnType").Length>0) { result.Reasons.Add("add operation"+where+": 戻り値付きの操作の追加は扱えません"); continue; }
+                    if(c.Kind=="operation" && ParameterNames(member.Attr("parameters")).Any(n=>n.Length==0 || n.Contains("\\n"))) { result.Reasons.Add("add operation"+where+": 引数名が空か改行を含みます"); continue; }
+                    if(c.Kind=="operation" && ParameterNames(member.Attr("parameters")).Distinct().Count()!=ParameterNames(member.Attr("parameters")).Length) { result.Reasons.Add("add operation"+where+": 同じ名前の引数があります"); continue; }
                     if(c.Kind=="attribute" && (member.Attr("multiplicity").Length>0 || member.Attr("default").Length>0)) { result.Reasons.Add("add attribute"+where+": 多重度・既定値付きの属性の追加は扱えません"); continue; }
                     if(member.Attr("type").Contains(", ")) { result.Reasons.Add("add attribute"+where+": 複数の型を持つ属性は扱えません"); continue; }
                     string memberKind=c.Kind;
@@ -2186,9 +2304,12 @@ public sealed class ClassTextPreflight
             if(unsupported.Length>0) { result.Reasons.Add("update "+c.Kind+where+" ["+c.Detail+"]: "+string.Join(",",unsupported)+" の変更は扱えません"); continue; }
             var edit=new ClassMemberEdit{CurrentId=c.Id,Kind=c.Kind,Line=c.Line,OldText=before.Text,NewText=after.Text,
                 OldVisibility=before.Attr("visibility"),NewVisibility=after.Attr("visibility"),OldType=before.Attr("type"),NewType=after.Attr("type"),
-                NameChanged=keys.Contains("name"),VisibilityChanged=keys.Contains("visibility"),TypeChanged=keys.Contains("type")};
+                OldParameters=before.Attr("parameters"),NewParameters=after.Attr("parameters"),
+                NameChanged=keys.Contains("name"),VisibilityChanged=keys.Contains("visibility"),TypeChanged=keys.Contains("type"),ParametersChanged=keys.Contains("parameters")};
             string problem=null;
-            if(edit.NameChanged && (edit.NewText.Length==0 || edit.NewText.Contains("\\n") || edit.OldText.Contains("\\n")))problem="空または改行を含む名前は扱えません";
+            if(edit.ParametersChanged && ParameterNames(edit.NewParameters).Any(n=>n.Length==0 || n.Contains("\\n")))problem="引数名が空か改行を含みます";
+            else if(edit.ParametersChanged && ParameterNames(edit.NewParameters).Distinct().Count()!=ParameterNames(edit.NewParameters).Length)problem="同じ名前の引数があります";
+            else if(edit.NameChanged && (edit.NewText.Length==0 || edit.NewText.Contains("\\n") || edit.OldText.Contains("\\n")))problem="空または改行を含む名前は扱えません";
             else if(edit.VisibilityChanged && edit.NewVisibility.Length==0)problem="可視性の記号を消す変更は扱えません";
             else if(edit.TypeChanged && edit.NewType.Length==0)problem="型を空にする変更は扱えません";
             else if(edit.TypeChanged && edit.NewType.Contains(", "))problem="複数の型を持つ属性は扱えません";
@@ -2202,7 +2323,7 @@ public sealed class ClassTextPreflight
     {
         var sb=new StringBuilder();
         sb.Append("本文更新の事前判定: ").Append(Candidate?"候補あり":"停止").Append('\n');
-        sb.Append("メンバ ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append("） / メンバ追加 ").Append(MemberAddCount).Append(" 削除 ").Append(MemberDeleteCount).Append(" / 関連 追加 ").Append(LinkAddCount).Append(" 削除 ").Append(LinkDeleteCount).Append(" / 停止理由 ").Append(Reasons.Count).Append("件\n");
+        sb.Append("メンバ ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append(" / 引数 ").Append(Edits.Count(e=>e.ParametersChanged)).Append("） / メンバ追加 ").Append(MemberAddCount).Append(" 削除 ").Append(MemberDeleteCount).Append(" / 関連 追加 ").Append(LinkAddCount).Append(" 削除 ").Append(LinkDeleteCount).Append(" / 停止理由 ").Append(Reasons.Count).Append("件\n");
         foreach(var r in Reasons)sb.Append("  ").Append(r).Append('\n');
         return sb.ToString().TrimEnd();
     }

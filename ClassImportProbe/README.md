@@ -1,4 +1,23 @@
-# クラス図同期実験 0.4.2
+# クラス図同期実験 0.5.0
+
+## 0.5.0: 操作の引数
+
+PlantUmlTool は操作の引数を名前だけ `Connect(transportInfo, appName)` の形で出す（引数は `Parameter` 配下の Argument モデルで、型は出力されない）。入力の括弧の中を `,` で分けた名前の並びとして扱い、次を書けるようにした。
+
+| 操作 | 書き方 |
+|---|---|
+| 引数付きの操作の追加 `+ Reset(a, b)` | Method を作った後、`Parameter` に Argument を名前順に `AddNewModelAt` / `AddNewModel` で作る |
+| 既存操作の引数の変更（改名・追加・削除） | 件数が同じなら順に `Name` を書き換え、違えば余分を `Delete` し足りない分を作る |
+| 引数付き操作の削除 | 操作ごと `Delete()`（引数は所有子として一緒に消える） |
+
+Argument のメタクラスは既存の引数（同じ操作、同じクラスの別操作、プロジェクト内の順）から取り、無ければ `Parameter` フィールドの型クラス。手書きで `a : Type` と書いた場合は型モデルを名前で解決して `Type` 参照を張る（無ければ停止）。戻り値は引き続き扱わない。
+
+### 実機手順（0.5.0）
+
+1. 原本のコピーで操作行の直後に `    + Reset(mode, force)` を足して「更新を試行して戻す」。診断の `arguments: field=... class=...` と `created argument` の行。
+2. 既存の操作の引数を 1 つ改名（例 `Connect(transportInfo, appName)` → `Connect(transportInfo2, appName)`）して試行。
+3. 既存の操作に引数を 1 つ足す／消すで試行。
+4. 通ったら確定 → フォームの引数一覧 → Ctrl+Z / Ctrl+Y → 保存して開き直し → 差分 0 件。
 
 ## 0.4.2: メンバを入力の位置に挿入する
 

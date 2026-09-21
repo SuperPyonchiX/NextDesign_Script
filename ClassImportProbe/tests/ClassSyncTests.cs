@@ -173,9 +173,16 @@ public static class ClassSyncTests
         var addOp = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    # stop()\n", "    # stop()\n    + reset()\n"));
         var addOpGate = ClassTextPreflight.Check(baseline, addOp, Plan(baseline, addOp));
         Check(addOpGate.Candidate && addOpGate.Members.Count == 1 && addOpGate.Members[0].Kind == "operation" && addOpGate.Members[0].Text == "reset", "operation add preflight: " + addOpGate.Summary());
-        var addOpArgs = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    # stop()\n", "    # stop()\n    + reset(mode : int)\n"));
+        var addOpArgs = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    # stop()\n", "    # stop()\n    + reset(mode, force : bool)\n"));
         var addOpArgsGate = ClassTextPreflight.Check(baseline, addOpArgs, Plan(baseline, addOpArgs));
-        Check(!addOpArgsGate.Candidate && addOpArgsGate.Reasons.Count == 1 && addOpArgsGate.Reasons[0].Contains("引数"), "operation with arguments stops: " + addOpArgsGate.Summary());
+        Check(addOpArgsGate.Candidate && addOpArgsGate.Members.Count == 1 && addOpArgsGate.Members[0].Parameters == "mode, force : bool", "operation with arguments passes: " + addOpArgsGate.Summary());
+        Check(string.Join("|", ClassTextPreflight.ParameterNames("mode, force : bool")) == "mode|force" && string.Join("|", ClassTextPreflight.ParameterTypes("mode, force : bool")) == "|bool", "parameter parsing");
+        var renameArg = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("start(mode : int)", "start(mode2 : int)"));
+        var renameArgGate = ClassTextPreflight.Check(baseline, renameArg, Plan(baseline, renameArg));
+        Check(renameArgGate.Candidate && renameArgGate.Edits.Count == 1 && renameArgGate.Edits[0].ParametersChanged && !renameArgGate.Edits[0].NameChanged, "argument rename is a parameters update: " + renameArgGate.Summary());
+        var dupArg = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("start(mode : int)", "start(a, a)"));
+        var dupArgGate = ClassTextPreflight.Check(baseline, dupArg, Plan(baseline, dupArg));
+        Check(!dupArgGate.Candidate && dupArgGate.Reasons.Count == 1 && dupArgGate.Reasons[0].Contains("同じ名前"), "duplicate argument names stop: " + dupArgGate.Summary());
         var addDefault = ClassDocument.Parse(File.ReadAllText(Path.Combine(samples, "roundtrip.puml"), new UTF8Encoding(false, true)).Replace("    + {static} count : int\n", "    + {static} count : int\n    - extra : long = 1\n"));
         var addDefaultGate = ClassTextPreflight.Check(baseline, addDefault, Plan(baseline, addDefault));
         Check(!addDefaultGate.Candidate && addDefaultGate.Reasons.Count == 1, "attribute with default stops: " + addDefaultGate.Summary());

@@ -818,15 +818,16 @@ public sealed class ClassSyncPlan
 // type, each as an old/new pair. Empty flags mean the value is unchanged.
 public sealed class ClassMemberEdit
 {
-    public string CurrentId, Kind, OldText, NewText, OldVisibility, NewVisibility, OldType, NewType;
+    public string CurrentId, Kind, OldText, NewText, OldVisibility, NewVisibility, OldType, NewType, OldParameters, NewParameters;
     public int Line;
-    public bool NameChanged, VisibilityChanged, TypeChanged;
+    public bool NameChanged, VisibilityChanged, TypeChanged, ParametersChanged;
     public string Describe()
     {
         var parts=new List<string>();
         if(NameChanged)parts.Add("name '"+OldText+"'->'"+NewText+"'");
         if(VisibilityChanged)parts.Add("visibility '"+OldVisibility+"'->'"+NewVisibility+"'");
         if(TypeChanged)parts.Add("type '"+OldType+"'->'"+NewType+"'");
+        if(ParametersChanged)parts.Add("parameters '"+OldParameters+"'->'"+NewParameters+"'");
         return Kind+" "+string.Join(", ",parts.ToArray());
     }
 }
@@ -863,7 +864,19 @@ public sealed class ClassTextPreflight
     public int VisibilityCount { get { return Edits.Count(e=>e.VisibilityChanged); } }
     public int TypeCount { get { return Edits.Count(e=>e.TypeChanged); } }
     static readonly string[] AttributeKeys = { "name", "visibility", "type" };
-    static readonly string[] OperationKeys = { "name", "visibility" };
+    static readonly string[] OperationKeys = { "name", "visibility", "parameters" };
+    // The exporter prints an operation's parameters as the argument names joined by ", "
+    // (K019); a hand-written "name : Type" keeps the type after the colon.
+    public static string[] ParameterNames(string parameters)
+    {
+        if(string.IsNullOrEmpty(parameters))return new string[0];
+        return parameters.Split(',').Select(x=>x.Trim()).Where(x=>x.Length>0).Select(x=>{int colon=x.IndexOf(" : ",StringComparison.Ordinal);return colon>=0?x.Substring(0,colon).Trim():x;}).ToArray();
+    }
+    public static string[] ParameterTypes(string parameters)
+    {
+        if(string.IsNullOrEmpty(parameters))return new string[0];
+        return parameters.Split(',').Select(x=>x.Trim()).Where(x=>x.Length>0).Select(x=>{int colon=x.IndexOf(" : ",StringComparison.Ordinal);return colon>=0?x.Substring(colon+3).Trim():"";}).ToArray();
+    }
     public static ClassTextPreflight Check(ClassDocument current,ClassDocument desired,ClassSyncPlan plan)
     {
         var result=new ClassTextPreflight();
@@ -903,8 +916,9 @@ public sealed class ClassTextPreflight
                     ClassElement owner;
                     if(!old.TryGetValue(member.Parent??"",out owner)) { result.Reasons.Add("add "+c.Kind+where+": 所有先のクラスが既存ではありません"); continue; }
                     if(member.Text.Length==0 || member.Text.Contains("\\n")) { result.Reasons.Add("add "+c.Kind+where+": 空または改行を含む名前は扱えません"); continue; }
-                    if(c.Kind=="operation" && member.Attr("parameters").Length>0) { result.Reasons.Add("add operation"+where+": 引数付きの操作の追加は扱えません（引数は別モデル）"); continue; }
                     if(c.Kind=="operation" && member.Attr("returnType").Length>0) { result.Reasons.Add("add operation"+where+": 戻り値付きの操作の追加は扱えません"); continue; }
+                    if(c.Kind=="operation" && ParameterNames(member.Attr("parameters")).Any(n=>n.Length==0 || n.Contains("\\n"))) { result.Reasons.Add("add operation"+where+": 引数名が空か改行を含みます"); continue; }
+                    if(c.Kind=="operation" && ParameterNames(member.Attr("parameters")).Distinct().Count()!=ParameterNames(member.Attr("parameters")).Length) { result.Reasons.Add("add operation"+where+": 同じ名前の引数があります"); continue; }
                     if(c.Kind=="attribute" && (member.Attr("multiplicity").Length>0 || member.Attr("default").Length>0)) { result.Reasons.Add("add attribute"+where+": 多重度・既定値付きの属性の追加は扱えません"); continue; }
                     if(member.Attr("type").Contains(", ")) { result.Reasons.Add("add attribute"+where+": 複数の型を持つ属性は扱えません"); continue; }
                     string memberKind=c.Kind;
@@ -930,9 +944,12 @@ public sealed class ClassTextPreflight
             if(unsupported.Length>0) { result.Reasons.Add("update "+c.Kind+where+" ["+c.Detail+"]: "+string.Join(",",unsupported)+" の変更は扱えません"); continue; }
             var edit=new ClassMemberEdit{CurrentId=c.Id,Kind=c.Kind,Line=c.Line,OldText=before.Text,NewText=after.Text,
                 OldVisibility=before.Attr("visibility"),NewVisibility=after.Attr("visibility"),OldType=before.Attr("type"),NewType=after.Attr("type"),
-                NameChanged=keys.Contains("name"),VisibilityChanged=keys.Contains("visibility"),TypeChanged=keys.Contains("type")};
+                OldParameters=before.Attr("parameters"),NewParameters=after.Attr("parameters"),
+                NameChanged=keys.Contains("name"),VisibilityChanged=keys.Contains("visibility"),TypeChanged=keys.Contains("type"),ParametersChanged=keys.Contains("parameters")};
             string problem=null;
-            if(edit.NameChanged && (edit.NewText.Length==0 || edit.NewText.Contains("\\n") || edit.OldText.Contains("\\n")))problem="空または改行を含む名前は扱えません";
+            if(edit.ParametersChanged && ParameterNames(edit.NewParameters).Any(n=>n.Length==0 || n.Contains("\\n")))problem="引数名が空か改行を含みます";
+            else if(edit.ParametersChanged && ParameterNames(edit.NewParameters).Distinct().Count()!=ParameterNames(edit.NewParameters).Length)problem="同じ名前の引数があります";
+            else if(edit.NameChanged && (edit.NewText.Length==0 || edit.NewText.Contains("\\n") || edit.OldText.Contains("\\n")))problem="空または改行を含む名前は扱えません";
             else if(edit.VisibilityChanged && edit.NewVisibility.Length==0)problem="可視性の記号を消す変更は扱えません";
             else if(edit.TypeChanged && edit.NewType.Length==0)problem="型を空にする変更は扱えません";
             else if(edit.TypeChanged && edit.NewType.Contains(", "))problem="複数の型を持つ属性は扱えません";
@@ -946,7 +963,7 @@ public sealed class ClassTextPreflight
     {
         var sb=new StringBuilder();
         sb.Append("本文更新の事前判定: ").Append(Candidate?"候補あり":"停止").Append('\n');
-        sb.Append("メンバ ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append("） / メンバ追加 ").Append(MemberAddCount).Append(" 削除 ").Append(MemberDeleteCount).Append(" / 関連 追加 ").Append(LinkAddCount).Append(" 削除 ").Append(LinkDeleteCount).Append(" / 停止理由 ").Append(Reasons.Count).Append("件\n");
+        sb.Append("メンバ ").Append(Edits.Count).Append("件（名前 ").Append(NameCount).Append(" / 可視性 ").Append(VisibilityCount).Append(" / 型 ").Append(TypeCount).Append(" / 引数 ").Append(Edits.Count(e=>e.ParametersChanged)).Append("） / メンバ追加 ").Append(MemberAddCount).Append(" 削除 ").Append(MemberDeleteCount).Append(" / 関連 追加 ").Append(LinkAddCount).Append(" 削除 ").Append(LinkDeleteCount).Append(" / 停止理由 ").Append(Reasons.Count).Append("件\n");
         foreach(var r in Reasons)sb.Append("  ").Append(r).Append('\n');
         return sb.ToString().TrimEnd();
     }
