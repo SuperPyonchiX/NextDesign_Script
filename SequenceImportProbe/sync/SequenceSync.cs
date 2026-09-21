@@ -1566,9 +1566,7 @@ public sealed class SequenceStructurePreparation
         {
             var frameShapeList=(List<SequenceJson>)pair[1];
             if(frameShapeList.Count==0)continue;
-            var target=patch["Editors"].Items.Single()[(string)pair[0]];
-            Require(target!=null && target.Items!=null,"エディタに"+(string)pair[0]+"の図形配列がありません。");
-            target.Items.AddRange(frameShapeList);
+            Collection(patch["Editors"].Items.Single(),(string)pair[0]).Items.AddRange(frameShapeList);
         }
         if(newLaneShapes.Count>0)
         {
@@ -1577,7 +1575,8 @@ public sealed class SequenceStructurePreparation
             laneArray.Items.AddRange(newLaneShapes);
         }
         return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),ReconnectCount=changed.Count,
-            EditorAfterDeleteJson=Deleted(editor,newShapes,newLaneShapes,newMessageShapes,gate.DeleteExecutions,
+            EditorAfterDeleteJson=Deleted(editor,newShapes,newLaneShapes,newMessageShapes,
+                newFrameShapes,newOperandShapes,gate.DeleteExecutions,
                 gate.DeleteParticipants.Concat(gate.DeleteMessages)
                     .Concat(gate.DeleteFragments).Concat(gate.DeleteOperands).ToList()),
             DeleteIds=gate.DeleteExecutions.ToArray(),
@@ -1586,6 +1585,18 @@ public sealed class SequenceStructurePreparation
             DeleteParticipantIds=gate.DeleteParticipants.ToArray(),DeleteMessageIds=gate.DeleteMessages.ToArray(),
             DeleteFrameIds=gate.DeleteFragments.Concat(gate.DeleteOperands).ToArray(),
             ReceiveRelationIds=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage").Select(r=>V(r,"Id")).ToArray()};
+    }
+    // A diagram that has never held a frame has no Fragments collection at all, so the
+    // first one has to create it rather than append to something that is not there.
+    static SequenceJson Collection(SequenceJson view,string name)
+    {
+        var array=view[name];
+        if(array!=null && array.Items!=null)return array;
+        Require(array==null,"エディタの"+name+"が配列ではありません。");
+        array=SequenceJson.Parse("[]");
+        if(view.Properties==null)view.Properties=new Dictionary<string,SequenceJson>(StringComparer.Ordinal);
+        view.Properties[name]=array;
+        return array;
     }
     static string Number(double value)
     { return value.ToString("R",System.Globalization.CultureInfo.InvariantCulture); }
@@ -1733,7 +1744,8 @@ public sealed class SequenceStructurePreparation
     internal const double LaneSpacing=240;
     internal const double MessageSpacing=50;
     static string Deleted(SequenceEditorDocument editor,List<SequenceJson> addedShapes,List<SequenceJson> addedLanes,
-        List<SequenceJson> addedWires,List<string> removed,List<string> removedLanes)
+        List<SequenceJson> addedWires,List<SequenceJson> addedFrames,List<SequenceJson> addedBranches,
+        List<string> removed,List<string> removedLanes)
     {
         var json=SequenceJson.Parse(editor.ImportJson());
         var view=json["Editors"].Items.Single();
@@ -1747,11 +1759,10 @@ public sealed class SequenceStructurePreparation
         }
         Action<string,List<SequenceJson>> append=(collection,shapes)=>{
             if(shapes.Count==0)return;
-            var array=view[collection];
-            if(array==null || array.Items==null)throw new InvalidOperationException("S220: 削除後のエディタに"+collection+"がありません。");
-            array.Items.AddRange(shapes.Select(sh=>SequenceJson.Parse(sh.ToJsonString())));
+            Collection(view,collection).Items.AddRange(shapes.Select(sh=>SequenceJson.Parse(sh.ToJsonString())));
         };
         append("ExecutionSpecifications",addedShapes);append("Lifelines",addedLanes);append("Messages",addedWires);
+        append("Fragments",addedFrames);append("Operands",addedBranches);
         return json.ToJsonString();
     }
     static bool Mentions(SequenceJson node,HashSet<string> ids)
