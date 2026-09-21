@@ -145,8 +145,8 @@ public static class PayloadTest {
    var fragmentPlan=SyncPlan.Build(fragmentBefore,fragmentAfter,()=>Guid.NewGuid().ToString());
    var fragmentGate=SequenceStructurePreflight.Check(fragmentBefore,fragmentPlan);
    if(!fragmentGate.Candidate || fragmentGate.DeleteFragments.Count!=1 || fragmentGate.DeleteOperands.Count!=1
-       || fragmentGate.DeleteMessages.Count!=1 || fragmentGate.Targets!=3)
-       throw new Exception("fragment sample must remove one fragment, its operand and the message inside: "
+       || fragmentGate.DeleteMessages.Count!=1 || fragmentGate.DeleteExecutions.Count!=1 || fragmentGate.Targets!=4)
+       throw new Exception("fragment sample must remove one fragment with its operand, message and bar: "
            +fragmentPlan.ToJson()+fragmentGate.ToJson());
    if(!fragmentGate.CanCommit(true) || fragmentGate.CanCommit(false))
        throw new Exception("fragment removal did not reach exactly the receiver-change commit mode");

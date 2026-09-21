@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.58";
+    public const string Title = "シーケンス生成実験 / 0.8.59";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -3319,8 +3319,9 @@ public sealed class SequenceStructurePreflight
         foreach(var child in inside)
         {
             if(after.ContainsKey(child.Id))return "フラグメントの中に残す要素があります。中身ごと消える場合だけ対象です。";
-            if(child.Kind!="operand" && child.Kind!="message")
-                return "フラグメントの中に"+child.Kind+"があるため対象外です。オペランドとメッセージだけを扱います。";
+            // Executions live inside a frame too; they leave with it like anything else.
+            if(child.Kind!="operand" && child.Kind!="message" && child.Kind!="execution")
+                return "フラグメントの中に"+child.Kind+"があるため対象外です。オペランド・メッセージ・実行区間だけを扱います。";
         }
         return null;
     }

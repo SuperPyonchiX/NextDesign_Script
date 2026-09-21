@@ -2,8 +2,14 @@
 participant A
 participant B
 A -> B : first()
+activate B
+deactivate B
 B --> A : firstDone()
+activate A
+deactivate A
 alt ready
-  A -> B : guarded()
+A -> B : guarded()
+activate B
+deactivate B
 end
 @enduml
