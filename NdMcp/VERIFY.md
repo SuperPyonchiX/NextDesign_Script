@@ -109,6 +109,29 @@ curl "http://127.0.0.1:3560/export?path=<modelPath>"
 - 「状態確認」で受信ログを表示し、内容を記録する（`%USERPROFILE%\.nd-mcp\server.log` にも同じログが残る）
 - 余裕があれば: サーバー稼働中に**プロジェクトを閉じる** → `/ping` と `/project` がどうなるか（503 の想定だが未確認）。さらに Next Design を終了したときに例外ダイアログが出ないか
 
+### Step 9: クラス図の PlantUML 同期（0.2.0、curl）
+
+PowerShell の `curl.exe` は JSON の引用符が崩れやすいので、POST 本文はファイルに書いて `--data-binary "@body.json"` で渡す。コピーのプロジェクトを開き、`Ctrl+S` で保存してから「サーバー開始」。`/ping` の `version` が `0.2.0` であること。
+
+1. 対象モデルの `modelPath` を `/search?q=` で控え（以下 `<PATH>`）、図を確認する。
+   `curl.exe -s -G "http://127.0.0.1:3560/class-sync/editors" --data-urlencode "path=<PATH>"`
+   → `editors` に `"classDiagram":true` の要素がある。無ければ `reason` を記録。
+2. 現在図を取る。
+   `curl.exe -s -G "http://127.0.0.1:3560/class-sync/current" --data-urlencode "path=<PATH>" -o current.json`
+   → `plantuml` が `@startuml` で始まり、クラス名が図と一致。`limitations` の内容を記録。
+   `plantuml` を `base.puml` に落とし、`edit.puml` にコピーする（PowerShell: `ConvertFrom-Json` → `[IO.File]::WriteAllText`、BOM なし UTF-8）。
+3. 本文 `body.json` を `{"path":"<PATH>","file":"C:\\work\\cs\\edit.puml"}` の形で作り、無編集で preview。
+   `curl.exe -s -X POST http://127.0.0.1:3560/class-sync/preview -H "Content-Type: application/json" --data-binary "@body.json"`
+   → `"changes":0`、`"ok":true`。差分が出たら `reportFile` を記録（読取り側の問題）。
+4. `edit.puml` の属性名を 1 つ変えて preview → `"changes":1`、`"stopReasons":0`。Next Design 側の属性名はまだ元のまま。
+5. trial: `/class-sync/trial` に同じ本文 → `"applied":true`、`"committed":false`、summary に「復元照合: 一致」。属性名は元のまま、未保存マークなし。
+6. apply（**対象の図をメインエディタで開いていない状態**で）: `/class-sync/apply` → `"committed":true`、「確定後の再照合: 一致」。図を開くと属性名が変わっている。`Ctrl+Z` / `Ctrl+Y` が効く。
+   失敗（`"ok":false`）なら `error` / `summary` / `reportFile` を記録し、**図を開いた状態**で同じ apply を再実行して結果を比較する（表示中でないと書けないかの切り分け）。
+7. 関連追加（Editor JSON 再反映の確認）: 6 を確定したまま `Ctrl+S`。`edit.puml` に既存クラス 2 つの間の関連行を 1 本足し（ラベルは既存行と同じフィールド名の書き方）、図を開かずに preview → `"changes":1`、apply → `"committed":true`。図を開き直して線が見えている。線が見えない・`C220` が出るなら、図を開いた状態で再実行して比較。
+8. Claude Code から: `nd_class_diagram_puml` → 属性を改名した PlantUML を `nd_class_diagram_preview`（`changes: 1`）→ `nd_class_diagram_apply(trial=True)`（`applied: true, committed: false`）→ `nd_class_diagram_apply`（`committed: true`）。
+
+5〜7 が通れば、コマンドの `EditorAccessMode.GetInactiveValue` はトランザクション内の書き込みに影響しないと判断する。5 で `applied:false` かつ `C230` が出る場合はその疑いがある。
+
 ## 記録表
 
 | # | 項目 | 結果 |
@@ -121,7 +144,8 @@ curl "http://127.0.0.1:3560/export?path=<modelPath>"
 | 6 | Step6: fields の kind / export の生成物 / 編集中フィールドの見え方 | |
 | 7 | Step7: Codex からの呼び出し | 2026-09-19、nd_ping・nd_project 成功。その他の MCP 呼び出しと停止時の応答は未確認 |
 | 8 | Step8: 停止 / プロジェクトを閉じた後 / ND 終了時 | |
-| 9 | Next Design の正確なバージョン（ヘルプ > バージョン情報） | |
+| 9 | Step9: クラス図同期 1〜8 の各応答（changes / applied / committed）。6・7 は図を開いていない状態と開いた状態の比較 | |
+| 10 | Next Design の正確なバージョン（ヘルプ > バージョン情報） | |
 
 ## 判定
 
