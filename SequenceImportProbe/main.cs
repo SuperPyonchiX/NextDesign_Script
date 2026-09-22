@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.76";
+    public const string Title = "シーケンス生成実験 / 0.8.77";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -4350,20 +4350,13 @@ public sealed class SequenceStructurePreparation
             Require(wireArray!=null && wireArray.Items!=null,"エディタにメッセージの図形配列がありません。");
             wireArray.Items.AddRange(newMessageShapes);
         }
+        // Stretching a lane so its timeline reaches an appended frame is the one thing
+        // here that rewrites a shape the diagram already had, and every committed frame
+        // addition so far has broken the product's undo. Nothing else this command does
+        // touches an existing shape, and no operation confirmed before it did either, so
+        // the stretch is held back until that is settled. ILifelineShape.TimelineLength is
+        // read-only, so the editor import is the only way to write it.
         var stretched=new List<SequenceStretchedLifeline>();
-        if(layout.ContainsKey("") && layout[""]["Growth"]>0)
-        {
-            double growth=layout[""]["Growth"];
-            var timelines=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
-            foreach(var shape in editor.Shapes().Where(sh=>timelines.Contains(V(sh,"ModelId"))))
-            {
-                Require(shape["LaneLength"]!=null,"参加者の図形にタイムラインの長さがありません。");
-                string length=Number(Read(shape,"LaneLength")+growth);
-                foreach(var node in patch["Editors"].Items.Single()["Lifelines"].Items.Where(n=>V(n,"Id")==V(shape,"Id")))
-                    node.Properties["LaneLength"]=SequenceJson.Parse(length);
-                stretched.Add(new SequenceStretchedLifeline{ModelId=V(shape,"ModelId"),ShapeId=V(shape,"Id"),Length=length});
-            }
-        }
         foreach(var pair in new[]{new object[]{"Fragments",newFrameShapes},new object[]{"Operands",newOperandShapes}})
         {
             var frameShapeList=(List<SequenceJson>)pair[1];
