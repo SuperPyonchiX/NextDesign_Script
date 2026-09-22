@@ -450,6 +450,8 @@ public static class SequenceStructureTrial
             foreach(var lane in prepared.StretchedLifelines)
                 log.AppendLine("stretch lifeline payload: model="+lane.ModelId+" shape="+lane.ShapeId
                     +" timeline="+lane.Length);
+            log.AppendLine("created shape collections: "+(prepared.CreatedCollections.Length==0?"none"
+                :string.Join(",",prepared.CreatedCollections)));
             Import(project,prepared.ReconnectJson,log);
             Verify(expectedReconnect,Rounded(project,rootId,fresh,newShapes),"接続変更後",log);
             log.AppendLine("receiver reconnection count: "+prepared.ReconnectCount

@@ -1176,6 +1176,7 @@ public sealed class SequenceStructurePreparation
     public SequenceAddedFragment[] AddedFragments=new SequenceAddedFragment[0];
     public SequenceAddedOperand[] AddedOperands=new SequenceAddedOperand[0];
     public SequenceStretchedLifeline[] StretchedLifelines=new SequenceStretchedLifeline[0];
+    public string[] CreatedCollections=new string[0];
     public string[] DeleteParticipantIds=new string[0];
     public string[] DeleteMessageIds=new string[0];
     public string[] DeleteFrameIds=new string[0];
@@ -1193,6 +1194,7 @@ public sealed class SequenceStructurePreparation
     {
         var gate=SequenceStructurePreflight.Check(current,plan);
         Require(gate.Candidate,"未対応の変更があるか、構造更新の候補がありません。");
+        Created.Clear();
         string root=current.Elements.Single(e=>e.Kind=="interaction").Id;
         var source=SequenceJson.Parse(exported);
         var editor=SequenceEditorDocument.Read(exported,root,editorId);
@@ -1612,17 +1614,21 @@ public sealed class SequenceStructurePreparation
             DeleteIds=gate.DeleteExecutions.ToArray(),
             AddedExecutions=additions.ToArray(),AddedParticipants=lanes.ToArray(),AddedMessages=wires.ToArray(),
             AddedFragments=frames.ToArray(),AddedOperands=branches.ToArray(),
-            StretchedLifelines=stretched.ToArray(),
+            StretchedLifelines=stretched.ToArray(),CreatedCollections=Created.ToArray(),
             DeleteParticipantIds=gate.DeleteParticipants.ToArray(),DeleteMessageIds=gate.DeleteMessages.ToArray(),
             DeleteFrameIds=gate.DeleteFragments.Concat(gate.DeleteOperands).ToArray(),
             ReceiveRelationIds=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage").Select(r=>V(r,"Id")).ToArray()};
     }
     // A diagram that has never held a frame has no Fragments collection at all, so the
     // first one has to create it rather than append to something that is not there.
+    // Records which collections had to be created, so a run says whether it took that
+    // path at all.
+    internal static readonly List<string> Created=new List<string>();
     static SequenceJson Collection(SequenceJson view,string name)
     {
         var array=view[name];
         if(array!=null && array.Items!=null)return array;
+        if(!Created.Contains(name))Created.Add(name);
         Require(array==null,"エディタの"+name+"が配列ではありません。");
         array=SequenceJson.Parse("[]");
         if(view.Properties==null)view.Properties=new Dictionary<string,SequenceJson>(StringComparer.Ordinal);

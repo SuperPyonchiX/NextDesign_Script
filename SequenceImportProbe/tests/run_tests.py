@@ -83,6 +83,17 @@ public static class PayloadTest {
    if(frameKeptPlan.Changes.Count!=0)
        throw new Exception("an existing frame was not recognised: "+frameKeptPlan.ToJson());
    // Putting messages that already exist inside a frame moves them; that is a different change.
+   // Adding a frame to a diagram that already holds one: the shape collections are
+   // already there, so nothing has to create them.
+   var secondFrameModel=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
+   var secondFrameInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-frameadd-second.puml")));
+   var secondFramePlan=SyncPlan.Build(secondFrameModel,secondFrameInput,()=>Guid.NewGuid().ToString());
+   var secondFrameGate=SequenceStructurePreflight.Check(secondFrameModel,secondFramePlan);
+   if(!secondFrameGate.Candidate || secondFrameGate.AddFragments.Count!=1 || secondFrameGate.AddOperands.Count!=1
+       || secondFrameGate.AddMessages.Count!=1 || secondFrameGate.AddExecutions.Count!=2)
+       throw new Exception("a second frame must be one frame, one operand, one message and two bars: "
+           +secondFramePlan.ToJson()+secondFrameGate.ToJson());
+
    var frameWrapInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-framewrap-after.puml")));
    var frameWrapGate=SequenceStructurePreflight.Check(frameAddModel,
        SyncPlan.Build(frameAddModel,frameWrapInput,()=>Guid.NewGuid().ToString()));
