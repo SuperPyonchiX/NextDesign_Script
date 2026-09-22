@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.78";
+    public const string Title = "シーケンス生成実験 / 0.8.79";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -4136,10 +4136,16 @@ public sealed class SequenceStructurePreparation
                 "MetamodelId",types.Fragment,"Name",name,"Fields",PumlBuild.Obj("Name",name,"Operator",operatorValue)))));
             var relationIds=new List<string>();var relationSources=new List<string>();
             var relationTargets=new List<string>();var relationFields=new List<string>();
-            // Ownership first, then the lanes the frame spans, as the generator writes them.
+            // DIAGNOSTIC BUILD: the lanes the frame spans are deliberately left unlinked.
+            // Committing a frame works but undoing it crashes the product, and every other
+            // explanation is now ruled out by measurement: the product undoes an imported
+            // fragment from the generation command, it undoes a frame deletion from this
+            // one, the crash survives removing the lane stretch, and it happens on diagrams
+            // whose shape collections already exist. The one thing left is that this is the
+            // only relation the extension creates whose far end is a model that was already
+            // there. Omitting it answers that and nothing else; a frame built this way does
+            // not record which lanes it covers, so this build is not shippable.
             var wiring=new List<string[][]>{new[]{types.Owns,new[]{root,id}}};
-            foreach(var lane in current.Elements.Where(e=>e.Kind=="participant"))
-                wiring.Add(new[]{types.Crossing,new[]{id,lane.Id}});
             foreach(var pair in wiring)
             {
                 string relationId=Guid.NewGuid().ToString();
