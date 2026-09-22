@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.8.75";
+    public const string Title = "シーケンス生成実験 / 0.8.76";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -4833,9 +4833,13 @@ public sealed class SequenceTrialState
             {
                 string field=frame.RelationFields[i];
                 if(field.Length==0)throw new InvalidOperationException("S230: 追加するフラグメントの関連の種別情報が不足しています。");
+                // A frame is the first addition whose relations point at something that was
+                // already there, so the far end has a collection of its own to append to.
                 int index=result.Relations.Count(pair=>pair.Value[0]==frame.RelationSources[i] && result.Field(pair.Key)==field);
+                int reverse=result.Relations.Count(pair=>pair.Value[1]==frame.RelationTargets[i] && result.Field(pair.Key)==field);
                 result.Relations[frame.RelationIds[i]]=new[]{frame.RelationSources[i],frame.RelationTargets[i],
-                    index.ToString(System.Globalization.CultureInfo.InvariantCulture),"0"};
+                    index.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    reverse.ToString(System.Globalization.CultureInfo.InvariantCulture)};
                 result.RelationFields[frame.RelationIds[i]]=field;
             }
             var box=SequenceJson.Parse(frame.Geometry);
@@ -4849,8 +4853,10 @@ public sealed class SequenceTrialState
                 string field=branch.RelationFields[0];
                 if(field.Length==0)throw new InvalidOperationException("S230: 追加するオペランドの関連の種別情報が不足しています。");
                 int index=result.Relations.Count(pair=>pair.Value[0]==branch.OwnerId && result.Field(pair.Key)==field);
+                int reverse=result.Relations.Count(pair=>pair.Value[1]==branch.ModelId && result.Field(pair.Key)==field);
                 result.Relations[branch.RelationIds[0]]=new[]{branch.OwnerId,branch.ModelId,
-                    index.ToString(System.Globalization.CultureInfo.InvariantCulture),"0"};
+                    index.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    reverse.ToString(System.Globalization.CultureInfo.InvariantCulture)};
                 result.RelationFields[branch.RelationIds[0]]=field;
                 // An operand has no rectangle of its own: the product reads back an empty
                 // geometry and keeps only the guard and the offset from the frame's top.
