@@ -1,10 +1,13 @@
-# クラス図同期実験 0.7.2
+# クラス図同期実験（ClassImportProbe）の版履歴と実機手順
+
+ClassImportProbe は 0.1.0〜0.7.2 でクラス図の PlantUML 同期を実機検証するために使った実験拡張。2026-09-22 に同期本体を PlantUmlTool 2.2.0（`PlantUmlTool/src/60〜62`）へ統合し、拡張フォルダは削除した（履歴は git にある）。以下は当時の README をそのまま残したもので、扱える差分・停止条件・各版の実機手順の記録として参照する。ボタン名は PlantUmlTool では「差分を検証」「PlantUMLを反映」「試行して戻す」「診断表示」に対応する。
+
+---
 
 ## 0.7.2: 括弧を含む戻り値
 
 NdMcp 0.2.0 の実機（`/class-sync/current` → 無編集で `/class-sync/preview`）で、`+ Connect(a, b) : decltype(Skeleton::Connect(a,b))` のように戻り値に括弧を含む操作 8 件が「引数の更新」として出た。操作行の正規表現が引数を最後の `)` まで貪欲に取っていたため。最初の `(` と対応する `)` までを引数とし、その後ろの `: 戻り値` に括弧があってもそのまま戻り値にする。`uint8 (raw)` のような括弧付きの型や `width (mm)` のような括弧付き属性名の扱いは変えない。
 
-**同期本体は PlantUmlTool 2.2.0 に統合した。** 正本は `PlantUmlTool/src/60-class-sync.cs` / `61-class-sync-runtime.cs` で、この拡張の `main.cs` は `python ClassImportProbe/sync/bundle.py` でそこから埋め込む。テストと samples も `PlantUmlTool/tests/` に移した。PlantUmlTool の「反映（クラス図）」で同じ操作ができるようになったら、この拡張は削除する予定（版履歴と実機手順の記録として README は残す）。MCP からの使い方は [NdMcp/README.md](../NdMcp/README.md) を参照。
 
 ## 0.7.1: クラスの改名、戻り値、多重度、既定値
 

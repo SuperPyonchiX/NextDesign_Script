@@ -4,7 +4,7 @@
 //  ★ このファイルは tools/build_main.py が生成する。直接編集しない。
 //     編集対象: src/header.cs / src/server.cs（サーバー本体）/ src/classsync.cs（クラス図同期の窓口）
 //               AgentReview/main.cs の Part 0 / 4 / 7 / 8（エクスポータ。転記元）
-//               ClassImportProbe/sync/ClassSync.cs, ClassSyncRuntime.cs（クラス図同期。転記元）
+//               PlantUmlTool/src/60-class-sync.cs, 61-class-sync-runtime.cs（クラス図同期。転記元）
 //
 //  Next Design のモデルを MCP（Model Context Protocol）クライアントから
 //  読めるようにするための、Next Design 側のサーバー。
@@ -29,7 +29,7 @@
 //    /markdown?path=&id=          サブツリーを design.md 形式の Markdown で返す
 //    /export?path=&id=&out=       design.md + diagrams\*.puml + _index.md をフォルダへ書き出す
 //
-//  クラス図同期（ClassImportProbe の同期本体を転記。この API だけがモデルへ書き込む）:
+//  クラス図同期（PlantUmlTool の同期本体を転記。この API だけがモデルへ書き込む）:
 //    GET  /class-sync/editors?path=&id=          モデルに紐づく図の一覧
 //    GET  /class-sync/current?path=&id=&editor=  クラス図を PlantUML（PlantUmlTool 互換の書式）で返す
 //    POST /class-sync/preview  {path|id, editor?, plantuml|file}  比較のみ

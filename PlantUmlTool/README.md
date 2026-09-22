@@ -1,14 +1,14 @@
 # PlantUmlTool — Next Design × PlantUML 連携
 
-## 2.2.0: クラス図の反映を統合（実機未確認）
+## 2.2.0: クラス図の反映を統合
 
-ClassImportProbe 0.7.2 で実機検証したクラス図の同期本体を `src/60-class-sync.cs` / `61-class-sync-runtime.cs` としてこの拡張に移した。リボン「PlantUML」タブに「反映（クラス図）」グループ（差分を検証 / PlantUMLを反映 / 試行して戻す / 診断表示）を追加。扱える差分・停止条件・実機での確認方法は [ClassImportProbe/README.md](../ClassImportProbe/README.md) の版履歴に残してある。
+ClassImportProbe 0.7.2 で実機検証したクラス図の同期本体を `src/60-class-sync.cs` / `61-class-sync-runtime.cs` としてこの拡張に移し、ClassImportProbe は削除した。リボン「PlantUML」タブに「反映（クラス図）」グループ（差分を検証 / PlantUMLを反映 / 試行して戻す / 診断表示）を追加。扱える差分・停止条件・各版の実機手順は [docs/class-sync-history.md](../docs/class-sync-history.md) に残してある。
 
 同時に、クラス図の出力を同期側の読取り＋書出し（`ClassDiagramSnapshot` + `ClassPumlWriter`）に切り替えた。出力と比較が同じ経路になるので、出力した直後のファイルを「差分を検証」に通すと 0 件になることが構成上保証される。出力の見た目の差: 操作の戻り値 `: T` と属性の多重度 `[a..b]` が出るようになった（反映側は「入力に書いてあるときだけ比較」するので、消しても差分にはならない）。関連の矢印はフィールド名ごとの対応表（Related `-->`、SuperClasses `--|>` 等）で出す。オプション `IncludeTitle` / `Theme` / `EmitTimestamp` / `HideEmptyMembers` はヘッダに反映する。それ以外の `ClassPlantUmlOptions` はクラス図の出力には効かなくなった（状態遷移図の出力は引き続き使う）。
 
 診断ファイルは `%LOCALAPPDATA%\NextDesign.ClassSync\reports\` に残る（モデル名・ID を含むので共有しない）。NdMcp 0.2.0 の `/class-sync/*` も同じ本体を転記して使う。
 
-実機手順: (1) クラス図を開いて「表示中の図を出力」→ 保存した .puml を無編集で「差分を検証」→ 0 件。(2) 属性名を 1 つ変えて「試行して戻す」→ 一致、図は元のまま。(3)「PlantUMLを反映」→ 図が変わり Ctrl+Z で戻る。
+**実機確認（2026-09-22）**: (1) クラス図を開いて「表示中の図を出力」→ 保存した .puml を無編集で「差分を検証」→ 0 件。(2) 属性名を 1 つ変えて「試行して戻す」→ 一致、図は元のまま。(3)「PlantUMLを反映」→ 図が変わり Ctrl+Z で戻る。(4)「選択モデル配下を一括出力」でクラス図・状態遷移図・シーケンス図が従来どおり出る。すべて成功。
 
 ## 2.1.3
 
@@ -234,7 +234,7 @@ Next Design には `ClassDiagram` というエディタ種別が**存在しな�
 | `src/40-class-export.cs` | クラス図の出力（Part 7） |
 | `src/50-state-export.cs` | 状態遷移図の出力（Part 8） |
 | `src/60-class-sync.cs` | クラス図同期の純粋部（SDK 非依存。解析・書出し・差分計画・事前判定）。`tests/run_class_sync_tests.py` の対象 |
-| `src/61-class-sync-runtime.cs` | クラス図同期の SDK 依存部（読取り・書込み・照合）。NdMcp と ClassImportProbe が転記する |
+| `src/61-class-sync-runtime.cs` | クラス図同期の SDK 依存部（読取り・書込み・照合）。NdMcp が転記する |
 | `src/62-class-sync-ui.cs` | 同期の結果表示と診断ファイル |
 
 ```
@@ -244,7 +244,7 @@ python PlantUmlTool/tests/compile_sdk.py --sdk-root work/sequence-api-research  
 python PlantUmlTool/tests/run_class_sync_tests.py   # クラス図同期の純粋部テスト（tests/samples）
 ```
 
-同期本体を直したら NdMcp（`python NdMcp/tools/build_main.py`）と ClassImportProbe（`python ClassImportProbe/sync/bundle.py`）も再生成する。
+同期本体を直したら NdMcp（`python NdMcp/tools/build_main.py`）も再生成する。
 
 `manifest.json` を変更したら、配置する前に必ず検証を通すこと。マニフェストの誤りは
 Next Design 自体をエラーなしで起動不能にする。

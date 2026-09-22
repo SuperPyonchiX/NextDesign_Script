@@ -1,13 +1,13 @@
 // ============================================================
 //  Part C / クラス図の PlantUML 同期 API（NdMcp 固有部。src/classsync.cs）
 //
-//  同期本体は ClassImportProbe/sync/ClassSync.cs と ClassSyncRuntime.cs を
+//  同期本体は PlantUmlTool/src/60-class-sync.cs と 61-class-sync-runtime.cs を
 //  tools/build_main.py が転記する。ここには HTTP 要求と同期本体をつなぐ薄い層と、
 //  同期本体が参照する ClassExperiment（リボン版では結果ダイアログ）の代替だけを置く。
 //  MCP 経由ではダイアログを出せないため、結果はすべて JSON 応答と診断ファイルに載せる。
 // ============================================================
 
-// ClassImportProbe/main.cs の ClassExperiment と同じ名前・同じメンバ。ダイアログは出さず出力ウィンドウへ書く。
+// PlantUmlTool/src/62-class-sync-ui.cs の ClassExperiment と同じ名前・同じメンバ。ダイアログは出さず出力ウィンドウへ書く。
 public static class ClassExperiment
 {
     public const string Version = "0.7.2";
@@ -81,7 +81,7 @@ public static class ClassSyncApi
         return editor;
     }
 
-    // GET /class-sync/current: 図の現在の内容を PlantUML（ClassImportProbe の比較用書式）で返す。
+    // GET /class-sync/current: 図の現在の内容を PlantUML（PlantUmlTool のクラス図出力と同じ書式）で返す。
     public static object Current(IApplication app, string path, string id, string editorId)
     {
         IModel model;

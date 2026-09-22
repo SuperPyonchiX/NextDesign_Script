@@ -2,7 +2,7 @@
 
 ## 0.2.0: クラス図の PlantUML 同期 API
 
-ClassImportProbe（0.7.1）で実機確認したクラス図の同期本体を `main.cs` に転記し、MCP ツール 4 つと HTTP エンドポイント 5 つを足した。読み出し API はこれまでどおり読み取り専用で、書き込むのは `/class-sync/trial` と `/class-sync/apply` だけ。
+PlantUmlTool 2.2.0 のクラス図同期本体（`PlantUmlTool/src/60〜61`。ClassImportProbe 0.7.2 として実機確認したもの）を `main.cs` に転記し、MCP ツール 4 つと HTTP エンドポイント 5 つを足した。読み出し API はこれまでどおり読み取り専用で、書き込むのは `/class-sync/trial` と `/class-sync/apply` だけ。
 
 | ツール | HTTP | 内容 |
 |---|---|---|
@@ -14,7 +14,7 @@ ClassImportProbe（0.7.1）で実機確認したクラス図の同期本体を `
 - 対象の図は `path` / `id` のモデルが持つ図（`IModel.GetEditors()`）から、クラス図と判定できる最初の 1 件を選ぶ。複数あるときは `editor` に editorId を渡す。
 - POST の本文は JSON `{path|id, editor?, plantuml|file}`。`file` は Next Design が動く PC 上の .puml パス（300KB 以下）。
 - 応答は `ok` / `changes` / `stopReasons` / `applied` / `committed` / `summary` / `details` と、診断ファイル `reportFile`（`%LOCALAPPDATA%\NextDesign.ClassSync\reports\`、リボン版と同じ場所）。`preview` には `currentPlantuml` も付く。
-- 扱える差分・停止条件・関連の追加に保存済みプロジェクトが要る点は [ClassImportProbe/README.md](../ClassImportProbe/README.md) と同じ。確認ダイアログは出さず自動で「はい」にする（クラス削除などの確認はエージェント側が preview の結果で行う）。
+- 扱える差分・停止条件・関連の追加に保存済みプロジェクトが要る点は [docs/class-sync-history.md](../docs/class-sync-history.md) と同じ。確認ダイアログは出さず自動で「はい」にする（クラス削除などの確認はエージェント側が preview の結果で行う）。
 - **実機確認（2026-09-22）**: 実プロジェクトのクラス図（893 行）で `editors` → `current` → 無編集 preview 0 件 → 属性改名の preview / trial / apply（図をメインエディタで閉じた状態）まで成功。同じ状態でクラス追加（属性・操作付き）と関連追加の確定も成功し、図を開くと箱と線が見える。確定後の Ctrl+Z ではモデルは戻るが、線を見せるために再反映した図形が空の箱として残る（図を切り替えて再表示すると消える。Ctrl+Y でも正常に戻る）。元に戻すときは Undo ではなく、元の PlantUML を `apply` し直す方が確実。
 
 実機手順:

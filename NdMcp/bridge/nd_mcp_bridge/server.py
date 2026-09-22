@@ -95,7 +95,7 @@ def nd_export(path: str = "", id: str = "", out: str = "") -> str:
     return _call("/export", {"path": path, "id": id, "out": out}, timeout=600)
 
 
-# ---- クラス図の PlantUML 同期（ClassImportProbe の同期本体を NdMcp 拡張に転記したもの） ----
+# ---- クラス図の PlantUML 同期（PlantUmlTool の同期本体を NdMcp 拡張に転記したもの） ----
 
 @mcp.tool()
 def nd_class_diagram_editors(path: str = "", id: str = "") -> str:

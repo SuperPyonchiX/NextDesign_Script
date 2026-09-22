@@ -1,6 +1,6 @@
 # クラス図の差分同期：実装計画と進捗
 
-[シーケンス図の計画](sequence-sync-plan.md)と同じ進め方を、別拡張 `ClassImportProbe` で繰り返す。共有部品を切り出さずに写したのは、クラス図で得た知見を独立に積み上げるため。
+[シーケンス図の計画](sequence-sync-plan.md)と同じ進め方を、別拡張 `ClassImportProbe` で繰り返した。共有部品を切り出さずに写したのは、クラス図で得た知見を独立に積み上げるため。2026-09-22 に PlantUmlTool 2.2.0 へ統合し、ClassImportProbe は削除した（版履歴は [class-sync-history.md](class-sync-history.md)）。
 
 ## 完成条件
 
@@ -42,7 +42,7 @@
 8. 0.7.0: 通常操作「PlantUMLを反映」を追加（実装済み、実機待ち）。本体を `ClassSyncRuntime.Run` に切り出し、MCP から呼べる形にした。
 9. 0.7.1: クラスの改名、操作の戻り値（`Type` 参照、片側比較）、属性の多重度（`LowerBound/UpperBound`、片側比較）・既定値（`Default`）。実装済み、実機待ち。
 10. NdMcp 0.2.0: クラス図更新の API を追加。**実機で editors / current / preview / trial / apply（図を閉じた状態、クラス追加・関連追加を含む）まで成功（2026-09-22、K061〜K063）。**`ClassSync.cs` / `ClassSyncRuntime.cs` を `build_main.py` で転記し、`GET /class-sync/editors|current`、`POST /class-sync/preview|trial|apply` と MCP ツール `nd_class_diagram_*` を用意した。修正は ClassImportProbe 側で行い、NdMcp は再生成するだけにする。
-11. PlantUmlTool 2.2.0 への統合（2026-09-22、実機待ち）: 同期本体を `PlantUmlTool/src/60-class-sync.cs` / `61-class-sync-runtime.cs` に移し、リボン「反映（クラス図）」を追加。クラス図の出力を同期側の Snapshot + Writer に切り替え、出力→無編集比較が 0 件になることを構成で保証する。NdMcp と ClassImportProbe はここから転記。シーケンス図は SequenceImportProbe の検証完了後に同じ形で統合し、状態遷移図はその後に新規で作る。Probe 2 拡張は統合後に削除する。
+11. PlantUmlTool 2.2.0 への統合（2026-09-22、**実機確認済み**: 出力→無編集検証 0 件、試行、反映と Undo、一括出力）: 同期本体を `PlantUmlTool/src/60-class-sync.cs` / `61-class-sync-runtime.cs` に移し、リボン「反映（クラス図）」を追加。クラス図の出力を同期側の Snapshot + Writer に切り替え、出力→無編集比較が 0 件になることを構成で保証する。NdMcp はここから転記。ClassImportProbe は削除済み。シーケンス図は SequenceImportProbe の検証完了後に同じ形で統合し、状態遷移図はその後に新規で作る。
 
 ### 2026-09-21 時点の到達点（同日夜に更新）
 
@@ -85,11 +85,13 @@
 
 ## 検査とソース構成
 
-`ClassImportProbe/sync/` が正本。`bundle.py` が `main.cs` の生成区画へ埋め込む。生成区画は直接編集しない。
+`PlantUmlTool/src/60-class-sync.cs`（純粋部）/ `61-class-sync-runtime.cs`（SDK 依存部）/ `62-class-sync-ui.cs` が正本。`main.cs` は生成物で直接編集しない。NdMcp は `NdMcp/tools/build_main.py` が 60/61 を転記する。
 
 ```powershell
-python ClassImportProbe/sync/bundle.py
-python ClassImportProbe/tests/run_tests.py --sdk-root work/sequence-api-research
+python PlantUmlTool/tools/build_main.py
+python PlantUmlTool/tests/run_class_sync_tests.py
+python PlantUmlTool/tests/compile_sdk.py --sdk-root work/sequence-api-research
+python NdMcp/tools/build_main.py
 ```
 
 診断レポートは実行PCの `%LOCALAPPDATA%\NextDesign.ClassSync\reports` へ保存する。モデル名やIDを含むため、公開リポジトリへ追加しない。

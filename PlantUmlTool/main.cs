@@ -10957,7 +10957,7 @@ public static class ClassSyncRuntime
 //  Part 9 / クラス図同期のリボン側（結果表示と診断ファイル）
 //
 //    同期本体（Part 9 の前半、60-class-sync.cs / 61-class-sync-runtime.cs）は
-//    ClassImportProbe で実機検証したものをそのまま置いている。ここは本体が
+//    実験拡張 ClassImportProbe（削除済み）で実機検証したものをそのまま置いている。ここは本体が
 //    参照する結果置き場（ClassExperiment）だけ。NdMcp では同名のクラスを
 //    ダイアログ無しの版に差し替えて同じ本体を使う。
 // ============================================================

@@ -4,7 +4,7 @@
 //  ★ このファイルは tools/build_main.py が生成する。直接編集しない。
 //     編集対象: src/header.cs / src/server.cs（サーバー本体）/ src/classsync.cs（クラス図同期の窓口）
 //               AgentReview/main.cs の Part 0 / 4 / 7 / 8（エクスポータ。転記元）
-//               ClassImportProbe/sync/ClassSync.cs, ClassSyncRuntime.cs（クラス図同期。転記元）
+//               PlantUmlTool/src/60-class-sync.cs, 61-class-sync-runtime.cs（クラス図同期。転記元）
 //
 //  Next Design のモデルを MCP（Model Context Protocol）クライアントから
 //  読めるようにするための、Next Design 側のサーバー。
@@ -29,7 +29,7 @@
 //    /markdown?path=&id=          サブツリーを design.md 形式の Markdown で返す
 //    /export?path=&id=&out=       design.md + diagrams\*.puml + _index.md をフォルダへ書き出す
 //
-//  クラス図同期（ClassImportProbe の同期本体を転記。この API だけがモデルへ書き込む）:
+//  クラス図同期（PlantUmlTool の同期本体を転記。この API だけがモデルへ書き込む）:
 //    GET  /class-sync/editors?path=&id=          モデルに紐づく図の一覧
 //    GET  /class-sync/current?path=&id=&editor=  クラス図を PlantUML（PlantUmlTool 互換の書式）で返す
 //    POST /class-sync/preview  {path|id, editor?, plantuml|file}  比較のみ
@@ -8814,13 +8814,13 @@ public static class ClassAudit
 // ============================================================
 //  Part C / クラス図の PlantUML 同期 API（NdMcp 固有部。src/classsync.cs）
 //
-//  同期本体は ClassImportProbe/sync/ClassSync.cs と ClassSyncRuntime.cs を
+//  同期本体は PlantUmlTool/src/60-class-sync.cs と 61-class-sync-runtime.cs を
 //  tools/build_main.py が転記する。ここには HTTP 要求と同期本体をつなぐ薄い層と、
 //  同期本体が参照する ClassExperiment（リボン版では結果ダイアログ）の代替だけを置く。
 //  MCP 経由ではダイアログを出せないため、結果はすべて JSON 応答と診断ファイルに載せる。
 // ============================================================
 
-// ClassImportProbe/main.cs の ClassExperiment と同じ名前・同じメンバ。ダイアログは出さず出力ウィンドウへ書く。
+// PlantUmlTool/src/62-class-sync-ui.cs の ClassExperiment と同じ名前・同じメンバ。ダイアログは出さず出力ウィンドウへ書く。
 public static class ClassExperiment
 {
     public const string Version = "0.7.2";
@@ -8894,7 +8894,7 @@ public static class ClassSyncApi
         return editor;
     }
 
-    // GET /class-sync/current: 図の現在の内容を PlantUML（ClassImportProbe の比較用書式）で返す。
+    // GET /class-sync/current: 図の現在の内容を PlantUML（PlantUmlTool のクラス図出力と同じ書式）で返す。
     public static object Current(IApplication app, string path, string id, string editorId)
     {
         IModel model;
