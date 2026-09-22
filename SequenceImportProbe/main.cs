@@ -1458,6 +1458,11 @@ public static class SequenceStructureTrial
             +" / メッセージ追加 "+prepared.AddedMessages.Length+"件"
             +" / フラグメント関連の削除 "+prepared.DeleteFrameIds.Length+"件"
             +" / フラグメント追加 "+prepared.AddedFragments.Length+"件 / オペランド追加 "+prepared.AddedOperands.Length+"件"
+            // Committing a frame works, but the product crashes undoing it, so say so here
+            // rather than leaving it to be discovered.
+            +(prepared.AddedFragments.Length>0
+                ?"\n注意: フラグメントを追加した更新はUndoできません。Undoすると製品が停止します（製品側の不具合）。"
+                    +"取り消すときは保存せずに開き直してください。":"")
             +" / タイムラインを伸ばした参加者 "+prepared.StretchedLifelines.Length+"件";
         log.AppendLine(summary);
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
