@@ -1383,7 +1383,15 @@ public static class SequenceStructureTrial
                 +"; added participants: "+prepared.AddedParticipants.Length+"; SDK state verified");
             stage="不要な要素の削除";
             using(project.SuspendModelVerification())foreach(string id in removedModels)project.GetModelById(id).Delete();
-            stage="削除後のエディタ反映";Import(project,prepared.EditorAfterDeleteJson,log);
+            // With nothing deleted, that editor is the one just imported, so importing it
+            // again only touches the same collections a second time. The product records
+            // adding an item to a list with the index it went in at, and undoing the whole
+            // transaction then reads that index back; a second pass over the same lists is
+            // what can leave it pointing past the end, which is the exception the product
+            // reports when undo crashes after a frame is added.
+            stage="削除後のエディタ反映";
+            if(removedModels.Length>0)Import(project,prepared.EditorAfterDeleteJson,log);
+            else log.AppendLine("post-delete editor import skipped: nothing was deleted");
             foreach(string id in removedModels){var m=project.GetModelById(id);if(m!=null && !m.IsDeleted)throw new InvalidOperationException("S230: 削除対象が残っています。");}
             var afterDelete=Rounded(project,rootId,fresh,newShapes);
             if(deletionOwners.Length>0)
