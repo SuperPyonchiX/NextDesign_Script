@@ -38,6 +38,24 @@ using System.Text.RegularExpressions;
 using NextDesign.Core;
 using NextDesign.Desktop;
 using NextDesign.Extension;
+// ------------------------------------------------------------
+//  出力ペインの表示
+// ------------------------------------------------------------
+public static class OutputPane
+{
+    public static void Show(IApplication app, string category)
+    {
+        // CurrentOutputCategory は未登録のカテゴリを渡すと
+        // 「値域外の値」例外になるため、先に 1 行書いて登録してから切り替える
+        app.Output.WriteLine(category, "");
+        app.Output.Clear(category);
+        app.Window.IsInformationPaneVisible = true;
+        app.Window.ActiveInfoWindow = "Output";
+        try { app.Window.CurrentOutputCategory = category; }
+        catch (Exception) { }   // カテゴリ切替に失敗しても処理は続行できる
+    }
+}
+
 
 // ------------------------------------------------------------
 //  出力オプション
@@ -175,24 +193,6 @@ public class PlantUmlText
         foreach (var ch in (s ?? ""))
             sb.Append(invalid.Contains(ch) || ch == ' ' ? '_' : ch);
         return sb.ToString().Trim('_', '.');
-    }
-}
-
-// ------------------------------------------------------------
-//  出力ペインの表示
-// ------------------------------------------------------------
-public static class OutputPane
-{
-    public static void Show(IApplication app, string category)
-    {
-        // CurrentOutputCategory は未登録のカテゴリを渡すと
-        // 「値域外の値」例外になるため、先に 1 行書いて登録してから切り替える
-        app.Output.WriteLine(category, "");
-        app.Output.Clear(category);
-        app.Window.IsInformationPaneVisible = true;
-        app.Window.ActiveInfoWindow = "Output";
-        try { app.Window.CurrentOutputCategory = category; }
-        catch (Exception) { }   // カテゴリ切替に失敗しても処理は続行できる
     }
 }
 
@@ -6793,7 +6793,8 @@ public class ClassExportRunner
         System.IO.File.WriteAllText(path, text, new UTF8Encoding(false));
     }
 }
-
+// PlantUmlTool only: the class diagram probe uses MetaProbe from the legacy import part,
+// so AgentReview and NdMcp do not transcribe this file.
 // ------------------------------------------------------------
 //  クラス図のメタモデル調査
 //
@@ -9227,8 +9228,8 @@ public static class ClassAudit
     }
     static string Pad(string s,int width) { int length=0;foreach(var ch in s)length+=ch<128?1:2;return s+new string(' ',Math.Max(0,width-length)); }
 }
-// SDK-facing runtime: read the active class diagram, probe its metamodel, compare with
-// PlantUML. Nothing here writes to the project.
+// SDK-facing read side: recognize a class diagram editor and read it into a ClassDocument.
+// Shared by the exporter (PlantUmlTool / AgentReview / NdMcp) and the sync runtime.
 public static class ClassDiagramKind
 {
     public static IModel ModelOf(object shape)
@@ -9595,7 +9596,49 @@ public sealed class ClassDiagramSnapshot
         return null;
     }
 }
+// ============================================================
+//  Part 9 / クラス図同期のリボン側（結果表示と診断ファイル）
+//
+//    同期本体（Part 9 の前半、60-class-sync.cs / 61-class-sync-runtime.cs）は
+//    実験拡張 ClassImportProbe（削除済み）で実機検証したものをそのまま置いている。ここは本体が
+//    参照する結果置き場（ClassExperiment）だけ。NdMcp では同名のクラスを
+//    ダイアログ無しの版に差し替えて同じ本体を使う。
+// ============================================================
 
+public static class ClassExperiment
+{
+    public const string Version = "0.7.2";
+    public const string Title = "PlantUML 連携 / クラス図同期 " + Version;
+    public static string Summary = "クラス図を開き「差分を検証」または「PlantUMLを反映」を押してください。";
+    public static string Details = "まだ実行していません。";
+    public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
+    public static void Write(string path, string text)
+    {
+        using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
+        using (var writer = new StreamWriter(stream, new UTF8Encoding(false))) writer.Write(text);
+    }
+    // 診断にはモデル名と ID が含まれる。この PC に残すだけで、リポジトリへは入れない。
+    public static string SaveReport(string kind, string log, string reportJson, string currentPuml)
+    {
+        try
+        {
+            string directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NextDesign.ClassSync", "reports");
+            Directory.CreateDirectory(directory);
+            string stem = Path.Combine(directory, DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + kind + "_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+            Write(stem + ".txt", log);
+            if (reportJson != null) Write(stem + ".json", reportJson);
+            if (currentPuml != null) Write(stem + "_current.puml", currentPuml);
+            return stem;
+        }
+        catch (Exception ex)
+        {
+            Summary += "\n診断ファイルを保存できませんでした: " + ex.Message;
+            return null;
+        }
+    }
+}
+// SDK-facing write-back: capture the editor JSON, probe the metamodel, compare and apply
+// PlantUML to the class diagram. AgentReview does not transcribe this file (read-only).
 // Exports the diagram's unit through the public SDK and cuts out this editor's JSON.
 // Read-only observation of the persisted shape structure for later write-back design.
 public static class ClassEditorCapture
@@ -10951,46 +10994,5 @@ public static class ClassSyncRuntime
         if(stem!=null)ClassExperiment.Summary+="\n診断保存先: "+stem+".txt";
         ClassExperiment.Details=outcome.Details;
         ClassExperiment.Show(app);
-    }
-}
-// ============================================================
-//  Part 9 / クラス図同期のリボン側（結果表示と診断ファイル）
-//
-//    同期本体（Part 9 の前半、60-class-sync.cs / 61-class-sync-runtime.cs）は
-//    実験拡張 ClassImportProbe（削除済み）で実機検証したものをそのまま置いている。ここは本体が
-//    参照する結果置き場（ClassExperiment）だけ。NdMcp では同名のクラスを
-//    ダイアログ無しの版に差し替えて同じ本体を使う。
-// ============================================================
-
-public static class ClassExperiment
-{
-    public const string Version = "0.7.2";
-    public const string Title = "PlantUML 連携 / クラス図同期 " + Version;
-    public static string Summary = "クラス図を開き「差分を検証」または「PlantUMLを反映」を押してください。";
-    public static string Details = "まだ実行していません。";
-    public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
-    public static void Write(string path, string text)
-    {
-        using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
-        using (var writer = new StreamWriter(stream, new UTF8Encoding(false))) writer.Write(text);
-    }
-    // 診断にはモデル名と ID が含まれる。この PC に残すだけで、リポジトリへは入れない。
-    public static string SaveReport(string kind, string log, string reportJson, string currentPuml)
-    {
-        try
-        {
-            string directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NextDesign.ClassSync", "reports");
-            Directory.CreateDirectory(directory);
-            string stem = Path.Combine(directory, DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + kind + "_" + Guid.NewGuid().ToString("N").Substring(0, 8));
-            Write(stem + ".txt", log);
-            if (reportJson != null) Write(stem + ".json", reportJson);
-            if (currentPuml != null) Write(stem + "_current.puml", currentPuml);
-            return stem;
-        }
-        catch (Exception ex)
-        {
-            Summary += "\n診断ファイルを保存できませんでした: " + ex.Message;
-            return null;
-        }
     }
 }

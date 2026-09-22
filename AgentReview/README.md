@@ -1,5 +1,7 @@
 ﻿# AgentReview — Claude Code / Codex による設計レビュー支援
 
+0.13.3 では、PlantUML 出力部（シーケンス図・クラス図・状態遷移図）を `PlantUmlTool/src` からの転記に切り替え、`main.cs` を `tools/build_main.py` の生成物にした（この拡張固有のコードは `src/00-agentreview.cs`）。クラス図の .puml は PlantUmlTool 2.2.0 と同じ書式になり、操作の戻り値 `: T` と属性の多重度 `[a..b]` が出る。出力の修正は PlantUmlTool 側で行い、`python AgentReview/tools/build_main.py` で再生成する（`--check` で差分検査、`python PlantUmlTool/tests/compile_sdk.py --sdk-root work/sequence-api-research --main AgentReview/main.cs` でコンパイル検査）。Next Design での再出力は実機確認待ち。
+
 0.13.2 では、シーケンス図の破棄後に余分な `activate` / `deactivate` を出力する不具合を修正。破棄メッセージと破棄点の両方に適用する。3拡張の共通回帰テストは `python Tools/Test-SequenceExport.py`。Next Designでの再出力・描画は実機確認待ち。
 
 ## 0.13.1 の実装状況

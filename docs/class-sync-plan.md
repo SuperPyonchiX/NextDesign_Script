@@ -43,6 +43,7 @@
 9. 0.7.1: クラスの改名、操作の戻り値（`Type` 参照、片側比較）、属性の多重度（`LowerBound/UpperBound`、片側比較）・既定値（`Default`）。実装済み、実機待ち。
 10. NdMcp 0.2.0: クラス図更新の API を追加。**実機で editors / current / preview / trial / apply（図を閉じた状態、クラス追加・関連追加を含む）まで成功（2026-09-22、K061〜K063）。**`ClassSync.cs` / `ClassSyncRuntime.cs` を `build_main.py` で転記し、`GET /class-sync/editors|current`、`POST /class-sync/preview|trial|apply` と MCP ツール `nd_class_diagram_*` を用意した。修正は ClassImportProbe 側で行い、NdMcp は再生成するだけにする。
 11. PlantUmlTool 2.2.0 への統合（2026-09-22、**実機確認済み**: 出力→無編集検証 0 件、試行、反映と Undo、一括出力）: 同期本体を `PlantUmlTool/src/60-class-sync.cs` / `61-class-sync-runtime.cs` に移し、リボン「反映（クラス図）」を追加。クラス図の出力を同期側の Snapshot + Writer に切り替え、出力→無編集比較が 0 件になることを構成で保証する。NdMcp はここから転記。ClassImportProbe は削除済み。シーケンス図は SequenceImportProbe の検証完了後に同じ形で統合し、状態遷移図はその後に新規で作る。
+12. 転記元の一本化（2026-09-22、実機待ち）: AgentReview 0.13.3 と NdMcp 0.2.1 の PlantUML 出力部を `PlantUmlTool/src`（10 / 40 / 50 / 60 / 61、NdMcp は 63 も）からの転記に切り替え、AgentReview の `main.cs` も `tools/build_main.py` の生成物にした。3 拡張のクラス図 .puml が同じ書式になる。
 
 ### 2026-09-21 時点の到達点（同日夜に更新）
 

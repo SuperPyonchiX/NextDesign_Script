@@ -3,8 +3,8 @@
 //
 //  ★ このファイルは tools/build_main.py が生成する。直接編集しない。
 //     編集対象: src/header.cs / src/server.cs（サーバー本体）/ src/classsync.cs（クラス図同期の窓口）
-//               AgentReview/main.cs の Part 0 / 4 / 7 / 8（エクスポータ。転記元）
-//               PlantUmlTool/src/60-class-sync.cs, 61-class-sync-runtime.cs（クラス図同期。転記元）
+//               AgentReview/main.cs の Part 0 / 4（共通ヘルパ・Markdown 出力。転記元）
+//               PlantUmlTool/src の 10 / 40 / 50（PlantUML 出力）と 60 / 61 / 63（クラス図同期）。転記元
 //
 //  Next Design のモデルを MCP（Model Context Protocol）クライアントから
 //  読めるようにするための、Next Design 側のサーバー。

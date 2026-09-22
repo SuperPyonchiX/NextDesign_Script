@@ -1,5 +1,9 @@
 # NdMcp — Next Design を MCP クライアントから読む
 
+## 0.2.1: PlantUML 出力を PlantUmlTool/src から転記
+
+`/export` の .puml と `/class-sync/current` が同じ出力コードになるよう、シーケンス図・クラス図・状態遷移図の出力部を AgentReview 経由ではなく `PlantUmlTool/src` から直接転記するようにした。AgentReview からは Part 0 / 4（共通ヘルパ・Markdown 出力）だけを転記する。クラス図の .puml は PlantUmlTool 2.2.0 の書式（戻り値・多重度付き）になる。実機は未確認（`/export` で以前と同じフォルダ構成が出ること）。
+
 ## 0.2.0: クラス図の PlantUML 同期 API
 
 PlantUmlTool 2.2.0 のクラス図同期本体（`PlantUmlTool/src/60〜61`。ClassImportProbe 0.7.2 として実機確認したもの）を `main.cs` に転記し、MCP ツール 4 つと HTTP エンドポイント 5 つを足した。読み出し API はこれまでどおり読み取り専用で、書き込むのは `/class-sync/trial` と `/class-sync/apply` だけ。
@@ -73,7 +77,7 @@ Claude Code は `-Client Claude`、両方なら `-Client Both` を指定する�
 | `SETUP.md` | 環境構築・更新手順 |
 | `VERIFY.md` | 実機検証手順 |
 
-`main.cs` の Markdown / PlantUML 出力部は `AgentReview/main.cs` の Part 0 / 4 / 7 / 8 と `WriteDesignArtifacts` を生成時に転記する。エクスポータの修正は AgentReview 側で行い、`python NdMcp/tools/build_main.py` で再生成する。クラス図同期部は `ClassImportProbe/sync/ClassSyncRuntime.cs` と `ClassSync.cs` をそのまま転記する。同期の修正は ClassImportProbe 側で行い、テストを通してから再生成する。
+`main.cs` の Markdown 出力部は `AgentReview/main.cs` の Part 0 / 4 と `WriteDesignArtifacts` を、PlantUML 出力部とクラス図同期部は `PlantUmlTool/src`（shims/metamap, 10, 40, 50, 60, 61, 63）を生成時に転記する。Markdown 出力の修正は AgentReview 側、PlantUML 出力と同期の修正は PlantUmlTool 側で行い、`python NdMcp/tools/build_main.py` で再生成する。コンパイル検査は `python PlantUmlTool/tests/compile_sdk.py --sdk-root work/sequence-api-research --main NdMcp/main.cs`。
 
 `/export` は AgentReview と同じ図グループ判定・保存階層・索引生成を使う。対応表を設定する場合も、AgentReview の `%USERPROFILE%\.nd-agent-review\config.ini` にある `diagramGroups.rulesFile` を参照する。未設定なら共通の自動判別を使う。図が0件でも `_index.md` を更新する。
 

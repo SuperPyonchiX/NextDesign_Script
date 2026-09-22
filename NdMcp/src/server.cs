@@ -340,7 +340,7 @@ public class NdMcpHttpError : Exception
 
 public static class NdMcpServer
 {
-    public const string Version = "0.2.0";
+    public const string Version = "0.2.1";
 
     public static int Port = 3560;
     public static string ExportDir;

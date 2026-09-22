@@ -3,12 +3,13 @@
 
 Next Design のスクリプト拡張はエントリポイントが1ファイルに限られるため、
   src/header.cs（ファイルヘッダと using）
-  AgentReview/main.cs の Part 0 / 4 / 7 / 8（共通ヘルパ・Markdown 出力・PlantUML 出力）
+  AgentReview/main.cs の Part 0 / 4（共通ヘルパ・Markdown 出力）
   src/server.cs（HTTP サーバー本体）
-  PlantUmlTool/src/61-class-sync-runtime.cs, 60-class-sync.cs（クラス図の PlantUML 同期。転記元）
+  PlantUmlTool/src の shims/metamap.cs, 10, 40, 50（PlantUML 出力。転記元）
+  PlantUmlTool/src の 60, 61, 63（クラス図の PlantUML 同期。転記元）
   src/classsync.cs（同期 API の窓口と ClassExperiment の代替）
-をこの順に連結して main.cs を生成する。転記元は AgentReview 側で実機検証済みのコードなので、
-エクスポータの修正は AgentReview で行い、本スクリプトで再生成する。
+をこの順に連結して main.cs を生成する。PlantUML 出力と同期の修正は PlantUmlTool 側で行い、
+Markdown 出力の修正は AgentReview で行い、本スクリプトで再生成する。
 
 使い方:
   python NdMcp/tools/build_main.py            # 生成
@@ -21,11 +22,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 REPO = ROOT.parent
 AGENT_REVIEW = REPO / "AgentReview" / "main.cs"
-CLASS_SYNC = [REPO / "PlantUmlTool" / "src" / "61-class-sync-runtime.cs", REPO / "PlantUmlTool" / "src" / "60-class-sync.cs"]
+PUT = REPO / "PlantUmlTool" / "src"
+# PlantUML 出力とクラス図同期は PlantUmlTool/src から転記する（05 OutputPane は AgentReview Part 0 のものを使う。
+# 45 ClassProbe と 62 の結果ダイアログは転記しない）
+TRANSCRIBED = [PUT / "shims" / "metamap.cs", PUT / "10-sequence-export.cs", PUT / "40-class-export.cs", PUT / "50-state-export.cs",
+               PUT / "60-class-sync.cs", PUT / "61-class-snapshot.cs", PUT / "63-class-sync-runtime.cs"]
 OUT = ROOT / "main.cs"
 
 # 転記する Part（ヘッダ行の「Part N /」で切り出す）。順序は転記順
-PARTS = [0, 4, 7, 8]
+PARTS = [0, 4]
 PART_HEADER = re.compile(r"^//  Part (\d+) /")
 SEPARATOR = "// " + "=" * 60
 
@@ -69,7 +74,7 @@ def build() -> str:
     end = agent_source.index("\n    }", start) + len("\n    }")
     chunks.append("public static class ReviewSnapshot\n{\n" + agent_source[start:end] + "\n}")
     chunks.append(SEPARATOR)
-    chunks.append("//  ここから AgentReview/main.cs の Part 0 / 4 / 7 / 8 の転記（tools/build_main.py が生成）")
+    chunks.append("//  ここから AgentReview/main.cs の Part 0 / 4 の転記（tools/build_main.py が生成）")
     chunks.append(SEPARATOR)
     for n in PARTS:
         chunks.append("")
@@ -83,12 +88,12 @@ def build() -> str:
     chunks.append("\npublic static class DesignArtifactWriter\n{\n" + writer + "\n}")
     chunks.append("")
     chunks.append(server.rstrip("\n"))
-    # クラス図同期は PlantUmlTool/src の実機検証済みコードをそのまま転記する。修正は PlantUmlTool 側で行う。
+    # PlantUML 出力とクラス図同期は PlantUmlTool/src の実機検証済みコードをそのまま転記する。修正は PlantUmlTool 側で行う。
     chunks.append("")
     chunks.append(SEPARATOR)
     chunks.append("//  ここから PlantUmlTool/src の転記（tools/build_main.py が生成）")
     chunks.append(SEPARATOR)
-    for source in CLASS_SYNC:
+    for source in TRANSCRIBED:
         chunks.append("")
         chunks.append("// BEGIN TRANSCRIBED " + source.name)
         chunks.append(source.read_text(encoding="utf-8-sig").rstrip("\n"))

@@ -228,14 +228,20 @@ Next Design には `ClassDiagram` というエディタ種別が**存在しな�
 | ファイル | 内容 |
 |---|---|
 | `src/00-header.cs` | ヘッダコメントと using |
+| `src/05-output-pane.cs` | 出力ウィンドウの表示（AgentReview / NdMcp は自前のものを使うので転記しない） |
 | `src/10-sequence-export.cs` | シーケンス図の出力（Part 0） |
 | `src/20-sequence-import-legacy.cs` | 旧シーケンス取り込み（Part 1〜5）。リボンから到達しない。`MetaProbe` だけ「メタモデル調査」が使う |
 | `src/30-handlers.cs` | コマンドハンドラ（Part 6） |
-| `src/40-class-export.cs` | クラス図の出力（Part 7） |
+| `src/40-class-export.cs` | クラス図の出力（Part 7）。本文は 60/61 の Snapshot + Writer で作る |
+| `src/45-class-probe.cs` | クラス図調査（`MetaProbe` に依存するので PlantUmlTool 専用） |
 | `src/50-state-export.cs` | 状態遷移図の出力（Part 8） |
 | `src/60-class-sync.cs` | クラス図同期の純粋部（SDK 非依存。解析・書出し・差分計画・事前判定）。`tests/run_class_sync_tests.py` の対象 |
-| `src/61-class-sync-runtime.cs` | クラス図同期の SDK 依存部（読取り・書込み・照合）。NdMcp が転記する |
+| `src/61-class-snapshot.cs` | クラス図の読取り（図 → 文書）。出力と同期の両方が使う |
 | `src/62-class-sync-ui.cs` | 同期の結果表示と診断ファイル |
+| `src/63-class-sync-runtime.cs` | クラス図同期の書込み・照合（SDK 依存） |
+| `src/shims/metamap.cs` | AgentReview / NdMcp が転記時に使う `MetaMap` シム。PlantUmlTool の生成には含めない |
+
+**PlantUML 出力の正本はここ。** AgentReview（`python AgentReview/tools/build_main.py`）と NdMcp（`python NdMcp/tools/build_main.py`）は `src/` の 10 / 40 / 50 / 60 / 61（NdMcp は 63 も）を転記して自分の `main.cs` を生成する。出力を直したら 3 つとも再生成する。
 
 ```
 python PlantUmlTool/tools/build_main.py            # main.cs を再生成
@@ -244,7 +250,7 @@ python PlantUmlTool/tests/compile_sdk.py --sdk-root work/sequence-api-research  
 python PlantUmlTool/tests/run_class_sync_tests.py   # クラス図同期の純粋部テスト（tests/samples）
 ```
 
-同期本体を直したら NdMcp（`python NdMcp/tools/build_main.py`）も再生成する。
+同期本体や出力を直したら AgentReview（`python AgentReview/tools/build_main.py`）と NdMcp（`python NdMcp/tools/build_main.py`）も再生成し、`compile_sdk.py --main <拡張>/main.cs` で両方をコンパイル検査する。
 
 `manifest.json` を変更したら、配置する前に必ず検証を通すこと。マニフェストの誤りは
 Next Design 自体をエラーなしで起動不能にする。
