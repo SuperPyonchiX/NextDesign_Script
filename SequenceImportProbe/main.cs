@@ -1326,7 +1326,8 @@ public static class SequenceStructureTrial
             .Concat(prepared.AddedFragments.Select(a=>a.ShapeId))
             .Concat(prepared.AddedOperands.Select(a=>a.ShapeId))
             // Written this run too, so the same rounding applies to them.
-            .Concat(prepared.StretchedLifelines.Select(a=>a.ShapeId)).ToArray();
+            .Concat(prepared.StretchedLifelines.Select(a=>a.ShapeId))
+            .Concat(prepared.ShiftedShapes.Select(a=>a.ShapeId)).ToArray();
         var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
             .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).ToArray();
         var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
@@ -1374,6 +1375,9 @@ public static class SequenceStructureTrial
             foreach(var lane in prepared.StretchedLifelines)
                 log.AppendLine("stretch lifeline payload: model="+lane.ModelId+" shape="+lane.ShapeId
                     +" timeline="+lane.Length);
+            foreach(var move in prepared.ShiftedShapes)
+                log.AppendLine("shift payload: model="+move.ModelId+" shape="+move.ShapeId
+                    +" "+PumlBuild.Json(move.Keys)+"="+PumlBuild.Json(move.Values));
             log.AppendLine("created shape collections: "+(prepared.CreatedCollections.Length==0?"none"
                 :string.Join(",",prepared.CreatedCollections)));
             Import(project,prepared.ReconnectJson,log);
@@ -1463,7 +1467,8 @@ public static class SequenceStructureTrial
             +(prepared.AddedFragments.Length>0
                 ?"\n注意: フラグメントを追加した更新はUndoできません。Undoすると製品が停止します（製品側の不具合）。"
                     +"取り消すときは保存せずに開き直してください。":"")
-            +" / タイムラインを伸ばした参加者 "+prepared.StretchedLifelines.Length+"件";
+            +" / タイムラインを伸ばした参加者 "+prepared.StretchedLifelines.Length+"件"
+            +(prepared.InsertedMessageId.Length>0?" / 途中への挿入で下げた図形 "+prepared.ShiftedShapes.Length+"件":"");
         log.AppendLine(summary);
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
         catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}
@@ -3642,8 +3647,26 @@ public sealed class SequenceStructurePreflight
             if(!before.ContainsKey(ports[0]) && !addedExecutions.Contains(ports[0]))
                 return "追加するメッセージの接続先は既存の実行区間か、この計画で追加する実行区間である必要があります。";
         }
+        // Going last needs no room made for it. Anywhere else, everything below has to
+        // move down, which is only describable while the frames stay out of it: a message
+        // the interaction owns directly, between bars that are already open across the
+        // point it goes in, so no new bar has to be placed either.
         string why=Appended(current,plan,added.Id,"追加するメッセージ");
-        if(why!=null)return why;
+        if(why!=null)
+        {
+            if(added.Parent!=root)return why;
+            foreach(string role in new[]{"sendExecution","receiveExecution"})
+                if(!before.ContainsKey(Link(added,role)[0]))
+                    return "図の途中へ挿入するメッセージは、既に開いている実行区間につないでください。"
+                        +"新しい実行区間を同時に作る挿入は対象外です。";
+            var below=Flatten(plan.Expected).SkipWhile(id=>id!=added.Id).Skip(1)
+                .Where(before.ContainsKey).Select(id=>after[id]).ToArray();
+            if(below.Length==0)return why;
+            if(below.Any(e=>e.Kind=="fragment" || e.Kind=="operand"))
+                return "挿入位置より下にフラグメントがあります。枠の移動を伴う挿入は対象外です。";
+            if(below.Any(e=>e.Kind!="message"))
+                return "挿入位置より下に"+below.First(e=>e.Kind!="message").Kind+"があります。メッセージだけを下げる挿入に限ります。";
+        }
         var order=Flatten(plan.Expected);
         var earlier=order.Take(Array.IndexOf(order,added.Id)).Select(id=>after[id]).Where(e=>e.Kind=="message").ToArray();
         if(earlier.Length==0)return "直前のメッセージがありません。最初のメッセージの追加は対象外です。";
@@ -3939,6 +3962,14 @@ public sealed class SequenceAddedOperand
         RelationFields=new string[0];
 }
 
+// A shape that had to move or grow to make room for a message inserted above it.
+// Only the values named here change; everything else about the shape is left alone.
+public sealed class SequenceShiftedShape
+{
+    public string ModelId, ShapeId, Kind;
+    public string[] Keys=new string[0], Values=new string[0];
+}
+
 // A lifeline whose timeline was stretched so it still reaches the bottom of the
 // diagram. Only its length changes; everything else about the lane is left alone.
 public sealed class SequenceStretchedLifeline
@@ -3960,6 +3991,8 @@ public sealed class SequenceStructurePreparation
     public SequenceAddedOperand[] AddedOperands=new SequenceAddedOperand[0];
     public SequenceStretchedLifeline[] StretchedLifelines=new SequenceStretchedLifeline[0];
     public string[] CreatedCollections=new string[0];
+    public SequenceShiftedShape[] ShiftedShapes=new SequenceShiftedShape[0];
+    public string InsertedMessageId="";
     public string[] DeleteParticipantIds=new string[0];
     public string[] DeleteMessageIds=new string[0];
     public string[] DeleteFrameIds=new string[0];
@@ -4191,6 +4224,17 @@ public sealed class SequenceStructurePreparation
                 ShapeId=shapeId,TemplateShapeId="",Guard=guard,Position=position,
                 RelationIds=new[]{relationId},RelationSources=new[]{wanted.Parent},RelationFields=new[]{types.Branches[2]}});
         }
+        // A message that has existing elements after it is an insertion: it needs room
+        // made below, and the checks that keep an appended message off an occupied row
+        // and inside the bars as they stand do not apply to it.
+        string insertedId="";
+        foreach(string id in gate.AddMessages)
+        {
+            var walk=SequenceStructurePreflight.Flatten(plan.Expected);
+            if(!walk.SkipWhile(e=>e!=id).Skip(1).Any(before.ContainsKey))continue;
+            Require(insertedId.Length==0,"1回の更新で挿入できるメッセージは1件です。");
+            insertedId=id;
+        }
         var wires=new List<SequenceAddedMessage>();
         var newMessageShapes=new List<SequenceJson>();
         foreach(string id in gate.AddMessages)
@@ -4215,18 +4259,24 @@ public sealed class SequenceStructurePreparation
                 string previous=earlier[earlier.Length-1].Id;
                 var previousShapes=shapes4.Where(sh=>V(sh,"ModelId")==previous).ToArray();
                 Require(previousShapes.Length==1,"直前のメッセージの図形を一意に取得できません。");
-                y=Read(previousShapes[0],"TargetY")+MessageSpacing;
-                // Only space the current bars already cover; growing them is a separate change.
+                double at=Read(previousShapes[0],"TargetY");
+                y=at+MessageSpacing;
                 foreach(string port in new[]{send,receive})
                 {
                     var bar=shapes4.Where(sh=>V(sh,"ModelId")==port).ToArray();
                     Require(bar.Length==1,"接続先の実行区間の図形を一意に取得できません。");
                     double top=Read(bar[0],"Y"),bottom=top+Read(bar[0],"Length");
-                    Require(y>=top && y<=bottom,"追加するメッセージが既存の実行区間の範囲に収まりません。後続の移動は対象外です。");
+                    // An appended message takes only space the bars already cover. An
+                    // inserted one lands on a bar that is open across the point it goes in,
+                    // and that bar grows with the room made below.
+                    if(id==insertedId)
+                        Require(top<=at && bottom>=at,"挿入位置をまたぐ実行区間につないでください。");
+                    else Require(y>=top && y<=bottom,"追加するメッセージが既存の実行区間の範囲に収まりません。後続の移動は対象外です。");
                 }
             }
-            Require(shapes4.All(sh=>V(sh,"ModelId")==template || sh["TargetY"]==null || Read(sh,"TargetY")!=y),
-                "追加するメッセージの位置に既存の図形があります。");
+            if(id!=insertedId)
+                Require(shapes4.All(sh=>V(sh,"ModelId")==template || sh["TargetY"]==null || Read(sh,"TargetY")!=y),
+                    "追加するメッセージの位置に既存の図形があります。");
             var entity=SequenceJson.Parse(byId[template].ToJsonString());
             entity.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(id));
             string name=wanted.Text??"";
@@ -4363,6 +4413,51 @@ public sealed class SequenceStructurePreparation
             Require(wireArray!=null && wireArray.Items!=null,"エディタにメッセージの図形配列がありません。");
             wireArray.Items.AddRange(newMessageShapes);
         }
+        // A message that does not go last needs the room below it. Everything already
+        // drawn at or under the point it goes in moves down by one message's spacing, and
+        // a bar open across that point grows instead of moving.
+        var shifted=new List<SequenceShiftedShape>();
+        if(insertedId.Length>0)
+        {
+            string id=insertedId;
+            var wanted=after[id];
+            var walk=SequenceStructurePreflight.Flatten(plan.Expected);
+            var earlier=walk.TakeWhile(e=>e!=id).Where(before.ContainsKey)
+                .Where(e=>after.ContainsKey(e) && after[e].Kind=="message").ToArray();
+            Require(earlier.Length>0,"挿入位置の直前のメッセージを取得できません。");
+            var previousShapes=editor.Shapes().Where(sh=>V(sh,"ModelId")==earlier[earlier.Length-1]).ToArray();
+            Require(previousShapes.Length==1,"直前のメッセージの図形を一意に取得できません。");
+            double at=Read(previousShapes[0],"TargetY");
+            var ports=new HashSet<string>(new[]{"sendExecution","receiveExecution"}
+                .Select(role=>wanted.Links[role].Single()));
+            foreach(var shape in editor.Shapes())
+            {
+                string model=V(shape,"ModelId");
+                var keys=new List<string>();var values=new List<string>();
+                if(shape["TargetY"]!=null && shape["SourceY"]!=null && Read(shape,"TargetY")>at)
+                {
+                    keys.Add("SourceY");values.Add(Number(Read(shape,"SourceY")+MessageSpacing));
+                    keys.Add("TargetY");values.Add(Number(Read(shape,"TargetY")+MessageSpacing));
+                }
+                else if(shape["Length"]!=null && shape["Y"]!=null)
+                {
+                    double top=Read(shape,"Y"),bottom=top+Read(shape,"Length");
+                    if(top>at) {keys.Add("Y");values.Add(Number(top+MessageSpacing));}
+                    else if(bottom>=at) {keys.Add("Length");values.Add(Number(Read(shape,"Length")+MessageSpacing));}
+                }
+                else if(shape["LaneLength"]!=null)
+                {keys.Add("LaneLength");values.Add(Number(Read(shape,"LaneLength")+MessageSpacing));}
+                if(keys.Count==0)continue;
+                foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
+                    .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items)
+                    .Where(n=>V(n,"Id")==V(shape,"Id")))
+                    for(int i=0;i<keys.Count;i++)node.Properties[keys[i]]=SequenceJson.Parse(values[i]);
+                shifted.Add(new SequenceShiftedShape{ModelId=model,ShapeId=V(shape,"Id"),
+                    Kind=ports.Contains(model)?"port":"other",Keys=keys.ToArray(),Values=values.ToArray()});
+            }
+            Require(ports.All(port=>shifted.Any(s=>s.ModelId==port)),
+                "挿入位置をまたぐ実行区間がありません。既に開いているバーの間に挿入してください。");
+        }
         var stretched=new List<SequenceStretchedLifeline>();
         if(layout.ContainsKey("") && layout[""]["Growth"]>0)
         {
@@ -4391,13 +4486,14 @@ public sealed class SequenceStructurePreparation
         }
         return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),ReconnectCount=changed.Count,
             EditorAfterDeleteJson=Deleted(editor,newShapes,newLaneShapes,newMessageShapes,
-                newFrameShapes,newOperandShapes,stretched,gate.DeleteExecutions,
+                newFrameShapes,newOperandShapes,stretched,shifted,gate.DeleteExecutions,
                 gate.DeleteParticipants.Concat(gate.DeleteMessages)
                     .Concat(gate.DeleteFragments).Concat(gate.DeleteOperands).ToList()),
             DeleteIds=gate.DeleteExecutions.ToArray(),
             AddedExecutions=additions.ToArray(),AddedParticipants=lanes.ToArray(),AddedMessages=wires.ToArray(),
             AddedFragments=frames.ToArray(),AddedOperands=branches.ToArray(),
             StretchedLifelines=stretched.ToArray(),CreatedCollections=Created.ToArray(),
+            ShiftedShapes=shifted.ToArray(),InsertedMessageId=insertedId,
             DeleteParticipantIds=gate.DeleteParticipants.ToArray(),DeleteMessageIds=gate.DeleteMessages.ToArray(),
             DeleteFrameIds=gate.DeleteFragments.Concat(gate.DeleteOperands).ToArray(),
             ReceiveRelationIds=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage").Select(r=>V(r,"Id")).ToArray()};
@@ -4569,7 +4665,8 @@ public sealed class SequenceStructurePreparation
     internal const double MessageSpacing=50;
     static string Deleted(SequenceEditorDocument editor,List<SequenceJson> addedShapes,List<SequenceJson> addedLanes,
         List<SequenceJson> addedWires,List<SequenceJson> addedFrames,List<SequenceJson> addedBranches,
-        List<SequenceStretchedLifeline> stretched,List<string> removed,List<string> removedLanes)
+        List<SequenceStretchedLifeline> stretched,List<SequenceShiftedShape> shifted,
+        List<string> removed,List<string> removedLanes)
     {
         var json=SequenceJson.Parse(editor.ImportJson());
         var view=json["Editors"].Items.Single();
@@ -4596,6 +4693,11 @@ public sealed class SequenceStructurePreparation
                 foreach(var node in lanes.Items.Where(n=>SequenceEditorDocument.Value(n,"Id")==lane.ShapeId))
                     node.Properties["LaneLength"]=SequenceJson.Parse(lane.Length);
         }
+        foreach(var move in shifted)
+            foreach(var node in view.Properties.Values.Where(array=>array!=null && array.Items!=null)
+                .SelectMany(array=>array.Items).Where(n=>SequenceEditorDocument.Value(n,"Id")==move.ShapeId))
+                for(int i=0;i<move.Keys.Length;i++)
+                    node.Properties[move.Keys[i]]=SequenceJson.Parse(move.Values[i]);
         return json.ToJsonString();
     }
     static bool Mentions(SequenceJson node,HashSet<string> ids)
@@ -4789,6 +4891,16 @@ public sealed class SequenceTrialState
     }
     public string Model(string shape)
     { string value;return ShapeModels.TryGetValue(shape,out value)?value:""; }
+    // Where a value sits in a shape signature. A node shape starts with its rectangle;
+    // a message follows with its text and both ends; a bar ends with its length.
+    static int Slot(string key,int count)
+    {
+        if(key=="Y")return 1;
+        if(key=="Length")return count-1;
+        if(key=="SourceY")return count-3;
+        if(key=="TargetY")return count-2;
+        return -1;
+    }
     static double Coordinate(string value)
     { return double.Parse(value,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture); }
     static string Coordinate(double value)
@@ -4826,6 +4938,32 @@ public sealed class SequenceTrialState
             string[] pattern;
             if(!result.Ports.TryGetValue(wire.TemplateModelId,out pattern))throw new InvalidOperationException("S230: メッセージの見本の送受信がありません。");
             result.Ports[wire.ModelId]=new[]{wire.SendPort,wire.ReceivePort,wire.Sender,wire.Receiver,pattern[4]};
+        }
+        // Room made for an inserted message: a shape below it moved down, a bar open
+        // across it grew, and a lane's timeline followed. The signatures the SDK reads
+        // back put those numbers in fixed places, so the moved values go back in the
+        // same places rather than being recomputed.
+        foreach(var move in prepared.ShiftedShapes)
+        {
+            string measured;
+            if(!result.Shapes.TryGetValue(move.ShapeId,out measured))
+                throw new InvalidOperationException("S230: 下げる図形がありません。");
+            int close=measured.LastIndexOf(']');
+            if(close<0)throw new InvalidOperationException("S230: 下げる図形の形が想定と違います。");
+            string tail=measured.Substring(close+1);
+            var node=SequenceJson.Parse(measured.Substring(0,close+1));
+            if(node==null || node.Items==null)throw new InvalidOperationException("S230: 下げる図形を読み取れません。");
+            var rows=node.Items.Select(item=>item.StringValue()).ToList();
+            for(int i=0;i<move.Keys.Length;i++)
+            {
+                // A lane keeps its length after the arrays; everything else is positional.
+                if(move.Keys[i]=="LaneLength") {tail=move.Values[i];continue;}
+                int slot=Slot(move.Keys[i],rows.Count);
+                if(slot<0 || slot>=rows.Count)
+                    throw new InvalidOperationException("S230: 下げる図形に"+move.Keys[i]+"の位置がありません。");
+                rows[slot]=move.Values[i];
+            }
+            result.Shapes[move.ShapeId]=PumlBuild.Json(rows.ToArray())+tail;
         }
         // Only the timeline length changes on a stretched lane; the rectangle stays.
         foreach(var lane in prepared.StretchedLifelines)

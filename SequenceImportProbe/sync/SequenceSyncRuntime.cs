@@ -402,7 +402,8 @@ public static class SequenceStructureTrial
             .Concat(prepared.AddedFragments.Select(a=>a.ShapeId))
             .Concat(prepared.AddedOperands.Select(a=>a.ShapeId))
             // Written this run too, so the same rounding applies to them.
-            .Concat(prepared.StretchedLifelines.Select(a=>a.ShapeId)).ToArray();
+            .Concat(prepared.StretchedLifelines.Select(a=>a.ShapeId))
+            .Concat(prepared.ShiftedShapes.Select(a=>a.ShapeId)).ToArray();
         var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
             .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).ToArray();
         var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
@@ -450,6 +451,9 @@ public static class SequenceStructureTrial
             foreach(var lane in prepared.StretchedLifelines)
                 log.AppendLine("stretch lifeline payload: model="+lane.ModelId+" shape="+lane.ShapeId
                     +" timeline="+lane.Length);
+            foreach(var move in prepared.ShiftedShapes)
+                log.AppendLine("shift payload: model="+move.ModelId+" shape="+move.ShapeId
+                    +" "+PumlBuild.Json(move.Keys)+"="+PumlBuild.Json(move.Values));
             log.AppendLine("created shape collections: "+(prepared.CreatedCollections.Length==0?"none"
                 :string.Join(",",prepared.CreatedCollections)));
             Import(project,prepared.ReconnectJson,log);
@@ -539,7 +543,8 @@ public static class SequenceStructureTrial
             +(prepared.AddedFragments.Length>0
                 ?"\n注意: フラグメントを追加した更新はUndoできません。Undoすると製品が停止します（製品側の不具合）。"
                     +"取り消すときは保存せずに開き直してください。":"")
-            +" / タイムラインを伸ばした参加者 "+prepared.StretchedLifelines.Length+"件";
+            +" / タイムラインを伸ばした参加者 "+prepared.StretchedLifelines.Length+"件"
+            +(prepared.InsertedMessageId.Length>0?" / 途中への挿入で下げた図形 "+prepared.ShiftedShapes.Length+"件":"");
         log.AppendLine(summary);
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
         catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}

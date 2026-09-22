@@ -100,6 +100,14 @@ public static class PayloadTest {
    if(frameWrapGate.Candidate)
        throw new Exception("wrapping existing messages was accepted: "+frameWrapGate.ToJson());
 
+   // A message inserted between two that already exist, onto bars already open there.
+   var insertModel=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-insert-before.puml")));
+   var insertInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-insert-after.puml")));
+   var insertPlan=SyncPlan.Build(insertModel,insertInput,()=>Guid.NewGuid().ToString());
+   var insertGate=SequenceStructurePreflight.Check(insertModel,insertPlan);
+   if(!insertGate.Candidate || insertGate.AddMessages.Count!=1 || insertGate.Targets!=1)
+       throw new Exception("an inserted message must be the only change: "+insertPlan.ToJson()+insertGate.ToJson());
+
    var reconnectBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-before.puml")));
    var reconnectAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-after.puml")));
    var reconnectPlan=SyncPlan.Build(reconnectBefore,reconnectAfter,()=>Guid.NewGuid().ToString());
