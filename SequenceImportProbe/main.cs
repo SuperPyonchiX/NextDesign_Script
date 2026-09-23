@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.36";
+    public const string Title = "シーケンス生成実験 / 0.9.37";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1783,6 +1783,22 @@ public static class SequenceBatch
                     // Applied but still different is that scenario's own problem, not the batch's.
                     failed=changes<0;
                     result=changes==0?"成功":changes<0?"照合できず: "+Line(SequenceExperiment.Summary,160):"差分 "+changes+"件";
+                    // Applying the same input again has to find nothing to do and write nothing.
+                    if(apply && changes==0)
+                    {
+                        var diagram=DiagramOf(project,root);
+                        string shapesBefore=string.Join("|",diagram.Shapes.Select(sh=>sh.Id).OrderBy(x=>x,StringComparer.Ordinal));
+                        SequenceSyncRuntime.BatchDiagram=diagram;SequenceSyncRuntime.BatchInput=s[2];
+                        SequenceSyncRuntime.Preview(app,true,true,true,true);
+                        bool again=SequenceSyncRuntime.LastCommitted;
+                        string shapesAfter=string.Join("|",DiagramOf(project,root).Shapes.Select(sh=>sh.Id).OrderBy(x=>x,StringComparer.Ordinal));
+                        if(again || SequenceSyncRuntime.LastChanges!=0 || shapesBefore!=shapesAfter)
+                        {
+                            result="2回目の反映で変化: 差分 "+SequenceSyncRuntime.LastChanges+"件 / 確定="+again;
+                            detail.AppendLine("■ "+s[0]+" 2回目の反映\n"+SequenceExperiment.Summary+"\n");
+                        }
+                        else result+="（2回目: 変化なし）";
+                    }
                 }
                 catch(Exception ex){failed=true;result="停止: "+Line(ex.Message,200);detail.AppendLine("■ "+s[0]+"\n"+ex+"\n");}
                 rows.Add(s[0]+" | "+result+" | "+(watch.ElapsedMilliseconds/1000)+"秒"+timing);
