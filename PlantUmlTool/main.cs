@@ -11194,46 +11194,43 @@ public static class ClassDiagramCreator
         IModel parent=editor!=null?ClassDiagramKind.ModelOf(editor):null;
         if(parent==null) { try { parent=app.Window.EditorPage.CurrentModel; } catch(Exception) { } }
         if(parent==null)throw new InvalidOperationException("C310: クラス図を追加するモデル（クラス図グループなど）をナビゲータで選ぶか、雛形にするクラス図を開いてから実行してください。");
-        var project=app.Workspace.CurrentProject;
         var trace=new StringBuilder();
         template=FindTemplate(parent,trace);
-        string source="配下";
-        if(template==null && project!=null && project.DesignModel!=null) { template=FindTemplate(project.DesignModel,trace);source="プロジェクト内"; }
-        if(template==null)throw new InvalidOperationException("C310: 雛形にできるクラス図（クラスが 1 つ以上載っているもの）が見つかりません。\n"+trace.ToString().TrimEnd());
+        if(template==null)throw new InvalidOperationException("C310: '"+ClassText.Normalize(parent.Name)+"' の直下に、雛形にできるクラス図（クラスが 1 つ以上載っているもの）がありません。雛形にするクラス図を開いてから実行してください。\n"+trace.ToString().TrimEnd());
         var metaclass=ClassDiagramKind.ModelOf(template).Metaclass;
         ownerField=parent.Metaclass.GetFields().Cast<IField>().FirstOrDefault(f=>f.IsEmbedded && f.TypeClass!=null && f.TypeClass.IsClassOf(metaclass));
         if(ownerField==null)throw new InvalidOperationException("C310: '"+ClassText.Normalize(parent.Name)+"'（"+parent.ClassName+"）にはクラス図（"+metaclass.Name+"）を追加できません。クラス図グループを選んでから実行してください。");
         owner=parent;
-        return "選択中のモデルの下（雛形は"+source+"の図）";
+        return "選択中のモデルの下（雛形は直下の図）";
     }
-    // The first model below root, in breadth-first order, with a class diagram showing a class.
-    // A model whose editors cannot be read still has its children searched. trace collects what
-    // was seen, for the message when nothing is found.
-    static IEditor FindTemplate(IModel root,StringBuilder trace)
+    // Only the direct children are searched: walking the tree reads every model's editors and
+    // took too long on a real project. trace collects what was seen, for the message when
+    // nothing is found.
+    static IEditor FindTemplate(IModel parent,StringBuilder trace)
     {
-        var queue=new Queue<IModel>();queue.Enqueue(root);
-        int models=0,editors=0,editorErrors=0,childErrors=0;var kinds=new List<string>();string firstError=null;
-        while(queue.Count>0 && models<200000)
+        int models=0,editors=0;var kinds=new List<string>();string firstError=null;
+        List<IModel> children;
+        try { children=parent.GetChildren().Cast<IModel>().Where(c=>c!=null && !c.IsDeleted).ToList(); }
+        catch(Exception ex) { trace.AppendLine("GetChildren: "+ex.Message);return null; }
+        foreach(var m in children)
         {
-            var m=queue.Dequeue();models++;
+            models++;
             try
             {
                 foreach(var e in m.GetEditors().Cast<object>().OfType<IEditor>())
                 {
                     editors++;
                     if(ClassDiagramKind.Reject(e)!=null)continue;
-                    int shown=0;
-                    try { shown=((IDiagram)e).Nodes.Cast<object>().OfType<INode>().Count(n=>ClassDiagramKind.ModelOf(n)!=null); }
+                    bool shown=false;
+                    try { shown=((IDiagram)e).Nodes.Cast<object>().OfType<INode>().Any(n=>ClassDiagramKind.ModelOf(n)!=null); }
                     catch(Exception ex) { if(firstError==null)firstError="Nodes: "+ex.Message; }
-                    if(kinds.Count<8)kinds.Add("'"+ClassText.Normalize(m.Name)+"' "+e.EditorType+"/"+e.ViewDefinitionName+" nodes="+shown);
-                    if(shown>0) { trace.AppendLine("template search: found in '"+ClassText.Normalize(m.Name)+"' after "+models+" models");return e; }
+                    if(shown)return e;
+                    if(kinds.Count<8)kinds.Add("'"+ClassText.Normalize(m.Name)+"' "+e.EditorType+"/"+e.ViewDefinitionName+" ノードなし");
                 }
             }
-            catch(Exception ex) { editorErrors++;if(firstError==null)firstError="GetEditors('"+ClassText.Normalize(m.Name)+"'): "+ex.Message; }
-            try { foreach(var child in m.GetChildren().Cast<IModel>())if(child!=null && !child.IsDeleted)queue.Enqueue(child); }
-            catch(Exception ex) { childErrors++;if(firstError==null)firstError="GetChildren('"+ClassText.Normalize(m.Name)+"'): "+ex.Message; }
+            catch(Exception ex) { if(firstError==null)firstError="GetEditors('"+ClassText.Normalize(m.Name)+"'): "+ex.Message; }
         }
-        trace.AppendLine("'"+ClassText.Normalize(root.Name)+"' 配下: モデル "+models+" / エディタ "+editors+" / 取得失敗 エディタ "+editorErrors+"・子 "+childErrors);
+        trace.AppendLine("直下のモデル "+models+" / エディタ "+editors);
         if(kinds.Count>0)trace.AppendLine("クラス図と判定したエディタ: "+string.Join(" | ",kinds.ToArray()));
         if(firstError!=null)trace.AppendLine("最初の例外: "+firstError);
         return null;

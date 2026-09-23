@@ -2,7 +2,7 @@
   "name": "PlantUmlTool",
   "displayName": "PlantUML 連携",
   "description": "シーケンス図・クラス図・状態遷移図を PlantUML 形式で出力し、編集した PlantUML をクラス図へ反映します。PlantUML から新しいクラス図も作れます。",
-  "version": "2.3.2",
+  "version": "2.3.3",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
