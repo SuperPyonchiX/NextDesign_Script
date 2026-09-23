@@ -773,8 +773,76 @@ public static class StructurePreparationTests
         int second=Array.IndexOf(added.RelationTargets,ids[3]);
         Require(expected.Relations[added.RelationIds[second]].SequenceEqual(new[]{"new-ref",ids[3],"1","0"}),"the second lane was not counted after the first");
     }
+    // What wrapping one message left: probe() at 80, a frame from 120 to 238 holding
+    // wrapped() at 190, after() at 278, bars from 50 (298 long) and 80 (248 long).
+    // Taking the frame away puts it back.
+    static void UnwrappedMessage()
+    {
+        var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
+        var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
+        var editor=raw["Editors"].Items.Single();string editorId=editor["Id"].StringValue();
+        foreach(var pair in new[]{new[]{"0","298"},new[]{"1","248"}})
+        {
+            var bar=editor["ExecutionSpecifications"].Items[int.Parse(pair[0])];
+            bar.Properties["Length"]=SequenceJson.Parse(pair[1]);bar.Properties["Height"]=SequenceJson.Parse(pair[1]);
+        }
+        foreach(var pair in new[]{new[]{"wrapped","190"},new[]{"after","278"}})
+        {
+            var entity=Clone(raw["Entities"].Items.Single(e=>e["Id"].StringValue()==ids[6]));Set(entity,"Id",pair[0]);raw["Entities"].Items.Add(entity);
+            foreach(var r in raw["Relations"].Items.Where(r=>r["TargetId"].StringValue()==ids[6]).ToArray())
+            {var copy=Clone(r);Set(copy,"Id",r["Id"].StringValue()+"-"+pair[0]);Set(copy,"TargetId",pair[0]);raw["Relations"].Items.Add(copy);}
+            var wire=Clone(editor["Messages"].Items[0]);Set(wire,"Id",pair[0]+"-shape");Set(wire,"ModelId",pair[0]);
+            wire.Properties["SourceY"]=SequenceJson.Parse(pair[1]);wire.Properties["TargetY"]=SequenceJson.Parse(pair[1]);editor["Messages"].Items.Add(wire);
+        }
+        string P=SequencePayload.Prefix;
+        raw["Entities"].Items.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id","old-frame","EntityType","CombinedFragment","MetamodelId","fragment","Name",""))));
+        raw["Entities"].Items.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id","old-operand","EntityType","InteractionOperand","MetamodelId","operand","Name",""))));
+        foreach(var r in new[]{new[]{"___Interaction_CombinedFragment",ids[0],"old-frame"},new[]{"___CombinedFragment_InteractionOperand","old-frame","old-operand"},
+            new[]{"CrossingFragmentCoveredLifeline","old-frame",ids[2]},new[]{"OperandTargetMessage","old-operand","wrapped"}})
+            raw["Relations"].Items.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id","r-"+r[0]+"-"+r[2],"MetamodelId",P+r[0],"SourceId",r[1],"TargetId",r[2]))));
+        editor.Properties["Fragments"]=SequenceJson.Parse(PumlBuild.Json(new object[]{PumlBuild.Obj("Id","old-frame-shape","ModelId","old-frame","X",4,"Y",120,"Width",332,"Height",118)}));
+        editor.Properties["Operands"]=SequenceJson.Parse(PumlBuild.Json(new object[]{PumlBuild.Obj("Id","old-operand-shape","ModelId","old-operand","Position",30)}));
+        var current=new SequenceDocument();
+        current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
+        current.Elements.Add(new SequenceElement{Id=ids[2],Kind="participant",Parent=ids[0]});
+        current.Elements.Add(new SequenceElement{Id=ids[3],Kind="participant",Parent=ids[0]});
+        foreach(string id in new[]{ids[4],ids[5]})
+        {var e=new SequenceElement{Id=id,Kind="execution",Parent=ids[0]};e.Links["participant"]=new[]{id==ids[4]?ids[2]:ids[3]};current.Elements.Add(e);}
+        var box=new SequenceElement{Id="old-frame",Kind="fragment",Parent=ids[0],Order=1,Text=""};box.Attributes["operator"]="alt";current.Elements.Add(box);
+        current.Elements.Add(new SequenceElement{Id="old-operand",Kind="operand",Parent="old-frame",Order=0,Text="ready"});
+        foreach(var row in new[]{new[]{ids[6],ids[0],"0","probe()"},new[]{"wrapped","old-operand","0","wrapped()"},new[]{"after",ids[0],"2","after()"}})
+        {
+            var m=new SequenceElement{Id=row[0],Kind="message",Parent=row[1],Order=int.Parse(row[2]),Text=row[3]};m.Attributes["sort"]="sync";
+            m.Links["sender"]=new[]{ids[2]};m.Links["receiver"]=new[]{ids[3]};m.Links["sendExecution"]=new[]{ids[4]};m.Links["receiveExecution"]=new[]{ids[5]};
+            current.Elements.Add(m);
+        }
+        var desired=current.Copy();
+        desired.Elements.RemoveAll(e=>e.Id=="old-frame" || e.Id=="old-operand");
+        var moved=desired.Elements.Single(e=>e.Id=="wrapped");moved.Parent=ids[0];moved.Order=1;
+        var plan=new SyncPlan{Expected=desired};
+        plan.Changes.Add(new SequenceChange{Action="move",Kind="message",Id="wrapped",Line=6});
+        plan.Changes.Add(new SequenceChange{Action="delete",Kind="fragment",Id="old-frame"});
+        plan.Changes.Add(new SequenceChange{Action="delete",Kind="operand",Id="old-operand"});
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate && gate.UnwrapFragments.SequenceEqual(new[]{"old-frame"}),"taking the frame away was not a candidate: "+gate.ToJson());
+        var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan);
+        Func<string,string,string> at=(shape,key)=>{
+            var hit=package.ShiftedShapes.Where(m=>m.ShapeId==shape).ToArray();
+            if(hit.Length==0)return null;
+            int i=Array.IndexOf(hit[0].Keys,key);return i<0?null:hit[0].Values[i];
+        };
+        Require(at(editor["Messages"].Items[0]["Id"].StringValue(),"TargetY")==null,"the message above the frame moved");
+        Require(at("wrapped-shape","TargetY")=="120","the message the frame held did not close up under the one above: "+at("wrapped-shape","TargetY"));
+        Require(at("after-shape","TargetY")=="160","the message below did not close up: "+at("after-shape","TargetY"));
+        string barA=editor["ExecutionSpecifications"].Items[0]["Id"].StringValue();
+        Require(at(barA,"Y")==null && at(barA,"Length")=="180","a bar across the frame did not shrink with it: "+at(barA,"Length"));
+        Require(at("old-frame-shape","Y")==null,"the frame being removed was moved");
+        foreach(var lane in editor["Lifelines"].Items)Require(at(lane["Id"].StringValue(),"LaneLength")=="122","a lane did not shorten with the diagram");
+        Require(package.DeleteFrameIds.Contains("old-frame") && package.DeleteFrameIds.Contains("old-operand"),"the frame was not deleted");
+    }
     public static void Run()
     {
+        UnwrappedMessage();
         AddedRef();
         AddedNote();
         WrappedMessage();

@@ -2117,9 +2117,11 @@ public sealed class SequenceStructurePreparation
         }
         // Wrapping makes room at the top of the run and below it. Every position moves by
         // the same rule, so a bar's two ends are mapped separately and its length follows.
+        if(gate.UnwrapFragments.Count>0)wrapMap=UnwrapLayout(gate,current,editor,out wrapGrowth);
         if(wrapMap!=null)
         {
             var laneIds=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
+            var leavingShapes=new HashSet<string>(gate.DeleteFragments.Concat(gate.DeleteOperands));
             foreach(var shape in editor.Shapes())
             {
                 string model=V(shape,"ModelId");
@@ -2135,16 +2137,18 @@ public sealed class SequenceStructurePreparation
                 {
                     // A bar the input closes inside the new frame has to end inside it too,
                     // even when it used to reach further down than the run's last message.
-                    string frameId=gate.WrapFragments[0];
-                    bool closesInside=after.ContainsKey(model) && (after[model].Links.ContainsKey("endContainer")?after[model].Links["endContainer"]:new string[0])
+                    string frameId=gate.WrapFragments.Count>0?gate.WrapFragments[0]:null;
+                    bool closesInside=frameId!=null && after.ContainsKey(model) && (after[model].Links.ContainsKey("endContainer")?after[model].Links["endContainer"]:new string[0])
                         .Any(id=>after.ContainsKey(id) && after[id].Kind=="operand" && after[id].Parent==frameId);
                     double top=Read(shape,"Y"),length=Read(shape,"Length"),moved=wrapMap(top);
-                    double floor=layout[frameId]["Y"]+layout[frameId]["Height"]-8;
-                    double grown=(closesInside?Math.Min(wrapInside(top+length),floor):wrapMap(top+length))-moved;
+                    double grown=(closesInside?Math.Min(wrapInside(top+length),layout[frameId]["Y"]+layout[frameId]["Height"]-8):wrapMap(top+length))-moved;
                     put("Y",top,moved);
                     // A bar carries its length as both Height and Length; writing one is ignored.
                     if(Math.Abs(grown-length)>1e-9){keys.Add("Length");values.Add(Number(grown));keys.Add("Height");values.Add(Number(grown));}
                 }
+                // The frame being taken away and its operands go; nothing to move.
+                else if(leavingShapes.Contains(model))continue;
+                else if(kind=="note" || kind=="ref")put("Y",Read(shape,"Y"),wrapMap(Read(shape,"Y")));
                 else if(kind=="fragment")
                 {
                     double top=Read(shape,"Y"),height=Read(shape,"Height"),moved=wrapMap(top);
@@ -2369,6 +2373,50 @@ public sealed class SequenceStructurePreparation
         var within=inside;
         map=p=>p<ys[0]-5?p:p>split?p+below:within(p);
         return layout;
+    }
+    // Taking a frame away closes the room it took, the reverse of wrapping: the first
+    // message it held goes one step under the message before the frame, messages keep
+    // their spacing within an operand and close up to one step across an operand's start,
+    // and everything under the frame follows one step under the last of them.
+    internal static Func<double,double> UnwrapLayout(SequenceStructurePreflight gate,SequenceDocument current,
+        SequenceEditorDocument editor,out double growth)
+    {
+        string frameId=gate.UnwrapFragments.Single();
+        var shapes=editor.Shapes();
+        Func<string,SequenceJson> shapeOf=id=>{
+            var found=shapes.Where(sh=>SequenceEditorDocument.Value(sh,"ModelId")==id).ToArray();
+            if(found.Length!=1)throw new InvalidOperationException("S220: 外す枠まわりの図形を一意に取得できません。");
+            return found[0];
+        };
+        var frame=shapeOf(frameId);
+        double top=Read(frame,"Y"),bottom=top+Read(frame,"Height");
+        var before=current.Elements.ToDictionary(e=>e.Id);
+        var walk=SequenceStructurePreflight.Flatten(current);
+        var inside=walk.Where(id=>before[id].Kind=="message" && before[before[id].Parent].Parent==frameId).ToArray();
+        if(inside.Length==0)throw new InvalidOperationException("S220: 外す枠の中にメッセージがありません。");
+        var ys=inside.Select(id=>Read(shapeOf(id),"TargetY")).ToArray();
+        var above=walk.Take(System.Array.IndexOf(walk,frameId)).Where(id=>before[id].Kind=="message").ToArray();
+        double first=above.Length>0?Read(shapeOf(above[above.Length-1]),"TargetY")+MessageSpacing:top+10;
+        var placed=new double[ys.Length];
+        for(int i=0;i<ys.Length;i++)
+        {
+            bool opens=i==0 || before[inside[i]].Parent!=before[inside[i-1]].Parent;
+            placed[i]=i==0?first:opens?placed[i-1]+MessageSpacing:placed[i-1]+(ys[i]-ys[i-1]);
+        }
+        // Below the frame, the first thing went where the frame's margin ended; it now goes
+        // one step under the last message that was inside.
+        var below=walk.Where(id=>shapes.Any(sh=>SequenceEditorDocument.Value(sh,"ModelId")==id))
+            .Select(id=>shapeOf(id)).Select(sh=>sh["TargetY"]!=null?Read(sh,"TargetY"):sh["Y"]!=null?Read(sh,"Y"):double.NaN)
+            .Where(y=>!double.IsNaN(y) && y>bottom).ToArray();
+        double shift=below.Length>0?placed[ys.Length-1]+MessageSpacing-below.Min():placed[ys.Length-1]-ys[ys.Length-1];
+        growth=shift;
+        var offsets=placed.Select((p,i)=>p-ys[i]).ToArray();
+        return p=>{
+            if(p<top)return p;
+            if(p>bottom)return p+shift;
+            int at=0;while(at+1<ys.Length && ys[at+1]<=p)at++;
+            return p+offsets[at];
+        };
     }
     // Where a frame over every lane goes across: the rectangle of an existing frame when
     // there is one, measured on the product, or the lanes' outer edges with a 16px margin.
