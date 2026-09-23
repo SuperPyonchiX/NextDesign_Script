@@ -197,7 +197,9 @@ public static class SequenceSyncRuntime
             if(model.Metaclass!=null)
                 foreach(var f in model.Metaclass.GetFields().Cast<IField>().Where(f=>!f.IsEmbedded && !f.IsReference))
                 {
+                    // A field of an enumerated type has no string form; read the value itself.
                     string value=null;try{value=model.GetFieldString(f.Name);}catch(Exception){}
+                    if(string.IsNullOrEmpty(value))try{var raw=model.GetField(f.Name);value=raw==null?null:Convert.ToString(raw);}catch(Exception){}
                     if(!string.IsNullOrEmpty(value))text.Append("\n    ").Append(f.Name).Append("=").Append(value.Length>24?value.Substring(0,24):value);
                 }
             return text.ToString();
@@ -212,6 +214,11 @@ public static class SequenceSyncRuntime
             lines.Append("\n実行区間 ").Append(tail(e.ModelId)).Append(" ").Append(e.Lifeline==null?"?":tail(e.Lifeline.ModelId))
                 .Append(" Y=").Append(e.LocationY).Append(" 長さ=").Append(e.Length)
                 .Append(e.Model==null?"":describe(e.Model));
+        foreach(var d in diagram.Destructions.OrderBy(d=>d.LocationY))
+            lines.Append("\n破棄 ").Append(tail(d.ModelId)).Append(" ").Append(d.Lifeline==null?"?":tail(d.Lifeline.ModelId))
+                .Append(" Y=").Append(d.LocationY).Append(d.Model==null?"":describe(d.Model));
+        foreach(var l in diagram.Lifelines.OrderBy(l=>l.LocationX))
+            lines.Append("\nライフライン ").Append(tail(l.ModelId)).Append(" 長さ=").Append(l.TimelineLength);
         return lines.ToString();
     }
     // HasUnsavedChanges answers false when the dirty state holds nothing savable, but the
