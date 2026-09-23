@@ -415,6 +415,15 @@ public static class StructurePreparationTests
         Require(expected.Ports[wire].SequenceEqual(new[]{ids[4],ids[5],ids[2],ids[3],"sync"}),"new message ports not predicted");
         Require(expected.Ports[ids[6]].SequenceEqual(state.Ports[ids[6]]),"the sample message ports changed");
         Require(state.Signature()==before,"expected state mutated the snapshot");
+        // A generated bar ends 16 under its last message: the receiver's bar grows to reach
+        // the one appended a step lower, and the lanes grow as far as the diagram does.
+        var shortRaw=SequenceJson.Parse(raw.ToJsonString());
+        var shortBar=shortRaw["Editors"].Items.Single()["ExecutionSpecifications"].Items[1];
+        shortBar.Properties["Length"]=SequenceJson.Parse("16");shortBar.Properties["Height"]=SequenceJson.Parse("16");
+        var reached=SequenceStructurePreparation.Build(shortRaw.ToJsonString(),editorId,current,plan);
+        var grown=reached.ShiftedShapes.Single(x=>x.ShapeId==shortBar["Id"].StringValue());
+        Require(grown.Keys.SequenceEqual(new[]{"Length","Height"}) && grown.Values.SequenceEqual(new[]{"56","56"}),"the bar did not reach the appended message: "+string.Join(",",grown.Values));
+        Require(!reached.ShiftedShapes.Any(x=>x.Kind=="participant"),"lanes grew although the diagram did not go lower");
     }
     // A frame holding one operand pair, drawn below the sample message: a frame from 100
     // to 190, operands 30 and 70 below its top, and one message inside the first at 140.

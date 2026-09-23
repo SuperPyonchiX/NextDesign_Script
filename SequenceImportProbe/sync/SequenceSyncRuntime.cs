@@ -360,7 +360,7 @@ public static class SequenceSyncRuntime
                         if(preflight.DeleteExecutions.Contains(id) && model.GetRelationsWhere((r,f)=>true).Any(r=>!exportedRelations.Contains(r.Id)))
                             throw new InvalidOperationException("S220: 削除対象に退避範囲外の関連があります。");
                     }
-                    if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=diagram.Id
+                    if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || (!Batch && (app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=diagram.Id))
                         || DiagramSnapshot.Read(diagram,new StringBuilder()).Document.ToJson()!=current.Document.ToJson())
                         throw new InvalidOperationException("S220: 準備中に対象の図が変化しました。");
                     Lap("準備");

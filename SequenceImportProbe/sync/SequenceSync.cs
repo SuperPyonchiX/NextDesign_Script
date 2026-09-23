@@ -1803,6 +1803,7 @@ public sealed class SequenceStructurePreparation
             insertedId=id;
         }
         var wires=new List<SequenceAddedMessage>();
+        var reach=new Dictionary<string,double>(StringComparer.Ordinal);
         var newMessageShapes=new List<SequenceJson>();
         foreach(string id in gate.AddMessages)
         {
@@ -1838,7 +1839,13 @@ public sealed class SequenceStructurePreparation
                     // and that bar grows with the room made below.
                     if(id==insertedId)
                         Require(top<=at && bottom>=at,"挿入位置をまたぐ実行区間につないでください。");
-                    else Require(y>=top && y<=bottom,"追加するメッセージが既存の実行区間の範囲に収まりません。後続の移動は対象外です。");
+                    else
+                    {
+                        Require(y>=top,"追加するメッセージが既存の実行区間より上になります。");
+                        // A generated bar ends 16 under its last message, so a message
+                        // appended one step lower lands just past it; the bar reaches down.
+                        if(y+16>bottom)reach[port]=Math.Max(reach.ContainsKey(port)?reach[port]:0,y+16);
+                    }
                 }
             }
             if(id!=insertedId)
@@ -2015,6 +2022,37 @@ public sealed class SequenceStructurePreparation
         // drawn at or under the point it goes in moves down by one message's spacing, and
         // a bar or frame open across that point grows instead of moving.
         var shifted=new List<SequenceShiftedShape>();
+        // Bars an appended message reaches past grow to it, and the lanes grow as far as
+        // the diagram now goes below where it ended.
+        if(reach.Count>0)
+        {
+            var all=editor.Shapes();
+            double floor=0;
+            foreach(var sh in all)
+            {
+                if(sh["TargetY"]!=null)floor=Math.Max(floor,Read(sh,"TargetY"));
+                if(sh["Y"]!=null && sh["Length"]!=null)floor=Math.Max(floor,Read(sh,"Y")+Read(sh,"Length"));
+            }
+            double growth=Math.Max(0,reach.Values.Max()-floor);
+            var laneIds=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
+            foreach(var sh in all)
+            {
+                string model=V(sh,"ModelId");
+                var keys=new List<string>();var values=new List<string>();
+                if(reach.ContainsKey(model))
+                {
+                    string grown=Number(reach[model]-Read(sh,"Y"));
+                    keys.Add("Length");values.Add(grown);keys.Add("Height");values.Add(grown);
+                }
+                else if(growth>0 && laneIds.Contains(model) && sh["LaneLength"]!=null)
+                {keys.Add("LaneLength");values.Add(Number(Read(sh,"LaneLength")+growth));}
+                if(keys.Count==0)continue;
+                foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
+                    .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items).Where(n=>V(n,"Id")==V(sh,"Id")))
+                    for(int i=0;i<keys.Count;i++)node.Properties[keys[i]]=SequenceJson.Parse(values[i]);
+                shifted.Add(new SequenceShiftedShape{ModelId=model,ShapeId=V(sh,"Id"),Kind=reach.ContainsKey(model)?"execution":"participant",Keys=keys.ToArray(),Values=values.ToArray()});
+            }
+        }
         if(insertedId.Length>0)
         {
             string id=insertedId;
