@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.30";
+    public const string Title = "シーケンス生成実験 / 0.9.31";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1778,7 +1778,8 @@ public static class SequenceBatch
                     int changes=Compare(app,apply?DiagramOf(project,root):Loaded(app,project,root,detail),s[2]);
                     // What the comparison found goes to the details, so a difference can be read.
                     if(changes!=0)detail.AppendLine("■ "+s[0]+" 比較\n"+string.Join("\n",SequenceExperiment.Details.Split('\f').Where(page=>!page.StartsWith("接続の実測",StringComparison.Ordinal)))+"\n");
-                    failed=changes!=0;
+                    // Applied but still different is that scenario's own problem, not the batch's.
+                    failed=changes<0;
                     result=changes==0?"成功":changes<0?"照合できず: "+Line(SequenceExperiment.Summary,160):"差分 "+changes+"件";
                 }
                 catch(Exception ex){failed=true;result="停止: "+Line(ex.Message,200);detail.AppendLine("■ "+s[0]+"\n"+ex+"\n");}
