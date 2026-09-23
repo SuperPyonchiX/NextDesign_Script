@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.31";
+    public const string Title = "シーケンス生成実験 / 0.9.32";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -2525,6 +2525,9 @@ public class PumlBuild
     // Rows between one message and the next. The structural sync places added and
     // inserted messages with the same step (SequenceStructurePreparation.MessageSpacing).
     public const int MessagePitch=40;
+    // A bar holding no message of its own still has to end before the next row, or the
+    // reader takes the next message for its end. 16 short of a row, as a closing bar ends.
+    public const int MinimumBar=MessagePitch-16;
     private PumlProfile profile; private SequencePayload payload;
     private HashSet<string> replied=new HashSet<string>();
     private List<object> entities=new List<object>(), relations=new List<object>();
@@ -2604,7 +2607,7 @@ public class PumlBuild
             if(n.Kind=="deactivate")
             {
                 string id=active[n.Left]; var bar=executions[id];
-                int length=Math.Max(40,y-16-(int)bar["Y"]); bar["Length"]=length;bar["Height"]=length;
+                int length=Math.Max(MinimumBar,y-16-(int)bar["Y"]); bar["Length"]=length;bar["Height"]=length;
                 string previous=activities[n.Left].Pop();
                 if(previous==null)active.Remove(n.Left);else active[n.Left]=previous;
                 pendingAlias=null; continue;
@@ -5643,7 +5646,7 @@ public sealed class SequenceStructurePreparation
                 }
             if(top==double.MaxValue)continue;
             var slot=new Dictionary<string,double>();
-            slot["Y"]=top;slot["Length"]=Math.Max(40,bottom+16-top);slot["Height"]=slot["Length"];
+            slot["Y"]=top;slot["Length"]=Math.Max(PumlBuild.MinimumBar,bottom+16-top);slot["Height"]=slot["Length"];
             layout[barId]=slot;
         }
         return layout;
@@ -5871,7 +5874,7 @@ public sealed class SequenceStructurePreparation
                 && (Link(e,"sendExecution").Contains(barId) || Link(e,"receiveExecution").Contains(barId))).Select(e=>layout[e.Id]["Y"]).ToArray();
             if(ys.Length==0)continue;
             var slot=new Dictionary<string,double>();
-            slot["Y"]=ys.Min();slot["Length"]=Math.Max(40,ys.Max()+16-ys.Min());slot["Height"]=slot["Length"];
+            slot["Y"]=ys.Min();slot["Length"]=Math.Max(PumlBuild.MinimumBar,ys.Max()+16-ys.Min());slot["Height"]=slot["Length"];
             layout[barId]=slot;
         }
         return layout;
@@ -5952,7 +5955,7 @@ public sealed class SequenceStructurePreparation
             var shape=shapeOf(wanted.Links["outer"][0]);
             if(shape!=null)bottom=Read(shape,"Y")+Read(shape,"Length");
         }
-        double length=Math.Max(40,bottom-top);
+        double length=Math.Max(PumlBuild.MinimumBar,bottom-top);
         var result=new Dictionary<string,double>();
         result["X"]=Read(lane,"X")+Read(lane,"Width")/2+8*depth;
         result["Y"]=top;result["Length"]=length;result["Height"]=length;

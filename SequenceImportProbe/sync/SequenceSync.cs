@@ -2457,7 +2457,7 @@ public sealed class SequenceStructurePreparation
                 }
             if(top==double.MaxValue)continue;
             var slot=new Dictionary<string,double>();
-            slot["Y"]=top;slot["Length"]=Math.Max(40,bottom+16-top);slot["Height"]=slot["Length"];
+            slot["Y"]=top;slot["Length"]=Math.Max(PumlBuild.MinimumBar,bottom+16-top);slot["Height"]=slot["Length"];
             layout[barId]=slot;
         }
         return layout;
@@ -2685,7 +2685,7 @@ public sealed class SequenceStructurePreparation
                 && (Link(e,"sendExecution").Contains(barId) || Link(e,"receiveExecution").Contains(barId))).Select(e=>layout[e.Id]["Y"]).ToArray();
             if(ys.Length==0)continue;
             var slot=new Dictionary<string,double>();
-            slot["Y"]=ys.Min();slot["Length"]=Math.Max(40,ys.Max()+16-ys.Min());slot["Height"]=slot["Length"];
+            slot["Y"]=ys.Min();slot["Length"]=Math.Max(PumlBuild.MinimumBar,ys.Max()+16-ys.Min());slot["Height"]=slot["Length"];
             layout[barId]=slot;
         }
         return layout;
@@ -2766,7 +2766,7 @@ public sealed class SequenceStructurePreparation
             var shape=shapeOf(wanted.Links["outer"][0]);
             if(shape!=null)bottom=Read(shape,"Y")+Read(shape,"Length");
         }
-        double length=Math.Max(40,bottom-top);
+        double length=Math.Max(PumlBuild.MinimumBar,bottom-top);
         var result=new Dictionary<string,double>();
         result["X"]=Read(lane,"X")+Read(lane,"Width")/2+8*depth;
         result["Y"]=top;result["Length"]=length;result["Height"]=length;
