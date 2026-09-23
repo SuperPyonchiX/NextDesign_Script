@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.40";
+    public const string Title = "シーケンス生成実験 / 0.9.41";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -833,6 +833,9 @@ public static class PumlRuntime
             c=definitions.Concat(observed).First(t=>t.Id==selected);
             p.Types["Destruction"]=c.Id;
             Child(p,c,"DestructionTargetLifeline","Lifeline","DestructionTargetLifeline");
+            // A destruction drawn by hand also points at the message that destroys the lane;
+            // that is what makes the product read the message as a destroy message.
+            try{Child(p,c,"DestroyMessage","DestroyMessage","DestroyMessage");}catch(InvalidOperationException){}
         }
         if(plan.All().Any(n=>n.Left=="[" || n.Right=="]"))
         {
@@ -2555,6 +2558,8 @@ public class PumlBuild
     public const int MinimumBar=MessagePitch-16;
     private PumlProfile profile; private SequencePayload payload;
     private HashSet<string> replied=new HashSet<string>();
+    // The last message each lane received, so a destroy right after it can point back.
+    private Dictionary<string,string> lastReceived=new Dictionary<string,string>();
     private List<object> entities=new List<object>(), relations=new List<object>();
     private Dictionary<string,List<object>> shapes=new Dictionary<string,List<object>>();
     private Dictionary<string,string> lifelines=new Dictionary<string,string>(), active=new Dictionary<string,string>();
@@ -2615,6 +2620,11 @@ public class PumlBuild
                 { var bar=execution.Value; int length=live.Contains(execution.Key)?at-(int)bar["Y"]:Math.Min((int)bar["Length"],at-(int)bar["Y"]); bar["Length"]=length; bar["Height"]=length; }
                 active.Remove(n.Left); activities.Remove(n.Left); pendingAlias=null;
                 string id=Entity("Destruction",""); Owned("Destructions",id); Link("DestructionTargetLifeline",id,lifelines[n.Left],false,0);
+                // The message just before, to the lane being destroyed, is its destroy message.
+                string killer;
+                if(profile.Relations.ContainsKey("DestroyMessage") && index>0 && (items[index-1].Kind=="sync" || items[index-1].Kind=="async")
+                    && items[index-1].Right==n.Left && lastReceived.TryGetValue(n.Left,out killer))
+                    Link("DestroyMessage",id,killer,false,0);
                 Shape("Destructions",id,"X",x[n.Left],"Y",at,"Width",20,"Height",20);
                 payload.Expected.Add(new PumlExpected{Id=id,Kind="destruction",Left=lifelines[n.Left],Y=at});
                 y+=20; continue;
@@ -2675,6 +2685,7 @@ public class PumlBuild
                 if(n.Kind=="reply" && send!=null && executions.ContainsKey(send) && replied.Add(send))Link("ReplyMessage",send,id,false,0);
                 Shape("Messages",id,"SourceY",y,"TargetY",targetY,"IsRightAtFrame",false,"SelfloopBendsX",self?Math.Max((int)executions[send]["X"],(int)executions[receive]["X"])+80:0);
                 if(operand!=null)Link("OperandTargetMessage",operand,id,false,0);
+                if(!outgoing)lastReceived[n.Right]=id;
                 payload.Expected.Add(new PumlExpected{Id=id,Kind=n.Kind,Text=n.Text,Left=incoming?null:lifelines[n.Left],Right=outgoing?null:lifelines[n.Right],Owner=operand,SendPort=send,ReceivePort=receive,Y=y,EndY=targetY});
                 y=targetY+MessagePitch; continue;
             }

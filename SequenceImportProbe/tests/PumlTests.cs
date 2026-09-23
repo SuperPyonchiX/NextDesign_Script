@@ -18,7 +18,7 @@ public static class PumlTests
         File.WriteAllText(Path.Combine(directory,"update-changed.json"),changed);
         var profile=new PumlProfile();
         foreach(string type in new[]{"Interaction","Frame","Lifeline","ExecutionSpecification","Message","CombinedFragment","InteractionOperand","InteractionUse","InteractionNote","MessageEnd","Destruction"})profile.Types[type]="fake-"+type;
-        foreach(string key in new[]{"Frame","Lifelines","ExecutionSpecifications","Messages","OwnedExecutionSpecification","SendMessage","ReceiveMessage","Fragments","Operands","CrossingFragmentCoveredLifeline","OperandTargetMessage","NestedInteractionFragment","InteractionUses","Notes","MessageEnds","Destructions","DestructionTargetLifeline","ReplyMessage"})profile.Relations[key]=key;
+        foreach(string key in new[]{"Frame","Lifelines","ExecutionSpecifications","Messages","OwnedExecutionSpecification","SendMessage","ReceiveMessage","Fragments","Operands","CrossingFragmentCoveredLifeline","OperandTargetMessage","NestedInteractionFragment","InteractionUses","Notes","MessageEnds","Destructions","DestructionTargetLifeline","ReplyMessage","DestroyMessage"})profile.Relations[key]=key;
         foreach(string op in new[]{"alt","opt","loop","par","break","critical","group"})profile.Operators[op]=op.ToUpperInvariant();
         foreach(var file in Directory.GetFiles(samples,"*.puml"))
         {
@@ -36,6 +36,15 @@ public static class PumlTests
             File.WriteAllText(Path.Combine(directory,Path.GetFileNameWithoutExtension(file)+".json"),payload.Json);
             // Each call answered from its own bar: the reply is tied back to the bar it leaves,
             // as a hand-drawn reply is, and no bar is tied to two replies.
+            // A destruction points at the message that destroys its lane, as one drawn by hand does:
+            // the message right before it, as the parser reads a destroy message. In this sample
+            // only stop() is; finish() is followed by an activate first.
+            if(Path.GetFileName(file)=="09-destroy.puml")
+            {
+                var built=SequenceJson.Parse(payload.Json)["Relations"].Items;
+                if(built.Count(r=>r["MetamodelId"].StringValue()=="DestroyMessage")!=1)
+                    throw new Exception("each destruction should point at its destroy message");
+            }
             if(Path.GetFileName(file)=="structure-wrap-before.puml")
             {
                 var built=SequenceJson.Parse(payload.Json)["Relations"].Items;
