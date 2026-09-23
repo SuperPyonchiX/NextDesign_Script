@@ -393,7 +393,7 @@ public static class StructurePreparationTests
         // The sample message sits at Y=80 inside bars that run from 50 to 170 and 80 to 160.
         var wires=patch["Editors"].Items.Single()["Messages"].Items;
         var created=wires.Single(sh=>sh["ModelId"].StringValue()==wire);
-        Require(wires.Count==2 && created["SourceY"].Raw=="130" && created["TargetY"].Raw=="130","new message was not placed one step below the last");
+        Require(wires.Count==2 && created["SourceY"].Raw=="120" && created["TargetY"].Raw=="120","new message was not placed one step below the last");
 
         var state=new SequenceTrialState();
         foreach(var e in raw["Entities"].Items)state.Models[e["Id"].StringValue()]=e.ToJsonString();
@@ -410,7 +410,7 @@ public static class StructurePreparationTests
         string before=state.Signature();
         var expected=state.Expected(package,plan,false);
         Require(expected.Models[wire]==PumlBuild.Json(new[]{"message","again()",ids[0],"False"}),"new message not in the expected state");
-        Require(expected.Shapes[added.ShapeId]==PumlBuild.Json(new[]{"again()","130","130","0"}),"new message shape not predicted");
+        Require(expected.Shapes[added.ShapeId]==PumlBuild.Json(new[]{"again()","120","120","0"}),"new message shape not predicted");
         Require(expected.ShapeModels[added.ShapeId]==wire,"new message shape owner missing");
         Require(expected.Ports[wire].SequenceEqual(new[]{ids[4],ids[5],ids[2],ids[3],"sync"}),"new message ports not predicted");
         Require(expected.Ports[ids[6]].SequenceEqual(state.Ports[ids[6]]),"the sample message ports changed");
@@ -470,10 +470,10 @@ public static class StructurePreparationTests
         if(into)
         {
             // Placed one step under the message above it, inside the first operand.
-            Require(y=="190","inserted message not placed under the one above: "+y);
-            Require(moved("frame-shape","Height")=="140" && moved("frame-shape","Y")==null,"the frame the point falls in did not grow");
+            Require(y=="180","inserted message not placed under the one above: "+y);
+            Require(moved("frame-shape","Height")=="130" && moved("frame-shape","Y")==null,"the frame the point falls in did not grow");
             Require(moved("first-shape","Position")==null,"the operand holding the point moved");
-            Require(moved("second-shape","Position")=="120","the later operand did not move down");
+            Require(moved("second-shape","Position")=="110","the later operand did not move down");
             Require(moved("inner-shape","TargetY")==null,"the message above the point moved");
             var patch=SequenceJson.Parse(package.ReconnectJson);
             Require(patch["Relations"].Items.Any(r=>r["MetamodelId"].StringValue()=="operand-message"
@@ -481,15 +481,15 @@ public static class StructurePreparationTests
         }
         else
         {
-            Require(y=="130","inserted message not placed under the one above: "+y);
-            Require(moved("frame-shape","Y")=="150" && moved("frame-shape","Height")==null,"the frame below did not move whole");
+            Require(y=="120","inserted message not placed under the one above: "+y);
+            Require(moved("frame-shape","Y")=="140" && moved("frame-shape","Height")==null,"the frame below did not move whole");
             Require(moved("first-shape","Position")==null && moved("second-shape","Position")==null,"operands moved with a frame that moved whole");
-            Require(moved("inner-shape","TargetY")=="190","the message inside the frame below did not move");
+            Require(moved("inner-shape","TargetY")=="180","the message inside the frame below did not move");
         }
-        Require(view["Fragments"].Items.Single()["Height"].Raw==(into?"140":"90"),"the frame change was not written to the editor");
-        Require(moved(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Length")=="170","a bar open across the point did not grow");
+        Require(view["Fragments"].Items.Single()["Height"].Raw==(into?"130":"90"),"the frame change was not written to the editor");
+        Require(moved(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Length")=="160","a bar open across the point did not grow");
         var after=SequenceJson.Parse(package.EditorAfterDeleteJson)["Editors"].Items.Single();
-        Require(after["Operands"].Items.Single(sh=>sh["Id"].StringValue()=="second-shape")["Position"].Raw==(into?"120":"70"),
+        Require(after["Operands"].Items.Single(sh=>sh["Id"].StringValue()=="second-shape")["Position"].Raw==(into?"110":"70"),
             "the delete stage editor lost the operand offset");
 
         var state=new SequenceTrialState();
@@ -515,9 +515,9 @@ public static class StructurePreparationTests
         state.Ports[ids[6]]=new[]{ids[4],ids[5],ids[2],ids[3],"sync"};
         state.Ports[inner]=new[]{ids[4],ids[5],ids[2],ids[3],"sync"};
         var expected=state.Expected(package,plan,false);
-        Require(expected.Shapes["frame-shape"]==PumlBuild.Json(into?new[]{"4","100","332","140"}:new[]{"4","150","332","90"})+"alt",
+        Require(expected.Shapes["frame-shape"]==PumlBuild.Json(into?new[]{"4","100","332","130"}:new[]{"4","140","332","90"})+"alt",
             "frame readback not predicted: "+expected.Shapes["frame-shape"]);
-        Require(expected.Shapes["second-shape"]=="[]"+PumlBuild.Json(new[]{"else",into?"120":"70"}),
+        Require(expected.Shapes["second-shape"]=="[]"+PumlBuild.Json(new[]{"else",into?"110":"70"}),
             "operand readback not predicted: "+expected.Shapes["second-shape"]);
         Require(expected.Shapes["first-shape"]=="[]"+PumlBuild.Json(new[]{"ready","30"}),"the first operand readback changed");
     }
@@ -541,7 +541,7 @@ public static class StructurePreparationTests
             wire.Properties["SourceY"]=SequenceJson.Parse(pair[1]);wire.Properties["TargetY"]=SequenceJson.Parse(pair[1]);editor["Messages"].Items.Add(wire);
         }
         var innerBar=Clone(editor["ExecutionSpecifications"].Items[1]);Set(innerBar,"Id","inner-bar-shape");Set(innerBar,"ModelId","inner-bar");
-        innerBar.Properties["Y"]=SequenceJson.Parse("130");innerBar.Properties["Length"]=SequenceJson.Parse("45");innerBar.Properties["Height"]=SequenceJson.Parse("45");
+        innerBar.Properties["Y"]=SequenceJson.Parse("130");innerBar.Properties["Length"]=SequenceJson.Parse("35");innerBar.Properties["Height"]=SequenceJson.Parse("35");
         editor["ExecutionSpecifications"].Items.Add(innerBar);
         var current=new SequenceDocument();
         current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
@@ -590,13 +590,13 @@ public static class StructurePreparationTests
         string barA=editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),barB=editor["ExecutionSpecifications"].Items[1]["Id"].StringValue();
         Require(moved(barA,"Y")==null && moved(barA,"Length")=="298" && moved(barA,"Height")=="298","a bar open across the frame did not grow by the room made");
         Require(moved(barB,"Y")==null && moved(barB,"Length")=="248","the other bar did not grow");
-        // It used to end 20 under the wrapped message; it still does, inside the frame.
+        // It ends 35 under the wrapped message, past the split; it still does, inside the frame.
         Require(moved("inner-bar-shape","Y")=="190" && moved("inner-bar-shape","Length")==null,
             "a bar closed inside the frame reached out of it: "+moved("inner-bar-shape","Length"));
         foreach(var lane in editor["Lifelines"].Items)Require(moved(lane["Id"].StringValue(),"LaneLength")=="338","a lane did not follow the growth");
         var patch=SequenceJson.Parse(package.ReconnectJson);
         var frameShape=patch["Editors"].Items.Single()["Fragments"].Items.Single();
-        Require(frameShape["X"].StringValue()=="4" && frameShape["Y"].StringValue()=="120" && frameShape["Width"].StringValue()=="332" && frameShape["Height"].StringValue()=="128",
+        Require(frameShape["X"].StringValue()=="4" && frameShape["Y"].StringValue()=="120" && frameShape["Width"].StringValue()=="332" && frameShape["Height"].StringValue()=="118",
             "frame not drawn around the message: "+frameShape.ToJsonString());
         Require(patch["Editors"].Items.Single()["Operands"].Items.Single()["Position"].StringValue()=="30","guard not at the generator's offset");
         Require(patch["Relations"].Items.Count(r=>r["MetamodelId"].StringValue()=="operand-message" && r["SourceId"].StringValue()=="wrap-operand"

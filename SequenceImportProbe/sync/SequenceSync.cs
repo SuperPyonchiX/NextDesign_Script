@@ -2151,7 +2151,7 @@ public sealed class SequenceStructurePreparation
         return result;
     }
     internal const double LaneSpacing=240;
-    internal const double MessageSpacing=50;
+    internal const double MessageSpacing=PumlBuild.MessagePitch;
     static string Deleted(SequenceEditorDocument editor,List<SequenceJson> addedShapes,List<SequenceJson> addedLanes,
         List<SequenceJson> addedWires,List<SequenceJson> addedFrames,List<SequenceJson> addedBranches,
         List<SequenceStretchedLifeline> stretched,List<SequenceShiftedShape> shifted,

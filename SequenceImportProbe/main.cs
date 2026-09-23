@@ -25,7 +25,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.6";
+    public const string Title = "シーケンス生成実験 / 0.9.7";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -1096,6 +1096,46 @@ public static class SequenceSyncRuntime
     }
     const string UnsavedAdvice="S220: 退避データを取得できません。プロジェクトを保存してから実行してください。"
         +"この操作は自動保存しません。";
+    // What each message and bar is tied to, as the product holds it: the port shapes, every
+    // relation with its fields and order, and the plain field values. Put next to one drawn
+    // by hand, it shows what a generated diagram lacks. Ids are cut to their last four
+    // characters, enough to pair the rows up.
+    static string Connections(ISequenceDiagram diagram)
+    {
+        Func<string,string> tail=id=>string.IsNullOrEmpty(id)?"-":id.Length<=4?id:id.Substring(id.Length-4);
+        Func<object,string> kind=port=>port==null?"なし":port is IExecutionSpecificationShape?"実行区間":port is ILifelineShape?"ライフライン":port.GetType().Name;
+        Func<ISequenceShape,string> portId=shape=>shape==null?"-":tail(shape.ModelId);
+        Func<IModel,string> describe=model=>{
+            var text=new StringBuilder();
+            foreach(var r in model.GetRelationsWhere((relation,field)=>true).OrderBy(r=>r.Metaclass.Id,StringComparer.Ordinal))
+            {
+                bool outgoing=r.Source.Id==model.Id;var other=outgoing?r.Target:r.Source;
+                string name=r.Metaclass.Id.Substring(r.Metaclass.Id.LastIndexOf('.')+1);
+                text.Append("\n    ").Append(outgoing?"→ ":"← ").Append(name)
+                    .Append(" ").Append(other.ClassName).Append(":").Append(tail(other.Id))
+                    .Append(" field=").Append(r.SourceField==null?"-":r.SourceField.Name).Append("/").Append(r.TargetField==null?"-":r.TargetField.Name)
+                    .Append(" index=").Append(r.SourceIndex).Append("/").Append(r.TargetIndex);
+            }
+            if(model.Metaclass!=null)
+                foreach(var f in model.Metaclass.GetFields().Cast<IField>().Where(f=>!f.IsEmbedded && !f.IsReference))
+                {
+                    string value=null;try{value=model.GetFieldString(f.Name);}catch(Exception){}
+                    if(!string.IsNullOrEmpty(value))text.Append("\n    ").Append(f.Name).Append("=").Append(value.Length>24?value.Substring(0,24):value);
+                }
+            return text.ToString();
+        };
+        var lines=new StringBuilder("接続の実測（IDは末尾4文字）");
+        foreach(var m in diagram.Messages.OrderBy(m=>m.SourceY))
+            lines.Append("\nメッセージ ").Append(tail(m.ModelId)).Append(" Y=").Append(m.SourceY).Append("/").Append(m.TargetY)
+                .Append(" 送信=").Append(kind(m.SendPort)).Append(":").Append(portId(m.SendPort as ISequenceShape))
+                .Append(" 受信=").Append(kind(m.ReceivePort)).Append(":").Append(portId(m.ReceivePort as ISequenceShape))
+                .Append(m.Model==null?"":describe(m.Model));
+        foreach(var e in diagram.ExecutionSpecifications.OrderBy(e=>e.LocationY))
+            lines.Append("\n実行区間 ").Append(tail(e.ModelId)).Append(" ").Append(e.Lifeline==null?"?":tail(e.Lifeline.ModelId))
+                .Append(" Y=").Append(e.LocationY).Append(" 長さ=").Append(e.Length)
+                .Append(e.Model==null?"":describe(e.Model));
+        return lines.ToString();
+    }
     // HasUnsavedChanges answers false when the dirty state holds nothing savable, but the
     // export still refuses, so ask the design model as well.
     static bool Unsaved(IProject project)
@@ -1142,6 +1182,12 @@ public static class SequenceSyncRuntime
             foreach(var c in plan.Changes)log.AppendLine(c.Action+" "+c.Kind+" line="+c.Line+" id="+c.Id);
             foreach(var warning in current.Limitations)log.AppendLine("要照合: "+warning);
             screenshot=(trial?"適用前の比較結果（更新後の残差ではありません）\n":"現在の図と入力の比較結果\n")+SequenceAudit.Reasons(current.Document,desired,plan)+"\f"+preflight.Summary();
+            // Only the comparison shows it; applying already has enough pages.
+            if(!prepare)
+            {
+                try {screenshot+="\f"+Connections(diagram);}
+                catch(Exception ex) {screenshot+="\f接続の実測: 取得できません: "+ex.Message;}
+            }
             log.AppendLine(screenshot);
             SequenceExperiment.Summary=SequenceAudit.Summary(plan,current.Limitations.Count)+"\n構造更新の停止理由: "+preflight.Reasons.Count+"件（診断表示）";
             log.AppendLine("Scope: "+project.Id+" / "+diagram.ModelId+" / "+diagram.Id);
@@ -2137,6 +2183,9 @@ public class PumlProfile
 }
 public class PumlBuild
 {
+    // Rows between one message and the next. The structural sync places added and
+    // inserted messages with the same step (SequenceStructurePreparation.MessageSpacing).
+    public const int MessagePitch=40;
     private PumlProfile profile; private SequencePayload payload;
     private List<object> entities=new List<object>(), relations=new List<object>();
     private Dictionary<string,List<object>> shapes=new Dictionary<string,List<object>>();
@@ -2256,7 +2305,7 @@ public class PumlBuild
                 Shape("Messages",id,"SourceY",y,"TargetY",targetY,"IsRightAtFrame",false,"SelfloopBendsX",self?Math.Max((int)executions[send]["X"],(int)executions[receive]["X"])+80:0);
                 if(operand!=null)Link("OperandTargetMessage",operand,id,false,0);
                 payload.Expected.Add(new PumlExpected{Id=id,Kind=n.Kind,Text=n.Text,Left=incoming?null:lifelines[n.Left],Right=outgoing?null:lifelines[n.Right],Owner=operand,SendPort=send,ReceivePort=receive,Y=y,EndY=targetY});
-                y=targetY+50; continue;
+                y=targetY+MessagePitch; continue;
             }
             if(n.Kind=="fragment")
             {
@@ -4945,7 +4994,7 @@ public sealed class SequenceStructurePreparation
         return result;
     }
     internal const double LaneSpacing=240;
-    internal const double MessageSpacing=50;
+    internal const double MessageSpacing=PumlBuild.MessagePitch;
     static string Deleted(SequenceEditorDocument editor,List<SequenceJson> addedShapes,List<SequenceJson> addedLanes,
         List<SequenceJson> addedWires,List<SequenceJson> addedFrames,List<SequenceJson> addedBranches,
         List<SequenceStretchedLifeline> stretched,List<SequenceShiftedShape> shifted,
