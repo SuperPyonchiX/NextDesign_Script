@@ -416,9 +416,116 @@ public static class StructurePreparationTests
         Require(expected.Ports[ids[6]].SequenceEqual(state.Ports[ids[6]]),"the sample message ports changed");
         Require(state.Signature()==before,"expected state mutated the snapshot");
     }
+    // A frame holding one operand pair, drawn below the sample message: a frame from 100
+    // to 190, operands 30 and 70 below its top, and one message inside the first at 140.
+    static void InsertedAroundFrame(bool into)
+    {
+        var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
+        var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
+        var editor=raw["Editors"].Items.Single();string editorId=editor["Id"].StringValue();
+        string inner="inner-message",frame="alt-frame",first="operand-1",second="operand-2";
+        var entity=Clone(raw["Entities"].Items.Single(e=>e["Id"].StringValue()==ids[6]));Set(entity,"Id",inner);raw["Entities"].Items.Add(entity);
+        foreach(var r in raw["Relations"].Items.Where(r=>r["TargetId"].StringValue()==ids[6]).ToArray())
+        {var copy=Clone(r);Set(copy,"Id",r["Id"].StringValue()+"-inner");Set(copy,"TargetId",inner);copy.Properties["SourceIndex"]=SequenceJson.Parse("1");raw["Relations"].Items.Add(copy);}
+        var wire=Clone(editor["Messages"].Items[0]);Set(wire,"Id","inner-shape");Set(wire,"ModelId",inner);
+        wire.Properties["SourceY"]=SequenceJson.Parse("140");wire.Properties["TargetY"]=SequenceJson.Parse("140");editor["Messages"].Items.Add(wire);
+        editor.Properties["Fragments"]=SequenceJson.Parse(PumlBuild.Json(new object[]{PumlBuild.Obj("Id","frame-shape","ModelId",frame,"X",4,"Y",100,"Width",332,"Height",90)}));
+        editor.Properties["Operands"]=SequenceJson.Parse(PumlBuild.Json(new object[]{PumlBuild.Obj("Id","first-shape","ModelId",first,"Position",30),
+            PumlBuild.Obj("Id","second-shape","ModelId",second,"Position",70)}));
+        var current=new SequenceDocument();
+        current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
+        current.Elements.Add(new SequenceElement{Id=ids[2],Kind="participant",Parent=ids[0]});
+        current.Elements.Add(new SequenceElement{Id=ids[3],Kind="participant",Parent=ids[0]});
+        foreach(string id in new[]{ids[4],ids[5]})
+        {var e=new SequenceElement{Id=id,Kind="execution",Parent=ids[0]};e.Links["participant"]=new[]{id==ids[4]?ids[2]:ids[3]};current.Elements.Add(e);}
+        Func<string,string,int,string,SequenceElement> message=(id,parent,order,text)=>{
+            var m=new SequenceElement{Id=id,Kind="message",Parent=parent,Order=order,Text=text};m.Attributes["sort"]="sync";
+            m.Links["sender"]=new[]{ids[2]};m.Links["receiver"]=new[]{ids[3]};m.Links["sendExecution"]=new[]{ids[4]};m.Links["receiveExecution"]=new[]{ids[5]};
+            return m;
+        };
+        current.Elements.Add(message(ids[6],ids[0],0,"probe()"));
+        var box=new SequenceElement{Id=frame,Kind="fragment",Parent=ids[0],Order=2,Text="alt"};box.Attributes["operator"]="alt";current.Elements.Add(box);
+        current.Elements.Add(new SequenceElement{Id=first,Kind="operand",Parent=frame,Order=0,Text="ready"});
+        current.Elements.Add(new SequenceElement{Id=second,Kind="operand",Parent=frame,Order=1,Text="else"});
+        current.Elements.Add(message(inner,first,0,"inside()"));
+        string added="inserted-message";
+        var desired=current.Copy();
+        desired.Elements.Add(into?message(added,first,1,"also()"):message(added,ids[0],1,"mid()"));
+        var plan=new SyncPlan{Expected=desired};
+        plan.Changes.Add(new SequenceChange{Action="add",Kind="message",Id=added,Line=5});
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate && gate.AddMessages.SequenceEqual(new[]{added}) && gate.CanCommit(true),
+            "insertion "+(into?"into":"above")+" a frame was not a candidate: "+gate.ToJson());
+        var types=new SequenceFrameTypes{Fragment="fragment",Operand="operand",Owns=new[]{"owns","Embed","f1"},
+            Branches=new[]{"branches","Embed","f2"},Crossing=new[]{"crossing","Ref","f3"},OperandMessage=new[]{"operand-message","Ref","f4"}};
+        var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan,types);
+        Require(package.InsertedMessageId==added,"the message was not treated as an insertion");
+        Func<string,string,string> moved=(shape,key)=>{
+            var hit=package.ShiftedShapes.Where(m=>m.ShapeId==shape).ToArray();
+            if(hit.Length==0)return null;
+            int i=Array.IndexOf(hit[0].Keys,key);return i<0?null:hit[0].Values[i];
+        };
+        var view=SequenceJson.Parse(package.ReconnectJson)["Editors"].Items.Single();
+        var y=view["Messages"].Items.Single(sh=>sh["ModelId"].StringValue()==added)["TargetY"].Raw;
+        if(into)
+        {
+            // Placed one step under the message above it, inside the first operand.
+            Require(y=="190","inserted message not placed under the one above: "+y);
+            Require(moved("frame-shape","Height")=="140" && moved("frame-shape","Y")==null,"the frame the point falls in did not grow");
+            Require(moved("first-shape","Position")==null,"the operand holding the point moved");
+            Require(moved("second-shape","Position")=="120","the later operand did not move down");
+            Require(moved("inner-shape","TargetY")==null,"the message above the point moved");
+            var patch=SequenceJson.Parse(package.ReconnectJson);
+            Require(patch["Relations"].Items.Any(r=>r["MetamodelId"].StringValue()=="operand-message"
+                && r["SourceId"].StringValue()==first && r["TargetId"].StringValue()==added),"the operand does not point at the message");
+        }
+        else
+        {
+            Require(y=="130","inserted message not placed under the one above: "+y);
+            Require(moved("frame-shape","Y")=="150" && moved("frame-shape","Height")==null,"the frame below did not move whole");
+            Require(moved("first-shape","Position")==null && moved("second-shape","Position")==null,"operands moved with a frame that moved whole");
+            Require(moved("inner-shape","TargetY")=="190","the message inside the frame below did not move");
+        }
+        Require(view["Fragments"].Items.Single()["Height"].Raw==(into?"140":"90"),"the frame change was not written to the editor");
+        Require(moved(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Length")=="170","a bar open across the point did not grow");
+        var after=SequenceJson.Parse(package.EditorAfterDeleteJson)["Editors"].Items.Single();
+        Require(after["Operands"].Items.Single(sh=>sh["Id"].StringValue()=="second-shape")["Position"].Raw==(into?"120":"70"),
+            "the delete stage editor lost the operand offset");
+
+        var state=new SequenceTrialState();
+        foreach(var e in raw["Entities"].Items)state.Models[e["Id"].StringValue()]=e.ToJsonString();
+        foreach(var r in raw["Relations"].Items)
+        {
+            string id=r["Id"].StringValue();
+            state.Relations[id]=new[]{r["SourceId"].StringValue(),r["TargetId"].StringValue(),r["SourceIndex"].Raw,r["TargetIndex"].Raw};
+            state.RelationFields[id]=r["MetamodelId"].StringValue();
+        }
+        foreach(var sh in SequenceEditorDocument.Read(raw.ToJsonString(),ids[0],editorId).Shapes())
+        {string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        // What the SDK side reads back for the shapes that move.
+        state.Shapes["frame-shape"]=PumlBuild.Json(new[]{"4","100","332","90"})+"alt";
+        state.Shapes["first-shape"]="[]"+PumlBuild.Json(new[]{"ready","30"});
+        state.Shapes["second-shape"]="[]"+PumlBuild.Json(new[]{"else","70"});
+        state.Shapes["inner-shape"]=PumlBuild.Json(new[]{"inside()","140","140","0"});
+        state.Shapes[editor["Messages"].Items[0]["Id"].StringValue()]=PumlBuild.Json(new[]{"probe()","80","80","0"});
+        foreach(var bar in editor["ExecutionSpecifications"].Items)
+            state.Shapes[bar["Id"].StringValue()]=PumlBuild.Json(new[]{bar["X"].Raw,bar["Y"].Raw,"16",bar["Height"].Raw,bar["Length"].Raw});
+        foreach(var lane in editor["Lifelines"].Items)
+            state.Shapes[lane["Id"].StringValue()]=PumlBuild.Json(new[]{lane["X"].Raw,"0","100","40"})+lane["LaneLength"].Raw;
+        state.Ports[ids[6]]=new[]{ids[4],ids[5],ids[2],ids[3],"sync"};
+        state.Ports[inner]=new[]{ids[4],ids[5],ids[2],ids[3],"sync"};
+        var expected=state.Expected(package,plan,false);
+        Require(expected.Shapes["frame-shape"]==PumlBuild.Json(into?new[]{"4","100","332","140"}:new[]{"4","150","332","90"})+"alt",
+            "frame readback not predicted: "+expected.Shapes["frame-shape"]);
+        Require(expected.Shapes["second-shape"]=="[]"+PumlBuild.Json(new[]{"else",into?"120":"70"}),
+            "operand readback not predicted: "+expected.Shapes["second-shape"]);
+        Require(expected.Shapes["first-shape"]=="[]"+PumlBuild.Json(new[]{"ready","30"}),"the first operand readback changed");
+    }
     public static void Run()
     {
         AddedMessage();
+        InsertedAroundFrame(false);
+        InsertedAroundFrame(true);
         DeletedMessage();
         AddedParticipant();
         AddedExecution();

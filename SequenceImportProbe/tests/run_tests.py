@@ -107,6 +107,16 @@ public static class PayloadTest {
    var insertGate=SequenceStructurePreflight.Check(insertModel,insertPlan);
    if(!insertGate.Candidate || insertGate.AddMessages.Count!=1 || insertGate.Targets!=1)
        throw new Exception("an inserted message must be the only change: "+insertPlan.ToJson()+insertGate.ToJson());
+   // The same insertion with a frame below it, and one into an operand already drawn.
+   var frameBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
+   foreach(string sample in new[]{"structure-insert-frame-after.puml","structure-insert-inframe-after.puml"})
+   {
+       var framedInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],sample)));
+       var framedPlan=SyncPlan.Build(frameBefore,framedInput,()=>Guid.NewGuid().ToString());
+       var framedGate=SequenceStructurePreflight.Check(frameBefore,framedPlan);
+       if(!framedGate.Candidate || framedGate.AddMessages.Count!=1 || framedGate.Targets!=1 || !framedGate.CanCommit(true))
+           throw new Exception(sample+" must be a single insertion: "+framedPlan.ToJson()+framedGate.ToJson());
+   }
 
    var reconnectBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-before.puml")));
    var reconnectAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-after.puml")));

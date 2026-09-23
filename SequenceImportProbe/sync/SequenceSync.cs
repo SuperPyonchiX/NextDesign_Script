@@ -829,8 +829,12 @@ public sealed class SequenceStructurePreflight
         var before=current.Elements.ToDictionary(e=>e.Id);
         var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
         string root=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
-        if(added.Parent!=root && !(adding.Contains(added.Parent) && after.ContainsKey(added.Parent) && after[added.Parent].Kind=="operand"))
-            return "追加するメッセージの所有先が相互作用でも、この計画で追加するオペランドでもありません。";
+        // A message may also go into an operand that is already drawn. Its frame then has
+        // to grow, so that is always an insertion, even at the very end of the diagram.
+        bool intoFrame=added.Parent!=root && before.ContainsKey(added.Parent) && before[added.Parent].Kind=="operand"
+            && after.ContainsKey(added.Parent) && after[added.Parent].Kind=="operand";
+        if(added.Parent!=root && !intoFrame && !(adding.Contains(added.Parent) && after.ContainsKey(added.Parent) && after[added.Parent].Kind=="operand"))
+            return "追加するメッセージの所有先が相互作用でも、既存のオペランドでも、この計画で追加するオペランドでもありません。";
         var known=new[]{"sender","receiver","sendExecution","receiveExecution"};
         if(added.Links.Keys.Any(key=>!known.Contains(key)))return "追加するメッセージに未対応の接続があります。";
         foreach(var e in plan.Expected.Elements)
@@ -860,24 +864,32 @@ public sealed class SequenceStructurePreflight
                 return "追加するメッセージの接続先は既存の実行区間か、この計画で追加する実行区間である必要があります。";
         }
         // Going last needs no room made for it. Anywhere else, everything below has to
-        // move down, which is only describable while the frames stay out of it: a message
-        // the interaction owns directly, between bars that are already open across the
-        // point it goes in, so no new bar has to be placed either.
+        // move down: messages and bars move, a frame below moves whole, and a frame the
+        // point falls inside grows, pushing its later operands down. That stays describable
+        // for a message placed right after an existing one in the same container, between
+        // bars that are already open across that point, so no new bar has to be placed.
         string why=Appended(current,plan,added.Id,"追加するメッセージ");
-        if(why!=null)
+        if(why!=null || intoFrame)
         {
-            if(added.Parent!=root)return why;
+            if(added.Parent!=root && !intoFrame)return why;
             foreach(string role in new[]{"sendExecution","receiveExecution"})
                 if(!before.ContainsKey(Link(added,role)[0]))
                     return "図の途中へ挿入するメッセージは、既に開いている実行区間につないでください。"
                         +"新しい実行区間を同時に作る挿入は対象外です。";
-            var below=Flatten(plan.Expected).SkipWhile(id=>id!=added.Id).Skip(1)
-                .Where(before.ContainsKey).Select(id=>after[id]).ToArray();
-            if(below.Length==0)return why;
-            if(below.Any(e=>e.Kind=="fragment" || e.Kind=="operand"))
-                return "挿入位置より下にフラグメントがあります。枠の移動を伴う挿入は対象外です。";
-            if(below.Any(e=>e.Kind!="message"))
-                return "挿入位置より下に"+below.First(e=>e.Kind!="message").Kind+"があります。メッセージだけを下げる挿入に限ります。";
+            var walk=Flatten(plan.Expected);
+            int at=Array.IndexOf(walk,added.Id);
+            // The room is made below the message just above. That only lands in the right
+            // container when that message shares it: at the head of an operand, or just
+            // after a frame closes, the point would fall on the wrong side of a boundary.
+            SequenceElement previous;
+            if(at<1 || !after.TryGetValue(walk[at-1],out previous) || previous.Kind!="message"
+                || !before.ContainsKey(previous.Id) || previous.Parent!=added.Parent)
+                return "挿入するメッセージの直前は、同じ所有先にある既存のメッセージにしてください。"
+                    +"オペランドの先頭や、枠の直後への挿入は対象外です。";
+            var below=walk.Skip(at+1).Where(before.ContainsKey).Select(id=>after[id]).ToArray();
+            if(below.Any(e=>e.Kind!="message" && e.Kind!="fragment" && e.Kind!="operand"))
+                return "挿入位置より下に"+below.First(e=>e.Kind!="message" && e.Kind!="fragment" && e.Kind!="operand").Kind
+                    +"があります。メッセージと枠だけを下げる挿入に限ります。";
         }
         var order=Flatten(plan.Expected);
         var earlier=order.Take(Array.IndexOf(order,added.Id)).Select(id=>after[id]).Where(e=>e.Kind=="message").ToArray();
@@ -1443,7 +1455,9 @@ public sealed class SequenceStructurePreparation
         foreach(string id in gate.AddMessages)
         {
             var walk=SequenceStructurePreflight.Flatten(plan.Expected);
-            if(!walk.SkipWhile(e=>e!=id).Skip(1).Any(before.ContainsKey))continue;
+            // Going into an operand already drawn grows its frame even at the very end.
+            bool intoFrame=after[id].Parent!=root && before.ContainsKey(after[id].Parent);
+            if(!intoFrame && !walk.SkipWhile(e=>e!=id).Skip(1).Any(before.ContainsKey))continue;
             Require(insertedId.Length==0,"1回の更新で挿入できるメッセージは1件です。");
             insertedId=id;
         }
@@ -1627,7 +1641,7 @@ public sealed class SequenceStructurePreparation
         }
         // A message that does not go last needs the room below it. Everything already
         // drawn at or under the point it goes in moves down by one message's spacing, and
-        // a bar open across that point grows instead of moving.
+        // a bar or frame open across that point grows instead of moving.
         var shifted=new List<SequenceShiftedShape>();
         if(insertedId.Length>0)
         {
@@ -1642,11 +1656,32 @@ public sealed class SequenceStructurePreparation
             double at=Read(previousShapes[0],"TargetY");
             var ports=new HashSet<string>(new[]{"sendExecution","receiveExecution"}
                 .Select(role=>wanted.Links[role].Single()));
-            foreach(var shape in editor.Shapes())
+            var shapesNow=editor.Shapes();
+            Func<string,string> kindOf=model=>before.ContainsKey(model)?before[model].Kind:"";
+            foreach(var shape in shapesNow)
             {
                 string model=V(shape,"ModelId");
                 var keys=new List<string>();var values=new List<string>();
-                if(shape["TargetY"]!=null && shape["SourceY"]!=null && Read(shape,"TargetY")>at)
+                if(kindOf(model)=="fragment")
+                {
+                    // A frame below moves whole; one the point falls inside grows.
+                    double top=Read(shape,"Y"),height=Read(shape,"Height");
+                    if(top>at) {keys.Add("Y");values.Add(Number(top+MessageSpacing));}
+                    else if(top+height>at) {keys.Add("Height");values.Add(Number(height+MessageSpacing));}
+                }
+                else if(kindOf(model)=="operand")
+                {
+                    // An operand has no rectangle, only its offset from the frame's top. It
+                    // moves with a frame that moves, so only a later operand of a frame that
+                    // grows needs a new offset.
+                    string owner=before[model].Parent;
+                    var boxes=shapesNow.Where(sh=>V(sh,"ModelId")==owner).ToArray();
+                    Require(boxes.Length==1,"オペランドの枠の図形を一意に取得できません。");
+                    double top=Read(boxes[0],"Y"),height=Read(boxes[0],"Height"),offset=Read(shape,"Position");
+                    if(top<=at && top+height>at && top+offset>at)
+                    {keys.Add("Position");values.Add(Number(offset+MessageSpacing));}
+                }
+                else if(shape["TargetY"]!=null && shape["SourceY"]!=null && Read(shape,"TargetY")>at)
                 {
                     keys.Add("SourceY");values.Add(Number(Read(shape,"SourceY")+MessageSpacing));
                     keys.Add("TargetY");values.Add(Number(Read(shape,"TargetY")+MessageSpacing));
@@ -2168,6 +2203,15 @@ public sealed class SequenceTrialState
             string measured;
             if(!result.Shapes.TryGetValue(move.ShapeId,out measured))
                 throw new InvalidOperationException("S230: 下げる図形がありません。");
+            // An operand reads back as an empty rectangle followed by [guard, offset].
+            if(move.Keys.Length==1 && move.Keys[0]=="Position")
+            {
+                var branch=measured.StartsWith("[]",StringComparison.Ordinal)?SequenceJson.Parse(measured.Substring(2)):null;
+                if(branch==null || branch.Items==null || branch.Items.Count!=2)
+                    throw new InvalidOperationException("S230: 下げるオペランドの図形の形が想定と違います。");
+                result.Shapes[move.ShapeId]="[]"+PumlBuild.Json(new[]{branch.Items[0].StringValue(),move.Values[0]});
+                continue;
+            }
             int close=measured.LastIndexOf(']');
             if(close<0)throw new InvalidOperationException("S230: 下げる図形の形が想定と違います。");
             string tail=measured.Substring(close+1);
