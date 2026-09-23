@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.35";
+    public const string Title = "シーケンス生成実験 / 0.9.36";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -5391,7 +5391,12 @@ public sealed class SequenceStructurePreparation
             var runLanes=new List<SequenceJson>();
             var eventsY=shapesNow.Where(sh=>before.ContainsKey(V(sh,"ModelId")) && !skipped.Contains(V(sh,"ModelId")))
                 .Select(sh=>{string k=before[V(sh,"ModelId")].Kind;return k=="message"?Read(sh,"TargetY"):(k=="note" || k=="ref" || k=="fragment")?Read(sh,"Y"):double.NaN;})
-                .Where(y=>!double.IsNaN(y)).ToArray();
+                .Where(y=>!double.IsNaN(y))
+                // A frame's bottom counts too: a bar closing just below a frame that grows has
+                // to follow it down, or it ends inside the frame.
+                .Concat(shapesNow.Where(sh=>before.ContainsKey(V(sh,"ModelId")) && before[V(sh,"ModelId")].Kind=="fragment")
+                    .Select(sh=>Read(sh,"Y")+Read(sh,"Height")))
+                .ToArray();
             foreach(var shape in shapesNow)
             {
                 string model=V(shape,"ModelId");

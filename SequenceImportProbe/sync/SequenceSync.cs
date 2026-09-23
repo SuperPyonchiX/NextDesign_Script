@@ -2200,7 +2200,12 @@ public sealed class SequenceStructurePreparation
             var runLanes=new List<SequenceJson>();
             var eventsY=shapesNow.Where(sh=>before.ContainsKey(V(sh,"ModelId")) && !skipped.Contains(V(sh,"ModelId")))
                 .Select(sh=>{string k=before[V(sh,"ModelId")].Kind;return k=="message"?Read(sh,"TargetY"):(k=="note" || k=="ref" || k=="fragment")?Read(sh,"Y"):double.NaN;})
-                .Where(y=>!double.IsNaN(y)).ToArray();
+                .Where(y=>!double.IsNaN(y))
+                // A frame's bottom counts too: a bar closing just below a frame that grows has
+                // to follow it down, or it ends inside the frame.
+                .Concat(shapesNow.Where(sh=>before.ContainsKey(V(sh,"ModelId")) && before[V(sh,"ModelId")].Kind=="fragment")
+                    .Select(sh=>Read(sh,"Y")+Read(sh,"Height")))
+                .ToArray();
             foreach(var shape in shapesNow)
             {
                 string model=V(shape,"ModelId");
