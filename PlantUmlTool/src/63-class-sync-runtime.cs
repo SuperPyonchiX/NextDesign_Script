@@ -263,6 +263,9 @@ public static class ClassSyncRuntime
     // member metaclasses to reuse. Null for an ordinary run.
     [ThreadStatic] public static ClassJsonNode ConnectorTemplate;
     [ThreadStatic] public static Dictionary<string,string> MemberTemplates;
+    // Set by the creator when no line can be cloned: relationships are still written, and
+    // their connectors stay as the product made them (hidden, K029).
+    [ThreadStatic] public static bool AllowHiddenLines;
     static IEditor Current(IApplication app)
     {
         if(targetEditorId==null)return app.Workspace.CurrentEditor;
@@ -596,6 +599,7 @@ public static class ClassSyncRuntime
         foreach(var c in d.Connectors.Cast<object>().ToList())
         {
             var shape=c as IConnector;if(shape==null || before.Contains(shape.Id))continue;
+            if(template==null && AllowHiddenLines) { log.AppendLine("connector "+shape.Id+" left hidden: no line to clone");continue; }
             if(template==null)throw new InvalidOperationException("C230: 図に既存の線がないため、線の雛形を取れません。");
             var own=ClassDiagramKind.ModelOf(shape);
             if(own==null || shape.StartPoint==null || shape.EndPoint==null)throw new InvalidOperationException("C230: 追加されたコネクタのモデルまたは両端を取得できません。");
@@ -995,7 +999,7 @@ public static class ClassSyncRuntime
             catch(Exception ex) { throw new InvalidOperationException("C220: 更新前の図を退避できません。保存済みの状態で実行してください（未保存扱いのときはコピーを開き直してください）。\n"+ex.Message); }
             if(unit.Editor==null || string.IsNullOrEmpty(unit.Schema))throw new InvalidOperationException("C220: 図の Editor JSON を退避できません。");
             var existing=unit.Editor["Connectors"];
-            if(preflight.LinkAddCount>0 && (existing==null || existing.Items==null || existing.Items.Count==0) && ConnectorTemplate==null)throw new InvalidOperationException("C220: 図に既存の線がないため、線の雛形を取れません。");
+            if(preflight.LinkAddCount>0 && (existing==null || existing.Items==null || existing.Items.Count==0) && ConnectorTemplate==null && !AllowHiddenLines)throw new InvalidOperationException("C220: 図に既存の線がないため、線の雛形を取れません。");
             log.AppendLine("editor captured for re-import: schema="+unit.Schema+" connectors="+(existing==null || existing.Items==null?0:existing.Items.Count));
         }
         if(!confirm(confirmation))return "本文更新: 中止（確認で取消）";

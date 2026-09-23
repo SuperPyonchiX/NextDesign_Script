@@ -236,17 +236,23 @@ public static class ClassSyncTests
     }
 
     // A new diagram from PlantUML: seeds from the template, then an add-only plan.
-    static void DiagramDraft(ClassDocument template)
+    static void DiagramDraft(ClassDocument unused)
     {
-        string input = "@startuml\ntitle 新しい図\npackage \"どこか\" {\nclass \"制御部\" as C\nclass \"Logger\" as L {\n  + write(text : String)\n}\nclass \"Sink\" as S\ninterface \"IOut\" as O\n}\nC --> L : logger\nL --> S : sink\n@enduml\n";
-        var draft = ClassDiagramDraft.Plan(ClassDocument.Parse(input), template, "file");
+        string input = "@startuml\ntitle 新しい図\npackage \"実装\" {\npackage \"システム\" {\nclass \"制御部\" as C\nclass \"Logger\" as L {\n  + write(text : String)\n}\nclass \"Sink\" as S\ninterface \"IOut\" as O\n}\n}\nC --> L : logger\nL --> S : sink\n@enduml\n";
+        var draft = ClassDiagramDraft.Plan(ClassDocument.Parse(input), "file");
         Check(draft.Reasons.Count == 0, "draft reasons: " + string.Join(" / ", draft.Reasons.ToArray()));
         Check(draft.Title == "新しい図", "draft title: " + draft.Title);
+        Check(draft.Items.Count == 4 && draft.Items.All(i => string.Join("/", i.Path) == "実装/システム"), "draft package paths: " + string.Join(",", draft.Items.Select(i => i.Name + "@" + string.Join("/", i.Path)).ToArray()));
+        Check(draft.Items.Single(i => i.Name == "IOut").Keyword == "interface", "draft keeps the keyword");
+        Check(ClassDiagramDraft.Plan(ClassDocument.Parse("@startuml\nclass A\n@enduml\n"), "file").Reasons.Count == 1, "a class outside any package stops the draft");
+        Check(ClassDiagramDraft.Plan(ClassDocument.Parse("@startuml\npackage \"P\" {\nclass A\n}\n@enduml\n"), "名前").Title == "名前", "file name as title");
+        // As the runtime resolves it: 制御部 exists, Logger and IOut are new seeds, Sink goes next to Logger.
+        draft.Seeds.Add(new ClassDiagramDraft.Seed { Name = "制御部", Existing = true });
+        draft.Seeds.Add(new ClassDiagramDraft.Seed { Name = "Logger" });
+        draft.Seeds.Add(new ClassDiagramDraft.Seed { Name = "IOut" });
+        foreach (var name in new[] { "制御部", "Logger", "IOut" }) draft.Anchors[name] = name;
+        draft.Anchors["Sink"] = "Logger";
         Check(draft.ExistingCount == 1 && draft.NewCount == 3, "draft counts: " + draft.ExistingCount + "/" + draft.NewCount);
-        Check(string.Join(",", draft.Seeds.Select(s => s.Name + (s.Existing ? "=" : "~") + template.Elements.Single(e => e.Id == s.TemplateId).Text).ToArray()) == "制御部=制御部,Logger~制御部,IOut~IDriver", "draft seeds: " + string.Join(",", draft.Seeds.Select(s => s.Name).ToArray()));
-        Check(draft.Anchors["Sink"] == "Logger", "draft anchor of Sink: " + draft.Anchors["Sink"]);
-        Check(ClassDiagramDraft.Plan(ClassDocument.Parse("@startuml\nclass A <<Nowhere>>\n@enduml\n"), template, "file").Reasons.Count == 1, "unknown stereotype stops the draft");
-        Check(ClassDiagramDraft.Plan(ClassDocument.Parse("@startuml\nclass A\n@enduml\n"), template, "名前").Title == "名前", "file name as title");
 
         // The new diagram once the seeds are on it: owners come from the model, the existing
         // class keeps its members and the product's unlabeled back-reference.

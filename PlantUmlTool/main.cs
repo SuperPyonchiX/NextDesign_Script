@@ -9229,22 +9229,26 @@ public static class ClassAudit
     static string Pad(string s,int width) { int length=0;foreach(var ch in s)length+=ch<128?1:2;return s+new string(' ',Math.Max(0,width-length)); }
 }
 
-// A new class diagram made from PlantUML with the open diagram as its template. The runtime
-// puts the seeds on an empty diagram (classes the template already shows, and one new class
-// per kind, made from a template class of that kind), then the ordinary sync adds the rest:
-// each new class goes next to its anchor seed, under the same owner.
+// A new class diagram made from PlantUML, without any diagram to copy. Each class sits in a
+// package block naming an existing model (a Domain) under the chosen group. The runtime puts
+// the seeds on the empty diagram (the classes that already exist, and one new class per
+// package and kind), then the ordinary sync adds the rest next to a seed of the same package
+// and kind. Plan reads the text; the runtime fills Seeds and Anchors after resolving models.
 public sealed class ClassDiagramDraft
 {
-    public sealed class Seed { public string Name, Keyword, Stereotype, TemplateId; public bool Existing; }
+    public sealed class Item { public string Name, Keyword, Stereotype; public string[] Path; public int Order; }
+    public sealed class Seed { public string Name; public bool Existing; }
     public string Title = "";
+    public List<Item> Items = new List<Item>();
     public List<Seed> Seeds = new List<Seed>();
-    // Input class name -> the seed whose owner and kind it takes.
+    // Input class name -> the seed whose owner and kind it takes (itself for a seed).
     public Dictionary<string,string> Anchors = new Dictionary<string,string>(StringComparer.Ordinal);
     public List<string> Reasons = new List<string>();
     public int ExistingCount { get { return Seeds.Count(s=>s.Existing); } }
-    public int NewCount { get { return Anchors.Count-ExistingCount; } }
+    public int NewCount { get { return Items.Count-ExistingCount; } }
     static bool IsClass(ClassElement e) { return e.Kind=="class" && !ClassDocument.IsContainerKeyword(e.Attr("keyword")); }
-    // Package blocks carry no ownership here: the template decides where classes go.
+    // The package blocks name the owners; the document compared with the diagram drops them
+    // and takes the owners as the diagram reads them.
     public static void Flatten(ClassDocument doc)
     {
         var packages=new HashSet<string>(doc.Elements.Where(e=>e.Kind=="package").Select(e=>e.Id),StringComparer.Ordinal);
@@ -9252,46 +9256,26 @@ public sealed class ClassDiagramDraft
         doc.Elements.RemoveAll(e=>packages.Contains(e.Id));
         foreach(var e in doc.Elements)if(e.Parent!=null && packages.Contains(e.Parent))e.Parent="root";
     }
-    // template: the open diagram as read. fallbackTitle: the file name, used without a title line.
-    public static ClassDiagramDraft Plan(ClassDocument input,ClassDocument template,string fallbackTitle)
+    public static ClassDiagramDraft Plan(ClassDocument input,string fallbackTitle)
     {
         var draft=new ClassDiagramDraft();
-        var doc=input.Copy();Flatten(doc);
-        string title=doc.HasTitle?ClassText.Inline(ClassText.Normalize(doc.Root.Text)):"";
+        var index=input.Elements.ToDictionary(e=>e.Id);
+        string title=input.HasTitle?ClassText.Inline(ClassText.Normalize(input.Root.Text)):"";
         if(title.Length==0)title=ClassText.Inline(ClassText.Normalize(fallbackTitle??""));
         draft.Title=title;
         if(title.Length==0 || title.Contains("\\n"))draft.Reasons.Add("図の名前を決められません。title 行を書いてください");
-        if(doc.Elements.Any(e=>e.Kind=="class" && ClassDocument.IsContainerKeyword(e.Attr("keyword"))))
-            draft.Reasons.Add("package / component の箱は新しい図では扱えません。クラスだけを書いてください");
-        var classes=doc.Elements.Where(IsClass).OrderBy(e=>e.Order).ToList();
-        if(classes.Count==0)draft.Reasons.Add("クラスがありません");
-        foreach(var cls in classes.Where(c=>c.Parent!="root"))draft.Reasons.Add("入れ子のクラスは新しい図では扱えません: "+cls.Text);
-        foreach(var name in classes.GroupBy(c=>c.Text).Where(g=>g.Count()>1).Select(g=>g.Key))draft.Reasons.Add("同じ名前のクラスが複数あります: "+name);
-        if(draft.Reasons.Count>0)return draft;
-        var shown=template.Elements.Where(IsClass).OrderBy(e=>e.Order).ToList();
-        foreach(var cls in classes)
+        if(input.Elements.Any(e=>e.Kind=="class" && ClassDocument.IsContainerKeyword(e.Attr("keyword"))))
+            draft.Reasons.Add("package / component をクラスとして書いたものは扱えません。置き場は package \"名前\" { } で囲んで示してください");
+        foreach(var cls in input.Elements.Where(IsClass).OrderBy(e=>e.Order))
         {
-            var same=shown.Where(t=>t.Text==cls.Text).ToList();
-            if(same.Count>1) { draft.Reasons.Add("雛形の図に同じ名前のクラスが複数あります: "+cls.Text);continue; }
-            if(same.Count==1)
-            {
-                draft.Seeds.Add(new Seed{Name=cls.Text,Keyword=same[0].Attr("keyword"),Stereotype=same[0].Attr("stereotype"),TemplateId=same[0].Id,Existing=true});
-                draft.Anchors[cls.Text]=cls.Text;
-                continue;
-            }
-            // No stereotype written: any template class of the keyword, whose stereotype it takes.
-            string keyword=cls.Attr("keyword"),stereotype=cls.Attr("stereotype");
-            var seed=draft.Seeds.FirstOrDefault(s=>!s.Existing && s.Keyword==keyword && (stereotype.Length==0 || s.Stereotype==stereotype));
-            if(seed!=null) { draft.Anchors[cls.Text]=seed.Name;continue; }
-            var model=shown.FirstOrDefault(t=>t.Attr("keyword")==keyword && (stereotype.Length==0 || t.Attr("stereotype")==stereotype));
-            if(model==null)
-            {
-                draft.Reasons.Add("雛形の図に "+keyword+(stereotype.Length>0?" <<"+stereotype+">>":"")+" のクラスがないため、'"+cls.Text+"' の種類を決められません");
-                continue;
-            }
-            draft.Seeds.Add(new Seed{Name=cls.Text,Keyword=keyword,Stereotype=model.Attr("stereotype"),TemplateId=model.Id});
-            draft.Anchors[cls.Text]=cls.Text;
+            var path=new List<string>();var at=cls.Parent;
+            while(at!=null && at!="root" && index[at].Kind=="package") { path.Insert(0,index[at].Text);at=index[at].Parent; }
+            if(at!="root") { draft.Reasons.Add("入れ子のクラスは扱えません: "+cls.Text);continue; }
+            if(path.Count==0) { draft.Reasons.Add("'"+cls.Text+"' を置く場所がありません。package \"既存のモデル名\" { } で囲んでください");continue; }
+            draft.Items.Add(new Item{Name=cls.Text,Keyword=cls.Attr("keyword"),Stereotype=cls.Attr("stereotype"),Path=path.ToArray(),Order=cls.Order});
         }
+        foreach(var name in draft.Items.GroupBy(i=>i.Name).Where(g=>g.Count()>1).Select(g=>g.Key))draft.Reasons.Add("同じ名前のクラスが複数あります: "+name);
+        if(draft.Items.Count==0 && draft.Reasons.Count==0)draft.Reasons.Add("クラスがありません");
         return draft;
     }
     // Run against the new diagram as read once the seeds are on it. Each class goes under its
@@ -10019,6 +10003,9 @@ public static class ClassSyncRuntime
     // member metaclasses to reuse. Null for an ordinary run.
     [ThreadStatic] public static ClassJsonNode ConnectorTemplate;
     [ThreadStatic] public static Dictionary<string,string> MemberTemplates;
+    // Set by the creator when no line can be cloned: relationships are still written, and
+    // their connectors stay as the product made them (hidden, K029).
+    [ThreadStatic] public static bool AllowHiddenLines;
     static IEditor Current(IApplication app)
     {
         if(targetEditorId==null)return app.Workspace.CurrentEditor;
@@ -10352,6 +10339,7 @@ public static class ClassSyncRuntime
         foreach(var c in d.Connectors.Cast<object>().ToList())
         {
             var shape=c as IConnector;if(shape==null || before.Contains(shape.Id))continue;
+            if(template==null && AllowHiddenLines) { log.AppendLine("connector "+shape.Id+" left hidden: no line to clone");continue; }
             if(template==null)throw new InvalidOperationException("C230: 図に既存の線がないため、線の雛形を取れません。");
             var own=ClassDiagramKind.ModelOf(shape);
             if(own==null || shape.StartPoint==null || shape.EndPoint==null)throw new InvalidOperationException("C230: 追加されたコネクタのモデルまたは両端を取得できません。");
@@ -10751,7 +10739,7 @@ public static class ClassSyncRuntime
             catch(Exception ex) { throw new InvalidOperationException("C220: 更新前の図を退避できません。保存済みの状態で実行してください（未保存扱いのときはコピーを開き直してください）。\n"+ex.Message); }
             if(unit.Editor==null || string.IsNullOrEmpty(unit.Schema))throw new InvalidOperationException("C220: 図の Editor JSON を退避できません。");
             var existing=unit.Editor["Connectors"];
-            if(preflight.LinkAddCount>0 && (existing==null || existing.Items==null || existing.Items.Count==0) && ConnectorTemplate==null)throw new InvalidOperationException("C220: 図に既存の線がないため、線の雛形を取れません。");
+            if(preflight.LinkAddCount>0 && (existing==null || existing.Items==null || existing.Items.Count==0) && ConnectorTemplate==null && !AllowHiddenLines)throw new InvalidOperationException("C220: 図に既存の線がないため、線の雛形を取れません。");
             log.AppendLine("editor captured for re-import: schema="+unit.Schema+" connectors="+(existing==null || existing.Items==null?0:existing.Items.Count));
         }
         if(!confirm(confirmation))return "本文更新: 中止（確認で取消）";
@@ -11144,31 +11132,32 @@ public static class ClassSyncRuntime
 // ============================================================
 //  Part 9 / PlantUML から新しいクラス図を作る
 //
-//    開いているクラス図を雛形にする。雛形の図と同じ所有先・ビュー定義で図のモデルを
-//    作り、PlantUML のうち雛形の図にあるクラスはそのまま載せ、無いクラスは種類ごとに
-//    1 つだけ雛形のクラスと同じ所有先・メタクラスで作る（種）。いったん保存してから、
+//    見本の図は使わない。クラス図グループ（または開いているクラス図の所有先）の
+//    クラス図欄に図のモデルを作り、PlantUML の package "名前" { } をグループ配下の
+//    既存モデル（Domain など）に対応させてクラスを置く。
+//    ・そのモデルに同じ名前のクラスがあれば、既存のクラスを図に載せる
+//    ・無ければ、そのモデルが持てるメタクラスのうちキーワード・ステレオタイプが合うもので作る
+//    ノードの定義はプロファイルのビュー定義から引く（FindElementDefByClass）。
+//    package と種類ごとに 1 つ（種）を先に作って図に置き、いったん保存してから、
 //    残りのクラス・メンバ・関連を通常の「PlantUMLを反映」と同じ本体で足す。
-//    計画（種と所有先の決め方）は純粋部 ClassDiagramDraft にある。
+//    計画（テキストの読み取りと所有先の決め方）は純粋部 ClassDiagramDraft にある。
 // ============================================================
 
 public static class ClassDiagramCreator
 {
-    // Ribbon entry: pick the file, create the diagram, show the result. With a class diagram
-    // open, the new one goes next to it; with any other model open or selected (a class diagram
-    // group), it goes under that model, taking the first class diagram found below it (or
-    // anywhere in the project) as the template.
+    // Ribbon entry: find where the diagram goes, pick the file, create, show the result.
     public static void Create(IApplication app)
     {
         var editor=app.Workspace.CurrentEditor;
-        IEditor template;IModel owner;IField ownerField;string where;
-        try { where=ResolvePlace(app,editor,out template,out owner,out ownerField); }
+        IModel owner;IField field;IClass diagramClass;string where;
+        try { where=ResolveGroup(app,editor,out owner,out field,out diagramClass); }
         catch(Exception ex) { ClassExperiment.Summary=ex.Message;ClassExperiment.Details=ex.ToString();ClassExperiment.Show(app);return; }
         string path=app.Window.UI.ShowOpenFileDialog("新しいクラス図にするPlantUML","PlantUML (*.puml;*.plantuml)|*.puml;*.plantuml");
         if(string.IsNullOrEmpty(path))return;
         string pumlText;
         try { if(new FileInfo(path).Length>300000)throw new InvalidOperationException("C120: 入力は300KB以下にしてください。");pumlText=File.ReadAllText(path,new UTF8Encoding(false,true)); }
         catch(Exception ex) { ClassExperiment.Summary=ex.Message;ClassExperiment.Details=ex.ToString();ClassExperiment.Show(app);return; }
-        var outcome=Run(app,template,owner,ownerField,where,pumlText,path,Path.GetFileNameWithoutExtension(path),message=>app.Window.UI.ShowConfirmDialog(message,ClassExperiment.Title));
+        var outcome=Run(app,owner,field,diagramClass,where,pumlText,path,Path.GetFileNameWithoutExtension(path),message=>app.Window.UI.ShowConfirmDialog(message,ClassExperiment.Title));
         ClassExperiment.Summary=outcome.Summary;
         string stem=ClassExperiment.SaveReport("create",outcome.Log,outcome.ReportJson,outcome.CurrentPuml);
         if(stem!=null)ClassExperiment.Summary+="\n診断保存先: "+stem+".txt";
@@ -11176,144 +11165,206 @@ public static class ClassDiagramCreator
         ClassExperiment.Show(app);
     }
 
-    sealed class Placed { public ClassDiagramDraft.Seed Seed; public IModel Model, Template; public INode TemplateNode; public bool Created; }
-
-    // Where the new diagram goes and which class diagram serves as its template. where says how
-    // they were found, for the confirmation and the log.
-    public static string ResolvePlace(IApplication app,IEditor editor,out IEditor template,out IModel owner,out IField ownerField)
+    static string Name(IModel m) { return m==null?"":ClassText.Inline(ClassText.Normalize(m.Name)); }
+    static List<IModel> Children(IModel m)
     {
-        template=null;owner=null;ownerField=null;
+        try { return m.GetChildren().Cast<IModel>().Where(c=>c!=null && !c.IsDeleted).ToList(); }
+        catch(Exception) { return new List<IModel>(); }
+    }
+    static List<IEditor> Editors(IModel m)
+    {
+        try { return m.GetEditors().Cast<object>().OfType<IEditor>().ToList(); }
+        catch(Exception) { return new List<IEditor>(); }
+    }
+    static bool HasClassDiagram(IModel m) { return Editors(m).Any(e=>ClassDiagramKind.Reject(e)==null); }
+    static IEnumerable<IClass> Concrete(IClass declared)
+    {
+        var all=new List<IClass>{declared};
+        try { all.AddRange(declared.GetAllSubClasses().Cast<IClass>()); } catch(Exception) { }
+        return all.Where(c=>c!=null && !c.IsAbstract).GroupBy(c=>c.FullName).Select(g=>g.First());
+    }
+
+    // The model that gets the diagram, the field that holds class diagrams and their metaclass.
+    // With a class diagram open: the same as that diagram. Otherwise the open or selected model
+    // (a class diagram group): the field whose existing children are class diagrams, or else the
+    // one whose element type has a class-diagram editor in the profile.
+    public static string ResolveGroup(IApplication app,IEditor editor,out IModel owner,out IField field,out IClass diagramClass)
+    {
+        owner=null;field=null;diagramClass=null;
         if(ClassDiagramKind.Reject(editor)==null)
         {
-            template=editor;var diagramModel=ClassDiagramKind.ModelOf(editor);
-            if(diagramModel==null)throw new InvalidOperationException("C310: 開いている図のモデルを取得できません。");
-            owner=diagramModel.Owner;try { ownerField=diagramModel.GetOwnerField(); } catch(Exception) { }
-            if(owner==null || ownerField==null)throw new InvalidOperationException("C310: 開いている図のモデルの所有先を取得できません。");
-            return "開いている図と同じ所有先";
+            var diagramModel=ClassDiagramKind.ModelOf(editor);
+            if(diagramModel==null || diagramModel.Owner==null)throw new InvalidOperationException("C310: 開いている図のモデルの所有先を取得できません。");
+            owner=diagramModel.Owner;diagramClass=diagramModel.Metaclass;
+            try { field=diagramModel.GetOwnerField(); } catch(Exception) { }
+            if(field==null)throw new InvalidOperationException("C310: 開いている図のモデルの所有フィールドを取得できません。");
+            return "開いている図と同じ「"+Name(owner)+"」の下";
         }
         IModel parent=editor!=null?ClassDiagramKind.ModelOf(editor):null;
         if(parent==null) { try { parent=app.Window.EditorPage.CurrentModel; } catch(Exception) { } }
-        if(parent==null)throw new InvalidOperationException("C310: クラス図を追加するモデル（クラス図グループなど）をナビゲータで選ぶか、雛形にするクラス図を開いてから実行してください。");
-        var trace=new StringBuilder();
-        var unloaded=new List<IEditor>();
-        template=FindTemplate(parent,trace,unloaded);
-        // A diagram never opened in this session reports no nodes (2.3.3 on a real project).
-        // Selecting its model in the navigator opens it; read it again afterwards.
-        foreach(var candidate in unloaded.Take(3))
+        if(parent==null)throw new InvalidOperationException("C310: クラス図を追加するモデル（クラス図グループなど）を開くか選んでから実行してください。");
+        var fields=parent.Metaclass.GetFields().Cast<IField>().Where(f=>f.IsEmbedded && f.TypeClass!=null).ToList();
+        // A class diagram already in the group shows which field and metaclass to use.
+        foreach(var child in Children(parent))
         {
-            if(template!=null)break;
-            var model=ClassDiagramKind.ModelOf(candidate);
-            try { app.Window.EditorPage.CurrentNavigator.Select(model,false); }
-            catch(Exception ex) { trace.AppendLine("ナビゲータで選べません: "+ex.Message);continue; }
-            var current=app.Workspace.CurrentEditor;
-            if(ClassDiagramKind.Reject(current)==null && ShowsClass(current) && ClassDiagramKind.ModelOf(current)!=null && ClassDiagramKind.ModelOf(current).Id==model.Id)template=current;
-            else if(ShowsClass(candidate))template=candidate;
-            else trace.AppendLine("'"+ClassText.Normalize(model.Name)+"' を開いてもノードを読めません（表示中のエディタ: "+(current==null?"なし":current.EditorType+"/"+current.ViewDefinitionName)+"）");
+            if(!HasClassDiagram(child))continue;
+            IField own=null;try { own=child.GetOwnerField(); } catch(Exception) { }
+            if(own==null)continue;
+            owner=parent;field=own;diagramClass=child.Metaclass;
+            return "「"+Name(parent)+"」の下";
         }
-        if(template==null)throw new InvalidOperationException("C310: '"+ClassText.Normalize(parent.Name)+"' の直下に、雛形にできるクラス図（クラスが 1 つ以上載っているもの）がありません。雛形にするクラス図を開いてから実行してください。\n"+trace.ToString().TrimEnd());
-        var metaclass=ClassDiagramKind.ModelOf(template).Metaclass;
-        ownerField=parent.Metaclass.GetFields().Cast<IField>().FirstOrDefault(f=>f.IsEmbedded && f.TypeClass!=null && f.TypeClass.IsClassOf(metaclass));
-        if(ownerField==null)throw new InvalidOperationException("C310: '"+ClassText.Normalize(parent.Name)+"'（"+parent.ClassName+"）にはクラス図（"+metaclass.Name+"）を追加できません。クラス図グループを選んでから実行してください。");
-        owner=parent;
-        return "選択中のモデルの下（雛形は直下の図）";
-    }
-    // Only the direct children are searched: walking the tree reads every model's editors and
-    // took too long on a real project. trace collects what was seen, for the message when
-    // nothing is found.
-    static bool ShowsClass(IEditor e)
-    {
-        try { return ((IDiagram)e).Nodes.Cast<object>().OfType<INode>().Any(n=>ClassDiagramKind.ModelOf(n)!=null); }
-        catch(Exception) { return false; }
-    }
-    // unloaded: class diagrams found without nodes, which may just not be loaded yet.
-    static IEditor FindTemplate(IModel parent,StringBuilder trace,List<IEditor> unloaded)
-    {
-        int models=0,editors=0;var kinds=new List<string>();string firstError=null;
-        List<IModel> children;
-        try { children=parent.GetChildren().Cast<IModel>().Where(c=>c!=null && !c.IsDeleted).ToList(); }
-        catch(Exception ex) { trace.AppendLine("GetChildren: "+ex.Message);return null; }
-        foreach(var m in children)
-        {
-            models++;
-            try
+        // No diagram yet: the profile's editor definitions.
+        var views=app.Workspace.CurrentProject.Profile.ViewDefinitions;
+        var found=new List<KeyValuePair<IField,IClass>>();
+        foreach(var f in fields)
+            foreach(var c in Concrete(f.TypeClass))
             {
-                foreach(var e in m.GetEditors().Cast<object>().OfType<IEditor>())
-                {
-                    editors++;
-                    if(ClassDiagramKind.Reject(e)!=null)continue;
-                    bool shown=false;
-                    try { shown=((IDiagram)e).Nodes.Cast<object>().OfType<INode>().Any(n=>ClassDiagramKind.ModelOf(n)!=null); }
-                    catch(Exception ex) { if(firstError==null)firstError="Nodes: "+ex.Message; }
-                    if(shown)return e;
-                    unloaded.Add(e);
-                    if(kinds.Count<8)kinds.Add("'"+ClassText.Normalize(m.Name)+"' "+e.EditorType+"/"+e.ViewDefinitionName+" ノードなし");
-                }
+                bool classEditor=false;
+                try { classEditor=views.FindEditorDefByClass(c,null).Cast<IEditorDef>().Any(d=>ClassSyncOptions.ClassEditorTypes.Contains(d.Type)); } catch(Exception) { }
+                if(classEditor)found.Add(new KeyValuePair<IField,IClass>(f,c));
             }
-            catch(Exception ex) { if(firstError==null)firstError="GetEditors('"+ClassText.Normalize(m.Name)+"'): "+ex.Message; }
+        if(found.Count==0)throw new InvalidOperationException("C310: '"+Name(parent)+"'（"+parent.ClassName+"）にはクラス図を追加できません。クラス図グループを開くか選んでから実行してください。");
+        if(found.Count>1)throw new InvalidOperationException("C310: '"+Name(parent)+"' に追加できる図の種類が複数あり、クラス図を決められません: "+string.Join(", ",found.Select(p=>p.Key.Name+"/"+p.Value.Name).ToArray()));
+        owner=parent;field=found[0].Key;diagramClass=found[0].Value;
+        return "「"+Name(parent)+"」の下";
+    }
+
+    // Keyword and stereotype a class of this metaclass reads back as (the snapshot's rules).
+    static string KeywordOf(IClass c,ClassSyncOptions o)
+    {
+        string keyword;
+        if(o.KeywordMap.TryGetValue(c.Name,out keyword))return keyword;
+        try { foreach(var s in c.GetAllSuperClasses().Cast<IClass>())if(o.KeywordMap.TryGetValue(s.Name,out keyword))return keyword; } catch(Exception) { }
+        return "class";
+    }
+    static string StereotypeOf(IClass c,string keyword,ClassSyncOptions o)
+    {
+        if(!o.EmitStereotypes)return "";
+        string stereotype;
+        if(o.StereotypeMap.TryGetValue(c.Name,out stereotype))return ClassText.Normalize(stereotype);
+        if(!string.Equals(keyword,"class",StringComparison.OrdinalIgnoreCase) || !o.EmitUnknownStereotype)return "";
+        return ClassText.Normalize(c.Name);
+    }
+
+    // A package path from the input: first below the group, then from the project root (the
+    // full owner path the exporter writes).
+    static IModel ResolvePath(IProject project,IModel group,string[] path,out string problem)
+    {
+        problem=null;
+        var starts=new List<KeyValuePair<IModel,string[]>>{new KeyValuePair<IModel,string[]>(group,path)};
+        var root=project.DesignModel;
+        if(root!=null)starts.Add(new KeyValuePair<IModel,string[]>(root,path.Length>1 && path[0]==Name(root)?path.Skip(1).ToArray():path));
+        foreach(var start in starts)
+        {
+            var at=start.Key;string missing=null;
+            foreach(var segment in start.Value)
+            {
+                var next=Children(at).Where(c=>Name(c)==segment).ToList();
+                if(next.Count!=1) { missing=next.Count==0?"'"+segment+"' が '"+Name(at)+"' の下にありません":"'"+Name(at)+"' の下に '"+segment+"' が複数あります";break; }
+                at=next[0];
+            }
+            if(missing==null)return at;
+            if(problem==null)problem=missing;
         }
-        trace.AppendLine("直下のモデル "+models+" / エディタ "+editors);
-        if(kinds.Count>0)trace.AppendLine("クラス図と判定したエディタ: "+string.Join(" | ",kinds.ToArray()));
-        if(firstError!=null)trace.AppendLine("最初の例外: "+firstError);
         return null;
     }
 
-    public static ClassSyncRuntime.Outcome Run(IApplication app,IEditor template,IModel owner,IField ownerField,string where,string pumlText,string sourceLabel,string fallbackTitle,Func<string,bool> confirm)
+    sealed class Kind { public IField Field; public IClass Class; public string Keyword, Stereotype; }
+    sealed class Placed { public ClassDiagramDraft.Item Item; public IModel Package, Model; public Kind Kind; public bool Created; }
+
+    public static ClassSyncRuntime.Outcome Run(IApplication app,IModel owner,IField field,IClass diagramClass,string where,string pumlText,string sourceLabel,string fallbackTitle,Func<string,bool> confirm)
     {
         var log=new StringBuilder();var outcome=new ClassSyncRuntime.Outcome();
         IModel diagramModel=null;var placed=new List<Placed>();bool saved=false;
         try
         {
-            string reject=ClassDiagramKind.Reject(template);
-            if(reject!=null)throw new InvalidOperationException(reject);
             var project=app.Workspace.CurrentProject;
             if(project==null || string.IsNullOrEmpty(project.Path))throw new InvalidOperationException("C310: 保存済みのプロジェクトで実行してください。");
             if(project.HasUnsavedChanges())throw new InvalidOperationException("C310: 未保存の変更があります。作成の途中でプロジェクトを保存するので、先に保存してから実行してください。");
+            if(!owner.IsEditable)throw new InvalidOperationException("C310: '"+Name(owner)+"' は編集できません。");
             log.AppendLine("PlantUML source: "+sourceLabel);
+            log.AppendLine("place: "+where+" "+owner.ClassName+"."+field.Name+" as "+diagramClass.FullName);
             var input=new ClassPumlParser().Parse(pumlText);
-            var templateDiagram=(IDiagram)template;
-            var templateModel=ClassDiagramKind.ModelOf(template);
-            if(templateModel==null)throw new InvalidOperationException("C310: 雛形の図のモデルを取得できません。");
-            var read=ClassDiagramSnapshot.Read(templateDiagram,new ClassSyncOptions(),log);
-            var draft=ClassDiagramDraft.Plan(input,read.Document,fallbackTitle);
-            log.AppendLine("draft: title='"+draft.Title+"' existing="+draft.ExistingCount+" new="+draft.NewCount+" seeds="+string.Join(",",draft.Seeds.Select(s=>s.Name+(s.Existing?"(existing)":"(new)")).ToArray()));
+            var draft=ClassDiagramDraft.Plan(input,fallbackTitle);
             if(draft.Reasons.Count>0)throw new InvalidOperationException("C310: 新しい図を作れません。\n"+string.Join("\n",draft.Reasons.ToArray()));
+            if(Children(owner).Any(m=>m.ClassName==diagramClass.Name && Name(m)==draft.Title))
+                throw new InvalidOperationException("C310: '"+Name(owner)+"' に同じ名前の図 '"+draft.Title+"' が既にあります。title を変えてください。");
 
-            log.AppendLine("place: "+where+" owner="+(owner==null?"?":owner.ClassName+" '"+owner.Name+"'."+(ownerField==null?"?":ownerField.Name))+" template='"+templateModel.Name+"' id="+template.Id);
-            if(owner==null || ownerField==null || !owner.IsEditable)throw new InvalidOperationException("C310: 図を追加する先のモデルが編集できません。");
-            if(owner.GetFieldValues(ownerField.Name).Cast<object>().OfType<IModel>().Any(m=>!m.IsDeleted && m.ClassName==templateModel.ClassName && ClassText.Inline(ClassText.Normalize(m.Name))==draft.Title))
-                throw new InvalidOperationException("C310: '"+ClassText.Normalize(owner.Name)+"' に同じ名前の図 '"+draft.Title+"' が既にあります。title を変えてください。");
-            foreach(var seed in draft.Seeds)
+            // Owners and kinds, all before anything is written.
+            var options=new ClassSyncOptions();var reasons=new List<string>();
+            var packages=new Dictionary<string,IModel>(StringComparer.Ordinal);
+            var kinds=new Dictionary<string,List<Kind>>(StringComparer.Ordinal);
+            foreach(var item in draft.Items)
             {
-                string modelId;
-                if(!read.ModelIds.TryGetValue(seed.TemplateId,out modelId))throw new InvalidOperationException("C310: 雛形のクラスのモデルを特定できません: "+seed.Name);
-                var model=project.GetModelById(modelId);
-                var node=templateDiagram.Nodes.Cast<object>().OfType<INode>().FirstOrDefault(n=>{var m=ClassDiagramKind.ModelOf(n);return m!=null && m.Id==modelId;});
-                if(model==null || node==null)throw new InvalidOperationException("C310: 雛形のクラスのモデルかノードを取得できません: "+seed.Name);
-                var p=new Placed{Seed=seed,Template=model,TemplateNode=node};
-                if(seed.Existing)p.Model=model;
-                else
+                string key=string.Join("\u0001",item.Path);IModel package;
+                if(!packages.TryGetValue(key,out package))
                 {
-                    var classOwner=model.Owner;IField classField=null;
-                    try { classField=model.GetOwnerField(); } catch(Exception) { }
-                    if(classOwner==null || classField==null || !classOwner.IsEditable)throw new InvalidOperationException("C310: 雛形のクラス '"+ClassText.Normalize(model.Name)+"' の所有先にクラスを追加できません。");
-                    if(classOwner.GetFieldValues(classField.Name).Cast<object>().OfType<IModel>().Any(m=>!m.IsDeleted && ClassText.Inline(ClassText.Normalize(m.Name))==seed.Name))
-                        throw new InvalidOperationException("C310: '"+ClassText.Normalize(classOwner.Name)+"' に同じ名前のクラス '"+seed.Name+"' が既にあります。雛形の図に載っていないクラスは再利用できません。");
-                    log.AppendLine("seed '"+seed.Name+"': new "+model.Metaclass.FullName+" under "+classOwner.ClassName+" '"+classOwner.Name+"'."+classField.Name+" (template '"+model.Name+"')");
+                    string problem;package=ResolvePath(project,owner,item.Path,out problem);
+                    if(package==null) { reasons.Add("package '"+string.Join("/",item.Path)+"' に対応するモデルがありません（"+problem+"）");packages[key]=null;continue; }
+                    packages[key]=package;
+                    log.AppendLine("package "+string.Join("/",item.Path)+" -> "+package.ClassName+" '"+package.Name+"' id="+package.Id);
                 }
-                placed.Add(p);
+                if(package==null)continue;
+                var p=new Placed{Item=item,Package=package};
+                var same=Children(package).Where(c=>Name(c)==item.Name).ToList();
+                if(same.Count>1) { reasons.Add("'"+Name(package)+"' に '"+item.Name+"' が複数あります");continue; }
+                if(same.Count==1) { p.Model=same[0];placed.Add(p);continue; }
+                List<Kind> available;
+                if(!kinds.TryGetValue(package.Id,out available))
+                {
+                    available=new List<Kind>();
+                    foreach(var f in package.Metaclass.GetFields().Cast<IField>().Where(f=>f.IsEmbedded && f.TypeClass!=null))
+                        foreach(var c in Concrete(f.TypeClass))
+                        {
+                            string k=KeywordOf(c,options);
+                            if(ClassDocument.IsContainerKeyword(k))continue;
+                            available.Add(new Kind{Field=f,Class=c,Keyword=k,Stereotype=StereotypeOf(c,k,options)});
+                        }
+                    kinds[package.Id]=available;
+                }
+                var fits=available.Where(k=>k.Keyword==item.Keyword && (item.Stereotype.Length==0 || k.Stereotype==item.Stereotype)).ToList();
+                if(fits.Count>1)
+                {
+                    // Prefer the metaclass the package's classes already use.
+                    var used=Children(package).GroupBy(c=>c.Metaclass==null?"":c.Metaclass.FullName).ToDictionary(g=>g.Key,g=>g.Count());
+                    int best=fits.Max(k=>{int n;return used.TryGetValue(k.Class.FullName,out n)?n:0;});
+                    if(best>0)fits=fits.Where(k=>{int n;return used.TryGetValue(k.Class.FullName,out n) && n==best;}).ToList();
+                }
+                if(fits.Count!=1)
+                {
+                    var choices=available.Where(k=>k.Keyword==item.Keyword).Select(k=>"<<"+k.Stereotype+">>").Distinct().ToArray();
+                    reasons.Add("'"+item.Name+"' の種類を決められません（'"+Name(package)+"' に置ける "+item.Keyword+(fits.Count==0?": "+(choices.Length==0?"なし":string.Join(" ",choices)):" が複数: "+string.Join(" ",fits.Select(k=>"<<"+k.Stereotype+">>").ToArray()))+"）。ステレオタイプを書いてください");
+                    continue;
+                }
+                p.Kind=fits[0];placed.Add(p);
             }
-            // The editor to clone when the new model has no editor of this view yet, and the line
-            // to clone for relationships (the new diagram starts without one). Needs the saved project.
-            var unit=ClassEditorCapture.ReadUnit(project,templateModel,template,log);
-            if(unit.Editor==null || string.IsNullOrEmpty(unit.Schema))throw new InvalidOperationException("C310: 雛形の図の Editor JSON を取得できません。");
-            var lines=unit.Editor["Connectors"];
-            var connectorTemplate=lines!=null && lines.Items!=null && lines.Items.Count>0?lines.Items[0]:null;
-            if(connectorTemplate==null && input.Elements.Any(e=>e.Kind=="link"))
-                log.AppendLine("the template diagram has no connector; relationship lines cannot be added");
+            if(reasons.Count>0)throw new InvalidOperationException("C310: 新しい図を作れません。\n"+string.Join("\n",reasons.ToArray()));
+            // Seeds: every existing class, and the first new class of each package and kind that
+            // has no existing class of that kind on the diagram to sit next to.
+            var anchors=new Dictionary<string,string>(StringComparer.Ordinal);
+            foreach(var p in placed.Where(x=>x.Model!=null))
+            {
+                draft.Seeds.Add(new ClassDiagramDraft.Seed{Name=p.Item.Name,Existing=true});draft.Anchors[p.Item.Name]=p.Item.Name;
+                string key=p.Package.Id+"|"+p.Model.Metaclass.FullName;if(!anchors.ContainsKey(key))anchors[key]=p.Item.Name;
+            }
+            foreach(var p in placed.Where(x=>x.Model==null))
+            {
+                string key=p.Package.Id+"|"+p.Kind.Class.FullName;string anchor;
+                if(anchors.TryGetValue(key,out anchor)) { draft.Anchors[p.Item.Name]=anchor;continue; }
+                anchors[key]=p.Item.Name;draft.Anchors[p.Item.Name]=p.Item.Name;
+                draft.Seeds.Add(new ClassDiagramDraft.Seed{Name=p.Item.Name});p.Created=true;
+                log.AppendLine("seed '"+p.Item.Name+"': new "+p.Kind.Class.FullName+" in '"+p.Package.Name+"'."+p.Kind.Field.Name);
+            }
+            var seeds=placed.Where(p=>p.Model!=null || p.Created).ToList();
+            log.AppendLine("draft: title='"+draft.Title+"' existing="+draft.ExistingCount+" new="+draft.NewCount+" seeds="+seeds.Count);
 
-            string question="クラス図「"+draft.Title+"」を「"+ClassText.Normalize(owner.Name)+"」の下に新しく作ります。\n"
-                +"雛形: 図「"+ClassText.Normalize(templateModel.Name)+"」（"+where+"。ビュー定義・線の形・新しいクラスの所有先と種類）\n"
-                +"既存のクラス "+draft.ExistingCount+" 件を載せ、新しいクラス "+draft.NewCount+" 件を作ります。\n"
+            // The line to clone for relationships: from a class diagram already in the group, if any.
+            ClassJsonNode connectorTemplate=null;
+            if(input.Elements.Any(e=>e.Kind=="link"))connectorTemplate=FindConnectorTemplate(project,owner,log);
+
+            string question="クラス図「"+draft.Title+"」を"+where+"に新しく作ります。\n"
+                +"既存のクラス "+draft.ExistingCount+" 件を載せ、新しいクラス "+draft.NewCount+" 件を作ります（置き場は package で指定したモデル）。\n"
+                +(input.Elements.Any(e=>e.Kind=="link") && connectorTemplate==null?"同じグループに線のあるクラス図が無いため、関連はモデルには作りますが図の線は表示されません。\n":"")
                 +"途中でプロジェクトを保存し、そのあと反映の内容を確認します。";
             if(!confirm(question)) { outcome.Summary="新しい図の作成を中止しました。";outcome.Succeeded=true;return Finish(outcome,log); }
 
@@ -11321,48 +11372,60 @@ public static class ClassDiagramCreator
             IDiagram created;
             try
             {
-                diagramModel=owner.AddNewModel(ownerField,templateModel.Metaclass);
+                diagramModel=owner.AddNewModel(field,diagramClass);
                 if(diagramModel==null)throw new InvalidOperationException("C320: 図のモデルを作成できませんでした。");
                 diagramModel.SetField("Name",draft.Title);
                 log.AppendLine("diagram model "+diagramModel.ClassName+" id="+diagramModel.Id+" name='"+diagramModel.Name+"'");
-                created=EnsureEditor(project,diagramModel,template,unit,log);
-                double width=placed.Max(x=>x.TemplateNode.Width),height=placed.Max(x=>x.TemplateNode.Height);
-                int column=0;
-                foreach(var p in placed)
+                var editors=Editors(diagramModel);
+                log.AppendLine("editors of the new model: "+string.Join(", ",editors.Select(e=>e.EditorType+"/"+e.ViewDefinitionName).ToArray()));
+                created=editors.Where(e=>ClassDiagramKind.Reject(e)==null).OfType<IDiagram>().FirstOrDefault();
+                if(created==null)throw new InvalidOperationException("C320: 新しい図のモデルにクラス図のエディタがありません（"+string.Join(", ",editors.Select(e=>e.EditorType+"/"+e.ViewDefinitionName).ToArray())+"）。");
+                var views=project.Profile.ViewDefinitions;var editorDef=((IEditor)created).EditorDefinition;
+                double x=40;
+                foreach(var p in seeds)
                 {
-                    if(p.Model==null)
+                    if(p.Created)
                     {
-                        p.Model=p.Template.Owner.AddNewModel(p.Template.GetOwnerField(),p.Template.Metaclass);
-                        if(p.Model==null)throw new InvalidOperationException("C320: クラスを作成できませんでした: "+p.Seed.Name);
-                        p.Model.SetField("Name",p.Seed.Name);
-                        if(ClassText.Inline(ClassText.Normalize(p.Model.Name))!=p.Seed.Name)throw new InvalidOperationException("C320: 作成したクラスの名前の読戻しが一致しません: "+p.Seed.Name);
-                        p.Created=true;
+                        p.Model=p.Package.AddNewModel(p.Kind.Field,p.Kind.Class);
+                        if(p.Model==null)throw new InvalidOperationException("C320: クラスを作成できませんでした: "+p.Item.Name);
+                        p.Model.SetField("Name",p.Item.Name);
+                        if(Name(p.Model)!=p.Item.Name)throw new InvalidOperationException("C320: 作成したクラスの名前の読戻しが一致しません: "+p.Item.Name);
                         log.AppendLine("created class "+p.Model.ClassName+" id="+p.Model.Id+" name='"+p.Model.Name+"'");
                     }
-                    var def=(p.TemplateNode as IRepresentation)==null?null:(p.TemplateNode as IRepresentation).ViewDefinition as IElementDef;
-                    try { created.AddNodeShape(p.Model,def); } catch(Exception ex) { log.AppendLine("AddNodeShape failed for '"+p.Seed.Name+"': "+ex.Message); }
+                    IElementDef def=null;
+                    try { def=views.FindElementDefByClass(editorDef,p.Model.Metaclass,null).Cast<IElementDef>().FirstOrDefault(); }
+                    catch(Exception ex) { log.AppendLine("FindElementDefByClass failed for "+p.Model.ClassName+": "+ex.Message); }
+                    log.AppendLine("node definition for "+p.Model.ClassName+": "+(def==null?"(none)":def.Type+" "+def.Path));
+                    try { created.AddNodeShape(p.Model,def); } catch(Exception ex) { log.AppendLine("AddNodeShape failed for '"+p.Item.Name+"': "+ex.Message); }
                     var node=created.Nodes.Cast<object>().OfType<INode>().FirstOrDefault(n=>{var m=ClassDiagramKind.ModelOf(n);return m!=null && m.Id==p.Model.Id;});
-                    if(node==null)throw new InvalidOperationException("C320: 新しい図にクラス '"+p.Seed.Name+"' のノードを置けませんでした。");
+                    if(node==null)throw new InvalidOperationException("C320: 新しい図にクラス '"+p.Item.Name+"' のノードを置けませんでした（ノード定義 "+(def==null?"なし":def.Path)+"）。");
                     // Every other column stays free for the classes added next to this one.
-                    node.SetLocationAt(40+column*2*(width+80),40);node.SetSizeAt(p.TemplateNode.Width,p.TemplateNode.Height);column++;
-                    log.AppendLine("seed node "+node.Id+" '"+p.Seed.Name+"' at ("+node.LocationX+","+node.LocationY+") visible="+node.IsVisible);
+                    node.SetLocationAt(x,40);x+=2*(node.Width+80);
+                    log.AppendLine("seed node "+node.Id+" '"+p.Item.Name+"' at ("+node.LocationX+","+node.LocationY+" "+node.Width+"x"+node.Height+") visible="+node.IsVisible);
                 }
                 transaction.Commit();
             }
             catch(Exception)
             {
                 try { transaction.Rollback(); } catch(Exception rollbackError) { log.AppendLine("rollback failed: "+rollbackError.Message); }
-                diagramModel=null;placed.Clear();
+                diagramModel=null;foreach(var p in placed.Where(x=>x.Created))p.Model=null;
                 throw;
             }
-            // The sync exports the new diagram before writing (relationship lines need it), which
-            // the product refuses while the project is dirty.
+            // The sync exports the new diagram before adding relationship lines, which the
+            // product refuses while the project is dirty.
             saved=app.Workspace.SaveProject(project,false);
             log.AppendLine("save: "+saved+" unsaved after="+project.HasUnsavedChanges());
             if(!saved || project.HasUnsavedChanges())throw new InvalidOperationException("C320: 作成した図を保存できませんでした。");
 
             ClassSyncRuntime.ConnectorTemplate=connectorTemplate;
-            ClassSyncRuntime.MemberTemplates=placed.Where(p=>p.Created).ToDictionary(p=>p.Model.Id,p=>p.Template.Id,StringComparer.Ordinal);
+            ClassSyncRuntime.AllowHiddenLines=connectorTemplate==null;
+            ClassSyncRuntime.MemberTemplates=new Dictionary<string,string>(StringComparer.Ordinal);
+            foreach(var p in placed.Where(x=>x.Created))
+            {
+                // A class of the same metaclass already in the package lends its member metaclasses.
+                var lender=Children(p.Package).FirstOrDefault(c=>c.Id!=p.Model.Id && c.Metaclass!=null && c.Metaclass.FullName==p.Kind.Class.FullName);
+                if(lender!=null)ClassSyncRuntime.MemberTemplates[p.Model.Id]=lender.Id;
+            }
             var sync=ClassSyncRuntime.Run(app,(IEditor)created,pumlText,sourceLabel,true,true,true,confirm,(desired,snapshot,prepareLog)=>{
                 draft.Prepare(desired,snapshot.Document);
                 prepareLog.AppendLine("input adjusted for the new diagram: "+desired.Elements.Count+" elements");
@@ -11375,12 +11438,13 @@ public static class ClassDiagramCreator
                 outcome.Succeeded=outcome.Applied=outcome.Committed=true;
                 SelectInNavigator(app,diagramModel,log);
                 outcome.Summary="クラス図「"+draft.Title+"」を作成しました（既存のクラス "+draft.ExistingCount+" 件 / 新しいクラス "+draft.NewCount+" 件）。\n"
-                    +"反映の結果:\n"+sync.Summary+"\nナビゲータで新しい図を開いて確認してください。保存はしていません。";
+                    +(connectorTemplate==null && input.Elements.Any(e=>e.Kind=="link")?"関連の線は表示されていません（線の雛形なし）。\n":"")
+                    +"反映の結果:\n"+sync.Summary+"\n保存はしていません。";
                 outcome.Details=outcome.Summary+"\f"+sync.Details;
                 return Finish(outcome,log,true);
             }
             outcome.ErrorMessage=sync.ErrorMessage??"反映できませんでした";
-            string removed=Remove(app,project,diagramModel,placed,log);
+            string removed=Remove(project,diagramModel,placed,log);
             outcome.Summary="新しい図に PlantUML を反映できませんでした。\n"+sync.Summary+"\n"+removed;
             outcome.Details=outcome.Summary+"\f"+sync.Details;
             return Finish(outcome,log,true);
@@ -11389,11 +11453,11 @@ public static class ClassDiagramCreator
         {
             outcome.ErrorMessage=ex.Message;
             log.AppendLine(ex.ToString());
-            string removed=saved?Remove(app,app.Workspace.CurrentProject,diagramModel,placed,log):"";
+            string removed=saved?Remove(app.Workspace.CurrentProject,diagramModel,placed,log):"";
             outcome.Summary="新しい図を作成できませんでした。\n"+ex.Message+(removed.Length>0?"\n"+removed:"");
             return Finish(outcome,log);
         }
-        finally { ClassSyncRuntime.ConnectorTemplate=null;ClassSyncRuntime.MemberTemplates=null; }
+        finally { ClassSyncRuntime.ConnectorTemplate=null;ClassSyncRuntime.MemberTemplates=null;ClassSyncRuntime.AllowHiddenLines=false; }
     }
 
     static ClassSyncRuntime.Outcome Finish(ClassSyncRuntime.Outcome outcome,StringBuilder log,bool detailsSet=false)
@@ -11403,51 +11467,58 @@ public static class ClassDiagramCreator
         return outcome;
     }
 
-    // The new model may already come with an editor of the template's view; otherwise the
-    // template's editor entry (without its shapes) is imported for it.
-    static IDiagram EnsureEditor(IProject project,IModel model,IEditor template,ClassEditorCapture.Unit unit,StringBuilder log)
+    // A connector entry of a class diagram already under the group, from the group's unit as
+    // saved. Null when there is none; the relationships are then made without visible lines.
+    static ClassJsonNode FindConnectorTemplate(IProject project,IModel owner,StringBuilder log)
     {
-        Func<IDiagram> find=()=>model.GetEditors().Cast<object>().OfType<IEditor>()
-            .Where(e=>e.ViewDefinitionName==template.ViewDefinitionName && e.EditorType==template.EditorType).OfType<IDiagram>().FirstOrDefault();
-        var found=find();
-        if(found!=null) { log.AppendLine("editor came with the model: "+((IEditor)found).Id);return found; }
-        var entry=ClassJsonNode.Parse(unit.Editor.ToJsonString());
-        entry.Properties.Remove("Nodes");entry.Properties.Remove("Connectors");
-        entry.Properties["Id"]=new ClassJsonNode{Raw=ClassJson.Q(Guid.NewGuid().ToString())};
-        entry.Properties["ModelId"]=new ClassJsonNode{Raw=ClassJson.Q(model.Id)};
-        log.AppendLine("editor entry for import: keys="+string.Join(",",entry.Properties.Keys));
-        string json="{\"Type\":\"Model\",\"SchemaVersion\":"+ClassJson.Q(unit.Schema)+",\"TopElementId\":"+ClassJson.Q(model.Id)
-            +",\"Entities\":[],\"Relations\":[],\"Editors\":["+entry.ToJsonString()+"]}";
-        var result=project.ImportUnitFromJson(json,null,null);
-        if(result==null)throw new InvalidOperationException("C320: 図のエディタを作成できませんでした（インポート結果なし）。");
-        log.AppendLine("editor import: "+result.State);
-        foreach(var e in result.Errors)log.AppendLine(e.Kind+": "+e.Message);
-        if(result.State!="success" || result.Errors.Any(e=>e.Kind!=UnitImportErrorKind.Info))throw new InvalidOperationException("C320: 図のエディタの作成が失敗または警告を返しました。");
-        found=find();
-        if(found==null)throw new InvalidOperationException("C320: 作成した図のエディタが見つかりません。");
-        log.AppendLine("editor imported: "+((IEditor)found).Id);
-        return found;
+        var diagrams=new HashSet<string>(Children(owner).Where(HasClassDiagram).Select(m=>m.Id),StringComparer.Ordinal);
+        if(diagrams.Count==0) { log.AppendLine("connector template: no class diagram in the group");return null; }
+        string directory=Path.Combine(Path.GetTempPath(),"ClassEditor-"+Guid.NewGuid().ToString("N"));
+        string path=Path.Combine(directory,"snapshot.nmdl");
+        try
+        {
+            Directory.CreateDirectory(directory);
+            if(owner.ModelUnit==null) { log.AppendLine("connector template: the group has no model unit");return null; }
+            project.UnitManager.ExportModelUnit(owner.ModelUnit,path);
+            var exported=ClassJsonNode.Parse(File.ReadAllText(path,new UTF8Encoding(false,true)));
+            var editors=exported["Editors"];
+            if(editors==null || editors.Items==null) { log.AppendLine("connector template: no Editors in the export");return null; }
+            foreach(var e in editors.Items.Where(e=>diagrams.Contains(ClassJsonNode.Value(e,"ModelId")??"")))
+            {
+                var lines=e["Connectors"];
+                if(lines!=null && lines.Items!=null && lines.Items.Count>0) { log.AppendLine("connector template: from editor "+ClassJsonNode.Value(e,"Id"));return lines.Items[0]; }
+            }
+            log.AppendLine("connector template: the group's class diagrams have no line");
+            return null;
+        }
+        catch(Exception ex) { log.AppendLine("connector template: export failed: "+ex.Message);return null; }
+        finally
+        {
+            try { if(File.Exists(path))File.Delete(path);if(Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any())Directory.Delete(directory); }
+            catch(Exception ex) { log.AppendLine("Temporary export cleanup failed: "+ex.Message); }
+        }
     }
 
     // Undo what the creator made when the sync did not go through. The saved file still holds
     // the diagram until the project is saved again.
-    static string Remove(IApplication app,IProject project,IModel diagramModel,List<Placed> placed,StringBuilder log)
+    static string Remove(IProject project,IModel diagramModel,List<Placed> placed,StringBuilder log)
     {
         if(project==null || diagramModel==null)return "";
+        var made=placed.Where(x=>x.Created && x.Model!=null && !x.Model.IsDeleted).ToList();
         var transaction=project.BeginUndoTransaction(false);
         try
         {
-            foreach(var p in placed.Where(x=>x.Created && x.Model!=null && !x.Model.IsDeleted))p.Model.Delete();
+            foreach(var p in made)p.Model.Delete();
             if(!diagramModel.IsDeleted)diagramModel.Delete();
             transaction.Commit();
-            log.AppendLine("removed the new diagram and "+placed.Count(x=>x.Created)+" created classes");
-            return "作成した図と、そのために作ったクラス "+placed.Count(x=>x.Created)+" 件を削除しました。保存済みのファイルには残っているので、上書き保存すると削除が確定します。";
+            log.AppendLine("removed the new diagram and "+made.Count+" created classes");
+            return "作成した図と、そのために作ったクラス "+made.Count+" 件を削除しました。保存済みのファイルには残っているので、上書き保存すると削除が確定します。";
         }
         catch(Exception ex)
         {
             try { transaction.Rollback(); } catch(Exception) { }
             log.AppendLine("removal failed: "+ex);
-            return "作成した図「"+ClassText.Normalize(diagramModel.Name)+"」を削除できませんでした。不要なら手動で削除してください。";
+            return "作成した図「"+Name(diagramModel)+"」を削除できませんでした。不要なら手動で削除してください。";
         }
     }
 

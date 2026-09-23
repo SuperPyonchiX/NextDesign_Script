@@ -1202,22 +1202,26 @@ public static class ClassAudit
     static string Pad(string s,int width) { int length=0;foreach(var ch in s)length+=ch<128?1:2;return s+new string(' ',Math.Max(0,width-length)); }
 }
 
-// A new class diagram made from PlantUML with the open diagram as its template. The runtime
-// puts the seeds on an empty diagram (classes the template already shows, and one new class
-// per kind, made from a template class of that kind), then the ordinary sync adds the rest:
-// each new class goes next to its anchor seed, under the same owner.
+// A new class diagram made from PlantUML, without any diagram to copy. Each class sits in a
+// package block naming an existing model (a Domain) under the chosen group. The runtime puts
+// the seeds on the empty diagram (the classes that already exist, and one new class per
+// package and kind), then the ordinary sync adds the rest next to a seed of the same package
+// and kind. Plan reads the text; the runtime fills Seeds and Anchors after resolving models.
 public sealed class ClassDiagramDraft
 {
-    public sealed class Seed { public string Name, Keyword, Stereotype, TemplateId; public bool Existing; }
+    public sealed class Item { public string Name, Keyword, Stereotype; public string[] Path; public int Order; }
+    public sealed class Seed { public string Name; public bool Existing; }
     public string Title = "";
+    public List<Item> Items = new List<Item>();
     public List<Seed> Seeds = new List<Seed>();
-    // Input class name -> the seed whose owner and kind it takes.
+    // Input class name -> the seed whose owner and kind it takes (itself for a seed).
     public Dictionary<string,string> Anchors = new Dictionary<string,string>(StringComparer.Ordinal);
     public List<string> Reasons = new List<string>();
     public int ExistingCount { get { return Seeds.Count(s=>s.Existing); } }
-    public int NewCount { get { return Anchors.Count-ExistingCount; } }
+    public int NewCount { get { return Items.Count-ExistingCount; } }
     static bool IsClass(ClassElement e) { return e.Kind=="class" && !ClassDocument.IsContainerKeyword(e.Attr("keyword")); }
-    // Package blocks carry no ownership here: the template decides where classes go.
+    // The package blocks name the owners; the document compared with the diagram drops them
+    // and takes the owners as the diagram reads them.
     public static void Flatten(ClassDocument doc)
     {
         var packages=new HashSet<string>(doc.Elements.Where(e=>e.Kind=="package").Select(e=>e.Id),StringComparer.Ordinal);
@@ -1225,46 +1229,26 @@ public sealed class ClassDiagramDraft
         doc.Elements.RemoveAll(e=>packages.Contains(e.Id));
         foreach(var e in doc.Elements)if(e.Parent!=null && packages.Contains(e.Parent))e.Parent="root";
     }
-    // template: the open diagram as read. fallbackTitle: the file name, used without a title line.
-    public static ClassDiagramDraft Plan(ClassDocument input,ClassDocument template,string fallbackTitle)
+    public static ClassDiagramDraft Plan(ClassDocument input,string fallbackTitle)
     {
         var draft=new ClassDiagramDraft();
-        var doc=input.Copy();Flatten(doc);
-        string title=doc.HasTitle?ClassText.Inline(ClassText.Normalize(doc.Root.Text)):"";
+        var index=input.Elements.ToDictionary(e=>e.Id);
+        string title=input.HasTitle?ClassText.Inline(ClassText.Normalize(input.Root.Text)):"";
         if(title.Length==0)title=ClassText.Inline(ClassText.Normalize(fallbackTitle??""));
         draft.Title=title;
         if(title.Length==0 || title.Contains("\\n"))draft.Reasons.Add("図の名前を決められません。title 行を書いてください");
-        if(doc.Elements.Any(e=>e.Kind=="class" && ClassDocument.IsContainerKeyword(e.Attr("keyword"))))
-            draft.Reasons.Add("package / component の箱は新しい図では扱えません。クラスだけを書いてください");
-        var classes=doc.Elements.Where(IsClass).OrderBy(e=>e.Order).ToList();
-        if(classes.Count==0)draft.Reasons.Add("クラスがありません");
-        foreach(var cls in classes.Where(c=>c.Parent!="root"))draft.Reasons.Add("入れ子のクラスは新しい図では扱えません: "+cls.Text);
-        foreach(var name in classes.GroupBy(c=>c.Text).Where(g=>g.Count()>1).Select(g=>g.Key))draft.Reasons.Add("同じ名前のクラスが複数あります: "+name);
-        if(draft.Reasons.Count>0)return draft;
-        var shown=template.Elements.Where(IsClass).OrderBy(e=>e.Order).ToList();
-        foreach(var cls in classes)
+        if(input.Elements.Any(e=>e.Kind=="class" && ClassDocument.IsContainerKeyword(e.Attr("keyword"))))
+            draft.Reasons.Add("package / component をクラスとして書いたものは扱えません。置き場は package \"名前\" { } で囲んで示してください");
+        foreach(var cls in input.Elements.Where(IsClass).OrderBy(e=>e.Order))
         {
-            var same=shown.Where(t=>t.Text==cls.Text).ToList();
-            if(same.Count>1) { draft.Reasons.Add("雛形の図に同じ名前のクラスが複数あります: "+cls.Text);continue; }
-            if(same.Count==1)
-            {
-                draft.Seeds.Add(new Seed{Name=cls.Text,Keyword=same[0].Attr("keyword"),Stereotype=same[0].Attr("stereotype"),TemplateId=same[0].Id,Existing=true});
-                draft.Anchors[cls.Text]=cls.Text;
-                continue;
-            }
-            // No stereotype written: any template class of the keyword, whose stereotype it takes.
-            string keyword=cls.Attr("keyword"),stereotype=cls.Attr("stereotype");
-            var seed=draft.Seeds.FirstOrDefault(s=>!s.Existing && s.Keyword==keyword && (stereotype.Length==0 || s.Stereotype==stereotype));
-            if(seed!=null) { draft.Anchors[cls.Text]=seed.Name;continue; }
-            var model=shown.FirstOrDefault(t=>t.Attr("keyword")==keyword && (stereotype.Length==0 || t.Attr("stereotype")==stereotype));
-            if(model==null)
-            {
-                draft.Reasons.Add("雛形の図に "+keyword+(stereotype.Length>0?" <<"+stereotype+">>":"")+" のクラスがないため、'"+cls.Text+"' の種類を決められません");
-                continue;
-            }
-            draft.Seeds.Add(new Seed{Name=cls.Text,Keyword=keyword,Stereotype=model.Attr("stereotype"),TemplateId=model.Id});
-            draft.Anchors[cls.Text]=cls.Text;
+            var path=new List<string>();var at=cls.Parent;
+            while(at!=null && at!="root" && index[at].Kind=="package") { path.Insert(0,index[at].Text);at=index[at].Parent; }
+            if(at!="root") { draft.Reasons.Add("入れ子のクラスは扱えません: "+cls.Text);continue; }
+            if(path.Count==0) { draft.Reasons.Add("'"+cls.Text+"' を置く場所がありません。package \"既存のモデル名\" { } で囲んでください");continue; }
+            draft.Items.Add(new Item{Name=cls.Text,Keyword=cls.Attr("keyword"),Stereotype=cls.Attr("stereotype"),Path=path.ToArray(),Order=cls.Order});
         }
+        foreach(var name in draft.Items.GroupBy(i=>i.Name).Where(g=>g.Count()>1).Select(g=>g.Key))draft.Reasons.Add("同じ名前のクラスが複数あります: "+name);
+        if(draft.Items.Count==0 && draft.Reasons.Count==0)draft.Reasons.Add("クラスがありません");
         return draft;
     }
     // Run against the new diagram as read once the seeds are on it. Each class goes under its
