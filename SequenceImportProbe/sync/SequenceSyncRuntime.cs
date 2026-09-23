@@ -517,10 +517,9 @@ public static class SequenceStructureTrial
         if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=editorId
             || Rounded(project,rootId,fresh,newShapes).Signature()!=original)
             throw new InvalidOperationException("S230: 確認中に対象の図が変化しました。");
-        // Serialized attributes are checked before starting; export is unavailable after a write.
-        if(SequenceEditorCapture.Read(project,root,diagram,log).Fingerprint()!=SequenceEditorDocument.Read(exported,rootId,editorId).Fingerprint())
-            throw new InvalidOperationException("S230: 確認中に表示設定が変化しました。");
-        SequenceSyncRuntime.Lap("再エクスポート");
+        // The confirmation is modal, so nothing can be edited while it is up, and the SDK
+        // state above has just been compared again. Exporting the whole unit a second time
+        // only to compare the editor's display settings cost as long as the first export.
         SequenceExperiment.Write(Path.Combine(directory,"trial-before-sdk.json"),original);
         SequenceExperiment.Write(Path.Combine(directory,"trial-expected-sdk.json"),expectedFinal.Signature());
         string stage="トランザクション開始";

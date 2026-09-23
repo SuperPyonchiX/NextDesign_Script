@@ -25,7 +25,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.17";
+    public const string Title = "シーケンス生成実験 / 0.9.18";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -1492,10 +1492,9 @@ public static class SequenceStructureTrial
         if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=editorId
             || Rounded(project,rootId,fresh,newShapes).Signature()!=original)
             throw new InvalidOperationException("S230: 確認中に対象の図が変化しました。");
-        // Serialized attributes are checked before starting; export is unavailable after a write.
-        if(SequenceEditorCapture.Read(project,root,diagram,log).Fingerprint()!=SequenceEditorDocument.Read(exported,rootId,editorId).Fingerprint())
-            throw new InvalidOperationException("S230: 確認中に表示設定が変化しました。");
-        SequenceSyncRuntime.Lap("再エクスポート");
+        // The confirmation is modal, so nothing can be edited while it is up, and the SDK
+        // state above has just been compared again. Exporting the whole unit a second time
+        // only to compare the editor's display settings cost as long as the first export.
         SequenceExperiment.Write(Path.Combine(directory,"trial-before-sdk.json"),original);
         SequenceExperiment.Write(Path.Combine(directory,"trial-expected-sdk.json"),expectedFinal.Signature());
         string stage="トランザクション開始";
@@ -1965,6 +1964,39 @@ public static class SequenceEditorCapture
         differences++;
         if(differences<=20)log.AppendLine("Geometry representations differ: shape="+id+", property="+property+", SDK="+actual.ToString("R",System.Globalization.CultureInfo.InvariantCulture)+", JSON="+serialized);
     }
+    internal static string Trim(string exported,HashSet<string> kept,StringBuilder log)
+    {
+        var document=SequenceJson.Parse(exported);
+        if(document==null || document.Properties==null)throw new InvalidOperationException("E180: 図のエクスポートがJSONオブジェクトではありません。");
+        var trimmed=new SequenceJson{Properties=new Dictionary<string,SequenceJson>(StringComparer.Ordinal)};
+        int entities=0,relations=0,editors=0;
+        foreach(var pair in document.Properties)
+        {
+            var value=pair.Value;
+            if(value!=null && value.Items!=null && pair.Key=="Entities")
+            {entities=value.Items.Count;value=new SequenceJson{Items=value.Items.Where(e=>kept.Contains(SequenceEditorDocument.Value(e,"Id")??"")).ToList()};}
+            else if(value!=null && value.Items!=null && pair.Key=="Relations")
+            {
+                relations=value.Items.Count;
+                value=new SequenceJson{Items=value.Items.Where(r=>kept.Contains(SequenceEditorDocument.Value(r,"SourceId")??"")
+                    || kept.Contains(SequenceEditorDocument.Value(r,"TargetId")??"")).ToList()};
+            }
+            else if(value!=null && value.Items!=null && pair.Key=="Editors")
+            {editors=value.Items.Count;value=new SequenceJson{Items=value.Items.Where(v=>Shows(v,kept)).ToList()};}
+            trimmed.Properties[pair.Key]=value;
+        }
+        string result=trimmed.ToJsonString();
+        log.AppendLine("Editor snapshot trimmed: entities "+entities+"→"+trimmed["Entities"].Items.Count+", relations "+relations+"→"+trimmed["Relations"].Items.Count
+            +", editors "+editors+"→"+trimmed["Editors"].Items.Count+", chars "+exported.Length+"→"+result.Length);
+        return result;
+    }
+    static bool Shows(SequenceJson node,HashSet<string> kept)
+    {
+        if(node==null)return false;
+        if(node.Properties!=null)return node.Properties.Any(p=>(p.Key=="ModelId" && p.Value!=null && p.Value.Raw!=null
+            && p.Value.Raw.StartsWith("\"",StringComparison.Ordinal) && kept.Contains(p.Value.StringValue())) || Shows(p.Value,kept));
+        return node.Items!=null && node.Items.Any(n=>Shows(n,kept));
+    }
     public static SequenceEditorDocument Read(IProject project,IInteraction root,ISequenceDiagram diagram,StringBuilder log,Action<string> capture=null)
     {
         // Never read the previously saved unit: it may omit current unsaved edits.
@@ -1978,7 +2010,11 @@ public static class SequenceEditorCapture
             log.AppendLine("Editor snapshot export: unit type="+root.ModelUnit.Type);
             project.UnitManager.ExportModelUnit(root.ModelUnit,path);
             if(!File.Exists(path) || new FileInfo(path).Length>100000000)throw new InvalidOperationException("E180: 図のエクスポートを取得できないか100MBを超えています。");
-            string exported=File.ReadAllText(path,new UTF8Encoding(false,true));
+            // The unit can hold far more than this diagram. Keep only the interaction's own
+            // models, every relation touching them and the editors that show them, so each
+            // later parse, check and saved file deals with this diagram alone.
+            string exported=Trim(File.ReadAllText(path,new UTF8Encoding(false,true)),
+                new HashSet<string>(SequenceMappedUpdate.Tree(root).Select(m=>m.Id)),log);
             var snapshot=SequenceEditorDocument.Read(exported,root.Id,diagram.Id);
             var shapes=snapshot.Shapes().ToDictionary(n=>SequenceEditorDocument.Value(n,"Id"));
             if(!new HashSet<string>(diagram.Shapes.Select(n=>n.Id+":"+n.ModelId)).SetEquals(shapes.Values.Select(n=>SequenceEditorDocument.Value(n,"Id")+":"+SequenceEditorDocument.Value(n,"ModelId"))))
