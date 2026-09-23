@@ -540,12 +540,16 @@ public static class StructurePreparationTests
             var wire=Clone(editor["Messages"].Items[0]);Set(wire,"Id",pair[0]+"-shape");Set(wire,"ModelId",pair[0]);
             wire.Properties["SourceY"]=SequenceJson.Parse(pair[1]);wire.Properties["TargetY"]=SequenceJson.Parse(pair[1]);editor["Messages"].Items.Add(wire);
         }
+        var innerBar=Clone(editor["ExecutionSpecifications"].Items[1]);Set(innerBar,"Id","inner-bar-shape");Set(innerBar,"ModelId","inner-bar");
+        innerBar.Properties["Y"]=SequenceJson.Parse("130");innerBar.Properties["Length"]=SequenceJson.Parse("45");innerBar.Properties["Height"]=SequenceJson.Parse("45");
+        editor["ExecutionSpecifications"].Items.Add(innerBar);
         var current=new SequenceDocument();
         current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
         current.Elements.Add(new SequenceElement{Id=ids[2],Kind="participant",Parent=ids[0]});
         current.Elements.Add(new SequenceElement{Id=ids[3],Kind="participant",Parent=ids[0]});
         foreach(string id in new[]{ids[4],ids[5]})
         {var e=new SequenceElement{Id=id,Kind="execution",Parent=ids[0]};e.Links["participant"]=new[]{id==ids[4]?ids[2]:ids[3]};current.Elements.Add(e);}
+        {var e=new SequenceElement{Id="inner-bar",Kind="execution",Parent=ids[0]};e.Links["participant"]=new[]{ids[3]};e.Links["endContainer"]=new[]{ids[0]};current.Elements.Add(e);}
         int order=0;
         foreach(var pair in new[]{new[]{ids[6],"probe()"},new[]{"wrapped","wrapped()"},new[]{"after","after()"}})
         {
@@ -558,11 +562,14 @@ public static class StructurePreparationTests
         desired.Elements.Add(new SequenceElement{Id="wrap-operand",Kind="operand",Parent="wrap-frame",Order=0,Text="ready"});
         var inner=desired.Elements.Single(e=>e.Id=="wrapped");inner.Parent="wrap-operand";inner.Order=0;
         desired.Elements.Single(e=>e.Id=="after").Order=2;
+        var closing=desired.Elements.Single(e=>e.Id=="inner-bar");closing.Parent="wrap-operand";closing.Links["endContainer"]=new[]{"wrap-operand"};
         var plan=new SyncPlan{Expected=desired};
         plan.Changes.Add(new SequenceChange{Action="add",Kind="fragment",Id="wrap-frame",Line=5});
         plan.Changes.Add(new SequenceChange{Action="add",Kind="operand",Id="wrap-operand",Line=5});
         plan.Changes.Add(new SequenceChange{Action="move",Kind="message",Id="wrapped",Line=6});
         plan.Changes.Add(new SequenceChange{Action="move",Kind="message",Id="after",Line=8});
+        plan.Changes.Add(new SequenceChange{Action="update",Kind="execution",Id="inner-bar",Line=7});
+        plan.Changes.Add(new SequenceChange{Action="move",Kind="execution",Id="inner-bar",Line=7});
         var gate=SequenceStructurePreflight.Check(current,plan);
         Require(gate.Candidate && gate.MoveMessages.SequenceEqual(new[]{"wrapped"}) && gate.WrapFragments.Count==1 && gate.CanCommit(),
             "a frame around one existing message was not a candidate: "+gate.ToJson());
@@ -583,6 +590,9 @@ public static class StructurePreparationTests
         string barA=editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),barB=editor["ExecutionSpecifications"].Items[1]["Id"].StringValue();
         Require(moved(barA,"Y")==null && moved(barA,"Length")=="298" && moved(barA,"Height")=="298","a bar open across the frame did not grow by the room made");
         Require(moved(barB,"Y")==null && moved(barB,"Length")=="248","the other bar did not grow");
+        // It used to end 20 under the wrapped message; it still does, inside the frame.
+        Require(moved("inner-bar-shape","Y")=="190" && moved("inner-bar-shape","Length")==null,
+            "a bar closed inside the frame reached out of it: "+moved("inner-bar-shape","Length"));
         foreach(var lane in editor["Lifelines"].Items)Require(moved(lane["Id"].StringValue(),"LaneLength")=="338","a lane did not follow the growth");
         var patch=SequenceJson.Parse(package.ReconnectJson);
         var frameShape=patch["Editors"].Items.Single()["Fragments"].Items.Single();

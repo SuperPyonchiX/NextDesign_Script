@@ -25,7 +25,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.5";
+    public const string Title = "シーケンス生成実験 / 0.9.6";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -4220,8 +4220,8 @@ public sealed class SequenceStructurePreparation
                 && sh["X"]!=null && sh["Width"]!=null).ToArray();
             if(frameShapes.Length>0)frameTemplate=frameShapes[0];
         }
-        Func<double,double> wrapMap=null;double wrapGrowth=0;
-        var layout=gate.WrapFragments.Count>0?WrapLayout(gate,plan,editor,frameTemplate,current,out wrapMap,out wrapGrowth)
+        Func<double,double> wrapMap=null,wrapInside=null;double wrapGrowth=0;
+        var layout=gate.WrapFragments.Count>0?WrapLayout(gate,plan,editor,frameTemplate,current,out wrapMap,out wrapInside,out wrapGrowth)
             :gate.AddFragments.Count>0?FrameLayout(gate,plan,editor,frameTemplate,current)
             :new Dictionary<string,Dictionary<string,double>>(StringComparer.Ordinal);
         var additions=new List<SequenceAddedExecution>();
@@ -4640,7 +4640,14 @@ public sealed class SequenceStructurePreparation
                 }
                 else if(kind=="execution")
                 {
-                    double top=Read(shape,"Y"),length=Read(shape,"Length"),moved=wrapMap(top),grown=wrapMap(top+length)-moved;
+                    // A bar the input closes inside the new frame has to end inside it too,
+                    // even when it used to reach further down than the run's last message.
+                    string frameId=gate.WrapFragments[0];
+                    bool closesInside=after.ContainsKey(model) && (after[model].Links.ContainsKey("endContainer")?after[model].Links["endContainer"]:new string[0])
+                        .Any(id=>after.ContainsKey(id) && after[id].Kind=="operand" && after[id].Parent==frameId);
+                    double top=Read(shape,"Y"),length=Read(shape,"Length"),moved=wrapMap(top);
+                    double floor=layout[frameId]["Y"]+layout[frameId]["Height"]-8;
+                    double grown=(closesInside?Math.Min(wrapInside(top+length),floor):wrapMap(top+length))-moved;
                     put("Y",top,moved);
                     // A bar carries its length as both Height and Length; writing one is ignored.
                     if(Math.Abs(grown-length)>1e-9){keys.Add("Length");values.Add(Number(grown));keys.Add("Height");values.Add(Number(grown));}
@@ -4821,7 +4828,7 @@ public sealed class SequenceStructurePreparation
     // A position above the run stays, so a bar opened before it keeps its top.
     internal static Dictionary<string,Dictionary<string,double>> WrapLayout(SequenceStructurePreflight gate,
         SyncPlan plan,SequenceEditorDocument editor,SequenceJson frameTemplate,SequenceDocument current,
-        out Func<double,double> map,out double growth)
+        out Func<double,double> map,out Func<double,double> inside,out double growth)
     {
         var layout=new Dictionary<string,Dictionary<string,double>>(StringComparer.Ordinal);
         var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
@@ -4860,12 +4867,14 @@ public sealed class SequenceStructurePreparation
         // the frame, the gap the generator leaves after a frame.
         double below=offsets[ys.Length-1]+38,split=ys[ys.Length-1]+MessageSpacing/2;
         growth=below;
-        map=p=>{
-            if(p<ys[0]-5)return p;
-            if(p>split)return p+below;
+        // Inside the run a position moves with the message just above it. A bar that
+        // closes inside the frame uses that for its bottom too, wherever it ended before.
+        inside=p=>{
             int at=0;while(at+1<ys.Length && ys[at+1]<=p)at++;
             return p+offsets[at];
         };
+        var within=inside;
+        map=p=>p<ys[0]-5?p:p>split?p+below:within(p);
         return layout;
     }
     // Where a frame over every lane goes across: the rectangle of an existing frame when
