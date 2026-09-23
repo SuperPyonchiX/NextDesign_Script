@@ -25,7 +25,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.11";
+    public const string Title = "シーケンス生成実験 / 0.9.12";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -2415,7 +2415,7 @@ public class PumlBuild
                 Shape("Notes",id,"X",sx,"Y",y,"Width",width,"Height",Math.Max(48,16+20*n.Text.Split('\n').Length));
                 payload.Expected.Add(new PumlExpected{Id=id,Kind="note",Text=n.Text});
             }
-            y+=Math.Max(48,16+20*n.Text.Split('\n').Length)+16;
+            y+=Math.Max(48,16+20*n.Text.Split('\n').Length)+MessagePitch;
         }
     }
     public static SequencePayload Build(PumlPlan plan,PumlProfile profile,string definition,string schema,SequenceIdentity identity=null)
@@ -4865,7 +4865,7 @@ public sealed class SequenceStructurePreparation
                 "挿入位置をまたぐ実行区間がありません。既に開いているバーの間に挿入してください。");
         }
         // A new note goes one message step under the message above it, as tall as its text,
-        // and what was below moves down by that height and the generator's 16 gap. A bar open
+        // and what was below moves down by that height and one message step. A bar open
         // across the point grows; the lanes follow.
         var notes=new List<SequenceAddedNote>();
         foreach(string id in gate.AddNotes.Concat(gate.AddRefs))
@@ -4878,7 +4878,7 @@ public sealed class SequenceStructurePreparation
             var previousShapes=editor.Shapes().Where(sh=>V(sh,"ModelId")==previous).ToArray();
             Require(previousShapes.Length==1,"Noteの直前のメッセージの図形を一意に取得できません。");
             double at=Read(previousShapes[0],"TargetY"),top=at+MessageSpacing;
-            double height=Math.Max(48,16+20*text.Replace("\r\n","\n").Split('\n').Length),room=height+16;
+            double height=Math.Max(48,16+20*text.Replace("\r\n","\n").Split('\n').Length),room=height+MessageSpacing;
             var noteLaneIds=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
             var noteLanes=editor.Shapes().Where(sh=>noteLaneIds.Contains(V(sh,"ModelId")) && sh["X"]!=null && sh["Width"]!=null).ToArray();
             Require(noteLanes.Length>0,"参加者の図形がないためNoteの幅を決められません。");

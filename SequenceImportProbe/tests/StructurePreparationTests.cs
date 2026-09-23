@@ -689,8 +689,8 @@ public static class StructurePreparationTests
             int i=Array.IndexOf(hit[0].Keys,key);return i<0?null:hit[0].Values[i];
         };
         Require(moved(editor["Messages"].Items[0]["Id"].StringValue(),"TargetY")==null,"the message above the note moved");
-        Require(moved("later-shape","TargetY")=="194","the message below did not make room for the note");
-        Require(moved(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Length")=="264","a bar open across the note did not grow");
+        Require(moved("later-shape","TargetY")=="218","the message below did not make room for the note");
+        Require(moved(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Length")=="288","a bar open across the note did not grow");
         Require(moved("closing-shape","Length")==null && moved("closing-shape","Y")==null,"a bar closed above the note grew past it");
         var afterDelete=SequenceJson.Parse(package.EditorAfterDeleteJson)["Editors"].Items.Single();
         Require(afterDelete["Notes"]!=null && afterDelete["Notes"].Items.Count==1,"the delete stage editor lost the note");

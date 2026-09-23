@@ -1,4 +1,4 @@
-# SequenceImportProbe 引き継ぎ（2026-09-23 / 0.9.11）
+# SequenceImportProbe 引き継ぎ（2026-09-23 / 0.9.12）
 
 PlantUML を正本に Next Design の既存シーケンス図を差分更新する C# スクリプト拡張。この文書は作業を別セッションへ引き継ぐためのもの。**まず `.local/nd-knowledge/index.md` を読むこと。** K001〜K160 に実機で確かめた事実が入っている。推測で候補を潰す前に、そこと製品ログを見る。
 
@@ -73,6 +73,7 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 - 関連: 相互作用の所有、対象レーンごとの CrossingFragmentCoveredLifeline、参照先が名前で一意に解決できたときだけ RefersTo。型は `PumlRuntime.RefTypes` で見本なしに解決
 - 削除: ref が出している関連（レーン・参照先）は一緒に消える。所有以外で ref を指す関連があれば名指しで停止。枠の中の ref は対象外
 - サンプル: `structure-wrap-before.puml` ⇔ `structure-ref-after.puml`（firstDone の下に `ref over A, B : Handshake`）
+- 0.9.12: ユーザー指摘で、Note・ref の下端から次のメッセージまでを 16 → 1段（40）に広げた。生成器と構造更新の両方。メッセージの本文は線の約20上に描かれるため、16 では接して見えた
 
 ## 3. 未解決（A15）: メッセージ・フラグメントを追加した更新の Undo で製品が停止する
 

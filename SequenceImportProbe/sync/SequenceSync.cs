@@ -1954,7 +1954,7 @@ public sealed class SequenceStructurePreparation
                 "挿入位置をまたぐ実行区間がありません。既に開いているバーの間に挿入してください。");
         }
         // A new note goes one message step under the message above it, as tall as its text,
-        // and what was below moves down by that height and the generator's 16 gap. A bar open
+        // and what was below moves down by that height and one message step. A bar open
         // across the point grows; the lanes follow.
         var notes=new List<SequenceAddedNote>();
         foreach(string id in gate.AddNotes.Concat(gate.AddRefs))
@@ -1967,7 +1967,7 @@ public sealed class SequenceStructurePreparation
             var previousShapes=editor.Shapes().Where(sh=>V(sh,"ModelId")==previous).ToArray();
             Require(previousShapes.Length==1,"Noteの直前のメッセージの図形を一意に取得できません。");
             double at=Read(previousShapes[0],"TargetY"),top=at+MessageSpacing;
-            double height=Math.Max(48,16+20*text.Replace("\r\n","\n").Split('\n').Length),room=height+16;
+            double height=Math.Max(48,16+20*text.Replace("\r\n","\n").Split('\n').Length),room=height+MessageSpacing;
             var noteLaneIds=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
             var noteLanes=editor.Shapes().Where(sh=>noteLaneIds.Contains(V(sh,"ModelId")) && sh["X"]!=null && sh["Width"]!=null).ToArray();
             Require(noteLanes.Length>0,"参加者の図形がないためNoteの幅を決められません。");
