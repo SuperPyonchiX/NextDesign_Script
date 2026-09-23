@@ -25,7 +25,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.16";
+    public const string Title = "シーケンス生成実験 / 0.9.17";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -536,7 +536,7 @@ public static class PumlRuntime
     // from nothing has none. The view definition names the classes the editor may place,
     // so read the concrete type from there instead of falling back to the abstract one.
     static IClass Resolve(ISequenceDiagram diagram,string[] definitionTypes,IEnumerable<IModel> observed,string label)
-    { return Resolve(diagram,definitionTypes,observed,null,label); }
+    { return Resolve(diagram,definitionTypes,observed,(IClass)null,label); }
     // Known concrete type ids, filled in once they have been read off a real profile.
     // Metaclass ids are fixed, so a value here removes the need for any sample at all.
     // Format: label, then the id. Leave a label out until its id is actually known.
@@ -674,6 +674,10 @@ public static class PumlRuntime
     // definition; an operand only exists inside a fragment. For those the field on the
     // concrete owner class carries the type, as long as it is not the abstract one.
     static IClass Resolve(ISequenceDiagram diagram,string[] definitionTypes,IEnumerable<IModel> observed,IClass declared,string label)
+    { return Resolve(diagram,definitionTypes,observed,()=>declared,label); }
+    // The fallback searches can walk the whole project, so they run only when neither a
+    // sample nor the view definition settles the type.
+    static IClass Resolve(ISequenceDiagram diagram,string[] definitionTypes,IEnumerable<IModel> observed,Func<IClass> fallback,string label)
     {
         var seen=observed.Select(m=>m.Metaclass).GroupBy(c=>c.Id).Select(g=>g.First()).ToArray();
         if(seen.Length>1)throw new InvalidOperationException("E121: 見本の"+label+"に複数の型があり、自動選択できません。");
@@ -686,6 +690,7 @@ public static class PumlRuntime
         string available=string.Join(", ",elements.Select(e=>e.Type).Where(name=>!string.IsNullOrEmpty(name))
             .GroupBy(name=>name,StringComparer.OrdinalIgnoreCase).Select(g=>g.Key).OrderBy(name=>name,StringComparer.Ordinal));
         if(defined.Length>1)throw new InvalidOperationException("E121: ビュー定義の"+label+"に複数の型があり、自動選択できません。定義の種別: "+available);
+        var declared=fallback==null?null:fallback();
         if(declared!=null && !declared.IsAbstract)return declared;
         if(declared!=null)available+=" / 宣言型: "+declared.FullName+"（抽象）";
         throw new InvalidOperationException("E121: "+label+"の具体型を決められません。"
@@ -727,7 +732,7 @@ public static class PumlRuntime
         var interaction=source[0];
         var declaredNote=Child(new PumlProfile(),interaction,"Notes","Notes","___Interaction_InteractionNote");
         var note=Resolve(diagram,new[]{"InteractionNote","Note","Notes"},
-            diagram.Notes.Select(n=>n.Model),declaredNote!=null && declaredNote.IsAbstract
+            diagram.Notes.Select(n=>n.Model),()=>declaredNote!=null && declaredNote.IsAbstract
                 ?(Anywhere(project,declaredNote) ?? Sibling(interaction,declaredNote)
                     ?? Pin(interaction,declaredNote,"Note") ?? Remembered(diagram,interaction,declaredNote,"Note") ?? Descend(project,declaredNote,"Note"))
                 :declaredNote,"Note");
@@ -747,7 +752,7 @@ public static class PumlRuntime
         var interaction=source[0];
         var declaredUse=Child(new PumlProfile(),interaction,"InteractionUses","InteractionUses","___Interaction_InteractionUse");
         var use=Resolve(diagram,new[]{"InteractionUse","InteractionUses","Ref"},
-            diagram.InteractionUses.Select(f=>f.Model),declaredUse!=null && declaredUse.IsAbstract
+            diagram.InteractionUses.Select(f=>f.Model),()=>declaredUse!=null && declaredUse.IsAbstract
                 ?(Anywhere(project,declaredUse) ?? Sibling(interaction,declaredUse)
                     ?? Pin(interaction,declaredUse,"相互作用の利用") ?? Remembered(diagram,interaction,declaredUse,"相互作用の利用") ?? Descend(project,declaredUse,"相互作用の利用"))
                 :declaredUse,"相互作用の利用");
@@ -765,7 +770,7 @@ public static class PumlRuntime
         var interaction=source[0];
         var declaredFragment=Child(new PumlProfile(),interaction,"Fragments","CombinedFragments","___Interaction_CombinedFragment");
         var fragment=Resolve(diagram,new[]{"CombinedFragment","Fragment","CombinedFragments"},
-            diagram.Fragments.Select(f=>f.Model),declaredFragment!=null && declaredFragment.IsAbstract
+            diagram.Fragments.Select(f=>f.Model),()=>declaredFragment!=null && declaredFragment.IsAbstract
                 ?(Anywhere(project,declaredFragment) ?? Sibling(interaction,declaredFragment)
                     ?? Pin(interaction,declaredFragment,"複合フラグメント") ?? Remembered(diagram,interaction,declaredFragment,"複合フラグメント")
                     ?? Descend(project,declaredFragment,"複合フラグメント"))
@@ -827,7 +832,7 @@ public static class PumlRuntime
         if(plan.All().Any(n=>n.Left=="[" || n.Right=="]"))
         {
             var declaredEnd=Child(p,source[0],"MessageEnds","MessageEnds","___Interaction_MessageEnd");
-            var c=Resolve(diagram,new[]{"MessageEnd","MessageEnds"},diagram.MessageEnds.Select(e=>e.Model),declaredEnd!=null && declaredEnd.IsAbstract
+            var c=Resolve(diagram,new[]{"MessageEnd","MessageEnds"},diagram.MessageEnds.Select(e=>e.Model),()=>declaredEnd!=null && declaredEnd.IsAbstract
                     ?(Anywhere(project,declaredEnd) ?? Sibling(source[0],declaredEnd)
                         ?? Pin(source[0],declaredEnd,"メッセージ端") ?? Remembered(diagram,source[0],declaredEnd,"メッセージ端") ?? Descend(project,declaredEnd,"メッセージ端"))
                     :declaredEnd,"メッセージ端");
@@ -838,7 +843,7 @@ public static class PumlRuntime
         {
             var declaredFragment=Child(p,source[0],"Fragments","CombinedFragments","___Interaction_CombinedFragment");
             var c=Resolve(diagram,new[]{"CombinedFragment","Fragment","CombinedFragments"},
-                diagram.Fragments.Select(f=>f.Model),declaredFragment!=null && declaredFragment.IsAbstract
+                diagram.Fragments.Select(f=>f.Model),()=>declaredFragment!=null && declaredFragment.IsAbstract
                     ?(Anywhere(project,declaredFragment) ?? Sibling(source[0],declaredFragment)
                         ?? Pin(source[0],declaredFragment,"複合フラグメント") ?? Remembered(diagram,source[0],declaredFragment,"複合フラグメント") ?? Descend(project,declaredFragment,"複合フラグメント"))
                     :declaredFragment,"複合フラグメント");
@@ -850,7 +855,7 @@ public static class PumlRuntime
             string operandId=source[0].Id+"_Operand";
             var sampleOperands=diagram.Fragments.Where(f=>f.Model.Metaclass.Id==c.Id).SelectMany(f=>f.Operands).Select(o=>o.Model).ToArray();
             var operand=sampleOperands.Length>0?Resolve(diagram,new[]{"InteractionOperand","Operand","Operands"},sampleOperands,
-                    declaredOperand!=null && declaredOperand.IsAbstract
+                    ()=>declaredOperand!=null && declaredOperand.IsAbstract
                         ?(Anywhere(project,declaredOperand) ?? Sibling(c,declaredOperand)
                             ?? Pin(c,declaredOperand,"分岐") ?? Remembered(diagram,c,declaredOperand,"分岐"))
                         :declaredOperand,"分岐")
@@ -864,7 +869,7 @@ public static class PumlRuntime
         {
             var declaredUse=Child(p,source[0],"InteractionUses","InteractionUses","___Interaction_InteractionUse");
             var c=Resolve(diagram,new[]{"InteractionUse","InteractionUses","Ref"},
-                diagram.InteractionUses.Select(f=>f.Model),declaredUse!=null && declaredUse.IsAbstract
+                diagram.InteractionUses.Select(f=>f.Model),()=>declaredUse!=null && declaredUse.IsAbstract
                     ?(Anywhere(project,declaredUse) ?? Sibling(source[0],declaredUse)
                         ?? Pin(source[0],declaredUse,"相互作用の利用") ?? Remembered(diagram,source[0],declaredUse,"相互作用の利用") ?? Descend(project,declaredUse,"相互作用の利用"))
                     :declaredUse,"相互作用の利用");
@@ -875,7 +880,7 @@ public static class PumlRuntime
         {
             var declaredNote=Child(p,source[0],"Notes","Notes","___Interaction_InteractionNote");
             var c=Resolve(diagram,new[]{"InteractionNote","Note","Notes"},
-                diagram.Notes.Select(n=>n.Model),declaredNote!=null && declaredNote.IsAbstract
+                diagram.Notes.Select(n=>n.Model),()=>declaredNote!=null && declaredNote.IsAbstract
                     ?(Anywhere(project,declaredNote) ?? Sibling(source[0],declaredNote)
                         ?? Pin(source[0],declaredNote,"Note") ?? Remembered(diagram,source[0],declaredNote,"Note") ?? Descend(project,declaredNote,"Note"))
                     :declaredNote,"Note");
