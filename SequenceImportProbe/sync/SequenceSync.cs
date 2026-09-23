@@ -2241,10 +2241,17 @@ public sealed class SequenceStructurePreparation
             {
                 var ys=gate.AddMessages.Where(id=>layout.ContainsKey(id)
                     && (Link(after[id],"sendExecution").Contains(bar.Id) || Link(after[id],"receiveExecution").Contains(bar.Id)))
-                    .Select(id=>layout[id]["Y"]).ToArray();
-                if(ys.Length==0)continue;
+                    .Select(id=>layout[id]["Y"]).DefaultIfEmpty(double.MinValue).ToArray();
                 var shape=editor.Shapes().Single(sh=>V(sh,"ModelId")==bar.Id);
                 double top=Read(shape,"Y"),length=Read(shape,"Length"),needed=ys.Max()+16-top;
+                // A bar that reached the frame's old bottom closed outside the frame; it keeps
+                // doing so, going down as far as the frame grew rather than stopping inside it.
+                foreach(var pair in layout.Where(p=>before.ContainsKey(p.Key) && before[p.Key].Kind=="fragment" && p.Value.ContainsKey("Height")))
+                {
+                    var box=editor.Shapes().Single(sh=>V(sh,"ModelId")==pair.Key);
+                    double oldBottom=Read(box,"Y")+Read(box,"Height"),newBottom=Read(box,"Y")+pair.Value["Height"];
+                    if(top<oldBottom && top+length>=oldBottom-1)needed=Math.Max(needed,length+newBottom-oldBottom);
+                }
                 if(needed<=length)continue;
                 string grown=Number(needed);
                 foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)

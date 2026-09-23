@@ -1028,8 +1028,10 @@ public static class StructurePreparationTests
         var shortBar=raw["Editors"].Items.Single()["ExecutionSpecifications"].Items[0];
         shortBar.Properties["Length"]=SequenceJson.Parse("150");shortBar.Properties["Height"]=SequenceJson.Parse("150");
         var grownPackage=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan,types);
-        var grownBar=grownPackage.ShiftedShapes.Single(x=>x.Kind=="execution");
-        Require(grownBar.ShapeId==shortBar["Id"].StringValue() && grownBar.Values.SequenceEqual(new[]{"208","208"}),"the sender's bar did not reach the new message");
+        // It ended at 200, past the frame's old bottom at 190, so it goes on past the new
+        // bottom by as much as the frame grew, which also covers the new message.
+        var grownBar=grownPackage.ShiftedShapes.Single(x=>x.Kind=="execution" && x.ShapeId==shortBar["Id"].StringValue());
+        Require(grownBar.Values.SequenceEqual(new[]{"250","250"}),"the sender's bar did not follow the frame: "+string.Join(",",grownBar.Values));
         var branch=package.AddedOperands.Single();
         Require(branch.OwnerId=="the-frame" && branch.Position=="102","the branch did not start 12 under the frame's bottom: "+branch.Position);
         var view=SequenceJson.Parse(package.ReconnectJson)["Editors"].Items.Single();
@@ -1038,7 +1040,9 @@ public static class StructurePreparationTests
         Require(frame.Keys.SequenceEqual(new[]{"Height"}) && frame.Values[0]=="190","the frame did not grow to hold the branch: "+string.Join(",",frame.Values));
         Require(package.StretchedLifelines.All(l=>l.Length=="340"),"the lanes did not grow with the frame");
         // The sender's bar ended at 300; the new message at 242 is inside it, the receiver's at 330 too.
-        Require(!package.ShiftedShapes.Any(x=>x.Kind=="execution"),"a bar that already reached the message was grown");
+        // Both bars close below the frame, so both follow it down by the 100 it grew.
+        Require(package.ShiftedShapes.Where(x=>x.Kind=="execution").All(x=>x.Values.SequenceEqual(new[]{"350","350"}))
+            && package.ShiftedShapes.Count(x=>x.Kind=="execution")==2,"bars closing below the frame did not follow it");
     }
     static void TrimmedBranch()
     {
