@@ -38,3 +38,4 @@ Note 本文の変更 | structure-note-after.puml | structure-note-text-after.pum
 混在: 続けて2本の挿入 | structure-wrap-before.puml | structure-mix-inserts-chain-after.puml
 混在: 挿入と Note の追加 | structure-wrap-before.puml | structure-mix-insert-note-after.puml
 混在: Note と ref を2か所に追加 | structure-wrap-before.puml | structure-mix-two-notes-after.puml
+混在: Note と枠の追加 | structure-fragment-after.puml | structure-mix-note-frame-after.puml

@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.37";
+    public const string Title = "シーケンス生成実験 / 0.9.38";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -4632,11 +4632,15 @@ public sealed class SequenceStructurePreflight
         // Messages, notes and refs make room together and compose. A new frame or branch is
         // laid out from where the diagram ends as it stands, so it cannot share an update
         // with anything that moves that.
-        bool framed=result.AddFragments.Count+result.AddOperands.Count>0;
-        bool placed=result.AddNotes.Count+result.AddRefs.Count>0
-            || result.AddMessages.Any(id=>!result.AddOperands.Contains(after[id].Parent));
-        if(framed && placed)
-            result.Reasons.Add("枠・分岐の追加は、ほかの場所へのメッセージ・Note・refの追加と分けて反映してください。");
+        // A new frame at the end is laid out under everything, so additions above it just
+        // push it down. A branch on a frame already drawn is laid out from that frame as it
+        // stands, so it still goes on its own.
+        var placedIds=result.AddNotes.Concat(result.AddRefs).Concat(result.AddMessages.Where(id=>!result.AddOperands.Contains(after[id].Parent))).ToList();
+        var flat=Flatten(plan.Expected);
+        int firstFrame=result.AddFragments.Count==0?int.MaxValue:result.AddFragments.Min(id=>Array.IndexOf(flat,id));
+        bool branchOnOld=result.AddOperands.Any(id=>before.ContainsKey(after[id].Parent));
+        if(placedIds.Count>0 && (branchOnOld || result.WrapFragments.Count>0 || placedIds.Any(id=>Array.IndexOf(flat,id)>firstFrame)))
+            result.Reasons.Add("既存の枠への分岐の追加・枠で囲む変更は、ほかの場所への追加と分けて反映してください。新しい枠より後ろへの追加も対象外です。");
         if(result.UnwrapFragments.Count>1 || (result.UnwrapFragments.Count==1 && (result.Targets!=1+result.DeleteOperands.Count
             || result.DeleteOperands.Any(o=>before[o].Parent!=result.UnwrapFragments[0]))))
             result.Reasons.Add("枠を外す変更は、ほかの変更と分けて1件ずつ反映してください。");
@@ -4934,6 +4938,65 @@ public sealed class SequenceStructurePreparation
             :gate.AddFragments.Count>0?FrameLayout(gate,plan,editor,frameTemplate,current)
             :gate.AddOperands.Count>0?BranchLayout(gate,plan,editor,current)
             :new Dictionary<string,Dictionary<string,double>>(StringComparer.Ordinal);
+        // Everything new that is placed by the room it takes, rather than by a new frame's
+        // layout, goes in runs: the new elements that follow one existing message, in order.
+        // Each run makes room right under that message, so an original position p moves
+        // down by the room of every run whose message lies above it. New elements stack
+        // under their message one after another. Several runs in one update compose.
+        var runs=new List<RoomRun>();
+        var placedY=new Dictionary<string,double>(StringComparer.Ordinal);
+        string insertedId="";
+        {
+            var walk=SequenceStructurePreflight.Flatten(plan.Expected);
+            var oldWalk=SequenceStructurePreflight.Flatten(current);
+            var placed=new HashSet<string>(gate.AddMessages.Where(id=>!layout.ContainsKey(id)).Concat(gate.AddNotes).Concat(gate.AddRefs));
+            var shapes0=editor.Shapes();
+            RoomRun run=null;
+            for(int i=0;i<walk.Length;i++)
+            {
+                string id=walk[i];
+                if(!placed.Contains(id)){if(before.ContainsKey(id))run=null;continue;}
+                if(run==null)
+                {
+                    var anchor=walk.Take(i).Where(e=>before.ContainsKey(e) && before[e].Kind=="message").LastOrDefault();
+                    Require(anchor!=null,"追加する要素の直前に既存のメッセージがありません。");
+                    var anchorShapes=shapes0.Where(sh=>V(sh,"ModelId")==anchor).ToArray();
+                    Require(anchorShapes.Length==1,"直前のメッセージの図形を一意に取得できません。");
+                    run=new RoomRun{Anchor=anchor,At=Read(anchorShapes[0],"TargetY")};
+                    // A note or ref this update removes from right under the same message gives
+                    // its place to the new one, which then only makes up the difference in height.
+                    int oldAt=System.Array.IndexOf(oldWalk,anchor);
+                    if(oldAt>=0 && oldAt+1<oldWalk.Length && (gate.DeleteNotes.Contains(oldWalk[oldAt+1]) || gate.DeleteRefs.Contains(oldWalk[oldAt+1])))
+                    {
+                        run.Replaced=oldWalk[oldAt+1];
+                        run.ReplacedHeight=Read(shapes0.Single(sh=>V(sh,"ModelId")==run.Replaced),"Height");
+                    }
+                    runs.Add(run);
+                }
+                var wanted=after[id];
+                double room=wanted.Kind=="message"?MessageSpacing:BoxHeight(wanted.Text)+MessageSpacing;
+                if(wanted.Kind!="message" && run.Replaced!=null && run.Items.Count==0)room-=run.ReplacedHeight+MessageSpacing;
+                run.Items.Add(id);run.Rooms.Add(room);
+                if(wanted.Kind=="message")foreach(string role in new[]{"sendExecution","receiveExecution"})run.Ports.Add(wanted.Links[role].Single());
+                // Any new element with something already drawn after it is an insertion.
+                if(walk.Skip(i+1).Any(before.ContainsKey) || (after[id].Parent!=root && before.ContainsKey(after[id].Parent))){insertedId=id;run.Inserted=true;}
+            }
+            Func<double,double> above=p=>runs.Where(r=>r.At<p).Sum(r=>r.Room);
+            foreach(var r in runs)
+            {
+                double y=r.At+above(r.At)+MessageSpacing;
+                for(int k=0;k<r.Items.Count;k++){placedY[r.Items[k]]=y;y+=r.Rooms[k];}
+            }
+        }
+        // A new frame goes under everything already drawn. When other additions make room
+        // above it in the same update, it goes down by all of that room.
+        if(gate.AddFragments.Count>0 && gate.WrapFragments.Count==0 && runs.Count>0)
+        {
+            double down=runs.Sum(r=>r.Room);
+            foreach(var pair in layout.Where(p=>p.Key.Length>0 && !before.ContainsKey(p.Key)))
+                if(pair.Value.ContainsKey("Y"))pair.Value["Y"]+=down;
+            if(layout.ContainsKey(""))layout[""]["Growth"]+=down;
+        }
         var additions=new List<SequenceAddedExecution>();
         var newEntities=new List<SequenceJson>();
         var newLaneShapes=new List<SequenceJson>();
@@ -5069,56 +5132,6 @@ public sealed class SequenceStructurePreparation
             string relationId=Guid.NewGuid().ToString();
             newRelations.Add(relate(types.OperandMessage,relationId,after[id].Parent,id));
             movedMessages.Add(new SequenceMovedMessage{ModelId=id,OperandId=after[id].Parent,RelationId=relationId,Field=types.OperandMessage[2]});
-        }
-        // Everything new that is placed by the room it takes, rather than by a new frame's
-        // layout, goes in runs: the new elements that follow one existing message, in order.
-        // Each run makes room right under that message, so an original position p moves
-        // down by the room of every run whose message lies above it. New elements stack
-        // under their message one after another. Several runs in one update compose.
-        var runs=new List<RoomRun>();
-        var placedY=new Dictionary<string,double>(StringComparer.Ordinal);
-        string insertedId="";
-        {
-            var walk=SequenceStructurePreflight.Flatten(plan.Expected);
-            var oldWalk=SequenceStructurePreflight.Flatten(current);
-            var placed=new HashSet<string>(gate.AddMessages.Where(id=>!layout.ContainsKey(id)).Concat(gate.AddNotes).Concat(gate.AddRefs));
-            var shapes0=editor.Shapes();
-            RoomRun run=null;
-            for(int i=0;i<walk.Length;i++)
-            {
-                string id=walk[i];
-                if(!placed.Contains(id)){if(before.ContainsKey(id))run=null;continue;}
-                if(run==null)
-                {
-                    var anchor=walk.Take(i).Where(e=>before.ContainsKey(e) && before[e].Kind=="message").LastOrDefault();
-                    Require(anchor!=null,"追加する要素の直前に既存のメッセージがありません。");
-                    var anchorShapes=shapes0.Where(sh=>V(sh,"ModelId")==anchor).ToArray();
-                    Require(anchorShapes.Length==1,"直前のメッセージの図形を一意に取得できません。");
-                    run=new RoomRun{Anchor=anchor,At=Read(anchorShapes[0],"TargetY")};
-                    // A note or ref this update removes from right under the same message gives
-                    // its place to the new one, which then only makes up the difference in height.
-                    int oldAt=System.Array.IndexOf(oldWalk,anchor);
-                    if(oldAt>=0 && oldAt+1<oldWalk.Length && (gate.DeleteNotes.Contains(oldWalk[oldAt+1]) || gate.DeleteRefs.Contains(oldWalk[oldAt+1])))
-                    {
-                        run.Replaced=oldWalk[oldAt+1];
-                        run.ReplacedHeight=Read(shapes0.Single(sh=>V(sh,"ModelId")==run.Replaced),"Height");
-                    }
-                    runs.Add(run);
-                }
-                var wanted=after[id];
-                double room=wanted.Kind=="message"?MessageSpacing:BoxHeight(wanted.Text)+MessageSpacing;
-                if(wanted.Kind!="message" && run.Replaced!=null && run.Items.Count==0)room-=run.ReplacedHeight+MessageSpacing;
-                run.Items.Add(id);run.Rooms.Add(room);
-                if(wanted.Kind=="message")foreach(string role in new[]{"sendExecution","receiveExecution"})run.Ports.Add(wanted.Links[role].Single());
-                // Any new element with something already drawn after it is an insertion.
-                if(walk.Skip(i+1).Any(before.ContainsKey) || (after[id].Parent!=root && before.ContainsKey(after[id].Parent))){insertedId=id;run.Inserted=true;}
-            }
-            Func<double,double> above=p=>runs.Where(r=>r.At<p).Sum(r=>r.Room);
-            foreach(var r in runs)
-            {
-                double y=r.At+above(r.At)+MessageSpacing;
-                for(int k=0;k<r.Items.Count;k++){placedY[r.Items[k]]=y;y+=r.Rooms[k];}
-            }
         }
         var wires=new List<SequenceAddedMessage>();
         var reach=new Dictionary<string,double>(StringComparer.Ordinal);
@@ -5471,7 +5484,8 @@ public sealed class SequenceStructurePreparation
                     for(int i=0;i<keys.Count;i++)node.Properties[keys[i]]=SequenceJson.Parse(values[i]);
                 shifted.Add(new SequenceShiftedShape{ModelId=model,ShapeId=V(shape,"Id"),Kind=kind,Keys=keys.ToArray(),Values=values.ToArray()});
             }
-            double growth=Math.Max(0,newFloor-oldFloor);
+            // With a new frame at the bottom, its own stretch already covers the lanes.
+            double growth=layout.ContainsKey("")?0:Math.Max(0,newFloor-oldFloor);
             if(growth>0)
                 foreach(var lane in runLanes)
                 {
