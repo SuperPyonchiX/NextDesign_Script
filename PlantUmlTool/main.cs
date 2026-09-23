@@ -9229,25 +9229,29 @@ public static class ClassAudit
     static string Pad(string s,int width) { int length=0;foreach(var ch in s)length+=ch<128?1:2;return s+new string(' ',Math.Max(0,width-length)); }
 }
 
-// A new class diagram made from PlantUML, without any diagram to copy. Each class sits in a
-// package block naming an existing model (a Domain) under the chosen group. The runtime puts
-// the seeds on the empty diagram (the classes that already exist, and one new class per
-// package and kind), then the ordinary sync adds the rest next to a seed of the same package
-// and kind. Plan reads the text; the runtime fills Seeds and Anchors after resolving models.
+// A new class diagram made from PlantUML, without any diagram to copy. The input may be an
+// exported diagram (package blocks for the owner path, package/component boxes with an alias
+// for owners shown on the diagram) or written by hand (package blocks naming owners). Every
+// element names its owner by that path. The runtime puts every existing box on the empty
+// diagram, adds one new class per owner and kind with no existing class to sit next to, then
+// the ordinary sync adds the rest. Plan reads the text; the runtime fills Seeds and Anchors.
 public sealed class ClassDiagramDraft
 {
-    public sealed class Item { public string Name, Keyword, Stereotype; public string[] Path; public int Order; }
+    // Path: names of the enclosing package blocks and boxes, outermost first.
+    public sealed class Item { public string Name, Keyword, Stereotype; public string[] Path; public bool Container; public int Order; }
     public sealed class Seed { public string Name; public bool Existing; }
     public string Title = "";
     public List<Item> Items = new List<Item>();
     public List<Seed> Seeds = new List<Seed>();
-    // Input class name -> the seed whose owner and kind it takes (itself for a seed).
+    // Input class name -> the class whose owner and kind a new class takes (itself for a seed).
     public Dictionary<string,string> Anchors = new Dictionary<string,string>(StringComparer.Ordinal);
     public List<string> Reasons = new List<string>();
     public int ExistingCount { get { return Seeds.Count(s=>s.Existing); } }
-    public int NewCount { get { return Items.Count-ExistingCount; } }
+    public int NewCount { get { return Items.Count(i=>!i.Container)-ExistingCount; } }
+    public int ContainerCount { get { return Items.Count(i=>i.Container); } }
     static bool IsClass(ClassElement e) { return e.Kind=="class" && !ClassDocument.IsContainerKeyword(e.Attr("keyword")); }
-    // The package blocks name the owners; the document compared with the diagram drops them
+    static string Key(ClassElement e) { return e.Attr("keyword")+"\u0001"+e.Text; }
+    // Plain package blocks only name owners; the document compared with the diagram drops them
     // and takes the owners as the diagram reads them.
     public static void Flatten(ClassDocument doc)
     {
@@ -9264,66 +9268,80 @@ public sealed class ClassDiagramDraft
         if(title.Length==0)title=ClassText.Inline(ClassText.Normalize(fallbackTitle??""));
         draft.Title=title;
         if(title.Length==0 || title.Contains("\\n"))draft.Reasons.Add("図の名前を決められません。title 行を書いてください");
-        if(input.Elements.Any(e=>e.Kind=="class" && ClassDocument.IsContainerKeyword(e.Attr("keyword"))))
-            draft.Reasons.Add("package / component をクラスとして書いたものは扱えません。置き場は package \"名前\" { } で囲んで示してください");
-        foreach(var cls in input.Elements.Where(IsClass).OrderBy(e=>e.Order))
+        foreach(var e in input.Elements.Where(x=>x.Kind=="class").OrderBy(x=>x.Order))
         {
-            var path=new List<string>();var at=cls.Parent;
-            while(at!=null && at!="root" && index[at].Kind=="package") { path.Insert(0,index[at].Text);at=index[at].Parent; }
-            if(at!="root") { draft.Reasons.Add("入れ子のクラスは扱えません: "+cls.Text);continue; }
-            if(path.Count==0) { draft.Reasons.Add("'"+cls.Text+"' を置く場所がありません。package \"既存のモデル名\" { } で囲んでください");continue; }
-            draft.Items.Add(new Item{Name=cls.Text,Keyword=cls.Attr("keyword"),Stereotype=cls.Attr("stereotype"),Path=path.ToArray(),Order=cls.Order});
+            var path=new List<string>();var at=e.Parent;bool nested=false;
+            while(at!=null && at!="root")
+            {
+                var owner=index[at];
+                if(owner.Kind=="class" && !ClassDocument.IsContainerKeyword(owner.Attr("keyword"))) { nested=true;break; }
+                path.Insert(0,owner.Text);at=owner.Parent;
+            }
+            if(nested) { draft.Reasons.Add("クラスの中のクラスは扱えません: "+e.Text);continue; }
+            bool container=ClassDocument.IsContainerKeyword(e.Attr("keyword"));
+            if(!container && path.Count==0) { draft.Reasons.Add("'"+e.Text+"' を置く場所がありません。package \"既存のモデル名\" { } で囲んでください");continue; }
+            draft.Items.Add(new Item{Name=e.Text,Keyword=e.Attr("keyword"),Stereotype=e.Attr("stereotype"),Path=path.ToArray(),Container=container,Order=e.Order});
         }
-        foreach(var name in draft.Items.GroupBy(i=>i.Name).Where(g=>g.Count()>1).Select(g=>g.Key))draft.Reasons.Add("同じ名前のクラスが複数あります: "+name);
-        if(draft.Items.Count==0 && draft.Reasons.Count==0)draft.Reasons.Add("クラスがありません");
+        foreach(var name in draft.Items.Where(i=>!i.Container).GroupBy(i=>i.Name).Where(g=>g.Count()>1).Select(g=>g.Key))draft.Reasons.Add("同じ名前のクラスが複数あります: "+name);
+        if(!draft.Items.Any(i=>!i.Container) && draft.Reasons.Count==0)draft.Reasons.Add("クラスがありません");
         return draft;
     }
-    // Run against the new diagram as read once the seeds are on it. Each class goes under its
-    // anchor's owner and takes its stereotype when none is written; an existing class written
-    // without a body keeps its members, and relationships already between the diagram's classes
-    // stay even when the input leaves them out, so making a diagram never deletes anything.
+    // Run against the new diagram as read once the boxes are on it. Every element goes under
+    // the owner the diagram reads for it (a new class: its anchor's), plain package blocks give
+    // way to the owner path the diagram reads, a new class written without a stereotype takes
+    // its anchor's, an existing class written without members keeps its members, and
+    // relationships already between the diagram's classes stay even when the input leaves
+    // them out, so making a diagram never deletes anything.
     public void Prepare(ClassDocument desired,ClassDocument current)
     {
         Flatten(desired);
         if(desired.HasTitle)desired.Root.Text=current.Root.Text;
         var index=current.Elements.ToDictionary(e=>e.Id);
-        var shown=current.Elements.Where(IsClass).GroupBy(e=>e.Text).ToDictionary(g=>g.Key,g=>g.First(),StringComparer.Ordinal);
-        var mine=desired.Elements.Where(IsClass).GroupBy(e=>e.Text).ToDictionary(g=>g.Key,g=>g.First(),StringComparer.Ordinal);
-        Func<string,string> copied=id=>id=="root"?"root":"cp:"+id;
-        var containers=new HashSet<string>(StringComparer.Ordinal);
-        foreach(var cls in shown.Values)for(var at=cls.Parent;at!=null && at!="root" && containers.Add(at);at=index[at].Parent) { }
-        foreach(var e in current.Elements.Where(e=>containers.Contains(e.Id)).ToList())
+        var shown=current.Elements.Where(e=>e.Kind=="class").GroupBy(Key).ToDictionary(g=>g.Key,g=>g.First(),StringComparer.Ordinal);
+        var mine=desired.Elements.Where(e=>e.Kind=="class").GroupBy(Key).ToDictionary(g=>g.Key,g=>g.First(),StringComparer.Ordinal);
+        // Diagram element id -> input element id; owners missing from the input are copied in.
+        var map=new Dictionary<string,string>(StringComparer.Ordinal){{"root","root"}};
+        foreach(var pair in shown) { ClassElement written;if(mine.TryGetValue(pair.Key,out written))map[pair.Value.Id]=written.Id; }
+        Func<string,string> mapped=null;
+        mapped=id=>{
+            string known;if(map.TryGetValue(id,out known))return known;
+            var e=index[id];var copy=e.Copy();copy.Id="cp:"+id;copy.Line=0;map[id]=copy.Id;
+            copy.Parent=e.Parent==null?null:mapped(e.Parent);
+            desired.Elements.Add(copy);return copy.Id;
+        };
+        foreach(var written in mine.Values.ToList())
         {
-            var copy=e.Copy();copy.Id=copied(e.Id);copy.Parent=copied(e.Parent);copy.Line=0;
-            desired.Elements.Add(copy);
-        }
-        foreach(var cls in mine.Values)
-        {
-            string anchor;ClassElement seed;
-            if(!Anchors.TryGetValue(cls.Text,out anchor) || !shown.TryGetValue(anchor,out seed))continue;
-            if(cls.Parent=="root")cls.Parent=copied(seed.Parent);
-            if(cls.Attr("stereotype").Length==0 && cls.Attr("keyword")==seed.Attr("keyword"))cls.Attributes["stereotype"]=seed.Attr("stereotype");
-        }
-        foreach(var seed in Seeds.Where(s=>s.Existing))
-        {
-            ClassElement written,read;
-            if(!mine.TryGetValue(seed.Name,out written) || !shown.TryGetValue(seed.Name,out read))continue;
-            if(desired.Elements.Any(e=>e.Parent==written.Id && ClassDocument.MemberKinds.Contains(e.Kind)))continue;
-            foreach(var member in current.Elements.Where(e=>e.Parent==read.Id && ClassDocument.MemberKinds.Contains(e.Kind)).OrderBy(e=>e.Order).ToList())
+            ClassElement read;
+            if(shown.TryGetValue(Key(written),out read))
             {
-                var copy=member.Copy();copy.Id=copied(member.Id);copy.Parent=written.Id;copy.Line=0;
+                if(written.Parent=="root" || !map.ContainsValue(written.Parent))written.Parent=mapped(read.Parent);
+                if(written.Attr("stereotype").Length==0)written.Attributes["stereotype"]=read.Attr("stereotype");
+                continue;
+            }
+            string anchor;
+            if(!Anchors.TryGetValue(written.Text,out anchor))continue;
+            var seed=current.Elements.FirstOrDefault(e=>IsClass(e) && e.Text==anchor);
+            if(seed==null)continue;
+            if(written.Parent=="root")written.Parent=mapped(seed.Parent);
+            if(written.Attr("stereotype").Length==0 && written.Attr("keyword")==seed.Attr("keyword"))written.Attributes["stereotype"]=seed.Attr("stereotype");
+        }
+        foreach(var pair in shown.Where(p=>IsClass(p.Value)))
+        {
+            ClassElement written;
+            if(!mine.TryGetValue(pair.Key,out written))continue;
+            if(desired.Elements.Any(e=>e.Parent==written.Id && ClassDocument.MemberKinds.Contains(e.Kind)))continue;
+            foreach(var member in current.Elements.Where(e=>e.Parent==pair.Value.Id && ClassDocument.MemberKinds.Contains(e.Kind)).OrderBy(e=>e.Order).ToList())
+            {
+                var copy=member.Copy();copy.Id="cp:"+member.Id;copy.Parent=written.Id;copy.Line=0;
                 desired.Elements.Add(copy);
             }
         }
-        var ends=new Dictionary<string,string>(StringComparer.Ordinal);
-        foreach(var pair in shown) { ClassElement written;if(mine.TryGetValue(pair.Key,out written))ends[pair.Value.Id]=written.Id; }
-        foreach(var id in containers)ends[id]=copied(id);
         foreach(var link in current.Elements.Where(e=>e.Kind=="link").ToList())
         {
             string from,to;
-            if(!ends.TryGetValue(link.Link("from")??"",out from) || !ends.TryGetValue(link.Link("to")??"",out to))continue;
+            if(!map.TryGetValue(link.Link("from")??"",out from) || !map.TryGetValue(link.Link("to")??"",out to))continue;
             if(desired.Elements.Any(e=>e.Kind=="link" && e.Link("from")==from && e.Link("to")==to && e.Text==link.Text))continue;
-            var copy=link.Copy();copy.Id=copied(link.Id);copy.Line=0;
+            var copy=link.Copy();copy.Id="cp:"+link.Id;copy.Line=0;
             copy.Links["from"]=new[]{from};copy.Links["to"]=new[]{to};
             desired.Elements.Add(copy);
         }
@@ -11176,6 +11194,17 @@ public static class ClassDiagramCreator
         try { return m.GetEditors().Cast<object>().OfType<IEditor>().ToList(); }
         catch(Exception) { return new List<IEditor>(); }
     }
+    // Models 2..depth levels below m (the direct children are looked at by the caller).
+    static List<IModel> Below(IModel m,int depth)
+    {
+        var result=new List<IModel>();var level=Children(m);
+        for(int d=2;d<=depth && level.Count>0 && result.Count<2000;d++)
+        {
+            level=level.SelectMany(Children).ToList();
+            result.AddRange(level);
+        }
+        return result;
+    }
     static bool HasClassDiagram(IModel m) { return Editors(m).Any(e=>ClassDiagramKind.Reject(e)==null); }
     static IEnumerable<IClass> Concrete(IClass declared)
     {
@@ -11270,7 +11299,7 @@ public static class ClassDiagramCreator
     }
 
     sealed class Kind { public IField Field; public IClass Class; public string Keyword, Stereotype; }
-    sealed class Placed { public ClassDiagramDraft.Item Item; public IModel Package, Model; public Kind Kind; public bool Created; }
+    sealed class Placed { public ClassDiagramDraft.Item Item; public IModel Package, Model; public Kind Kind; public bool Created, Container; }
 
     public static ClassSyncRuntime.Outcome Run(IApplication app,IModel owner,IField field,IClass diagramClass,string where,string pumlText,string sourceLabel,string fallbackTitle,Func<string,bool> confirm)
     {
@@ -11287,14 +11316,28 @@ public static class ClassDiagramCreator
             var input=new ClassPumlParser().Parse(pumlText);
             var draft=ClassDiagramDraft.Plan(input,fallbackTitle);
             if(draft.Reasons.Count>0)throw new InvalidOperationException("C310: 新しい図を作れません。\n"+string.Join("\n",draft.Reasons.ToArray()));
-            if(Children(owner).Any(m=>m.ClassName==diagramClass.Name && Name(m)==draft.Title))
-                throw new InvalidOperationException("C310: '"+Name(owner)+"' に同じ名前の図 '"+draft.Title+"' が既にあります。title を変えてください。");
+            // An exported diagram keeps its title; the copy gets the next free number.
+            var taken=new HashSet<string>(Children(owner).Where(m=>m.ClassName==diagramClass.Name).Select(Name),StringComparer.Ordinal);
+            if(taken.Contains(draft.Title))
+            {
+                int n=2;while(taken.Contains(draft.Title+" "+n))n++;
+                log.AppendLine("title '"+draft.Title+"' is taken; using '"+draft.Title+" "+n+"'");
+                draft.Title=draft.Title+" "+n;
+            }
 
             // Owners and kinds, all before anything is written.
             var options=new ClassSyncOptions();var reasons=new List<string>();
             var packages=new Dictionary<string,IModel>(StringComparer.Ordinal);
             var kinds=new Dictionary<string,List<Kind>>(StringComparer.Ordinal);
-            foreach(var item in draft.Items)
+            foreach(var item in draft.Items.Where(i=>i.Container))
+            {
+                // A package/component box: the owner the exporter showed on the diagram. It must exist.
+                string problem;var box=ResolvePath(project,owner,item.Path.Concat(new[]{item.Name}).ToArray(),out problem);
+                if(box==null) { reasons.Add("箱 '"+string.Join("/",item.Path.Concat(new[]{item.Name}).ToArray())+"' に対応するモデルがありません（"+problem+"）。package / component の新規作成は扱えません");continue; }
+                log.AppendLine("box "+item.Name+" -> "+box.ClassName+" '"+box.Name+"' id="+box.Id);
+                placed.Add(new Placed{Item=item,Package=box.Owner,Model=box,Container=true});
+            }
+            foreach(var item in draft.Items.Where(i=>!i.Container))
             {
                 string key=string.Join("\u0001",item.Path);IModel package;
                 if(!packages.TryGetValue(key,out package))
@@ -11307,6 +11350,8 @@ public static class ClassDiagramCreator
                 if(package==null)continue;
                 var p=new Placed{Item=item,Package=package};
                 var same=Children(package).Where(c=>Name(c)==item.Name).ToList();
+                // The exporter writes a class owned by another class at the depth of the nearest box.
+                if(same.Count==0)same=Below(package,3).Where(c=>Name(c)==item.Name && c.Metaclass!=null && !ClassDocument.IsContainerKeyword(KeywordOf(c.Metaclass,options))).ToList();
                 if(same.Count>1) { reasons.Add("'"+Name(package)+"' に '"+item.Name+"' が複数あります");continue; }
                 if(same.Count==1) { p.Model=same[0];placed.Add(p);continue; }
                 List<Kind> available;
@@ -11342,7 +11387,7 @@ public static class ClassDiagramCreator
             // Seeds: every existing class, and the first new class of each package and kind that
             // has no existing class of that kind on the diagram to sit next to.
             var anchors=new Dictionary<string,string>(StringComparer.Ordinal);
-            foreach(var p in placed.Where(x=>x.Model!=null))
+            foreach(var p in placed.Where(x=>x.Model!=null && !x.Container))
             {
                 draft.Seeds.Add(new ClassDiagramDraft.Seed{Name=p.Item.Name,Existing=true});draft.Anchors[p.Item.Name]=p.Item.Name;
                 string key=p.Package.Id+"|"+p.Model.Metaclass.FullName;if(!anchors.ContainsKey(key))anchors[key]=p.Item.Name;
@@ -11363,7 +11408,7 @@ public static class ClassDiagramCreator
             if(input.Elements.Any(e=>e.Kind=="link"))connectorTemplate=FindConnectorTemplate(project,owner,log);
 
             string question="クラス図「"+draft.Title+"」を"+where+"に新しく作ります。\n"
-                +"既存のクラス "+draft.ExistingCount+" 件を載せ、新しいクラス "+draft.NewCount+" 件を作ります（置き場は package で指定したモデル）。\n"
+                +"既存の箱 "+draft.ContainerCount+" 件・既存のクラス "+draft.ExistingCount+" 件を載せ、新しいクラス "+draft.NewCount+" 件を作ります（置き場は package で指定したモデル）。\n"
                 +(input.Elements.Any(e=>e.Kind=="link") && connectorTemplate==null?"同じグループに線のあるクラス図が無いため、関連はモデルには作りますが図の線は表示されません。\n":"")
                 +"途中でプロジェクトを保存し、そのあと反映の内容を確認します。";
             if(!confirm(question)) { outcome.Summary="新しい図の作成を中止しました。";outcome.Succeeded=true;return Finish(outcome,log); }
@@ -11381,7 +11426,7 @@ public static class ClassDiagramCreator
                 created=editors.Where(e=>ClassDiagramKind.Reject(e)==null).OfType<IDiagram>().FirstOrDefault();
                 if(created==null)throw new InvalidOperationException("C320: 新しい図のモデルにクラス図のエディタがありません（"+string.Join(", ",editors.Select(e=>e.EditorType+"/"+e.ViewDefinitionName).ToArray())+"）。");
                 var views=project.Profile.ViewDefinitions;var editorDef=((IEditor)created).EditorDefinition;
-                double x=40;
+                double x=40,y=40,rowHeight=0;
                 foreach(var p in seeds)
                 {
                     if(p.Created)
@@ -11400,7 +11445,8 @@ public static class ClassDiagramCreator
                     var node=created.Nodes.Cast<object>().OfType<INode>().FirstOrDefault(n=>{var m=ClassDiagramKind.ModelOf(n);return m!=null && m.Id==p.Model.Id;});
                     if(node==null)throw new InvalidOperationException("C320: 新しい図にクラス '"+p.Item.Name+"' のノードを置けませんでした（ノード定義 "+(def==null?"なし":def.Path)+"）。");
                     // Every other column stays free for the classes added next to this one.
-                    node.SetLocationAt(x,40);x+=2*(node.Width+80);
+                    if(x>40 && x+node.Width>6000) { x=40;y+=rowHeight+120;rowHeight=0; }
+                    node.SetLocationAt(x,y);x+=2*(node.Width+80);rowHeight=Math.Max(rowHeight,node.Height);
                     log.AppendLine("seed node "+node.Id+" '"+p.Item.Name+"' at ("+node.LocationX+","+node.LocationY+" "+node.Width+"x"+node.Height+") visible="+node.IsVisible);
                 }
                 transaction.Commit();

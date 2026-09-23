@@ -45,6 +45,17 @@ public static class ClassDiagramCreator
         try { return m.GetEditors().Cast<object>().OfType<IEditor>().ToList(); }
         catch(Exception) { return new List<IEditor>(); }
     }
+    // Models 2..depth levels below m (the direct children are looked at by the caller).
+    static List<IModel> Below(IModel m,int depth)
+    {
+        var result=new List<IModel>();var level=Children(m);
+        for(int d=2;d<=depth && level.Count>0 && result.Count<2000;d++)
+        {
+            level=level.SelectMany(Children).ToList();
+            result.AddRange(level);
+        }
+        return result;
+    }
     static bool HasClassDiagram(IModel m) { return Editors(m).Any(e=>ClassDiagramKind.Reject(e)==null); }
     static IEnumerable<IClass> Concrete(IClass declared)
     {
@@ -139,7 +150,7 @@ public static class ClassDiagramCreator
     }
 
     sealed class Kind { public IField Field; public IClass Class; public string Keyword, Stereotype; }
-    sealed class Placed { public ClassDiagramDraft.Item Item; public IModel Package, Model; public Kind Kind; public bool Created; }
+    sealed class Placed { public ClassDiagramDraft.Item Item; public IModel Package, Model; public Kind Kind; public bool Created, Container; }
 
     public static ClassSyncRuntime.Outcome Run(IApplication app,IModel owner,IField field,IClass diagramClass,string where,string pumlText,string sourceLabel,string fallbackTitle,Func<string,bool> confirm)
     {
@@ -156,14 +167,28 @@ public static class ClassDiagramCreator
             var input=new ClassPumlParser().Parse(pumlText);
             var draft=ClassDiagramDraft.Plan(input,fallbackTitle);
             if(draft.Reasons.Count>0)throw new InvalidOperationException("C310: 新しい図を作れません。\n"+string.Join("\n",draft.Reasons.ToArray()));
-            if(Children(owner).Any(m=>m.ClassName==diagramClass.Name && Name(m)==draft.Title))
-                throw new InvalidOperationException("C310: '"+Name(owner)+"' に同じ名前の図 '"+draft.Title+"' が既にあります。title を変えてください。");
+            // An exported diagram keeps its title; the copy gets the next free number.
+            var taken=new HashSet<string>(Children(owner).Where(m=>m.ClassName==diagramClass.Name).Select(Name),StringComparer.Ordinal);
+            if(taken.Contains(draft.Title))
+            {
+                int n=2;while(taken.Contains(draft.Title+" "+n))n++;
+                log.AppendLine("title '"+draft.Title+"' is taken; using '"+draft.Title+" "+n+"'");
+                draft.Title=draft.Title+" "+n;
+            }
 
             // Owners and kinds, all before anything is written.
             var options=new ClassSyncOptions();var reasons=new List<string>();
             var packages=new Dictionary<string,IModel>(StringComparer.Ordinal);
             var kinds=new Dictionary<string,List<Kind>>(StringComparer.Ordinal);
-            foreach(var item in draft.Items)
+            foreach(var item in draft.Items.Where(i=>i.Container))
+            {
+                // A package/component box: the owner the exporter showed on the diagram. It must exist.
+                string problem;var box=ResolvePath(project,owner,item.Path.Concat(new[]{item.Name}).ToArray(),out problem);
+                if(box==null) { reasons.Add("箱 '"+string.Join("/",item.Path.Concat(new[]{item.Name}).ToArray())+"' に対応するモデルがありません（"+problem+"）。package / component の新規作成は扱えません");continue; }
+                log.AppendLine("box "+item.Name+" -> "+box.ClassName+" '"+box.Name+"' id="+box.Id);
+                placed.Add(new Placed{Item=item,Package=box.Owner,Model=box,Container=true});
+            }
+            foreach(var item in draft.Items.Where(i=>!i.Container))
             {
                 string key=string.Join("\u0001",item.Path);IModel package;
                 if(!packages.TryGetValue(key,out package))
@@ -176,6 +201,8 @@ public static class ClassDiagramCreator
                 if(package==null)continue;
                 var p=new Placed{Item=item,Package=package};
                 var same=Children(package).Where(c=>Name(c)==item.Name).ToList();
+                // The exporter writes a class owned by another class at the depth of the nearest box.
+                if(same.Count==0)same=Below(package,3).Where(c=>Name(c)==item.Name && c.Metaclass!=null && !ClassDocument.IsContainerKeyword(KeywordOf(c.Metaclass,options))).ToList();
                 if(same.Count>1) { reasons.Add("'"+Name(package)+"' に '"+item.Name+"' が複数あります");continue; }
                 if(same.Count==1) { p.Model=same[0];placed.Add(p);continue; }
                 List<Kind> available;
@@ -211,7 +238,7 @@ public static class ClassDiagramCreator
             // Seeds: every existing class, and the first new class of each package and kind that
             // has no existing class of that kind on the diagram to sit next to.
             var anchors=new Dictionary<string,string>(StringComparer.Ordinal);
-            foreach(var p in placed.Where(x=>x.Model!=null))
+            foreach(var p in placed.Where(x=>x.Model!=null && !x.Container))
             {
                 draft.Seeds.Add(new ClassDiagramDraft.Seed{Name=p.Item.Name,Existing=true});draft.Anchors[p.Item.Name]=p.Item.Name;
                 string key=p.Package.Id+"|"+p.Model.Metaclass.FullName;if(!anchors.ContainsKey(key))anchors[key]=p.Item.Name;
@@ -232,7 +259,7 @@ public static class ClassDiagramCreator
             if(input.Elements.Any(e=>e.Kind=="link"))connectorTemplate=FindConnectorTemplate(project,owner,log);
 
             string question="クラス図「"+draft.Title+"」を"+where+"に新しく作ります。\n"
-                +"既存のクラス "+draft.ExistingCount+" 件を載せ、新しいクラス "+draft.NewCount+" 件を作ります（置き場は package で指定したモデル）。\n"
+                +"既存の箱 "+draft.ContainerCount+" 件・既存のクラス "+draft.ExistingCount+" 件を載せ、新しいクラス "+draft.NewCount+" 件を作ります（置き場は package で指定したモデル）。\n"
                 +(input.Elements.Any(e=>e.Kind=="link") && connectorTemplate==null?"同じグループに線のあるクラス図が無いため、関連はモデルには作りますが図の線は表示されません。\n":"")
                 +"途中でプロジェクトを保存し、そのあと反映の内容を確認します。";
             if(!confirm(question)) { outcome.Summary="新しい図の作成を中止しました。";outcome.Succeeded=true;return Finish(outcome,log); }
@@ -250,7 +277,7 @@ public static class ClassDiagramCreator
                 created=editors.Where(e=>ClassDiagramKind.Reject(e)==null).OfType<IDiagram>().FirstOrDefault();
                 if(created==null)throw new InvalidOperationException("C320: 新しい図のモデルにクラス図のエディタがありません（"+string.Join(", ",editors.Select(e=>e.EditorType+"/"+e.ViewDefinitionName).ToArray())+"）。");
                 var views=project.Profile.ViewDefinitions;var editorDef=((IEditor)created).EditorDefinition;
-                double x=40;
+                double x=40,y=40,rowHeight=0;
                 foreach(var p in seeds)
                 {
                     if(p.Created)
@@ -269,7 +296,8 @@ public static class ClassDiagramCreator
                     var node=created.Nodes.Cast<object>().OfType<INode>().FirstOrDefault(n=>{var m=ClassDiagramKind.ModelOf(n);return m!=null && m.Id==p.Model.Id;});
                     if(node==null)throw new InvalidOperationException("C320: 新しい図にクラス '"+p.Item.Name+"' のノードを置けませんでした（ノード定義 "+(def==null?"なし":def.Path)+"）。");
                     // Every other column stays free for the classes added next to this one.
-                    node.SetLocationAt(x,40);x+=2*(node.Width+80);
+                    if(x>40 && x+node.Width>6000) { x=40;y+=rowHeight+120;rowHeight=0; }
+                    node.SetLocationAt(x,y);x+=2*(node.Width+80);rowHeight=Math.Max(rowHeight,node.Height);
                     log.AppendLine("seed node "+node.Id+" '"+p.Item.Name+"' at ("+node.LocationX+","+node.LocationY+" "+node.Width+"x"+node.Height+") visible="+node.IsVisible);
                 }
                 transaction.Commit();

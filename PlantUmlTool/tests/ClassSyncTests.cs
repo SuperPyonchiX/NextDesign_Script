@@ -238,33 +238,37 @@ public static class ClassSyncTests
     // A new diagram from PlantUML: seeds from the template, then an add-only plan.
     static void DiagramDraft(ClassDocument unused)
     {
-        string input = "@startuml\ntitle 新しい図\npackage \"実装\" {\npackage \"システム\" {\nclass \"制御部\" as C\nclass \"Logger\" as L {\n  + write(text : String)\n}\nclass \"Sink\" as S\ninterface \"IOut\" as O\n}\n}\nC --> L : logger\nL --> S : sink\n@enduml\n";
-        var draft = ClassDiagramDraft.Plan(ClassDocument.Parse(input), "file");
-        Check(draft.Reasons.Count == 0, "draft reasons: " + string.Join(" / ", draft.Reasons.ToArray()));
-        Check(draft.Title == "新しい図", "draft title: " + draft.Title);
-        Check(draft.Items.Count == 4 && draft.Items.All(i => string.Join("/", i.Path) == "実装/システム"), "draft package paths: " + string.Join(",", draft.Items.Select(i => i.Name + "@" + string.Join("/", i.Path)).ToArray()));
-        Check(draft.Items.Single(i => i.Name == "IOut").Keyword == "interface", "draft keeps the keyword");
+        // The diagram once the boxes are on it: the Domain box, the existing 制御部 and the new
+        // seed Logger, with the owner path above the box and the product's back-reference.
+        string shown = "@startuml\ntitle クラス図 2\npackage \"Root\" {\npackage \"実装\" {\npackage \"OnBoardClientApp\" as OnBoardClientApp <<Domain_Impl>> {\n  class \"制御部\" as Controller <<Unit>> {\n    - state : int\n  }\n  class \"Logger\" as Logger <<Unit>>\n}\n}\n}\nLogger --> OnBoardClientApp\n@enduml\n";
+        // Exported shape: owner path, then the box with an alias; 制御部 written without members.
+        string exported = "@startuml\ntitle クラス図\npackage \"Root\" {\npackage \"実装\" {\npackage \"OnBoardClientApp\" as App <<Domain_Impl>> {\nclass \"制御部\" as C <<Unit>>\nclass \"Logger\" as L <<Unit>> {\n  + write(text : String)\n}\nclass \"Sink\" as S\n}\n}\n}\nC --> L : logger\nL --> S : sink\n@enduml\n";
+        // Hand-written shape: one package block naming the box.
+        string written = "@startuml\ntitle 新しい図\npackage \"OnBoardClientApp\" {\nclass \"制御部\" as C\nclass \"Logger\" as L {\n  + write(text : String)\n}\nclass \"Sink\" as S\n}\nC --> L : logger\nL --> S : sink\n@enduml\n";
+        foreach (var input in new[] { exported, written })
+        {
+            var draft = ClassDiagramDraft.Plan(ClassDocument.Parse(input), "file");
+            Check(draft.Reasons.Count == 0, "draft reasons: " + string.Join(" / ", draft.Reasons.ToArray()));
+            var logger = draft.Items.Single(i => i.Name == "Logger");
+            Check(string.Join("/", logger.Path) == (input == exported ? "Root/実装/OnBoardClientApp" : "OnBoardClientApp"), "draft path: " + string.Join("/", logger.Path));
+            Check(draft.Items.Count(i => i.Container) == (input == exported ? 1 : 0), "draft boxes");
+            // As the runtime resolves it: 制御部 exists, Logger is the new seed, Sink goes next to Logger.
+            draft.Seeds.Add(new ClassDiagramDraft.Seed { Name = "制御部", Existing = true });
+            draft.Seeds.Add(new ClassDiagramDraft.Seed { Name = "Logger" });
+            draft.Anchors["制御部"] = "制御部"; draft.Anchors["Logger"] = "Logger"; draft.Anchors["Sink"] = "Logger";
+            Check(draft.ExistingCount == 1 && draft.NewCount == 2, "draft counts: " + draft.ExistingCount + "/" + draft.NewCount);
+            var current = ClassDocument.Parse(shown);
+            var desired = ClassDocument.Parse(input);
+            draft.Prepare(desired, current);
+            desired.Validate();
+            var plan = Plan(current, desired);
+            Check(plan.Changes.All(c => c.Action == "add"), "draft plan adds only: " + Describe(plan));
+            Check(plan.Changes.Count(c => c.Kind == "class") == 1 && plan.Changes.Count(c => c.Kind == "operation") == 1 && plan.Changes.Count(c => c.Kind == "link") == 2 && plan.Changes.Count == 4, "draft plan counts: " + Describe(plan));
+            var gate = ClassTextPreflight.Check(current, desired, plan);
+            Check(gate.Candidate && gate.Classes.Single().SiblingAlias == "L", "draft preflight: " + gate.Summary());
+            Check(desired.Elements.Single(e => e.Kind == "class" && e.Text == "Sink").Attr("stereotype") == "Unit", "new class takes the anchor's stereotype");
+        }
         Check(ClassDiagramDraft.Plan(ClassDocument.Parse("@startuml\nclass A\n@enduml\n"), "file").Reasons.Count == 1, "a class outside any package stops the draft");
         Check(ClassDiagramDraft.Plan(ClassDocument.Parse("@startuml\npackage \"P\" {\nclass A\n}\n@enduml\n"), "名前").Title == "名前", "file name as title");
-        // As the runtime resolves it: 制御部 exists, Logger and IOut are new seeds, Sink goes next to Logger.
-        draft.Seeds.Add(new ClassDiagramDraft.Seed { Name = "制御部", Existing = true });
-        draft.Seeds.Add(new ClassDiagramDraft.Seed { Name = "Logger" });
-        draft.Seeds.Add(new ClassDiagramDraft.Seed { Name = "IOut" });
-        foreach (var name in new[] { "制御部", "Logger", "IOut" }) draft.Anchors[name] = name;
-        draft.Anchors["Sink"] = "Logger";
-        Check(draft.ExistingCount == 1 && draft.NewCount == 3, "draft counts: " + draft.ExistingCount + "/" + draft.NewCount);
-
-        // The new diagram once the seeds are on it: owners come from the model, the existing
-        // class keeps its members and the product's unlabeled back-reference.
-        var current = ClassDocument.Parse("@startuml\ntitle 新しい図\npackage \"システム\" {\n  class \"制御部\" as Controller <<Unit>> {\n    - state : int\n    + start() : bool\n  }\n  class \"Logger\" as Logger <<Unit>>\n  interface \"IOut\" as IOut\n}\nLogger --> Controller\n@enduml\n");
-        var desired = ClassDocument.Parse(input);
-        draft.Prepare(desired, current);
-        desired.Validate();
-        var plan = Plan(current, desired);
-        Check(plan.Changes.All(c => c.Action == "add"), "draft plan adds only: " + Describe(plan));
-        Check(plan.Changes.Count(c => c.Kind == "class") == 1 && plan.Changes.Count(c => c.Kind == "operation") == 1 && plan.Changes.Count(c => c.Kind == "link") == 2, "draft plan counts: " + Describe(plan));
-        var gate = ClassTextPreflight.Check(current, desired, plan);
-        Check(gate.Candidate && gate.Classes.Single().SiblingAlias == "L", "draft preflight: " + gate.Summary());
-        Check(desired.Elements.Single(e => e.Kind == "class" && e.Text == "Sink").Attr("stereotype") == "Unit", "new class takes the anchor's stereotype");
     }
 }
