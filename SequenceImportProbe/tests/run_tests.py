@@ -109,8 +109,12 @@ public static class PayloadTest {
        throw new Exception("an inserted message must be the only change: "+insertPlan.ToJson()+insertGate.ToJson());
    // The same insertion with a frame below it, and one into an operand already drawn.
    var frameBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
-   foreach(string sample in new[]{"structure-insert-frame-after.puml","structure-insert-inframe-after.puml"})
+   foreach(var pair in new[]{new[]{"structure-fragment-before.puml","structure-insert-frame-after.puml"},
+       new[]{"structure-fragment-before.puml","structure-insert-inframe-after.puml"},
+       new[]{"structure-insert-frame-after.puml","structure-insert-inframe-next.puml"}})
    {
+       string sample=pair[1];
+       frameBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],pair[0])));
        var framedInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],sample)));
        var framedPlan=SyncPlan.Build(frameBefore,framedInput,()=>Guid.NewGuid().ToString());
        var framedGate=SequenceStructurePreflight.Check(frameBefore,framedPlan);
