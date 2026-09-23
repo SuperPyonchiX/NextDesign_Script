@@ -2,7 +2,7 @@
   "name": "SequenceImportProbe",
   "displayName": "シーケンス生成実験",
   "description": "PlantUMLから新しいシーケンス図を生成する実験用拡張。",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -22,12 +22,6 @@
                   "type": "Button",
                   "label": "診断表示",
                   "command": "SequenceImportProbe.Details"
-                },
-                {
-                  "id": "SequenceImportProbe.ResultButton",
-                  "type": "Button",
-                  "label": "結果表示",
-                  "command": "SequenceImportProbe.Result"
                 }
               ]
             },
@@ -51,24 +45,12 @@
             },
             {
               "id": "SequenceImportProbe.Run",
-              "label": "構造更新の検証",
+              "label": "反映",
               "controls": [
-                {
-                  "id": "SequenceImportProbe.TrialStructureButton",
-                  "type": "Button",
-                  "label": "試行して戻す",
-                  "command": "SequenceImportProbe.TrialStructure"
-                },
-                {
-                  "id": "SequenceImportProbe.CommitUnusedButton",
-                  "type": "Button",
-                  "label": "区間削除を確定",
-                  "command": "SequenceImportProbe.CommitUnused"
-                },
                 {
                   "id": "SequenceImportProbe.CommitReceiverButton",
                   "type": "Button",
-                  "label": "接続変更・削除を確定",
+                  "label": "PlantUMLを反映",
                   "command": "SequenceImportProbe.CommitReceiver"
                 }
               ]
@@ -78,10 +60,6 @@
       ]
     },
     "commands": [
-      {
-        "id": "SequenceImportProbe.Result",
-        "execFunc": "ShowSequenceResult"
-      },
       {
         "id": "SequenceImportProbe.Details",
         "execFunc": "ShowSequenceDetails"
@@ -93,14 +71,6 @@
       {
         "id": "SequenceImportProbe.SyncPreview",
         "execFunc": "PreviewSequenceSync"
-      },
-      {
-        "id": "SequenceImportProbe.TrialStructure",
-        "execFunc": "TrialSequenceStructure"
-      },
-      {
-        "id": "SequenceImportProbe.CommitUnused",
-        "execFunc": "CommitUnusedExecutions"
       },
       {
         "id": "SequenceImportProbe.CommitReceiver",

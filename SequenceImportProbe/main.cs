@@ -10,8 +10,6 @@ using NextDesign.Core;
 using NextDesign.Desktop;
 
 public void CommitReceiverStructure(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App,true,true,true,true); }
-public void CommitUnusedExecutions(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App,true,true,true); }
-public void TrialSequenceStructure(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App,true,true); }
 public void PrepareSequenceStructure(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App,true); }
 public void PreviewSequenceSync(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App); }
 public void CreateSequenceMap(ICommandContext context, ICommandParams parameters) { SequenceMappedUpdate.Run(context.App, true); }
@@ -22,13 +20,13 @@ public void ReplaceSequence(ICommandContext context, ICommandParams parameters) 
 public void ProbeSequenceDelta(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, false, true, false, true); }
 public void ProbeSequenceStructure(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, false, true, false, false, true); }
 public void ProbeSequenceUpdate(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Run(context.App, false, true); }
-public void ShowSequenceResult(ICommandContext context, ICommandParams parameters) { SequenceExperiment.Show(context.App); }
-public void ShowSequenceDetails(ICommandContext context, ICommandParams parameters) { foreach(var page in SequenceExperiment.Details.Split('\f')) context.App.Window.UI.ShowInformationDialog(page, SequenceExperiment.Title); }
+// The result summary comes first, so the last result can be read again from here.
+public void ShowSequenceDetails(ICommandContext context, ICommandParams parameters) { foreach(var page in new[]{SequenceExperiment.Summary}.Concat(SequenceExperiment.Details.Split('\f'))) context.App.Window.UI.ShowInformationDialog(page, SequenceExperiment.Title); }
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.3";
-    public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
+    public const string Title = "シーケンス生成実験 / 0.9.4";
+    public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
 
@@ -1097,7 +1095,7 @@ public static class SequenceSyncRuntime
         parts.Reverse();return string.Join("::",parts);
     }
     const string UnsavedAdvice="S220: 退避データを取得できません。プロジェクトを保存してから実行してください。"
-        +"試行して戻した直後も保存が必要です。この操作は自動保存しません。";
+        +"この操作は自動保存しません。";
     // HasUnsavedChanges answers false when the dirty state holds nothing savable, but the
     // export still refuses, so ask the design model as well.
     static bool Unsaved(IProject project)
@@ -1134,10 +1132,8 @@ public static class SequenceSyncRuntime
             // project has unsaved changes. Say so before any work instead of letting the
             // export throw halfway. This command never saves for you.
             if(prepare && Unsaved(project))throw new InvalidOperationException(UnsavedAdvice);
-            if(retain && !preflight.CanCommit(reconnectCommit))
-                throw new InvalidOperationException(reconnectCommit
-                    ?"S231: 確定できるのは受信接続変更・実行区間の追加削除・参加者の追加削除だけです。他の差分は「差分を検証」で確認してください。"
-                    :"S231: このボタンで確定できるのは未使用実行区間の削除だけです。他を含む場合は「接続変更・削除を確定」を使ってください。");
+            if(retain && !preflight.CanCommit())
+                throw new InvalidOperationException("S231: 反映できない差分が含まれています。停止理由は「診断表示」で確認してください。");
             report="{\"version\":1,\"project\":"+SequencePayload.Q(project.Id)+",\"diagram\":"+SequencePayload.Q(diagram.Id)
                 +",\"current\":"+current.Document.ToJson()+",\"desired\":"+desired.ToJson()+",\"plan\":"+plan.ToJson()
                 +",\"structurePreflight\":"+preflight.ToJson()+",\"expected\":"+plan.Expected.ToJson()+",\"limitations\":"+PumlBuild.Json(current.Limitations.ToArray())
@@ -1345,7 +1341,9 @@ public static class SequenceStructureTrial
             return model.GetEditors().OfType<ISequenceDiagram>().Single(d=>d.Id==editorId);
         };
         string confirmation=retain
-            ? "コピーのプロジェクトで実行してください。\n受信接続変更: "+reconnectCount+"件 / 実行区間削除: "+prepared.DeleteIds.Length+"件 / 実行区間追加: "+prepared.AddedExecutions.Length+"件。照合成功時に変更を確定します。\n確定後にUndoとRedoをこのコマンドが実行し、読み戻して照合します。最終状態は確定後と同じです。\n自動保存はしません。実行しますか？"
+            ? "PlantUMLの差分を図へ反映します。照合が一致したときだけ確定し、一致しなければ取り消します。\n"
+                +"メッセージやフラグメントを追加する更新は確定後にUndoできません（製品側の不具合）。取り消すときは保存せずに開き直してください。\n"
+                +"自動保存はしません。実行しますか？"
             : "コピーのプロジェクトで実行してください。\n受信接続変更と実行区間削除を一時適用し、照合後に必ず取り消します。\n自動保存・変更の確定は行いません。試行しますか？";
         if(!app.Window.UI.ShowConfirmDialog(confirmation,SequenceExperiment.Title))
             return caseId+": キャンセル / 図への変更なし";
@@ -3514,13 +3512,10 @@ public sealed class SequenceStructurePreflight
     public bool Candidate { get { return Reasons.Count==0 && Targets>0; } }
     // The deletion-only mode stays exactly as the product confirmed it. The other mode
     // covers a receiver change together with deletions, additions, or both.
-    public bool CanCommit(bool reconnect)
+    // One button commits every supported change, a deletion alone included.
+    public bool CanCommit()
     {
-        if(!Candidate)return false;
-        // The deletion-only button stays exactly where the product first confirmed it.
-        if(!reconnect)return DeleteExecutions.Count==Targets;
-        // The general button takes everything the deletion-only one cannot.
-        return Targets>DeleteExecutions.Count;
+        return Candidate && Targets>0;
     }
     // A fragment goes only as a whole: its operands and everything inside them have to
     // be leaving in the same plan, so nothing is left without a place to live.

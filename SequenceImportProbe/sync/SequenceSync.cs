@@ -722,13 +722,10 @@ public sealed class SequenceStructurePreflight
     public bool Candidate { get { return Reasons.Count==0 && Targets>0; } }
     // The deletion-only mode stays exactly as the product confirmed it. The other mode
     // covers a receiver change together with deletions, additions, or both.
-    public bool CanCommit(bool reconnect)
+    // One button commits every supported change, a deletion alone included.
+    public bool CanCommit()
     {
-        if(!Candidate)return false;
-        // The deletion-only button stays exactly where the product first confirmed it.
-        if(!reconnect)return DeleteExecutions.Count==Targets;
-        // The general button takes everything the deletion-only one cannot.
-        return Targets>DeleteExecutions.Count;
+        return Candidate && Targets>0;
     }
     // A fragment goes only as a whole: its operands and everything inside them have to
     // be leaving in the same plan, so nothing is left without a place to live.

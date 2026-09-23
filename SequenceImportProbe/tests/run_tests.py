@@ -118,7 +118,7 @@ public static class PayloadTest {
        var framedInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],sample)));
        var framedPlan=SyncPlan.Build(frameBefore,framedInput,()=>Guid.NewGuid().ToString());
        var framedGate=SequenceStructurePreflight.Check(frameBefore,framedPlan);
-       if(!framedGate.Candidate || framedGate.AddMessages.Count!=1 || framedGate.Targets!=1 || !framedGate.CanCommit(true))
+       if(!framedGate.Candidate || framedGate.AddMessages.Count!=1 || framedGate.Targets!=1 || !framedGate.CanCommit())
            throw new Exception(sample+" must be a single insertion: "+framedPlan.ToJson()+framedGate.ToJson());
    }
 
@@ -129,18 +129,18 @@ public static class PayloadTest {
    if(!reconnectGate.Candidate || reconnectPlan.Changes.Count!=2 || reconnectGate.ReconnectMessages.Count!=1 || reconnectGate.DeleteExecutions.Count!=1)
        throw new Exception("reconnect sample must contain exactly one receiver update and one deletion: "+reconnectPlan.ToJson()+reconnectGate.ToJson());
 
-   if(!trialGate.CanCommit(false) || trialGate.CanCommit(true) || reconnectGate.CanCommit(false) || !reconnectGate.CanCommit(true))
+   if(!trialGate.CanCommit() || !reconnectGate.CanCommit())
        throw new Exception("commit modes accepted the wrong scope");
    reconnectGate.Reasons.Add("unsupported change");
-   if(reconnectGate.CanCommit(true))throw new Exception("commit accepted partially supported plan");
+   if(reconnectGate.CanCommit())throw new Exception("commit accepted partially supported plan");
    var emptyGate=new SequenceStructurePreflight();
-   if(emptyGate.CanCommit(false) || emptyGate.CanCommit(true))throw new Exception("empty commit accepted");
+   if(emptyGate.CanCommit())throw new Exception("empty commit accepted");
 
    var batchBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-batch-before.puml")));
    var batchAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-batch-after.puml")));
    var batchPlan=SyncPlan.Build(batchBefore,batchAfter,()=>Guid.NewGuid().ToString());
    var batchGate=SequenceStructurePreflight.Check(batchBefore,batchPlan);
-   if(!batchGate.CanCommit(true) || batchPlan.Changes.Count!=4 || batchGate.ReconnectMessages.Count!=2 || batchGate.DeleteExecutions.Count!=2)
+   if(!batchGate.CanCommit() || batchPlan.Changes.Count!=4 || batchGate.ReconnectMessages.Count!=2 || batchGate.DeleteExecutions.Count!=2)
        throw new Exception("batch sample must contain two reconnects and two deletions: "+batchPlan.ToJson()+batchGate.ToJson());
    if(SyncPlan.Build(batchPlan.Expected,batchAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("batch semantic plan is not idempotent");
@@ -150,7 +150,7 @@ public static class PayloadTest {
    var nontailAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-nontail-after.puml")));
    var nontailPlan=SyncPlan.Build(batchBefore,nontailAfter,()=>Guid.NewGuid().ToString());
    var nontailGate=SequenceStructurePreflight.Check(batchBefore,nontailPlan);
-   if(!nontailGate.CanCommit(true) || nontailPlan.Changes.Count!=2 || nontailGate.ReconnectMessages.Count!=1 || nontailGate.DeleteExecutions.Count!=1)
+   if(!nontailGate.CanCommit() || nontailPlan.Changes.Count!=2 || nontailGate.ReconnectMessages.Count!=1 || nontailGate.DeleteExecutions.Count!=1)
        throw new Exception("non-tail sample must contain one reconnect and one deletion: "+nontailPlan.ToJson()+nontailGate.ToJson());
    // The batch sample deletes both inner bars; this one deletes only the earlier of
    // the two, so a later sibling of the same participant survives. Whether the product
@@ -165,7 +165,7 @@ public static class PayloadTest {
    var occupiedBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-occupied-before.puml")));
    var occupiedPlan=SyncPlan.Build(occupiedBefore,batchAfter,()=>Guid.NewGuid().ToString());
    var occupiedGate=SequenceStructurePreflight.Check(occupiedBefore,occupiedPlan);
-   if(!occupiedGate.CanCommit(true) || occupiedPlan.Changes.Count!=2 || occupiedGate.ReconnectMessages.Count!=1 || occupiedGate.DeleteExecutions.Count!=1)
+   if(!occupiedGate.CanCommit() || occupiedPlan.Changes.Count!=2 || occupiedGate.ReconnectMessages.Count!=1 || occupiedGate.DeleteExecutions.Count!=1)
        throw new Exception("occupied sample must contain one reconnect and one deletion: "+occupiedPlan.ToJson()+occupiedGate.ToJson());
    var occupiedTarget=occupiedPlan.Expected.Elements.Single(e=>e.Id==occupiedGate.ReconnectMessages[0]).Links["receiveExecution"].Single();
    if(occupiedBefore.Elements.Count(e=>e.Kind=="message" && e.Links.ContainsKey("receiveExecution") && e.Links["receiveExecution"].Contains(occupiedTarget))==0)
@@ -179,7 +179,7 @@ public static class PayloadTest {
    var addGate=SequenceStructurePreflight.Check(batchAfter,addPlan);
    if(!addGate.Candidate || addPlan.Changes.Count!=2 || addGate.AddExecutions.Count!=1 || addGate.ReconnectMessages.Count!=1 || addGate.DeleteExecutions.Count!=0)
        throw new Exception("addition sample must contain one added execution and one reconnect: "+addPlan.ToJson()+addGate.ToJson());
-   if(!addGate.CanCommit(true) || addGate.CanCommit(false))
+   if(!addGate.CanCommit())
        throw new Exception("addition sample did not reach exactly the receiver-change commit mode");
    if(SyncPlan.Build(addPlan.Expected,occupiedBefore,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("addition semantic plan is not idempotent");
@@ -190,7 +190,7 @@ public static class PayloadTest {
    var laneGate=SequenceStructurePreflight.Check(batchAfter,lanePlan);
    if(!laneGate.Candidate || lanePlan.Changes.Count!=1 || laneGate.AddParticipants.Count!=1 || laneGate.Targets!=1)
        throw new Exception("participant sample must add exactly one lane: "+lanePlan.ToJson()+laneGate.ToJson());
-   if(!laneGate.CanCommit(true) || laneGate.CanCommit(false))
+   if(!laneGate.CanCommit())
        throw new Exception("participant sample did not reach exactly the receiver-change commit mode");
    if(SyncPlan.Build(lanePlan.Expected,laneAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("participant semantic plan is not idempotent");
@@ -199,7 +199,7 @@ public static class PayloadTest {
    var dropGate=SequenceStructurePreflight.Check(laneAfter,dropPlan);
    if(!dropGate.Candidate || dropPlan.Changes.Count!=1 || dropGate.DeleteParticipants.Count!=1 || dropGate.Targets!=1)
        throw new Exception("participant removal sample must delete exactly one lane: "+dropPlan.ToJson()+dropGate.ToJson());
-   if(!dropGate.CanCommit(true) || dropGate.CanCommit(false))
+   if(!dropGate.CanCommit())
        throw new Exception("participant removal did not reach exactly the receiver-change commit mode");
 
    // The batch diagram without its last reply.
@@ -208,7 +208,7 @@ public static class PayloadTest {
    var messageGate=SequenceStructurePreflight.Check(batchAfter,messagePlan);
    if(!messageGate.Candidate || messagePlan.Changes.Count!=1 || messageGate.DeleteMessages.Count!=1 || messageGate.Targets!=1)
        throw new Exception("message sample must delete exactly one message: "+messagePlan.ToJson()+messageGate.ToJson());
-   if(!messageGate.CanCommit(true) || messageGate.CanCommit(false))
+   if(!messageGate.CanCommit())
        throw new Exception("message removal did not reach exactly the receiver-change commit mode");
    if(SyncPlan.Build(messagePlan.Expected,messageAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("message semantic plan is not idempotent");
@@ -218,7 +218,7 @@ public static class PayloadTest {
    var addBackGate=SequenceStructurePreflight.Check(messageAfter,addBackPlan);
    if(!addBackGate.Candidate || addBackPlan.Changes.Count!=1 || addBackGate.AddMessages.Count!=1 || addBackGate.Targets!=1)
        throw new Exception("message addition sample must add exactly one message: "+addBackPlan.ToJson()+addBackGate.ToJson());
-   if(!addBackGate.CanCommit(true) || addBackGate.CanCommit(false))
+   if(!addBackGate.CanCommit())
        throw new Exception("message addition did not reach exactly the receiver-change commit mode");
    if(SyncPlan.Build(addBackPlan.Expected,batchAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("message addition semantic plan is not idempotent");
@@ -233,7 +233,7 @@ public static class PayloadTest {
        || fragmentGate.DeleteMessages.Count!=1 || fragmentGate.DeleteExecutions.Count!=2 || fragmentGate.Targets!=5)
        throw new Exception("fragment sample must remove one fragment with its operand, message and bars: "
            +fragmentPlan.ToJson()+fragmentGate.ToJson());
-   if(!fragmentGate.CanCommit(true) || fragmentGate.CanCommit(false))
+   if(!fragmentGate.CanCommit())
        throw new Exception("fragment removal did not reach exactly the receiver-change commit mode");
    if(SyncPlan.Build(fragmentPlan.Expected,fragmentAfter,()=>Guid.NewGuid().ToString()).Changes.Count!=0)
        throw new Exception("fragment semantic plan is not idempotent");

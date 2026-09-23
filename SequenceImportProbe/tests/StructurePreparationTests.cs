@@ -153,7 +153,7 @@ public static class StructurePreparationTests
         var gate=SequenceStructurePreflight.Check(current,plan);
         Require(gate.Candidate && gate.AddExecutions.SequenceEqual(new[]{bar}) && gate.ReconnectMessages.SequenceEqual(new[]{ids[6]}),
             "added bar with a reconnect was not a candidate");
-        Require(gate.CanCommit(true) && !gate.CanCommit(false),"commit modes accepted the wrong scope for an addition");
+        Require(gate.CanCommit(),"commit modes accepted the wrong scope for an addition");
 
         var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan);
         Require(package.AddedExecutions.Length==1,"addition was not prepared");
@@ -228,7 +228,7 @@ public static class StructurePreparationTests
 
         var gate=SequenceStructurePreflight.Check(current,plan);
         Require(gate.Candidate && gate.AddParticipants.SequenceEqual(new[]{lane}),"added lane was not a candidate");
-        Require(gate.CanCommit(true) && !gate.CanCommit(false),"commit modes accepted the wrong scope for a lane");
+        Require(gate.CanCommit(),"commit modes accepted the wrong scope for a lane");
 
         var middle=current.Copy();
         middle.Elements.Add(new SequenceElement{Id=lane,Kind="participant",Parent=ids[0],Order=-1,Text="C"});
@@ -302,7 +302,7 @@ public static class StructurePreparationTests
 
         var gate=SequenceStructurePreflight.Check(current,plan);
         Require(gate.Candidate && gate.DeleteMessages.SequenceEqual(new[]{ids[6]}),"message deletion was not a candidate");
-        Require(gate.CanCommit(true) && !gate.CanCommit(false),"commit modes accepted the wrong scope for a message");
+        Require(gate.CanCommit(),"commit modes accepted the wrong scope for a message");
 
         var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan);
         Require(package.DeleteMessageIds.SequenceEqual(new[]{ids[6]}),"message was not prepared for deletion");
@@ -366,7 +366,7 @@ public static class StructurePreparationTests
 
         var gate=SequenceStructurePreflight.Check(current,plan);
         Require(gate.Candidate && gate.AddMessages.SequenceEqual(new[]{wire}),"added message was not a candidate");
-        Require(gate.CanCommit(true) && !gate.CanCommit(false),"commit modes accepted the wrong scope for a message");
+        Require(gate.CanCommit(),"commit modes accepted the wrong scope for a message");
 
         var first=desired.Copy();first.Elements.Single(e=>e.Id==wire).Order=-1;
         var firstPlan=new SyncPlan{Expected=first};firstPlan.Changes.AddRange(plan.Changes);
@@ -454,7 +454,7 @@ public static class StructurePreparationTests
         var plan=new SyncPlan{Expected=desired};
         plan.Changes.Add(new SequenceChange{Action="add",Kind="message",Id=added,Line=5});
         var gate=SequenceStructurePreflight.Check(current,plan);
-        Require(gate.Candidate && gate.AddMessages.SequenceEqual(new[]{added}) && gate.CanCommit(true),
+        Require(gate.Candidate && gate.AddMessages.SequenceEqual(new[]{added}) && gate.CanCommit(),
             "insertion "+(into?"into":"above")+" a frame was not a candidate: "+gate.ToJson());
         var types=new SequenceFrameTypes{Fragment="fragment",Operand="operand",Owns=new[]{"owns","Embed","f1"},
             Branches=new[]{"branches","Embed","f2"},Crossing=new[]{"crossing","Ref","f3"},OperandMessage=new[]{"operand-message","Ref","f4"}};
