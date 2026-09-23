@@ -2,7 +2,7 @@
   "name": "PlantUmlTool",
   "displayName": "PlantUML 連携",
   "description": "シーケンス図・クラス図・状態遷移図を PlantUML 形式で出力し、編集した PlantUML をクラス図へ反映します。",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -60,15 +60,6 @@
                   "imageSmall": "resources/import16.png",
                   "imageLarge": "resources/import32.png",
                   "command": "PlantUmlTool.ApplyClassSync"
-                },
-                {
-                  "id": "PlantUmlTool.TrialClassSyncButton",
-                  "type": "Button",
-                  "label": "試行して戻す",
-                  "description": "反映を一時的に適用して照合し、必ず取り消します。反映前の確認用です。",
-                  "imageSmall": "resources/importall16.png",
-                  "imageLarge": "resources/importall32.png",
-                  "command": "PlantUmlTool.TrialClassSync"
                 },
                 {
                   "id": "PlantUmlTool.ClassSyncDetailsButton",
@@ -155,13 +146,6 @@
         "title": "PlantUMLを反映",
         "group": "plantuml",
         "execFunc": "ApplyClassSync",
-        "canExecWhen": { "uiState": "ProjectOpened" }
-      },
-      {
-        "id": "PlantUmlTool.TrialClassSync",
-        "title": "試行して戻す",
-        "group": "plantuml",
-        "execFunc": "TrialClassSync",
         "canExecWhen": { "uiState": "ProjectOpened" }
       },
       {

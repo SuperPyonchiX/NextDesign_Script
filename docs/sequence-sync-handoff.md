@@ -71,7 +71,7 @@ git diff --check
 
 ### 守ること
 
-- **PlantUML 出力側（`PlantUmlTool`）は変更しない。** ユーザーの決定。`AgentReview/main.cs` と `NdMcp/main.cs` の複製も触らない
+- **PlantUML 出力側（`PlantUmlTool`）は変更しない。** ユーザーの決定。（例外: 2026-09-23 にユーザーの依頼でクラス図同期の「試行して戻す」ボタンを削除した。2.2.1。出力処理は触っていない）`AgentReview/main.cs` と `NdMcp/main.cs` の複製も触らない
 - 実在する構造差分を比較条件の緩和で消さない。入力にない実行区間・長さ0の区間・MessageEnd を発明しない
 - `main.cs` の生成領域は直接編集しない。`sync/` を直して `bundle.py`
 - プロジェクトを自動保存しない。`ExportModelUnit` の未保存制約を自動保存で回避しない

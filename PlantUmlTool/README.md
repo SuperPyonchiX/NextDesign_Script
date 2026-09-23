@@ -1,5 +1,9 @@
 # PlantUmlTool — Next Design × PlantUML 連携
 
+## 2.2.1: 「試行して戻す」ボタンを削除
+
+クラス図の「反映（クラス図）」グループから「試行して戻す」を外した。「PlantUMLを反映」も同じ適用と照合を行い、不一致なら取り消す。反映後は Ctrl+Z で戻せるので、試行を別に挟む必要がない。グループは 差分を検証 / PlantUMLを反映 / 診断表示 の3つになった。
+
 ## 2.2.0: クラス図の反映を統合
 
 ClassImportProbe 0.7.2 で実機検証したクラス図の同期本体を `src/60-class-sync.cs` / `61-class-sync-runtime.cs` としてこの拡張に移し、ClassImportProbe は削除した。リボン「PlantUML」タブに「反映（クラス図）」グループ（差分を検証 / PlantUMLを反映 / 試行して戻す / 診断表示）を追加。扱える差分・停止条件・各版の実機手順は [docs/class-sync-history.md](../docs/class-sync-history.md) に残してある。
