@@ -25,7 +25,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.18";
+    public const string Title = "シーケンス生成実験 / 0.9.19";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -5097,10 +5097,16 @@ public sealed class SequenceStructurePreparation
         // Wrapping makes room at the top of the run and below it. Every position moves by
         // the same rule, so a bar's two ends are mapped separately and its length follows.
         if(gate.UnwrapFragments.Count>0)wrapMap=UnwrapLayout(gate,current,editor,out wrapGrowth);
+        // A note or ref taken out on its own closes the room it took, as a frame does. With
+        // anything added or moved in the same update the positions are laid out from what
+        // is there now, so the space is left as it is.
+        else if(gate.DeleteNotes.Count+gate.DeleteRefs.Count>0 && gate.AddNotes.Count+gate.AddRefs.Count+gate.AddMessages.Count
+            +gate.AddFragments.Count+gate.AddExecutions.Count+gate.AddParticipants.Count+gate.MoveMessages.Count==0)
+            wrapMap=AnnotationGaps(gate,editor,out wrapGrowth);
         if(wrapMap!=null)
         {
             var laneIds=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
-            var leavingShapes=new HashSet<string>(gate.DeleteFragments.Concat(gate.DeleteOperands));
+            var leavingShapes=new HashSet<string>(gate.DeleteFragments.Concat(gate.DeleteOperands).Concat(gate.DeleteNotes).Concat(gate.DeleteRefs));
             foreach(var shape in editor.Shapes())
             {
                 string model=V(shape,"ModelId");
@@ -5395,6 +5401,35 @@ public sealed class SequenceStructurePreparation
             if(p>bottom)return p+shift;
             int at=0;while(at+1<ys.Length && ys[at+1]<=p)at++;
             return p+offsets[at];
+        };
+    }
+    // Each removed note or ref gives back the distance from its top to the first thing
+    // under it, so that thing lands where the box began, one step under the message above.
+    // Measured rather than assumed, so boxes laid out with an older gap close up too.
+    internal static Func<double,double> AnnotationGaps(SequenceStructurePreflight gate,SequenceEditorDocument editor,out double growth)
+    {
+        var shapes=editor.Shapes();
+        var removed=new HashSet<string>(gate.DeleteNotes.Concat(gate.DeleteRefs).Concat(gate.DeleteMessages).Concat(gate.DeleteExecutions));
+        Func<SequenceJson,double> at=sh=>sh["TargetY"]!=null?Read(sh,"TargetY"):sh["Y"]!=null?Read(sh,"Y"):double.NaN;
+        var gaps=new List<double[]>();
+        foreach(string id in gate.DeleteNotes.Concat(gate.DeleteRefs))
+        {
+            var box=shapes.Single(sh=>SequenceEditorDocument.Value(sh,"ModelId")==id);
+            double top=Read(box,"Y"),bottom=top+Read(box,"Height");
+            // Bars and lanes do not mark a row; everything else below the box does.
+            var below=shapes.Where(sh=>!removed.Contains(SequenceEditorDocument.Value(sh,"ModelId")) && sh["Length"]==null && sh["LaneLength"]==null)
+                .Select(at).Where(y=>!double.IsNaN(y) && y>=bottom).ToArray();
+            if(below.Length>0)gaps.Add(new[]{top,below.Min()});
+        }
+        growth=-gaps.Sum(g=>g[1]-g[0]);
+        return p=>{
+            double moved=p;
+            foreach(var g in gaps)
+            {
+                if(p>=g[1])moved-=g[1]-g[0];
+                else if(p>g[0])moved-=p-g[0];
+            }
+            return moved;
         };
     }
     // Where a frame over every lane goes across: the rectangle of an existing frame when

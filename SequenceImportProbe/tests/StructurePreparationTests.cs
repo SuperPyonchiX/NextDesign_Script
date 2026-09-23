@@ -840,8 +840,62 @@ public static class StructurePreparationTests
         foreach(var lane in editor["Lifelines"].Items)Require(at(lane["Id"].StringValue(),"LaneLength")=="122","a lane did not shorten with the diagram");
         Require(package.DeleteFrameIds.Contains("old-frame") && package.DeleteFrameIds.Contains("old-operand"),"the frame was not deleted");
     }
+    // A note from 120 to 168 under probe() at 80, and later() one step under it at 208, on
+    // bars from 50 (288 long) and 80 (238 long). Removing the note closes that room.
+    static void DeletedNote()
+    {
+        var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
+        var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
+        var editor=raw["Editors"].Items.Single();string editorId=editor["Id"].StringValue();
+        foreach(var pair in new[]{new[]{"0","288"},new[]{"1","238"}})
+        {
+            var bar=editor["ExecutionSpecifications"].Items[int.Parse(pair[0])];
+            bar.Properties["Length"]=SequenceJson.Parse(pair[1]);bar.Properties["Height"]=SequenceJson.Parse(pair[1]);
+        }
+        var entity=Clone(raw["Entities"].Items.Single(e=>e["Id"].StringValue()==ids[6]));Set(entity,"Id","later");raw["Entities"].Items.Add(entity);
+        foreach(var r in raw["Relations"].Items.Where(r=>r["TargetId"].StringValue()==ids[6]).ToArray())
+        {var copy=Clone(r);Set(copy,"Id",r["Id"].StringValue()+"-later");Set(copy,"TargetId","later");raw["Relations"].Items.Add(copy);}
+        var wire=Clone(editor["Messages"].Items[0]);Set(wire,"Id","later-shape");Set(wire,"ModelId","later");
+        wire.Properties["SourceY"]=SequenceJson.Parse("208");wire.Properties["TargetY"]=SequenceJson.Parse("208");editor["Messages"].Items.Add(wire);
+        raw["Entities"].Items.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id","old-note","EntityType","InteractionNote","MetamodelId","note","Name","checked"))));
+        raw["Relations"].Items.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id","owns-old-note","MetamodelId",SequencePayload.Prefix+"___Interaction_InteractionNote","SourceId",ids[0],"TargetId","old-note"))));
+        editor.Properties["Notes"]=SequenceJson.Parse(PumlBuild.Json(new object[]{PumlBuild.Obj("Id","old-note-shape","ModelId","old-note","X",20,"Y",120,"Width",300,"Height",48)}));
+        var current=new SequenceDocument();
+        current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
+        current.Elements.Add(new SequenceElement{Id=ids[2],Kind="participant",Parent=ids[0]});
+        current.Elements.Add(new SequenceElement{Id=ids[3],Kind="participant",Parent=ids[0]});
+        foreach(string id in new[]{ids[4],ids[5]})
+        {var e=new SequenceElement{Id=id,Kind="execution",Parent=ids[0]};e.Links["participant"]=new[]{id==ids[4]?ids[2]:ids[3]};current.Elements.Add(e);}
+        foreach(var row in new[]{new[]{ids[6],"0","probe()"},new[]{"later","2","later()"}})
+        {
+            var m=new SequenceElement{Id=row[0],Kind="message",Parent=ids[0],Order=int.Parse(row[1]),Text=row[2]};m.Attributes["sort"]="sync";
+            m.Links["sender"]=new[]{ids[2]};m.Links["receiver"]=new[]{ids[3]};m.Links["sendExecution"]=new[]{ids[4]};m.Links["receiveExecution"]=new[]{ids[5]};
+            current.Elements.Add(m);
+        }
+        var note=new SequenceElement{Id="old-note",Kind="note",Parent=ids[0],Order=1,Text="checked"};note.Links["targets"]=new string[0];note.Attributes["position"]="free";
+        current.Elements.Add(note);
+        var desired=current.Copy();desired.Elements.RemoveAll(e=>e.Id=="old-note");
+        var plan=new SyncPlan{Expected=desired};
+        plan.Changes.Add(new SequenceChange{Action="delete",Kind="note",Id="old-note"});
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate && gate.DeleteNotes.SequenceEqual(new[]{"old-note"}),"removing a note was not a candidate: "+gate.ToJson());
+        var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan);
+        Func<string,string,string> at=(shape,key)=>{
+            var hit=package.ShiftedShapes.Where(m=>m.ShapeId==shape).ToArray();
+            if(hit.Length==0)return null;
+            int i=Array.IndexOf(hit[0].Keys,key);return i<0?null:hit[0].Values[i];
+        };
+        Require(at("later-shape","TargetY")=="120","the message under the note did not move up to where the note began: "+at("later-shape","TargetY"));
+        Require(at(editor["Messages"].Items[0]["Id"].StringValue(),"TargetY")==null,"the message above the note moved");
+        string barA=editor["ExecutionSpecifications"].Items[0]["Id"].StringValue();
+        Require(at(barA,"Y")==null && at(barA,"Length")=="200","a bar across the note did not shrink: "+at(barA,"Length"));
+        Require(at("old-note-shape","Y")==null,"the note being removed was moved");
+        foreach(var lane in editor["Lifelines"].Items)Require(at(lane["Id"].StringValue(),"LaneLength")=="152","a lane did not shorten");
+        Require(package.DeleteNoteIds.SequenceEqual(new[]{"old-note"}),"the note was not deleted");
+    }
     public static void Run()
     {
+        DeletedNote();
         UnwrappedMessage();
         AddedRef();
         AddedNote();
