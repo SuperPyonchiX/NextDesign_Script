@@ -59,6 +59,10 @@ public sealed class DiagramSnapshot
             add(m,"message",m.Text,m.SourceY);var e=doc.Elements.Last();var model=m.Model as IMessage;
             if(model==null)throw new InvalidOperationException("S210: メッセージの型が不正です。");
             e.Attributes["sort"]=model.Kind;
+            // A message a destruction points back at is the one that destroys the lane, whatever
+            // sort the profile records for it; the parser reads it the same way.
+            if(model.GetRelationsWhere((r,f)=>r.Target!=null && r.Target.Id==model.Id && r.Metaclass!=null
+                && r.Metaclass.Id==SequencePayload.Prefix+"DestroyMessage").Any())e.Attributes["sort"]="destroy";
             e.Links["sender"]=m.Sender==null?new string[0]:new[]{m.Sender.ModelId};
             e.Links["receiver"]=m.Receiver==null?new string[0]:new[]{m.Receiver.ModelId};
             if(m.SendPort is IExecutionSpecificationShape)e.Links["sendExecution"]=new[]{m.SendPort.ModelId};
@@ -340,6 +344,27 @@ public static class SequenceSyncRuntime
                         catch(Exception ex) {throw new InvalidOperationException("S220: フラグメントの型を解決できません: "+ex.Message,ex);}
                         log.AppendLine("frame types: "+frameTypes.ToJson());
                     }
+                    // Literals for message sorts, so a message of a sort the diagram has none of
+                    // can still be added.
+                    SequenceStructurePreparation.SortLiterals.Clear();
+                    try
+                    {
+                        var messageClass=PumlRuntime.BaseTypes(diagram)[6];
+                        var sortField=messageClass.GetFields().Cast<IField>().FirstOrDefault(f=>f.Name=="MessageSort");
+                        if(sortField!=null && sortField.TypeEnum!=null)
+                            foreach(string sort in new[]{"sync","async","reply"})
+                            {
+                                var literal=sortField.TypeEnum.Literals.FirstOrDefault(l=>string.Equals(l.Name,sort,StringComparison.OrdinalIgnoreCase));
+                                if(literal!=null)SequenceStructurePreparation.SortLiterals[sort]=literal.Name;
+                            }
+                    }
+                    catch(Exception ex){log.AppendLine("message sort literals: "+ex.Message);}
+                    SequenceStructurePreparation.DestroyTypes=null;
+                    if(preflight.AddDestroys.Count>0)
+                    {
+                        try {SequenceStructurePreparation.DestroyTypes=PumlRuntime.DestroyTypes(diagram);}
+                        catch(Exception ex) {throw new InvalidOperationException("S220: 破棄の型を解決できません: "+ex.Message,ex);}
+                    }
                     SequenceNoteTypes noteTypes=null;
                     if(preflight.AddNotes.Count>0)
                     {
@@ -446,7 +471,12 @@ public static class SequenceStructureTrial
             }
         }
         foreach(var m in root.Messages)
-            state.Ports[m.Id]=new[]{Port(m.SendPort),Port(m.ReceivePort),m.Sender==null?"":m.Sender.Id,m.Receiver==null?"":m.Receiver.Id,m.Kind};
+        {
+            // A message a destruction points back at reads as a destroy message, as the snapshot reads it.
+            bool destroying=m.GetRelationsWhere((r,f)=>r.Target!=null && r.Target.Id==m.Id && r.Metaclass!=null
+                && r.Metaclass.Id==SequencePayload.Prefix+"DestroyMessage").Any();
+            state.Ports[m.Id]=new[]{Port(m.SendPort),Port(m.ReceivePort),m.Sender==null?"":m.Sender.Id,m.Receiver==null?"":m.Receiver.Id,destroying?"destroy":m.Kind};
+        }
         foreach(var shape in diagram.Shapes)
         {
             var rows=new List<string>();var node=shape as ISequenceNodeShape;
@@ -487,7 +517,7 @@ public static class SequenceStructureTrial
             +prepared.AddedParticipants.Length+prepared.DeleteParticipantIds.Length
             +prepared.DeleteMessageIds.Length+prepared.AddedMessages.Length
             +prepared.DeleteFrameIds.Length+prepared.AddedFragments.Length+prepared.AddedOperands.Length+reconnectCount
-            +prepared.MovedMessages.Length+prepared.DeleteNoteIds.Length+prepared.AddedNotes.Length+prepared.DeleteRefIds.Length
+            +prepared.MovedMessages.Length+prepared.DeleteNoteIds.Length+prepared.AddedNotes.Length+prepared.DeleteRefIds.Length+prepared.DeleteDestroyIds.Length
             +(plan.Changes.Any(c=>c.Action=="move")?prepared.ShiftedShapes.Length:0)+prepared.Renamed.Length;
         Func<SequenceChange,bool> supported=c=>
             (c.Action=="delete" && c.Kind=="execution")
@@ -497,12 +527,12 @@ public static class SequenceStructureTrial
             || (reconnectCommit && c.Action=="update" && c.Kind=="message")
             // A rename writes only the element's text.
             || (reconnectCommit && c.Action=="update" && prepared.Renamed.Any(r=>r[0]==c.Id))
-            || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message" || c.Kind=="note" || c.Kind=="ref"
+            || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message" || c.Kind=="note" || c.Kind=="ref" || c.Kind=="destroy"
                 || c.Kind=="fragment" || c.Kind=="operand"))
             // A wrap moves messages into the new frame, and bars follow them by position.
             || (reconnectCommit && c.Action=="move" && (c.Kind=="message" || c.Kind=="execution"))
             || (reconnectCommit && c.Action=="delete"
-                && (c.Kind=="participant" || c.Kind=="message" || c.Kind=="fragment" || c.Kind=="operand" || c.Kind=="note" || c.Kind=="ref"));
+                && (c.Kind=="participant" || c.Kind=="message" || c.Kind=="fragment" || c.Kind=="operand" || c.Kind=="note" || c.Kind=="ref" || c.Kind=="destroy"));
         if(retain && (touched==0 || (!reconnectCommit && touched!=prepared.DeleteIds.Length)
             || plan.Changes.Any(c=>!supported(c))))
             throw new InvalidOperationException("S231: 確定モードの対象外の差分があります。");
@@ -518,7 +548,7 @@ public static class SequenceStructureTrial
             .Concat(prepared.StretchedLifelines.Select(a=>a.ShapeId))
             .Concat(prepared.ShiftedShapes.Select(a=>a.ShapeId)).ToArray();
         var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
-            .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).Concat(prepared.DeleteNoteIds).Concat(prepared.DeleteRefIds).ToArray();
+            .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).Concat(prepared.DeleteNoteIds).Concat(prepared.DeleteRefIds).Concat(prepared.DeleteDestroyIds).ToArray();
         var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
         var expectedReconnect=before.Expected(prepared,plan,false);
         var expectedFinal=before.Expected(prepared,plan,true);
@@ -716,14 +746,68 @@ public static class SequenceBatch
         SequenceSyncRuntime.Preview(app);
         return SequenceSyncRuntime.LastChanges;
     }
+    // PlantUmlTool names an exported file after its diagram, with these characters replaced.
+    static string FileNameOf(string name)
+    {
+        var invalid=new HashSet<char>(Path.GetInvalidFileNameChars());
+        var b=new StringBuilder();
+        foreach(char c in name??"")b.Append(invalid.Contains(c) || c==' '?'_':c);
+        string result=b.ToString().Trim('_','.');
+        if(result.Length==0)result="sequence";
+        return result.Length>100?result.Substring(0,100):result;
+    }
+    // Every PlantUML file in a folder exported by PlantUmlTool, compared unedited with the
+    // diagram it came from. Nothing is written or saved, so it can run on a real project.
+    static void RoundTrip(IApplication app,IProject project,string folder)
+    {
+        string title=SequenceExperiment.Title;
+        var diagrams=SequenceMappedUpdate.Tree(project.DesignModel).OfType<IInteraction>()
+            .Where(m=>m.GetEditors().OfType<ISequenceDiagram>().Any())
+            .GroupBy(m=>FileNameOf(m.Name),StringComparer.OrdinalIgnoreCase).ToDictionary(g=>g.Key,g=>g.ToArray(),StringComparer.OrdinalIgnoreCase);
+        var files=Directory.GetFiles(folder,"*.puml").OrderBy(f=>f,StringComparer.OrdinalIgnoreCase).Take(300).ToArray();
+        var rows=new List<string>();var detail=new StringBuilder();var clock=System.Diagnostics.Stopwatch.StartNew();
+        int passed=0;
+        try
+        {
+            SequenceExperiment.BatchMode=true;SequenceSyncRuntime.Batch=true;
+            foreach(string file in files)
+            {
+                string name=Path.GetFileNameWithoutExtension(file),result;
+                IInteraction[] found;
+                if(!diagrams.TryGetValue(name,out found))result="対応する図なし（名前が重複して出力名にハッシュが付いたものを含む）";
+                else if(found.Length>1)result="同じ名前の図が"+found.Length+"枚あり、対応を決められません";
+                else
+                {
+                    try
+                    {
+                        int changes=Compare(app,Loaded(app,project,found[0].Id,detail),file);
+                        if(changes==0){result="差分0件";passed++;}
+                        else
+                        {
+                            result=changes<0?"照合できず: "+Line(SequenceExperiment.Summary,160):"差分 "+changes+"件";
+                            detail.AppendLine("■ "+name+"\n"+string.Join("\n",SequenceExperiment.Details.Split('\f').Where(page=>!page.StartsWith("接続の実測",StringComparison.Ordinal)))+"\n");
+                        }
+                    }
+                    catch(Exception ex){result="停止: "+Line(ex.Message,160);detail.AppendLine("■ "+name+"\n"+ex+"\n");}
+                }
+                rows.Add(name+" | "+result);
+            }
+        }
+        finally {SequenceExperiment.BatchMode=false;SequenceSyncRuntime.Batch=false;SequenceSyncRuntime.BatchDiagram=null;SequenceSyncRuntime.BatchInput=null;}
+        SequenceExperiment.Summary="既存図の往復確認（書込みなし）: "+passed+"/"+files.Length+"件 差分0件 / "+(clock.ElapsedMilliseconds/1000)+"秒\n"+string.Join("\n",rows);
+        SequenceExperiment.Details=SequenceExperiment.Summary+"\f"+detail;
+        app.Window.UI.ShowInformationDialog(SequenceExperiment.Summary.Length>3000?SequenceExperiment.Summary.Substring(0,3000)+"\n…（続きは診断表示）":SequenceExperiment.Summary,title);
+    }
     public static void Run(IApplication app)
     {
         string title=SequenceExperiment.Title;
         var project=app.Workspace.CurrentProject;
         if(project==null || !(app.Workspace.CurrentEditor is ISequenceDiagram))
         {app.Window.UI.ShowInformationDialog("シーケンス図を開いてから実行してください。新しい図はその図と同じ親に作ります。",title);return;}
-        string list=app.Window.UI.ShowOpenFileDialog("シナリオ一覧","シナリオ一覧 (*.txt)|*.txt");
+        string list=app.Window.UI.ShowOpenFileDialog("シナリオ一覧、または出力済み PlantUML のどれか1つ",
+            "シナリオ一覧 (*.txt)|*.txt|出力済み PlantUML のフォルダ (*.puml)|*.puml");
         if(string.IsNullOrEmpty(list))return;
+        if(string.Equals(Path.GetExtension(list),".puml",StringComparison.OrdinalIgnoreCase)){RoundTrip(app,project,Path.GetDirectoryName(list));return;}
         string folder=Path.GetDirectoryName(list),resultPath=Path.ChangeExtension(list,".result.tsv");
         var scenarios=new List<string[]>();
         foreach(var raw in File.ReadAllLines(list,new UTF8Encoding(false,true)))

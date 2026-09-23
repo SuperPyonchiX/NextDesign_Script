@@ -233,7 +233,7 @@ public static class StructurePreparationTests
         var middle=current.Copy();
         middle.Elements.Add(new SequenceElement{Id=lane,Kind="participant",Parent=ids[0],Order=-1,Text="C"});
         var middlePlan=new SyncPlan{Expected=middle};middlePlan.Changes.AddRange(plan.Changes);
-        Require(SequenceStructurePreflight.Check(current,middlePlan).AddParticipants.Count==0,"a lane inserted before existing ones was accepted");
+        Require(SequenceStructurePreflight.Check(current,middlePlan).AddParticipants.Count==1,"a lane inserted before existing ones was refused");
 
         var used=desired.Copy();
         var msg=new SequenceElement{Id="msg",Kind="message",Parent=ids[0],Text="call"};
@@ -374,7 +374,7 @@ public static class StructurePreparationTests
 
         var reply=desired.Copy();reply.Elements.Single(e=>e.Id==wire).Attributes["sort"]="reply";
         var replyPlan=new SyncPlan{Expected=reply};replyPlan.Changes.AddRange(plan.Changes);
-        Require(SequenceStructurePreflight.Check(current,replyPlan).AddMessages.Count==0,"a sort with no existing sample was accepted");
+        Require(SequenceStructurePreflight.Check(current,replyPlan).AddMessages.Count==1,"a sort with no existing sample was refused");
 
         var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan);
         Require(package.AddedMessages.Length==1,"message was not prepared");

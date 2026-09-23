@@ -39,3 +39,8 @@ Note 本文の変更 | structure-note-after.puml | structure-note-text-after.pum
 混在: 挿入と Note の追加 | structure-wrap-before.puml | structure-mix-insert-note-after.puml
 混在: Note と ref を2か所に追加 | structure-wrap-before.puml | structure-mix-two-notes-after.puml
 混在: Note と枠の追加 | structure-fragment-after.puml | structure-mix-note-frame-after.puml
+参加者の途中への追加 | structure-wrap-before.puml | probe-mid-lane.puml
+非同期メッセージの追加 | structure-wrap-before.puml | probe-async.puml
+自己呼出しの追加 | structure-wrap-before.puml | probe-self.puml
+破棄の追加 | structure-wrap-before.puml | probe-destroy-add.puml
+破棄の削除 | probe-destroy-add.puml | structure-wrap-before.puml

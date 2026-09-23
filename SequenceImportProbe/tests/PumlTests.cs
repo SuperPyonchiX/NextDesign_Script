@@ -37,12 +37,11 @@ public static class PumlTests
             // Each call answered from its own bar: the reply is tied back to the bar it leaves,
             // as a hand-drawn reply is, and no bar is tied to two replies.
             // A destruction points at the message that destroys its lane, as one drawn by hand does:
-            // the message right before it, as the parser reads a destroy message. In this sample
-            // only stop() is; finish() is followed by an activate first.
+            // the message right before it, perhaps with an activate of the receiver between.
             if(Path.GetFileName(file)=="09-destroy.puml")
             {
                 var built=SequenceJson.Parse(payload.Json)["Relations"].Items;
-                if(built.Count(r=>r["MetamodelId"].StringValue()=="DestroyMessage")!=1)
+                if(built.Count(r=>r["MetamodelId"].StringValue()=="DestroyMessage")!=2)
                     throw new Exception("each destruction should point at its destroy message");
             }
             if(Path.GetFileName(file)=="structure-wrap-before.puml")
