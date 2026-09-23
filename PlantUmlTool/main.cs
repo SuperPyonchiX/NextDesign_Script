@@ -11153,18 +11153,22 @@ public static class ClassSyncRuntime
 
 public static class ClassDiagramCreator
 {
-    // Ribbon entry: pick the file, create next to the open diagram, show the result.
+    // Ribbon entry: pick the file, create the diagram, show the result. With a class diagram
+    // open, the new one goes next to it; with any other model open or selected (a class diagram
+    // group), it goes under that model, taking the first class diagram found below it (or
+    // anywhere in the project) as the template.
     public static void Create(IApplication app)
     {
         var editor=app.Workspace.CurrentEditor;
-        string reject=ClassDiagramKind.Reject(editor);
-        if(reject!=null) { ClassExperiment.Summary=reject+"\n新しい図の雛形にするクラス図を開いてから実行してください。";ClassExperiment.Details=ClassExperiment.Summary;ClassExperiment.Show(app);return; }
+        IEditor template;IModel owner;IField ownerField;string where;
+        try { where=ResolvePlace(app,editor,out template,out owner,out ownerField); }
+        catch(Exception ex) { ClassExperiment.Summary=ex.Message;ClassExperiment.Details=ex.ToString();ClassExperiment.Show(app);return; }
         string path=app.Window.UI.ShowOpenFileDialog("新しいクラス図にするPlantUML","PlantUML (*.puml;*.plantuml)|*.puml;*.plantuml");
         if(string.IsNullOrEmpty(path))return;
         string pumlText;
         try { if(new FileInfo(path).Length>300000)throw new InvalidOperationException("C120: 入力は300KB以下にしてください。");pumlText=File.ReadAllText(path,new UTF8Encoding(false,true)); }
         catch(Exception ex) { ClassExperiment.Summary=ex.Message;ClassExperiment.Details=ex.ToString();ClassExperiment.Show(app);return; }
-        var outcome=Run(app,editor,pumlText,path,Path.GetFileNameWithoutExtension(path),message=>app.Window.UI.ShowConfirmDialog(message,ClassExperiment.Title));
+        var outcome=Run(app,template,owner,ownerField,where,pumlText,path,Path.GetFileNameWithoutExtension(path),message=>app.Window.UI.ShowConfirmDialog(message,ClassExperiment.Title));
         ClassExperiment.Summary=outcome.Summary;
         string stem=ClassExperiment.SaveReport("create",outcome.Log,outcome.ReportJson,outcome.CurrentPuml);
         if(stem!=null)ClassExperiment.Summary+="\n診断保存先: "+stem+".txt";
@@ -11174,7 +11178,52 @@ public static class ClassDiagramCreator
 
     sealed class Placed { public ClassDiagramDraft.Seed Seed; public IModel Model, Template; public INode TemplateNode; public bool Created; }
 
-    public static ClassSyncRuntime.Outcome Run(IApplication app,IEditor template,string pumlText,string sourceLabel,string fallbackTitle,Func<string,bool> confirm)
+    // Where the new diagram goes and which class diagram serves as its template. where says how
+    // they were found, for the confirmation and the log.
+    public static string ResolvePlace(IApplication app,IEditor editor,out IEditor template,out IModel owner,out IField ownerField)
+    {
+        template=null;owner=null;ownerField=null;
+        if(ClassDiagramKind.Reject(editor)==null)
+        {
+            template=editor;var diagramModel=ClassDiagramKind.ModelOf(editor);
+            if(diagramModel==null)throw new InvalidOperationException("C310: 開いている図のモデルを取得できません。");
+            owner=diagramModel.Owner;try { ownerField=diagramModel.GetOwnerField(); } catch(Exception) { }
+            if(owner==null || ownerField==null)throw new InvalidOperationException("C310: 開いている図のモデルの所有先を取得できません。");
+            return "開いている図と同じ所有先";
+        }
+        IModel parent=editor!=null?ClassDiagramKind.ModelOf(editor):null;
+        if(parent==null) { try { parent=app.Window.EditorPage.CurrentModel; } catch(Exception) { } }
+        if(parent==null)throw new InvalidOperationException("C310: クラス図を追加するモデル（クラス図グループなど）をナビゲータで選ぶか、雛形にするクラス図を開いてから実行してください。");
+        var project=app.Workspace.CurrentProject;
+        template=FindTemplate(parent);
+        string source="配下";
+        if(template==null && project!=null && project.DesignModel!=null) { template=FindTemplate(project.DesignModel);source="プロジェクト内"; }
+        if(template==null)throw new InvalidOperationException("C310: 雛形にできるクラス図（クラスが 1 つ以上載っているもの）がプロジェクトにありません。");
+        var metaclass=ClassDiagramKind.ModelOf(template).Metaclass;
+        ownerField=parent.Metaclass.GetFields().Cast<IField>().FirstOrDefault(f=>f.IsEmbedded && f.TypeClass!=null && f.TypeClass.IsClassOf(metaclass));
+        if(ownerField==null)throw new InvalidOperationException("C310: '"+ClassText.Normalize(parent.Name)+"'（"+parent.ClassName+"）にはクラス図（"+metaclass.Name+"）を追加できません。クラス図グループを選んでから実行してください。");
+        owner=parent;
+        return "選択中のモデルの下（雛形は"+source+"の図）";
+    }
+    // The first model below root, in breadth-first order, with a class diagram showing a class.
+    static IEditor FindTemplate(IModel root)
+    {
+        var queue=new Queue<IModel>();queue.Enqueue(root);int seen=0;
+        while(queue.Count>0 && seen++<200000)
+        {
+            var m=queue.Dequeue();
+            try
+            {
+                foreach(var e in m.GetEditors().Cast<object>().OfType<IEditor>())
+                    if(ClassDiagramKind.Reject(e)==null && ((IDiagram)e).Nodes.Cast<object>().OfType<INode>().Any(n=>ClassDiagramKind.ModelOf(n)!=null))return e;
+                foreach(var child in m.GetChildren().Cast<IModel>())if(child!=null && !child.IsDeleted)queue.Enqueue(child);
+            }
+            catch(Exception) { }
+        }
+        return null;
+    }
+
+    public static ClassSyncRuntime.Outcome Run(IApplication app,IEditor template,IModel owner,IField ownerField,string where,string pumlText,string sourceLabel,string fallbackTitle,Func<string,bool> confirm)
     {
         var log=new StringBuilder();var outcome=new ClassSyncRuntime.Outcome();
         IModel diagramModel=null;var placed=new List<Placed>();bool saved=false;
@@ -11195,10 +11244,8 @@ public static class ClassDiagramCreator
             log.AppendLine("draft: title='"+draft.Title+"' existing="+draft.ExistingCount+" new="+draft.NewCount+" seeds="+string.Join(",",draft.Seeds.Select(s=>s.Name+(s.Existing?"(existing)":"(new)")).ToArray()));
             if(draft.Reasons.Count>0)throw new InvalidOperationException("C310: 新しい図を作れません。\n"+string.Join("\n",draft.Reasons.ToArray()));
 
-            // Where the diagram goes: next to the template's diagram model, same field and metaclass.
-            var owner=templateModel.Owner;
-            IField ownerField=null;try { ownerField=templateModel.GetOwnerField(); } catch(Exception) { }
-            if(owner==null || ownerField==null || !owner.IsEditable)throw new InvalidOperationException("C310: 雛形の図のモデルの所有先に図を追加できません。");
+            log.AppendLine("place: "+where+" owner="+(owner==null?"?":owner.ClassName+" '"+owner.Name+"'."+(ownerField==null?"?":ownerField.Name))+" template='"+templateModel.Name+"' id="+template.Id);
+            if(owner==null || ownerField==null || !owner.IsEditable)throw new InvalidOperationException("C310: 図を追加する先のモデルが編集できません。");
             if(owner.GetFieldValues(ownerField.Name).Cast<object>().OfType<IModel>().Any(m=>!m.IsDeleted && m.ClassName==templateModel.ClassName && ClassText.Inline(ClassText.Normalize(m.Name))==draft.Title))
                 throw new InvalidOperationException("C310: '"+ClassText.Normalize(owner.Name)+"' に同じ名前の図 '"+draft.Title+"' が既にあります。title を変えてください。");
             foreach(var seed in draft.Seeds)
@@ -11231,7 +11278,7 @@ public static class ClassDiagramCreator
                 log.AppendLine("the template diagram has no connector; relationship lines cannot be added");
 
             string question="クラス図「"+draft.Title+"」を「"+ClassText.Normalize(owner.Name)+"」の下に新しく作ります。\n"
-                +"雛形: 開いている図「"+ClassText.Normalize(templateModel.Name)+"」（ビュー定義・線の形・新しいクラスの所有先と種類）\n"
+                +"雛形: 図「"+ClassText.Normalize(templateModel.Name)+"」（"+where+"。ビュー定義・線の形・新しいクラスの所有先と種類）\n"
                 +"既存のクラス "+draft.ExistingCount+" 件を載せ、新しいクラス "+draft.NewCount+" 件を作ります。\n"
                 +"途中でプロジェクトを保存し、そのあと反映の内容を確認します。";
             if(!confirm(question)) { outcome.Summary="新しい図の作成を中止しました。";outcome.Succeeded=true;return Finish(outcome,log); }

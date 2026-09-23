@@ -2,7 +2,7 @@
   "name": "PlantUmlTool",
   "displayName": "PlantUML 連携",
   "description": "シーケンス図・クラス図・状態遷移図を PlantUML 形式で出力し、編集した PlantUML をクラス図へ反映します。PlantUML から新しいクラス図も作れます。",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
@@ -65,7 +65,7 @@
                   "id": "PlantUmlTool.CreateClassDiagramButton",
                   "type": "Button",
                   "label": "PlantUMLから新規作成",
-                  "description": "開いているクラス図を雛形に、PlantUML ファイルの内容で新しいクラス図を同じ所有先に作ります（途中で保存します）。",
+                  "description": "PlantUML ファイルの内容で新しいクラス図を作ります。クラス図を開いていればその隣に、クラス図グループなどを選んでいればその下に作ります（途中で保存します）。",
                   "imageSmall": "resources/newclass16.png",
                   "imageLarge": "resources/newclass32.png",
                   "command": "PlantUmlTool.CreateClassDiagram"
