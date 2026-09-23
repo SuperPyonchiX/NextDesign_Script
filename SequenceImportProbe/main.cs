@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.0";
+    public const string Title = "シーケンス生成実験 / 0.9.1";
     public static string Summary = "シーケンス図を開き「PlantUMLを取り込む」または「最小図を生成」を押してください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -1388,11 +1388,9 @@ public static class SequenceStructureTrial
             stage="不要な要素の削除";
             using(project.SuspendModelVerification())foreach(string id in removedModels)project.GetModelById(id).Delete();
             // With nothing deleted, that editor is the one just imported, so importing it
-            // again only touches the same collections a second time. The product records
-            // adding an item to a list with the index it went in at, and undoing the whole
-            // transaction then reads that index back; a second pass over the same lists is
-            // what can leave it pointing past the end, which is the exception the product
-            // reports when undo crashes after a frame is added.
+            // again only touches the same collections a second time. Skipping it does not
+            // stop the product crashing when undoing an added message: that happens with a
+            // single import too.
             stage="削除後のエディタ反映";
             if(removedModels.Length>0)Import(project,prepared.EditorAfterDeleteJson,log);
             else log.AppendLine("post-delete editor import skipped: nothing was deleted");
@@ -1462,13 +1460,16 @@ public static class SequenceStructureTrial
             +" / メッセージ追加 "+prepared.AddedMessages.Length+"件"
             +" / フラグメント関連の削除 "+prepared.DeleteFrameIds.Length+"件"
             +" / フラグメント追加 "+prepared.AddedFragments.Length+"件 / オペランド追加 "+prepared.AddedOperands.Length+"件"
-            // Committing a frame works, but the product crashes undoing it, so say so here
-            // rather than leaving it to be discovered.
-            +(prepared.AddedFragments.Length>0
-                ?"\n注意: フラグメントを追加した更新はUndoできません。Undoすると製品が停止します（製品側の不具合）。"
-                    +"取り消すときは保存せずに開き直してください。":"")
             +" / タイムラインを伸ばした参加者 "+prepared.StretchedLifelines.Length+"件"
-            +(prepared.InsertedMessageId.Length>0?" / 途中への挿入で下げた図形 "+prepared.ShiftedShapes.Length+"件":"");
+            +(prepared.InsertedMessageId.Length>0?" / 途中への挿入で下げた図形 "+prepared.ShiftedShapes.Length+"件":"")
+            // Committing an addition works, but the product crashes undoing a message or a
+            // frame added this way, so say so here rather than leaving it to be discovered.
+            // Undo after adding only bars or participants has not been tried.
+            +(prepared.AddedMessages.Length>0 || prepared.AddedFragments.Length>0
+                ?"\n注意: メッセージやフラグメントを追加した更新はUndoできません。Undoすると製品が停止します（製品側の不具合）。"
+                    +"取り消すときは保存せずに開き直してください。"
+                :prepared.AddedExecutions.Length>0 || prepared.AddedParticipants.Length>0
+                ?"\n注意: 実行区間・参加者の追加をUndoできるかは未確認です。取り消すときは保存せずに開き直してください。":"");
         log.AppendLine(summary);
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
         catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}
