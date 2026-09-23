@@ -10,6 +10,7 @@ using NextDesign.Core;
 using NextDesign.Desktop;
 
 public void CommitReceiverStructure(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App,true,true,true,true); }
+public void RunScenarioBatch(ICommandContext context, ICommandParams parameters) { SequenceBatch.Run(context.App); }
 public void PrepareSequenceStructure(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App,true); }
 public void PreviewSequenceSync(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App); }
 public void CreateSequenceMap(ICommandContext context, ICommandParams parameters) { SequenceMappedUpdate.Run(context.App, true); }
@@ -25,10 +26,13 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.24";
+    public const string Title = "シーケンス生成実験 / 0.9.25";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
-    public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
+    // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
+    public static bool BatchMode;
+    public static string BatchInput, LastRoot;
+    public static void Show(IApplication app) { if(!BatchMode)app.Window.UI.ShowInformationDialog(Summary, Title); }
 
     public static void Run(IApplication app) { Run(app, false); }
     public static void Run(IApplication app, bool fromPlantUml, bool updateProbe=false, bool replaceExisting=false, bool deltaProbe=false, bool structureProbe=false)
@@ -54,7 +58,7 @@ public static class SequenceExperiment
             string pumlText = null;
             if (fromPlantUml)
             {
-                var path = app.Window.UI.ShowOpenFileDialog("取り込むPlantUMLファイル", "PlantUML (*.puml;*.plantuml)|*.puml;*.plantuml");
+                var path = BatchInput ?? app.Window.UI.ShowOpenFileDialog("取り込むPlantUMLファイル", "PlantUML (*.puml;*.plantuml)|*.puml;*.plantuml");
                 if (string.IsNullOrEmpty(path)) return;
                 if (new FileInfo(path).Length > 300000) throw new InvalidOperationException("E120: 入力は300KB以下にしてください。");
                 pumlText = File.ReadAllText(path, new UTF8Encoding(false, true));
@@ -77,8 +81,9 @@ public static class SequenceExperiment
             var ownerField = sample.GetOwnerField();
             if (owner == null || ownerField == null || !owner.IsEditable || owner.IsDeleted || owner.IsProxy)
                 throw new InvalidOperationException("E102: 新しい図を置く親モデルを取得できないか、編集できません。");
-            if (!app.Window.UI.ShowConfirmDialog(structureProbe ? "コピーのプロジェクトで実行してください。\n一時図の受信先変更と実行区間の削除・再作成を検証し、最後にすべて取り消します。\n削除中だけSDKの編集可否検査を一時停止します。自動保存はしません。" : replaceExisting ? "コピーのプロジェクトで実行してください。\n現在の図をPlantUMLの内容で置き換えます。図自体のIDは維持します。\n配下の要素と手作業の配置は作り直します。子要素と外部モデルとの関連は引き継ぎません。自動保存はしません。" : deltaProbe ? "コピーのプロジェクトで実行してください。\n一時図で名前変更・メッセージ1件の差分追加と削除を検証し、最後に取り消します。\n削除中だけSDKの編集可否検査を一時停止する実験です。既存図は更新せず、自動保存もしません。" : updateProbe ? "コピーのプロジェクトで実行してください。\n一時図を作り、同じIDでメッセージ名を再取り込みします。\n最後に一時図を含む操作を取り消します。既存図を更新する検証ではありません。\n自動保存はしません。" : "実プロジェクトのコピーを開いていますか？\n新しい検証用シーケンス図を同じ親に追加する実験です。\n既存図の内容は入力にコピーしません。自動保存しません。\n失敗時はトランザクションの取消を試みますが、実機での復元動作は未確認です。", Title)) return;
-            var folder = app.Window.UI.ShowSelectFolderDialog("実験結果の保存先");
+            if (!BatchMode && !app.Window.UI.ShowConfirmDialog(structureProbe ? "コピーのプロジェクトで実行してください。\n一時図の受信先変更と実行区間の削除・再作成を検証し、最後にすべて取り消します。\n削除中だけSDKの編集可否検査を一時停止します。自動保存はしません。" : replaceExisting ? "コピーのプロジェクトで実行してください。\n現在の図をPlantUMLの内容で置き換えます。図自体のIDは維持します。\n配下の要素と手作業の配置は作り直します。子要素と外部モデルとの関連は引き継ぎません。自動保存はしません。" : deltaProbe ? "コピーのプロジェクトで実行してください。\n一時図で名前変更・メッセージ1件の差分追加と削除を検証し、最後に取り消します。\n削除中だけSDKの編集可否検査を一時停止する実験です。既存図は更新せず、自動保存もしません。" : updateProbe ? "コピーのプロジェクトで実行してください。\n一時図を作り、同じIDでメッセージ名を再取り込みします。\n最後に一時図を含む操作を取り消します。既存図を更新する検証ではありません。\n自動保存はしません。" : "実プロジェクトのコピーを開いていますか？\n新しい検証用シーケンス図を同じ親に追加する実験です。\n既存図の内容は入力にコピーしません。自動保存しません。\n失敗時はトランザクションの取消を試みますが、実機での復元動作は未確認です。", Title)) return;
+            var folder = BatchMode?Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.SequenceSync","batch")
+                :app.Window.UI.ShowSelectFolderDialog("実験結果の保存先");
             if (string.IsNullOrEmpty(folder)) return;
             directory = Path.Combine(folder, "sequence_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + Guid.NewGuid().ToString("N").Substring(0,8));
             Directory.CreateDirectory(directory);
@@ -150,7 +155,7 @@ public static class SequenceExperiment
             stage = "生成データの記録";
             Write(Path.Combine(directory, "input.json"), payload.Json);
             Write(Path.Combine(directory, "before.txt"), detail.ToString()+(replacement==null?"":"\n更新前の構造:\n"+replacement.Before));
-            if (!app.Window.UI.ShowConfirmDialog(structureProbe ? "一時図で受信先を送信側の実行区間へ変更し、受信実行区間を削除・再作成して接続を戻します。\n各段階を照合し、最後に一時図を取り消します。続けますか？" : replaceExisting ? "現在の図「"+sample.Name+"」を「"+payload.Name+"」へ更新します。\n"+plan.Summary()+"\n旧子要素: "+(replacement.AllIds.Length-2)+"件を置換します。\n図IDは維持し、子要素IDは変わります。続けますか？" : updateProbe ? "同じIDへの再取り込みを一時図で検証します。\nprobe()をupdatedProbe()へ変更したデータを再取り込みし、取消後に一時モデルが消えたことを確認します。\n続けますか？" : "新しい図「" + payload.Name + "」を追加します。\n" + (plan == null ? "A → B : probe()\nライフライン2本・同期メッセージ1本" : plan.Summary()) + "\n入力データの記録: 済み\n続けますか？", Title))
+            if (!BatchMode && !app.Window.UI.ShowConfirmDialog(structureProbe ? "一時図で受信先を送信側の実行区間へ変更し、受信実行区間を削除・再作成して接続を戻します。\n各段階を照合し、最後に一時図を取り消します。続けますか？" : replaceExisting ? "現在の図「"+sample.Name+"」を「"+payload.Name+"」へ更新します。\n"+plan.Summary()+"\n旧子要素: "+(replacement.AllIds.Length-2)+"件を置換します。\n図IDは維持し、子要素IDは変わります。続けますか？" : updateProbe ? "同じIDへの再取り込みを一時図で検証します。\nprobe()をupdatedProbe()へ変更したデータを再取り込みし、取消後に一時モデルが消えたことを確認します。\n続けますか？" : "新しい図「" + payload.Name + "」を追加します。\n" + (plan == null ? "A → B : probe()\nライフライン2本・同期メッセージ1本" : plan.Summary()) + "\n入力データの記録: 済み\n続けますか？", Title))
             { Summary = "キャンセル / インポートAPI呼出: なし"; Show(app); return; }
             var current = app.Workspace.CurrentProject;
             if (current == null || current.Id != projectId || !string.Equals(current.Path, projectPath, StringComparison.OrdinalIgnoreCase))
@@ -266,7 +271,7 @@ public static class SequenceExperiment
             // Require a successful journal write before committing; failures enter rollback.
             Write(Path.Combine(directory, "checked.txt"), detail + "\nモデル・送受信・シェイプ照合: 一致\ncommit: 未実行");
             stage = "確定";
-            completion.Commit(delegate { transaction.Commit(); }); committed = true;
+            completion.Commit(delegate { transaction.Commit(); }); committed = true; LastRoot = rootId;
             Summary = "ケース: " + (structureProbe ? "UPDATE004" : replaceExisting ? "UPDATE002" : updateProbe ? (deltaProbe ? "UPDATE003" : "UPDATE001") : fromPlantUml ? "IMPORT001" : "CREATE001") + " / モデル・シェイプ照合: 一致\n"+(replaceExisting?"更新した図: ":"新しい図: ") + payload.Name
                 + "\n" + (plan == null ? "ライフライン: 2 / メッセージ: 1" : plan.Summary()) + "\n確定: 済み / プロジェクト保存: していません\n図を開き直し、図とこの画面を撮影してください。\n図表示・Undo/Redo・再読込: 未確認";
             }
@@ -1199,6 +1204,14 @@ public static class SequenceSyncRuntime
     // Milliseconds per stage of the last run, shown with its result so a slow step can be
     // named from a measurement rather than guessed.
     internal static readonly List<string> Timings=new List<string>();
+    // Set by the scenario batch: the diagram and input to use without asking, and what the
+    // last run found.
+    internal static bool Batch;
+    internal static ISequenceDiagram BatchDiagram;
+    internal static string BatchInput;
+    internal static int LastChanges=-1;
+    internal static bool LastCommitted;
+    internal static string LastReasons="";
     static System.Diagnostics.Stopwatch clock;
     internal static void Lap(string stage)
     {
@@ -1214,9 +1227,10 @@ public static class SequenceSyncRuntime
         retain=retain||reconnectCommit;trial=trial||retain;prepare=prepare||trial;
         try
         {
-            var diagram=app.Workspace.CurrentEditor as ISequenceDiagram;
+            LastChanges=-1;LastCommitted=false;LastReasons="";
+            var diagram=Batch && BatchDiagram!=null?BatchDiagram:app.Workspace.CurrentEditor as ISequenceDiagram;
             if(diagram==null)throw new InvalidOperationException("S210: シーケンス図を開いてください。");
-            string path=app.Window.UI.ShowOpenFileDialog("図全体と比較するPlantUML","PlantUML (*.puml;*.plantuml)|*.puml;*.plantuml");
+            string path=Batch && BatchInput!=null?BatchInput:app.Window.UI.ShowOpenFileDialog("図全体と比較するPlantUML","PlantUML (*.puml;*.plantuml)|*.puml;*.plantuml");
             if(string.IsNullOrEmpty(path))return;
             if(new FileInfo(path).Length>300000)throw new InvalidOperationException("S210: 入力は300KB以下にしてください。");
             clock=System.Diagnostics.Stopwatch.StartNew();
@@ -1238,6 +1252,7 @@ public static class SequenceSyncRuntime
                 if(matches.Length!=1)current.Limitations.Add("ref参照先 "+e.Line+"行: "+matches.Length+"候補");
             }
             var plan=SequenceNotePolicy.Build(current.Document,desired,()=>Guid.NewGuid().ToString());
+            LastChanges=plan.Changes.Count;
             var preflight=SequenceStructurePreflight.Check(current.Document,plan);
             Lap("差分計画");
             // The snapshot goes through ExportModelUnit, which refuses to run while the
@@ -1262,6 +1277,7 @@ public static class SequenceSyncRuntime
             log.AppendLine(screenshot);
             SequenceExperiment.Summary=SequenceAudit.Summary(plan,current.Limitations.Count)+"\n構造更新の停止理由: "+preflight.Reasons.Count+"件（診断表示）";
             log.AppendLine("Scope: "+project.Id+" / "+diagram.ModelId+" / "+diagram.Id);
+            LastReasons=string.Join(" / ",preflight.Reasons.Distinct());
             // Checked after the comparison is logged, so the reasons reach the diagnostics.
             if(retain && !preflight.CanCommit())
                 throw new InvalidOperationException("S231: 反映できない差分が含まれています。"
@@ -1361,7 +1377,8 @@ public static class SequenceSyncRuntime
             if(screenshot==null)SequenceExperiment.Summary+="\n診断保存先: "+stem+".txt";
         }
         catch(Exception ex) {log.AppendLine("診断の保存失敗: "+ex.Message);SequenceExperiment.Summary+="\n診断ファイルを保存できませんでした。診断表示で確認してください。";}
-        SequenceExperiment.Details=screenshot??log.ToString();SequenceExperiment.Show(app);
+        SequenceExperiment.Details=screenshot??log.ToString();
+        if(!Batch)SequenceExperiment.Show(app);
     }
 }
 
@@ -1490,10 +1507,10 @@ public static class SequenceStructureTrial
                 +"自動保存はしません。実行しますか？"
             : "コピーのプロジェクトで実行してください。\n受信接続変更と実行区間削除を一時適用し、照合後に必ず取り消します。\n自動保存・変更の確定は行いません。試行しますか？";
         SequenceSyncRuntime.Lap("照合の用意");
-        if(!app.Window.UI.ShowConfirmDialog(confirmation,SequenceExperiment.Title))
+        if(!SequenceSyncRuntime.Batch && !app.Window.UI.ShowConfirmDialog(confirmation,SequenceExperiment.Title))
             return caseId+": キャンセル / 図への変更なし";
         SequenceSyncRuntime.Lap("確認画面（操作待ち）");
-        if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=editorId
+        if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || (!SequenceSyncRuntime.Batch && (app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=editorId))
             || Rounded(project,rootId,fresh,newShapes).Signature()!=original)
             throw new InvalidOperationException("S230: 確認中に対象の図が変化しました。");
         // The confirmation is modal, so nothing can be edited while it is up, and the SDK
@@ -1558,6 +1575,7 @@ public static class SequenceStructureTrial
         {
             var completion=new SequenceCommitTrial();
             completion.Run(apply,delegate {stage="変更の確定";transaction.Commit();},rollback,verifyRestored);
+            SequenceSyncRuntime.LastCommitted=completion.Committed;
             foreach(var error in new[]{completion.ApplyError,completion.CommitError,completion.RollbackError,completion.VerifyError})if(error!=null)log.AppendLine(error.ToString());
             Refresh(app,log);
             string cycle="";
@@ -1624,6 +1642,110 @@ public static class SequenceStructureTrial
         try{SequenceExperiment.Write(Path.Combine(directory,"trial-result.txt"),summary+"\n"+log.ToString());}
         catch(Exception ex){log.AppendLine("trial result save: "+ex);summary+="\n試行結果の記録: 保存失敗";}
         return summary;
+    }
+}
+
+// Runs a list of before/after PlantUML pairs on a copy of a project: each before becomes a
+// new diagram beside the one that is open, the after is applied to it, and the result is
+// compared again. Saving between steps is what lets the export run; this command is the
+// only one that saves. Run again after reopening the project to recheck every diagram.
+public static class SequenceBatch
+{
+    static string Line(string text,int max)
+    {
+        string flat=(text??"").Replace("\r","").Replace("\n"," / ");
+        return flat.Length>max?flat.Substring(0,max)+"…":flat;
+    }
+    static ISequenceDiagram DiagramOf(IProject project,string root)
+    {
+        var model=project.GetModelById(root) as IInteraction;
+        if(model==null)throw new InvalidOperationException("図のモデルが見つかりません: "+root);
+        return model.GetEditors().OfType<ISequenceDiagram>().Single();
+    }
+    static void Save(IApplication app,IProject project)
+    {
+        if(!app.Workspace.SaveProject(project,false))throw new InvalidOperationException("プロジェクトを保存できません。");
+    }
+    static int Compare(IApplication app,ISequenceDiagram diagram,string after)
+    {
+        SequenceSyncRuntime.BatchDiagram=diagram;SequenceSyncRuntime.BatchInput=after;
+        SequenceSyncRuntime.Preview(app);
+        return SequenceSyncRuntime.LastChanges;
+    }
+    public static void Run(IApplication app)
+    {
+        string title=SequenceExperiment.Title;
+        var project=app.Workspace.CurrentProject;
+        if(project==null || !(app.Workspace.CurrentEditor is ISequenceDiagram))
+        {app.Window.UI.ShowInformationDialog("シーケンス図を開いてから実行してください。新しい図はその図と同じ親に作ります。",title);return;}
+        string list=app.Window.UI.ShowOpenFileDialog("シナリオ一覧","シナリオ一覧 (*.txt)|*.txt");
+        if(string.IsNullOrEmpty(list))return;
+        string folder=Path.GetDirectoryName(list),resultPath=Path.ChangeExtension(list,".result.tsv");
+        var scenarios=new List<string[]>();
+        foreach(var raw in File.ReadAllLines(list,new UTF8Encoding(false,true)))
+        {
+            string line=raw.Trim();
+            if(line.Length==0 || line.StartsWith("#",StringComparison.Ordinal))continue;
+            var parts=line.Split('|').Select(p=>p.Trim()).ToArray();
+            if(parts.Length!=3){app.Window.UI.ShowInformationDialog("シナリオの行の形が違います（名前 | before | after）: "+line,title);return;}
+            scenarios.Add(new[]{parts[0],Path.Combine(folder,parts[1]),Path.Combine(folder,parts[2])});
+        }
+        bool apply=app.Window.UI.ShowConfirmDialog("シナリオ "+scenarios.Count+"件。\n"
+            +"「はい」: 実験用のコピーのプロジェクトで、各シナリオの図を新しく作り、反映して照合します。途中でプロジェクトを自動保存します。\n"
+            +"「いいえ」: 前回の実行で作った図を、保存せずに再検証します（開き直した後に使います）。",title);
+        var rows=new List<string>();var detail=new StringBuilder();var created=new List<string>();
+        var clock=System.Diagnostics.Stopwatch.StartNew();
+        var previous=new Dictionary<string,string>();
+        if(!apply)
+        {
+            if(!File.Exists(resultPath)){app.Window.UI.ShowInformationDialog("前回の実行結果がありません: "+resultPath,title);return;}
+            foreach(var row in File.ReadAllLines(resultPath,new UTF8Encoding(false)))
+            {var cells=row.Split('\t');if(cells.Length>=2 && cells[1].Length>0)previous[cells[0]]=cells[1];}
+        }
+        try
+        {
+            SequenceExperiment.BatchMode=true;SequenceSyncRuntime.Batch=true;
+            if(apply)Save(app,project);
+            foreach(var s in scenarios)
+            {
+                var watch=System.Diagnostics.Stopwatch.StartNew();
+                string root=null,result;
+                try
+                {
+                    if(apply)
+                    {
+                        SequenceExperiment.BatchInput=s[1];SequenceExperiment.LastRoot=null;
+                        SequenceExperiment.Run(app,true);
+                        root=SequenceExperiment.LastRoot;
+                        if(root==null)throw new InvalidOperationException("取込: "+Line(SequenceExperiment.Summary,200));
+                        Save(app,project);
+                        var diagram=DiagramOf(project,root);
+                        SequenceSyncRuntime.BatchDiagram=diagram;SequenceSyncRuntime.BatchInput=s[2];
+                        SequenceSyncRuntime.Preview(app,true,true,true,true);
+                        bool committed=SequenceSyncRuntime.LastCommitted;
+                        string reasons=SequenceSyncRuntime.LastReasons,summary=SequenceExperiment.Summary;
+                        detail.AppendLine("■ "+s[0]+"\n"+summary+"\n");
+                        Save(app,project);
+                        if(!committed)throw new InvalidOperationException("反映: "+(reasons.Length>0?reasons:Line(summary,200)));
+                    }
+                    else if(!previous.TryGetValue(s[0],out root))throw new InvalidOperationException("前回の実行で図が作られていません。");
+                    int changes=Compare(app,DiagramOf(project,root),s[2]);
+                    result=changes==0?"成功":changes<0?"照合できず: "+Line(SequenceExperiment.Summary,160):"差分 "+changes+"件";
+                }
+                catch(Exception ex){result="停止: "+Line(ex.Message,200);detail.AppendLine("■ "+s[0]+"\n"+ex+"\n");try{if(apply)Save(app,project);}catch(Exception){}}
+                rows.Add(s[0]+" | "+result+" | "+(watch.ElapsedMilliseconds/1000)+"秒");
+                created.Add(s[0]+"\t"+(root??""));
+            }
+        }
+        finally {SequenceExperiment.BatchMode=false;SequenceExperiment.BatchInput=null;SequenceSyncRuntime.Batch=false;SequenceSyncRuntime.BatchDiagram=null;SequenceSyncRuntime.BatchInput=null;}
+        if(apply)
+            try{File.WriteAllLines(resultPath,created,new UTF8Encoding(false));}
+            catch(Exception ex){rows.Add("前回結果の保存に失敗: "+ex.Message);}
+        int passed=rows.Count(r=>r.Contains(" | 成功 | "));
+        SequenceExperiment.Summary=(apply?"シナリオ一括検証（反映）":"シナリオ一括検証（再検証）")+": "+passed+"/"+scenarios.Count+"件成功 / "+(clock.ElapsedMilliseconds/1000)+"秒\n"
+            +string.Join("\n",rows)+(apply?"\n\nプロジェクトを閉じて開き直し、もう一度このボタンで「いいえ」（再検証）を実行してください。":"");
+        SequenceExperiment.Details=SequenceExperiment.Summary+"\f"+detail;
+        app.Window.UI.ShowInformationDialog(SequenceExperiment.Summary,title);
     }
 }
 // END GENERATED SequenceSyncRuntime.cs

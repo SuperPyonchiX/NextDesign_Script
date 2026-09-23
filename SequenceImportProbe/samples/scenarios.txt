@@ -1,0 +1,29 @@
+# シナリオ一括検証の一覧。1行に「名前 | before | after」。パスはこのファイルからの相対。
+# 「シナリオ一括検証」ボタンで、before から新しい図を作り、after を反映して照合する。
+受信接続の変更 | structure-reconnect-before.puml | structure-reconnect-after.puml
+実行区間の削除 | structure-trial-before.puml | structure-trial-after.puml
+接続変更と区間削除（複数） | structure-batch-before.puml | structure-batch-after.puml
+実行区間の非末尾削除 | structure-batch-before.puml | structure-nontail-after.puml
+実行区間の追加 | structure-batch-after.puml | structure-occupied-before.puml
+参加者の追加 | structure-batch-after.puml | structure-participant-after.puml
+参加者の削除 | structure-participant-after.puml | structure-batch-after.puml
+メッセージの削除 | structure-batch-after.puml | structure-message-after.puml
+メッセージの追加（末尾） | structure-message-after.puml | structure-batch-after.puml
+メッセージの挿入（途中） | structure-insert-before.puml | structure-insert-after.puml
+メッセージの挿入（枠の上） | structure-fragment-before.puml | structure-insert-frame-after.puml
+メッセージの挿入（枠の中） | structure-fragment-before.puml | structure-insert-inframe-after.puml
+メッセージの挿入（else のある枠） | structure-else-before.puml | structure-else-insert-after.puml
+フラグメントの追加（末尾） | structure-fragment-after.puml | structure-frameadd-after.puml
+フラグメントの追加（2つ目） | structure-fragment-before.puml | structure-frameadd-second.puml
+フラグメントの削除 | structure-fragment-before.puml | structure-fragment-after.puml
+既存メッセージを枠で囲む | structure-wrap-before.puml | structure-wrap-after.puml
+枠を外す | structure-wrap-after.puml | structure-wrap-before.puml
+分岐の追加 | structure-fragment-before.puml | structure-else-add-after.puml
+分岐の削除 | structure-else-before.puml | structure-else-drop-after.puml
+Note の追加 | structure-wrap-before.puml | structure-note-after.puml
+Note の削除 | structure-note-after.puml | structure-wrap-before.puml
+ref の追加 | structure-wrap-before.puml | structure-ref-after.puml
+ref の削除 | structure-ref-after.puml | structure-wrap-before.puml
+Note を ref に差し替え | structure-note-after.puml | structure-ref-after.puml
+順序の入れ替え | structure-wrap-before.puml | structure-swap-after.puml
+枠の中での入れ替え | structure-inframe-before.puml | structure-inframe-swap-after.puml

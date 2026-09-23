@@ -195,6 +195,15 @@ public static class PayloadTest {
    var crossBase=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
    if(SequenceStructurePreflight.Check(crossBase,SyncPlan.Build(crossBase,crossing,()=>Guid.NewGuid().ToString())).Candidate)
        throw new Exception("a message moved across a frame was taken for a reorder");
+   // Every scenario the batch runs has to be something the structural update accepts.
+   foreach(var line in File.ReadAllLines(Path.Combine(args[1],"scenarios.txt")).Select(l=>l.Trim()).Where(l=>l.Length>0 && !l.StartsWith("#")))
+   {
+       var cells=line.Split('|').Select(c=>c.Trim()).ToArray();
+       var from=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],cells[1])));
+       var to=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],cells[2])));
+       var scenarioGate=SequenceStructurePreflight.Check(from,SequenceNotePolicy.Build(from,to,()=>Guid.NewGuid().ToString()));
+       if(!scenarioGate.CanCommit())throw new Exception("scenario "+cells[0]+" is not applicable: "+scenarioGate.ToJson());
+   }
    var reconnectBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-before.puml")));
    var reconnectAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-after.puml")));
    var reconnectPlan=SyncPlan.Build(reconnectBefore,reconnectAfter,()=>Guid.NewGuid().ToString());
