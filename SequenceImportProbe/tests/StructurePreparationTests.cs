@@ -714,10 +714,68 @@ public static class StructurePreparationTests
         var added=package.AddedNotes[0];
         Require(expected.Models["new-note"]==PumlBuild.Json(new[]{"note-class","checked",ids[0],"False"}),"the note model was not predicted");
         Require(expected.Shapes[added.ShapeId]==PumlBuild.Json(new[]{"20","120","300","48"})+"checked","the note readback was not predicted");
-        Require(expected.Relations[added.RelationId].SequenceEqual(new[]{ids[0],"new-note","0","0"}),"the note ownership was not predicted");
+        Require(expected.Relations[added.RelationIds[0]].SequenceEqual(new[]{ids[0],"new-note","0","0"}),"the note ownership was not predicted");
+    }
+    // A ref under the message at 80, over both lanes, referring to another interaction.
+    static void AddedRef()
+    {
+        var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
+        var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
+        string editorId=raw["Editors"].Items.Single()["Id"].StringValue();
+        var current=new SequenceDocument();
+        current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
+        current.Elements.Add(new SequenceElement{Id=ids[2],Kind="participant",Parent=ids[0]});
+        current.Elements.Add(new SequenceElement{Id=ids[3],Kind="participant",Parent=ids[0]});
+        foreach(string id in new[]{ids[4],ids[5]})
+        {var e=new SequenceElement{Id=id,Kind="execution",Parent=ids[0]};e.Links["participant"]=new[]{id==ids[4]?ids[2]:ids[3]};current.Elements.Add(e);}
+        var m=new SequenceElement{Id=ids[6],Kind="message",Parent=ids[0],Order=0,Text="probe()"};m.Attributes["sort"]="sync";
+        m.Links["sender"]=new[]{ids[2]};m.Links["receiver"]=new[]{ids[3]};m.Links["sendExecution"]=new[]{ids[4]};m.Links["receiveExecution"]=new[]{ids[5]};
+        current.Elements.Add(m);
+        var desired=current.Copy();
+        var use=new SequenceElement{Id="new-ref",Kind="ref",Parent=ids[0],Order=1,Text="Handshake"};
+        use.Links["targets"]=new[]{ids[2],ids[3]};use.Attributes["reference"]="other-interaction";desired.Elements.Add(use);
+        var plan=new SyncPlan{Expected=desired};
+        plan.Changes.Add(new SequenceChange{Action="add",Kind="ref",Id="new-ref",Line=6});
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate && gate.AddRefs.SequenceEqual(new[]{"new-ref"}),"an added ref was not a candidate: "+gate.ToJson());
+        var types=new SequenceRefTypes{Class="ref-class",Owns=new[]{"owns-ref","Embed","f1"},Crossing=new[]{"covers","Ref","f2"},RefersTo=new[]{"refers","Ref","f3"}};
+        var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan,null,null,types);
+        var added=package.AddedNotes.Single();
+        Require(added.Kind=="ref" && added.RelationIds.Length==4,"a ref needs its ownership, two lanes and its target");
+        var patch=SequenceJson.Parse(package.ReconnectJson);
+        Require(patch["Entities"].Items.Single(e=>e["Id"].StringValue()=="new-ref")["EntityType"].StringValue()=="InteractionUse","the ref entity was not built");
+        Require(patch["Relations"].Items.Count(r=>r["MetamodelId"].StringValue()=="covers" && r["SourceId"].StringValue()=="new-ref")==2,"the ref does not cover both lanes");
+        Require(patch["Relations"].Items.Single(r=>r["MetamodelId"].StringValue()=="refers")["TargetId"].StringValue()=="other-interaction","the ref does not refer to its interaction");
+        var shape=patch["Editors"].Items.Single()["InteractionUses"].Items.Single();
+        // Lane centres 70 and 270: 55 out on the left, 110 wider than the span.
+        Require(shape["X"].StringValue()=="15" && shape["Y"].StringValue()=="120" && shape["Width"].StringValue()=="310" && shape["Height"].StringValue()=="48",
+            "the ref is not placed over its lanes: "+shape.ToJsonString());
+        Require(SequenceJson.Parse(package.EditorAfterDeleteJson)["Editors"].Items.Single()["InteractionUses"].Items.Count==1,"the delete stage editor lost the ref");
+        var state=new SequenceTrialState();
+        foreach(var e in raw["Entities"].Items)state.Models[e["Id"].StringValue()]=e.ToJsonString();
+        foreach(var r in raw["Relations"].Items)
+        {
+            string id=r["Id"].StringValue();
+            state.Relations[id]=new[]{r["SourceId"].StringValue(),r["TargetId"].StringValue(),r["SourceIndex"].Raw,r["TargetIndex"].Raw};
+            state.RelationFields[id]=r["MetamodelId"].StringValue();
+        }
+        foreach(var sh in SequenceEditorDocument.Read(raw.ToJsonString(),ids[0],editorId).Shapes())
+        {string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        var view=raw["Editors"].Items.Single();
+        foreach(var w in view["Messages"].Items)state.Shapes[w["Id"].StringValue()]=PumlBuild.Json(new[]{"m",w["TargetY"].Raw,w["TargetY"].Raw,"0"});
+        foreach(var bar in view["ExecutionSpecifications"].Items)
+            state.Shapes[bar["Id"].StringValue()]=PumlBuild.Json(new[]{bar["X"].Raw,bar["Y"].Raw,"16",bar["Height"].Raw,bar["Length"].Raw});
+        foreach(var lane in view["Lifelines"].Items)
+            state.Shapes[lane["Id"].StringValue()]=PumlBuild.Json(new[]{lane["X"].Raw,"0","100","40"})+lane["LaneLength"].Raw;
+        state.Ports[ids[6]]=new[]{ids[4],ids[5],ids[2],ids[3],"sync"};
+        var expected=state.Expected(package,plan,false);
+        Require(expected.Shapes[added.ShapeId]==PumlBuild.Json(new[]{"15","120","310","48"})+"Handshake","the ref readback was not predicted");
+        int second=Array.IndexOf(added.RelationTargets,ids[3]);
+        Require(expected.Relations[added.RelationIds[second]].SequenceEqual(new[]{"new-ref",ids[3],"1","0"}),"the second lane was not counted after the first");
     }
     public static void Run()
     {
+        AddedRef();
         AddedNote();
         WrappedMessage();
         AddedMessage();

@@ -1,4 +1,4 @@
-# SequenceImportProbe 引き継ぎ（2026-09-23 / 0.9.10）
+# SequenceImportProbe 引き継ぎ（2026-09-23 / 0.9.11）
 
 PlantUML を正本に Next Design の既存シーケンス図を差分更新する C# スクリプト拡張。この文書は作業を別セッションへ引き継ぐためのもの。**まず `.local/nd-knowledge/index.md` を読むこと。** K001〜K160 に実機で確かめた事実が入っている。推測で候補を潰す前に、そこと製品ログを見る。
 
@@ -66,6 +66,13 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 - サンプル: `structure-wrap-before.puml` ⇔ `structure-note-after.puml`（firstDone の下に Note）
 - 0.9.9 実機: 追加は反映できたが、再比較で B の最初のバーの endBefore が Note → second() に変わった。直前のメッセージの直後で閉じるバーまで「挿入位置をまたぐ」として伸ばしていたため。0.9.10 で、伸ばすのは次の段まで開いているバー（と、挿入するメッセージがつながるバー）に限った。途中へのメッセージ挿入にも同じ誤りがあった
 
+### 0.9.11: ref の追加・削除（実機未確認）
+
+- Note と同じ置き方（相互作用直下の既存メッセージの1段下、高さ＋16 だけ下を下げる）。幅は対象の参加者に合わせる（左 55 外、幅は範囲＋110、最小150）
+- 関連: 相互作用の所有、対象レーンごとの CrossingFragmentCoveredLifeline、参照先が名前で一意に解決できたときだけ RefersTo。型は `PumlRuntime.RefTypes` で見本なしに解決
+- 削除: ref が出している関連（レーン・参照先）は一緒に消える。所有以外で ref を指す関連があれば名指しで停止。枠の中の ref は対象外
+- サンプル: `structure-wrap-before.puml` ⇔ `structure-ref-after.puml`（firstDone の下に `ref over A, B : Handshake`）
+
 ## 3. 未解決（A15）: メッセージ・フラグメントを追加した更新の Undo で製品が停止する
 
 - 例外: `System.ArgumentOutOfRangeException` at `DensoCreate.Indio.IMF.Kernel.IML.AddListItemAction<T>.InternalUnExecute()`
@@ -83,7 +90,7 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 |---|---|
 | move: 既存メッセージを枠で囲む（0.9.6 の見た目確認だけ残り） | 1 |
 | move: 順序の入れ替え・枠から出す | 3〜5 |
-| ref の追加・削除（RefersTo リンク） | 3〜5 |
+| ref の追加・削除（0.9.11 実装済み・実機未確認） | 1〜3 |
 | オペランド単独の追加・削除 | 2〜3 |
 | create/destroy | 未定（A10 の正規化が前提） |
 | 実行区間削除の取り直し | 1 |

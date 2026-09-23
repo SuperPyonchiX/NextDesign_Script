@@ -141,6 +141,14 @@ public static class PayloadTest {
    var noteDropGate=SequenceStructurePreflight.Check(noted,SequenceNotePolicy.Build(noted,noteBase,()=>Guid.NewGuid().ToString()));
    if(!noteDropGate.Candidate || noteDropGate.DeleteNotes.Count!=1 || noteDropGate.Targets!=1)
        throw new Exception("removing a note was not a single candidate: "+noteDropGate.ToJson());
+   // A ref put in under a message, and taken out again.
+   var refed=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-ref-after.puml")));
+   var refAddGate=SequenceStructurePreflight.Check(noteBase,SequenceNotePolicy.Build(noteBase,refed,()=>Guid.NewGuid().ToString()));
+   if(!refAddGate.Candidate || refAddGate.AddRefs.Count!=1 || refAddGate.Targets!=1)
+       throw new Exception("adding a ref was not a single candidate: "+refAddGate.ToJson());
+   var refDropGate=SequenceStructurePreflight.Check(refed,SequenceNotePolicy.Build(refed,noteBase,()=>Guid.NewGuid().ToString()));
+   if(!refDropGate.Candidate || refDropGate.DeleteRefs.Count!=1 || refDropGate.Targets!=1)
+       throw new Exception("removing a ref was not a single candidate: "+refDropGate.ToJson());
    var reconnectBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-before.puml")));
    var reconnectAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-after.puml")));
    var reconnectPlan=SyncPlan.Build(reconnectBefore,reconnectAfter,()=>Guid.NewGuid().ToString());

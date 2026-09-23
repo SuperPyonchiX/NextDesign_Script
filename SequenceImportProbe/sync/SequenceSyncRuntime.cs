@@ -306,7 +306,15 @@ public static class SequenceSyncRuntime
                         catch(Exception ex) {throw new InvalidOperationException("S220: Noteの型を解決できません: "+ex.Message,ex);}
                         log.AppendLine("note types: "+noteTypes.Class+" / "+PumlBuild.Json(noteTypes.Owns)+" / "+noteTypes.Field+":"+noteTypes.Storage);
                     }
-                    var preparation=SequenceStructurePreparation.Build(exported,diagram.Id,current.Document,plan,frameTypes,noteTypes);
+                    SequenceRefTypes refTypes=null;
+                    if(preflight.AddRefs.Count>0)
+                    {
+                        try {refTypes=PumlRuntime.RefTypes(diagram,project);}
+                        catch(Exception ex) {throw new InvalidOperationException("S220: refの型を解決できません: "+ex.Message,ex);}
+                        log.AppendLine("ref types: "+refTypes.Class+" / "+PumlBuild.Json(refTypes.Owns)+" / "+PumlBuild.Json(refTypes.Crossing)
+                            +" / "+(refTypes.RefersTo==null?"no RefersTo":PumlBuild.Json(refTypes.RefersTo)));
+                    }
+                    var preparation=SequenceStructurePreparation.Build(exported,diagram.Id,current.Document,plan,frameTypes,noteTypes,refTypes);
                     var raw=SequenceJson.Parse(exported);
                     var exportedRelations=new HashSet<string>(raw["Relations"].Items.Select(r=>SequenceEditorDocument.Value(r,"Id")));
                     foreach(string id in preflight.DeleteExecutions.Concat(preflight.ReconnectMessages))
@@ -435,19 +443,19 @@ public static class SequenceStructureTrial
             +prepared.AddedParticipants.Length+prepared.DeleteParticipantIds.Length
             +prepared.DeleteMessageIds.Length+prepared.AddedMessages.Length
             +prepared.DeleteFrameIds.Length+prepared.AddedFragments.Length+prepared.AddedOperands.Length+reconnectCount
-            +prepared.MovedMessages.Length+prepared.DeleteNoteIds.Length+prepared.AddedNotes.Length;
+            +prepared.MovedMessages.Length+prepared.DeleteNoteIds.Length+prepared.AddedNotes.Length+prepared.DeleteRefIds.Length;
         Func<SequenceChange,bool> supported=c=>
             (c.Action=="delete" && c.Kind=="execution")
             // Boundary anchors shifting with a deletion write nothing. The preflight only
             // lets a plan through when that is all an execution update amounts to.
             || (c.Action=="update" && c.Kind=="execution")
             || (reconnectCommit && c.Action=="update" && c.Kind=="message")
-            || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message" || c.Kind=="note"
+            || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message" || c.Kind=="note" || c.Kind=="ref"
                 || c.Kind=="fragment" || c.Kind=="operand"))
             // A wrap moves messages into the new frame, and bars follow them by position.
             || (reconnectCommit && c.Action=="move" && (c.Kind=="message" || c.Kind=="execution"))
             || (reconnectCommit && c.Action=="delete"
-                && (c.Kind=="participant" || c.Kind=="message" || c.Kind=="fragment" || c.Kind=="operand" || c.Kind=="note"));
+                && (c.Kind=="participant" || c.Kind=="message" || c.Kind=="fragment" || c.Kind=="operand" || c.Kind=="note" || c.Kind=="ref"));
         if(retain && (touched==0 || (!reconnectCommit && touched!=prepared.DeleteIds.Length)
             || plan.Changes.Any(c=>!supported(c))))
             throw new InvalidOperationException("S231: 確定モードの対象外の差分があります。");
@@ -463,7 +471,7 @@ public static class SequenceStructureTrial
             .Concat(prepared.StretchedLifelines.Select(a=>a.ShapeId))
             .Concat(prepared.ShiftedShapes.Select(a=>a.ShapeId)).ToArray();
         var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
-            .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).Concat(prepared.DeleteNoteIds).ToArray();
+            .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).Concat(prepared.DeleteNoteIds).Concat(prepared.DeleteRefIds).ToArray();
         var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
         var expectedReconnect=before.Expected(prepared,plan,false);
         var expectedFinal=before.Expected(prepared,plan,true);
@@ -594,7 +602,7 @@ public static class SequenceStructureTrial
             +" / 参加者追加 "+prepared.AddedParticipants.Length+"件 / 参加者削除 "+prepared.DeleteParticipantIds.Length+"件"
             +" / メッセージ削除 "+prepared.DeleteMessageIds.Length+"件"
             +" / メッセージ追加 "+prepared.AddedMessages.Length+"件"
-            +" / フラグメント関連の削除 "+prepared.DeleteFrameIds.Length+"件 / Note削除 "+prepared.DeleteNoteIds.Length+"件 / Note追加 "+prepared.AddedNotes.Length+"件"
+            +" / フラグメント関連の削除 "+prepared.DeleteFrameIds.Length+"件 / Note削除 "+prepared.DeleteNoteIds.Length+"件 / Note・ref追加 "+prepared.AddedNotes.Length+"件 / ref削除 "+prepared.DeleteRefIds.Length+"件"
             +" / フラグメント追加 "+prepared.AddedFragments.Length+"件 / オペランド追加 "+prepared.AddedOperands.Length+"件"
             +" / タイムラインを伸ばした参加者 "+prepared.StretchedLifelines.Length+"件"
             +(prepared.InsertedMessageId.Length>0?" / 途中への挿入で下げた図形 "+prepared.ShiftedShapes.Length+"件":"")
