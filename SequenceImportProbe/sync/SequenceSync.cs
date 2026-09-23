@@ -955,15 +955,18 @@ public sealed class SequenceStructurePreflight
             // The room is made below the message just above. That only lands in the right
             // container when that message shares it: at the head of an operand, or just
             // after a frame closes, the point would fall on the wrong side of a boundary.
+            // Several new elements may follow one another; the first of them sits under an
+            // existing message, and each is checked on its own.
             SequenceElement previous;
-            if(at<1 || !after.TryGetValue(walk[at-1],out previous) || previous.Kind!="message"
-                || !before.ContainsKey(previous.Id) || previous.Parent!=added.Parent)
-                return "挿入するメッセージの直前は、同じ所有先にある既存のメッセージにしてください。"
+            if(at<1 || !after.TryGetValue(walk[at-1],out previous) || previous.Parent!=added.Parent
+                || !((previous.Kind=="message" && before.ContainsKey(previous.Id))
+                    || (adding.Contains(previous.Id) && (previous.Kind=="message" || previous.Kind=="note" || previous.Kind=="ref"))))
+                return "挿入するメッセージの直前は、同じ所有先にある既存のメッセージか、この更新で追加するメッセージ・Note・refにしてください。"
                     +"オペランドの先頭や、枠の直後への挿入は対象外です。";
             var below=walk.Skip(at+1).Where(before.ContainsKey).Select(id=>after[id]).ToArray();
-            if(below.Any(e=>e.Kind!="message" && e.Kind!="fragment" && e.Kind!="operand"))
-                return "挿入位置より下に"+below.First(e=>e.Kind!="message" && e.Kind!="fragment" && e.Kind!="operand").Kind
-                    +"があります。メッセージと枠だけを下げる挿入に限ります。";
+            if(below.Any(e=>e.Kind!="message" && e.Kind!="fragment" && e.Kind!="operand" && e.Kind!="note" && e.Kind!="ref"))
+                return "挿入位置より下に"+below.First(e=>e.Kind!="message" && e.Kind!="fragment" && e.Kind!="operand" && e.Kind!="note" && e.Kind!="ref").Kind
+                    +"があります。メッセージ・枠・Note・refだけを下げる挿入に限ります。";
         }
         var order=Flatten(plan.Expected);
         var earlier=order.Take(Array.IndexOf(order,added.Id)).Select(id=>after[id]).Where(e=>e.Kind=="message").ToArray();
@@ -1158,13 +1161,16 @@ public sealed class SequenceStructurePreflight
             return "追加する"+added.Kind+"を参照する要素があります。";
         var walk=Flatten(plan.Expected);
         int at=Array.IndexOf(walk,added.Id);
+        var adding=new HashSet<string>(plan.Changes.Where(c=>c.Action=="add").Select(c=>c.Id));
         SequenceElement previous;
-        if(at<1 || !after.TryGetValue(walk[at-1],out previous) || previous.Kind!="message" || !before.ContainsKey(previous.Id) || previous.Parent!=root)
-            return "追加する"+added.Kind+"の直前は、相互作用直下の既存メッセージにしてください。図の先頭・枠の直後への追加は対象外です。";
+        if(at<1 || !after.TryGetValue(walk[at-1],out previous) || previous.Parent!=root
+            || !((previous.Kind=="message" && before.ContainsKey(previous.Id))
+                || (adding.Contains(previous.Id) && (previous.Kind=="message" || previous.Kind=="note" || previous.Kind=="ref"))))
+            return "追加する"+added.Kind+"の直前は、相互作用直下の既存メッセージか、この更新で追加するメッセージ・Note・refにしてください。図の先頭・枠の直後への追加は対象外です。";
         var below=walk.Skip(at+1).Where(before.ContainsKey).Select(id=>after[id]).ToArray();
-        if(below.Any(e=>e.Kind!="message" && e.Kind!="fragment" && e.Kind!="operand" && e.Kind!="note"))
-            return "追加するNoteより下に"+below.First(e=>e.Kind!="message" && e.Kind!="fragment" && e.Kind!="operand" && e.Kind!="note").Kind
-                +"があります。メッセージ・枠・Noteだけを下げる変更に限ります。";
+        if(below.Any(e=>e.Kind!="message" && e.Kind!="fragment" && e.Kind!="operand" && e.Kind!="note" && e.Kind!="ref"))
+            return "追加する"+added.Kind+"より下に"+below.First(e=>e.Kind!="message" && e.Kind!="fragment" && e.Kind!="operand" && e.Kind!="note" && e.Kind!="ref").Kind
+                +"があります。メッセージ・枠・Note・refだけを下げる変更に限ります。";
         return null;
     }
     // The reverse of wrapping: a top-level frame goes, every operand with it, and what the
@@ -1416,10 +1422,14 @@ public sealed class SequenceStructurePreflight
             result.ReconnectMessages.Add(change.Id);
             if((old.Text??"")!=(next.Text??""))result.Renames.Add(change.Id);
         }
-        // Each of these makes room by moving what is below; two in one update would have to
-        // agree on where everything goes.
-        if(result.AddNotes.Count+result.AddRefs.Count>1 || (result.AddNotes.Count+result.AddRefs.Count>0 && (result.AddMessages.Count+result.AddFragments.Count>0)))
-            result.Reasons.Add("Note・refの追加は1件ずつ、メッセージや枠の追加とは分けて反映してください。");
+        // Messages, notes and refs make room together and compose. A new frame or branch is
+        // laid out from where the diagram ends as it stands, so it cannot share an update
+        // with anything that moves that.
+        bool framed=result.AddFragments.Count+result.AddOperands.Count>0;
+        bool placed=result.AddNotes.Count+result.AddRefs.Count>0
+            || result.AddMessages.Any(id=>!result.AddOperands.Contains(after[id].Parent));
+        if(framed && placed)
+            result.Reasons.Add("枠・分岐の追加は、ほかの場所へのメッセージ・Note・refの追加と分けて反映してください。");
         if(result.UnwrapFragments.Count>1 || (result.UnwrapFragments.Count==1 && (result.Targets!=1+result.DeleteOperands.Count
             || result.DeleteOperands.Any(o=>before[o].Parent!=result.UnwrapFragments[0]))))
             result.Reasons.Add("枠を外す変更は、ほかの変更と分けて1件ずつ反映してください。");
@@ -1527,6 +1537,20 @@ public sealed class SequenceShiftedShape
 {
     public string ModelId, ShapeId, Kind;
     public string[] Keys=new string[0], Values=new string[0];
+}
+
+// New elements placed one after another under one existing message, and the room each
+// takes. Replaced names a note or ref removed from the same spot, whose height is given back.
+public sealed class RoomRun
+{
+    public string Anchor, Replaced;
+    // Something already drawn comes after it, or it goes into a frame that has to grow.
+    public bool Inserted;
+    public double At, ReplacedHeight;
+    public List<string> Items=new List<string>();
+    public List<double> Rooms=new List<double>();
+    public HashSet<string> Ports=new HashSet<string>(StringComparer.Ordinal);
+    public double Room { get { return Rooms.Sum(); } }
 }
 
 // A message already drawn that a new frame now holds: only the operand's reference to
@@ -1839,18 +1863,55 @@ public sealed class SequenceStructurePreparation
             newRelations.Add(relate(types.OperandMessage,relationId,after[id].Parent,id));
             movedMessages.Add(new SequenceMovedMessage{ModelId=id,OperandId=after[id].Parent,RelationId=relationId,Field=types.OperandMessage[2]});
         }
-        // A message that has existing elements after it is an insertion: it needs room
-        // made below, and the checks that keep an appended message off an occupied row
-        // and inside the bars as they stand do not apply to it.
+        // Everything new that is placed by the room it takes, rather than by a new frame's
+        // layout, goes in runs: the new elements that follow one existing message, in order.
+        // Each run makes room right under that message, so an original position p moves
+        // down by the room of every run whose message lies above it. New elements stack
+        // under their message one after another. Several runs in one update compose.
+        var runs=new List<RoomRun>();
+        var placedY=new Dictionary<string,double>(StringComparer.Ordinal);
         string insertedId="";
-        foreach(string id in gate.AddMessages)
         {
             var walk=SequenceStructurePreflight.Flatten(plan.Expected);
-            // Going into an operand already drawn grows its frame even at the very end.
-            bool intoFrame=after[id].Parent!=root && before.ContainsKey(after[id].Parent);
-            if(!intoFrame && !walk.SkipWhile(e=>e!=id).Skip(1).Any(before.ContainsKey))continue;
-            Require(insertedId.Length==0,"1回の更新で挿入できるメッセージは1件です。");
-            insertedId=id;
+            var oldWalk=SequenceStructurePreflight.Flatten(current);
+            var placed=new HashSet<string>(gate.AddMessages.Where(id=>!layout.ContainsKey(id)).Concat(gate.AddNotes).Concat(gate.AddRefs));
+            var shapes0=editor.Shapes();
+            RoomRun run=null;
+            for(int i=0;i<walk.Length;i++)
+            {
+                string id=walk[i];
+                if(!placed.Contains(id)){if(before.ContainsKey(id))run=null;continue;}
+                if(run==null)
+                {
+                    var anchor=walk.Take(i).Where(e=>before.ContainsKey(e) && before[e].Kind=="message").LastOrDefault();
+                    Require(anchor!=null,"追加する要素の直前に既存のメッセージがありません。");
+                    var anchorShapes=shapes0.Where(sh=>V(sh,"ModelId")==anchor).ToArray();
+                    Require(anchorShapes.Length==1,"直前のメッセージの図形を一意に取得できません。");
+                    run=new RoomRun{Anchor=anchor,At=Read(anchorShapes[0],"TargetY")};
+                    // A note or ref this update removes from right under the same message gives
+                    // its place to the new one, which then only makes up the difference in height.
+                    int oldAt=System.Array.IndexOf(oldWalk,anchor);
+                    if(oldAt>=0 && oldAt+1<oldWalk.Length && (gate.DeleteNotes.Contains(oldWalk[oldAt+1]) || gate.DeleteRefs.Contains(oldWalk[oldAt+1])))
+                    {
+                        run.Replaced=oldWalk[oldAt+1];
+                        run.ReplacedHeight=Read(shapes0.Single(sh=>V(sh,"ModelId")==run.Replaced),"Height");
+                    }
+                    runs.Add(run);
+                }
+                var wanted=after[id];
+                double room=wanted.Kind=="message"?MessageSpacing:BoxHeight(wanted.Text)+MessageSpacing;
+                if(wanted.Kind!="message" && run.Replaced!=null && run.Items.Count==0)room-=run.ReplacedHeight+MessageSpacing;
+                run.Items.Add(id);run.Rooms.Add(room);
+                if(wanted.Kind=="message")foreach(string role in new[]{"sendExecution","receiveExecution"})run.Ports.Add(wanted.Links[role].Single());
+                // Any new element with something already drawn after it is an insertion.
+                if(walk.Skip(i+1).Any(before.ContainsKey) || (after[id].Parent!=root && before.ContainsKey(after[id].Parent))){insertedId=id;run.Inserted=true;}
+            }
+            Func<double,double> above=p=>runs.Where(r=>r.At<p).Sum(r=>r.Room);
+            foreach(var r in runs)
+            {
+                double y=r.At+above(r.At)+MessageSpacing;
+                for(int k=0;k<r.Items.Count;k++){placedY[r.Items[k]]=y;y+=r.Rooms[k];}
+            }
         }
         var wires=new List<SequenceAddedMessage>();
         var reach=new Dictionary<string,double>(StringComparer.Ordinal);
@@ -1873,34 +1934,16 @@ public sealed class SequenceStructurePreparation
             if(layout.ContainsKey(id))y=layout[id]["Y"];
             else
             {
-                Require(earlier.Length>0,"直前のメッセージを退避データから取得できません。");
-                string previous=earlier[earlier.Length-1].Id;
-                var previousShapes=shapes4.Where(sh=>V(sh,"ModelId")==previous).ToArray();
-                Require(previousShapes.Length==1,"直前のメッセージの図形を一意に取得できません。");
-                double at=Read(previousShapes[0],"TargetY");
-                y=at+MessageSpacing;
+                y=placedY[id];
+                var run=runs.Single(r=>r.Items.Contains(id));
+                // The bars it uses have to be open where its run starts; they are grown to it.
                 foreach(string port in new[]{send,receive})
                 {
                     var bar=shapes4.Where(sh=>V(sh,"ModelId")==port).ToArray();
                     Require(bar.Length==1,"接続先の実行区間の図形を一意に取得できません。");
-                    double top=Read(bar[0],"Y"),bottom=top+Read(bar[0],"Length");
-                    // An appended message takes only space the bars already cover. An
-                    // inserted one lands on a bar that is open across the point it goes in,
-                    // and that bar grows with the room made below.
-                    if(id==insertedId)
-                        Require(top<=at && bottom>=at,"挿入位置をまたぐ実行区間につないでください。");
-                    else
-                    {
-                        Require(y>=top,"追加するメッセージが既存の実行区間より上になります。");
-                        // A generated bar ends 16 under its last message, so a message
-                        // appended one step lower lands just past it; the bar reaches down.
-                        if(y+16>bottom)reach[port]=Math.Max(reach.ContainsKey(port)?reach[port]:0,y+16);
-                    }
+                    Require(Read(bar[0],"Y")<=run.At,"追加するメッセージが既存の実行区間より上になります。");
                 }
             }
-            if(id!=insertedId)
-                Require(shapes4.All(sh=>V(sh,"ModelId")==template || sh["TargetY"]==null || Read(sh,"TargetY")!=y),
-                    "追加するメッセージの位置に既存の図形があります。");
             var entity=SequenceJson.Parse(byId[template].ToJsonString());
             entity.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(id));
             string name=wanted.Text??"";
@@ -2091,108 +2134,6 @@ public sealed class SequenceStructurePreparation
         // drawn at or under the point it goes in moves down by one message's spacing, and
         // a bar or frame open across that point grows instead of moving.
         var shifted=new List<SequenceShiftedShape>();
-        // Bars an appended message reaches past grow to it, and the lanes grow as far as
-        // the diagram now goes below where it ended.
-        if(reach.Count>0)
-        {
-            var all=editor.Shapes();
-            double floor=0;
-            foreach(var sh in all)
-            {
-                if(sh["TargetY"]!=null)floor=Math.Max(floor,Read(sh,"TargetY"));
-                if(sh["Y"]!=null && sh["Length"]!=null)floor=Math.Max(floor,Read(sh,"Y")+Read(sh,"Length"));
-            }
-            double growth=Math.Max(0,reach.Values.Max()-floor);
-            var laneIds=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
-            foreach(var sh in all)
-            {
-                string model=V(sh,"ModelId");
-                var keys=new List<string>();var values=new List<string>();
-                if(reach.ContainsKey(model))
-                {
-                    string grown=Number(reach[model]-Read(sh,"Y"));
-                    keys.Add("Length");values.Add(grown);keys.Add("Height");values.Add(grown);
-                }
-                else if(growth>0 && laneIds.Contains(model) && sh["LaneLength"]!=null)
-                {keys.Add("LaneLength");values.Add(Number(Read(sh,"LaneLength")+growth));}
-                if(keys.Count==0)continue;
-                foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
-                    .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items).Where(n=>V(n,"Id")==V(sh,"Id")))
-                    for(int i=0;i<keys.Count;i++)node.Properties[keys[i]]=SequenceJson.Parse(values[i]);
-                shifted.Add(new SequenceShiftedShape{ModelId=model,ShapeId=V(sh,"Id"),Kind=reach.ContainsKey(model)?"execution":"participant",Keys=keys.ToArray(),Values=values.ToArray()});
-            }
-        }
-        if(insertedId.Length>0)
-        {
-            string id=insertedId;
-            var wanted=after[id];
-            var walk=SequenceStructurePreflight.Flatten(plan.Expected);
-            var earlier=walk.TakeWhile(e=>e!=id).Where(before.ContainsKey)
-                .Where(e=>after.ContainsKey(e) && after[e].Kind=="message").ToArray();
-            Require(earlier.Length>0,"挿入位置の直前のメッセージを取得できません。");
-            var previousShapes=editor.Shapes().Where(sh=>V(sh,"ModelId")==earlier[earlier.Length-1]).ToArray();
-            Require(previousShapes.Length==1,"直前のメッセージの図形を一意に取得できません。");
-            double at=Read(previousShapes[0],"TargetY");
-            var ports=new HashSet<string>(new[]{"sendExecution","receiveExecution"}
-                .Select(role=>wanted.Links[role].Single()));
-            var shapesNow=editor.Shapes();
-            Func<string,string> kindOf=model=>before.ContainsKey(model)?before[model].Kind:"";
-            foreach(var shape in shapesNow)
-            {
-                string model=V(shape,"ModelId");
-                var keys=new List<string>();var values=new List<string>();
-                if(kindOf(model)=="fragment")
-                {
-                    // A frame below moves whole; one the point falls inside grows.
-                    double top=Read(shape,"Y"),height=Read(shape,"Height");
-                    if(top>at) {keys.Add("Y");values.Add(Number(top+MessageSpacing));}
-                    else if(top+height>at) {keys.Add("Height");values.Add(Number(height+MessageSpacing));}
-                }
-                else if(kindOf(model)=="operand")
-                {
-                    // An operand has no rectangle, only its offset from the frame's top. It
-                    // moves with a frame that moves, so only a later operand of a frame that
-                    // grows needs a new offset.
-                    string owner=before[model].Parent;
-                    var boxes=shapesNow.Where(sh=>V(sh,"ModelId")==owner).ToArray();
-                    Require(boxes.Length==1,"オペランドの枠の図形を一意に取得できません。");
-                    double top=Read(boxes[0],"Y"),height=Read(boxes[0],"Height"),offset=Read(shape,"Position");
-                    if(top<=at && top+height>at && top+offset>at)
-                    {keys.Add("Position");values.Add(Number(offset+MessageSpacing));}
-                }
-                else if(shape["TargetY"]!=null && shape["SourceY"]!=null && Read(shape,"TargetY")>at)
-                {
-                    keys.Add("SourceY");values.Add(Number(Read(shape,"SourceY")+MessageSpacing));
-                    keys.Add("TargetY");values.Add(Number(Read(shape,"TargetY")+MessageSpacing));
-                }
-                else if(shape["Length"]!=null && shape["Y"]!=null)
-                {
-                    double top=Read(shape,"Y"),bottom=top+Read(shape,"Length");
-                    if(top>at) {keys.Add("Y");values.Add(Number(top+MessageSpacing));}
-                    // Only a bar still open at the next step grows, or one the new message lands
-                    // on. A bar that closes right after the message above ends before the new one.
-                    else if(bottom>=at+MessageSpacing || ports.Contains(model))
-                    {
-                        // A bar carries its length as both Height and Length, and the
-                        // product keeps the pair in step. Writing only one is ignored.
-                        string grown=Number(Read(shape,"Length")+MessageSpacing);
-                        keys.Add("Length");values.Add(grown);
-                        if(shape["Height"]!=null) {keys.Add("Height");values.Add(grown);}
-                    }
-                }
-                else if(shape["LaneLength"]!=null)
-                {keys.Add("LaneLength");values.Add(Number(Read(shape,"LaneLength")+MessageSpacing));}
-                if(keys.Count==0)continue;
-                foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
-                    .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items)
-                    .Where(n=>V(n,"Id")==V(shape,"Id")))
-                    for(int i=0;i<keys.Count;i++)node.Properties[keys[i]]=SequenceJson.Parse(values[i]);
-                shifted.Add(new SequenceShiftedShape{ModelId=model,ShapeId=V(shape,"Id"),
-                    Kind=ports.Contains(model)?"port":"other",Keys=keys.ToArray(),Values=values.ToArray()});
-            }
-            Require(ports.All(port=>shifted.Any(s=>s.ModelId==port)),
-                "挿入位置をまたぐ実行区間がありません。既に開いているバーの間に挿入してください。");
-        }
         // A new note goes one message step under the message above it, as tall as its text,
         // and what was below moves down by that height and one message step. A bar open
         // across the point grows; the lanes follow.
@@ -2202,25 +2143,7 @@ public sealed class SequenceStructurePreparation
             var wanted=after[id];string text=wanted.Text??"";bool isRef=wanted.Kind=="ref";
             if(isRef)Require(refTypes!=null && refTypes.Owns!=null && refTypes.Crossing!=null,"refの型情報が解決できていません。");
             else Require(noteTypes!=null && noteTypes.Owns!=null && noteTypes.Owns.Length==3,"Noteの型情報が解決できていません。");
-            var walk=SequenceStructurePreflight.Flatten(plan.Expected);
-            string previous=walk[System.Array.IndexOf(walk,id)-1];
-            var previousShapes=editor.Shapes().Where(sh=>V(sh,"ModelId")==previous).ToArray();
-            Require(previousShapes.Length==1,"Noteの直前のメッセージの図形を一意に取得できません。");
-            double at=Read(previousShapes[0],"TargetY"),top=at+MessageSpacing;
-            double height=Math.Max(48,16+20*text.Replace("\r\n","\n").Split('\n').Length),room=height+MessageSpacing;
-            // A note or ref this update removes from the same spot gives its space to the new
-            // one, which then only makes up the difference in height. Otherwise the removed
-            // box would leave its gap under the new one.
-            var oldWalk=SequenceStructurePreflight.Flatten(current);
-            int oldAt=System.Array.IndexOf(oldWalk,previous);
-            string replaced=oldAt>=0 && oldAt+1<oldWalk.Length && (gate.DeleteNotes.Contains(oldWalk[oldAt+1]) || gate.DeleteRefs.Contains(oldWalk[oldAt+1]))
-                ?oldWalk[oldAt+1]:null;
-            if(replaced!=null)
-            {
-                var replacedShapes=editor.Shapes().Where(sh=>V(sh,"ModelId")==replaced).ToArray();
-                Require(replacedShapes.Length==1,"置き換えるNote・refの図形を一意に取得できません。");
-                top=Read(replacedShapes[0],"Y");room=height-Read(replacedShapes[0],"Height");
-            }
+            double top=placedY[id],height=BoxHeight(text);
             var noteLaneIds=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
             var noteLanes=editor.Shapes().Where(sh=>noteLaneIds.Contains(V(sh,"ModelId")) && sh["X"]!=null && sh["Width"]!=null).ToArray();
             Require(noteLanes.Length>0,"参加者の図形がないためNoteの幅を決められません。");
@@ -2259,36 +2182,93 @@ public sealed class SequenceStructurePreparation
             Collection(patch["Editors"].Items.Single(),isRef?"InteractionUses":"Notes").Items.Add(shape);
             (isRef?newRefShapes:newNoteShapes).Add(shape);
             notes.Add(added);
-            var laneShapeIds=new HashSet<string>(noteLanes.Select(sh=>V(sh,"Id")));
-            foreach(var existing in editor.Shapes())
+        }
+        // Room under each run: what was drawn below moves down, a bar or frame open across
+        // the point grows, a later branch of a frame that grows moves down in it, and the
+        // lanes follow. A bar a new message uses reaches at least 16 past it.
+        if(runs.Count>0)
+        {
+            var shapesNow=editor.Shapes();
+            Func<double,double> above=p=>runs.Where(r=>r.At<p).Sum(r=>r.Room);
+            var laneIds=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
+            var skipped=new HashSet<string>(runs.Where(r=>r.Replaced!=null).Select(r=>r.Replaced));
+            // The lanes grow by as much as the lowest thing drawn went down.
+            double oldFloor=0,newFloor=0;
+            Action<double,double> floor=(was,now)=>{oldFloor=Math.Max(oldFloor,was);newFloor=Math.Max(newFloor,now);};
+            foreach(var r in runs)for(int k=0;k<r.Items.Count;k++)
+                newFloor=Math.Max(newFloor,placedY[r.Items[k]]+(after[r.Items[k]].Kind=="message"?16:BoxHeight(after[r.Items[k]].Text)));
+            var runLanes=new List<SequenceJson>();
+            var eventsY=shapesNow.Where(sh=>before.ContainsKey(V(sh,"ModelId")) && !skipped.Contains(V(sh,"ModelId")))
+                .Select(sh=>{string k=before[V(sh,"ModelId")].Kind;return k=="message"?Read(sh,"TargetY"):(k=="note" || k=="ref" || k=="fragment")?Read(sh,"Y"):double.NaN;})
+                .Where(y=>!double.IsNaN(y)).ToArray();
+            foreach(var shape in shapesNow)
             {
-                string model=V(existing,"ModelId");
+                string model=V(shape,"ModelId");
                 string kind=before.ContainsKey(model)?before[model].Kind:"";
+                if(skipped.Contains(model))continue;
                 var keys=new List<string>();var values=new List<string>();
-                if(model==replaced || room==0)continue;
-                if(kind=="message" && Read(existing,"TargetY")>at)
+                Action<string,double,double> put=(key,was,now)=>{if(Math.Abs(now-was)>1e-9){keys.Add(key);values.Add(Number(now));}};
+                if(kind=="message")
                 {
-                    keys.Add("SourceY");values.Add(Number(Read(existing,"SourceY")+room));
-                    keys.Add("TargetY");values.Add(Number(Read(existing,"TargetY")+room));
+                    double moved=above(Read(shape,"TargetY"));
+                    floor(Read(shape,"TargetY"),Read(shape,"TargetY")+moved);
+                    put("SourceY",Read(shape,"SourceY"),Read(shape,"SourceY")+moved);
+                    put("TargetY",Read(shape,"TargetY"),Read(shape,"TargetY")+moved);
                 }
                 else if(kind=="execution")
                 {
-                    double y=Read(existing,"Y"),length=Read(existing,"Length");
-                    if(y>at){keys.Add("Y");values.Add(Number(y+room));}
-                    // A bar that closes right after the message above ends before the note.
-                    else if(y+length>=at+MessageSpacing){keys.Add("Length");values.Add(Number(length+room));keys.Add("Height");values.Add(Number(length+room));}
+                    double top=Read(shape,"Y"),length=Read(shape,"Length"),bottom=top+length;
+                    double newTop=top+above(top);
+                    // A bar grows with the room made inside it: something already drawn lies
+                    // between the point and its end. A bar a new message uses reaches it below.
+                    Func<RoomRun,bool> holds=r=>eventsY.Any(y=>y>r.At && y<=bottom);
+                    double newBottom=bottom+above(top)+runs.Where(r=>r.At>=top && ((bottom>=r.At+MessageSpacing && holds(r)) || (r.Inserted && r.Ports.Contains(model) && bottom>=r.At))).Sum(r=>r.Room);
+                    foreach(var r in runs.Where(r=>r.Ports.Contains(model)))
+                        foreach(string item in r.Items.Where(x=>after[x].Kind=="message" && Link(after[x],"sendExecution").Concat(Link(after[x],"receiveExecution")).Contains(model)))
+                            newBottom=Math.Max(newBottom,placedY[item]+16);
+                    floor(bottom,newBottom);
+                    put("Y",top,newTop);
+                    // A bar carries its length as both Height and Length; writing one is ignored.
+                    if(Math.Abs((newBottom-newTop)-length)>1e-9){keys.Add("Length");values.Add(Number(newBottom-newTop));keys.Add("Height");values.Add(Number(newBottom-newTop));}
                 }
-                else if((kind=="fragment" || kind=="note" || kind=="ref") && Read(existing,"Y")>at)
-                {keys.Add("Y");values.Add(Number(Read(existing,"Y")+room));}
-                else if(laneShapeIds.Contains(V(existing,"Id")) && existing["LaneLength"]!=null)
-                {keys.Add("LaneLength");values.Add(Number(Read(existing,"LaneLength")+room));}
+                else if(kind=="fragment")
+                {
+                    double top=Read(shape,"Y"),height=Read(shape,"Height");
+                    double grown=height+runs.Where(r=>r.At>=top && r.At<top+height).Sum(r=>r.Room);
+                    floor(top+height,top+above(top)+grown);
+                    put("Y",top,top+above(top));
+                    put("Height",height,grown);
+                }
+                else if(kind=="operand")
+                {
+                    var box=shapesNow.Single(sh=>V(sh,"ModelId")==before[model].Parent);
+                    double top=Read(box,"Y"),height=Read(box,"Height"),offset=Read(shape,"Position");
+                    put("Position",offset,offset+runs.Where(r=>r.At>=top && r.At<top+height && top+offset>r.At).Sum(r=>r.Room));
+                }
+                else if(kind=="note" || kind=="ref")
+                {
+                    double top=Read(shape,"Y"),moved=above(top);
+                    floor(top+Read(shape,"Height"),top+moved+Read(shape,"Height"));
+                    put("Y",top,top+moved);
+                }
+                else if(laneIds.Contains(model) && shape["LaneLength"]!=null){runLanes.Add(shape);continue;}
                 if(keys.Count==0)continue;
                 foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
                     .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items)
-                    .Where(n=>V(n,"Id")==V(existing,"Id")))
+                    .Where(n=>V(n,"Id")==V(shape,"Id")))
                     for(int i=0;i<keys.Count;i++)node.Properties[keys[i]]=SequenceJson.Parse(values[i]);
-                shifted.Add(new SequenceShiftedShape{ModelId=model,ShapeId=V(existing,"Id"),Kind=kind,Keys=keys.ToArray(),Values=values.ToArray()});
+                shifted.Add(new SequenceShiftedShape{ModelId=model,ShapeId=V(shape,"Id"),Kind=kind,Keys=keys.ToArray(),Values=values.ToArray()});
             }
+            double growth=Math.Max(0,newFloor-oldFloor);
+            if(growth>0)
+                foreach(var lane in runLanes)
+                {
+                    string length=Number(Read(lane,"LaneLength")+growth);
+                    foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
+                        .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items).Where(n=>V(n,"Id")==V(lane,"Id")))
+                        node.Properties["LaneLength"]=SequenceJson.Parse(length);
+                    shifted.Add(new SequenceShiftedShape{ModelId=V(lane,"ModelId"),ShapeId=V(lane,"Id"),Kind="participant",Keys=new[]{"LaneLength"},Values=new[]{length}});
+                }
         }
         // Wrapping makes room at the top of the run and below it. Every position moves by
         // the same rule, so a bar's two ends are mapped separately and its length follows.
@@ -2793,6 +2773,9 @@ public sealed class SequenceStructurePreparation
         double left=laneShapes.Min(sh=>Read(sh,"X")),right=laneShapes.Max(sh=>Read(sh,"X")+Read(sh,"Width"));
         x=left-16;width=right-left+32;
     }
+    // How tall the generator makes a note or ref for its text.
+    internal static double BoxHeight(string text)
+    { return Math.Max(48,16+20*(text??"").Replace("\r\n","\n").Split('\n').Length); }
     static int Depth(SequenceElement wanted,Dictionary<string,SequenceElement> after)
     {
         int depth=0;

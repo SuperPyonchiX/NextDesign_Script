@@ -1102,8 +1102,66 @@ public static class StructurePreparationTests
         Require(expected.Models[ids[6]]==PumlBuild.Json(new[]{"message","renamed()",ids[0],"False"}),"the renamed model was not predicted");
         Require(expected.Shapes[wire["Id"].StringValue()]==PumlBuild.Json(new[]{"renamed()","80","80","0"}),"the renamed shape was not predicted");
     }
+    // probe() at 80, two() at 120, three() at 160, all on bars 50..250 and 80..230. A new
+    // message goes under probe() and a note under two(): the rooms add up below each.
+    static void TwoRuns()
+    {
+        var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
+        var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
+        var editor=raw["Editors"].Items.Single();string editorId=editor["Id"].StringValue();
+        foreach(var pair in new[]{new[]{"0","200"},new[]{"1","150"}})
+        {
+            var bar=editor["ExecutionSpecifications"].Items[int.Parse(pair[0])];
+            bar.Properties["Length"]=SequenceJson.Parse(pair[1]);bar.Properties["Height"]=SequenceJson.Parse(pair[1]);
+        }
+        foreach(var row in new[]{new[]{"two","120"},new[]{"three","160"}})
+        {
+            var entity=Clone(raw["Entities"].Items.Single(e=>e["Id"].StringValue()==ids[6]));Set(entity,"Id",row[0]);raw["Entities"].Items.Add(entity);
+            foreach(var r in raw["Relations"].Items.Where(r=>r["TargetId"].StringValue()==ids[6]).ToArray())
+            {var copy=Clone(r);Set(copy,"Id",r["Id"].StringValue()+"-"+row[0]);Set(copy,"TargetId",row[0]);raw["Relations"].Items.Add(copy);}
+            var wire=Clone(editor["Messages"].Items[0]);Set(wire,"Id",row[0]+"-shape");Set(wire,"ModelId",row[0]);
+            wire.Properties["SourceY"]=SequenceJson.Parse(row[1]);wire.Properties["TargetY"]=SequenceJson.Parse(row[1]);editor["Messages"].Items.Add(wire);
+        }
+        var current=new SequenceDocument();
+        current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
+        current.Elements.Add(new SequenceElement{Id=ids[2],Kind="participant",Parent=ids[0]});
+        current.Elements.Add(new SequenceElement{Id=ids[3],Kind="participant",Parent=ids[0]});
+        foreach(string id in new[]{ids[4],ids[5]})
+        {var e=new SequenceElement{Id=id,Kind="execution",Parent=ids[0]};e.Links["participant"]=new[]{id==ids[4]?ids[2]:ids[3]};current.Elements.Add(e);}
+        Func<string,int,SequenceElement> message=(id,order)=>{
+            var m=new SequenceElement{Id=id,Kind="message",Parent=ids[0],Order=order,Text=id};m.Attributes["sort"]="sync";
+            m.Links["sender"]=new[]{ids[2]};m.Links["receiver"]=new[]{ids[3]};m.Links["sendExecution"]=new[]{ids[4]};m.Links["receiveExecution"]=new[]{ids[5]};
+            return m;
+        };
+        current.Elements.Add(message(ids[6],0));current.Elements.Add(message("two",2));current.Elements.Add(message("three",4));
+        var desired=current.Copy();
+        desired.Elements.Add(message("added",1));
+        var note=new SequenceElement{Id="noted",Kind="note",Parent=ids[0],Order=3,Text="checked"};note.Links["targets"]=new string[0];note.Attributes["position"]="free";
+        desired.Elements.Add(note);
+        var plan=new SyncPlan{Expected=desired};
+        plan.Changes.Add(new SequenceChange{Action="add",Kind="message",Id="added",Line=5});
+        plan.Changes.Add(new SequenceChange{Action="add",Kind="note",Id="noted",Line=7});
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate && gate.AddMessages.Count==1 && gate.AddNotes.Count==1,"a message and a note in two places were not candidates: "+gate.ToJson());
+        var types=new SequenceNoteTypes{Class="note-class",Field="Body",Storage="String",Owns=new[]{"owns-note","Embed","fields"}};
+        var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan,null,types);
+        Func<string,string,string> at=(shape,key)=>{
+            var hit=package.ShiftedShapes.Where(x=>x.ShapeId==shape).ToArray();
+            if(hit.Length==0)return null;
+            int i=Array.IndexOf(hit[0].Keys,key);return i<0?null:hit[0].Values[i];
+        };
+        var view=SequenceJson.Parse(package.ReconnectJson)["Editors"].Items.Single();
+        Require(view["Messages"].Items.Single(sh=>sh["ModelId"].StringValue()=="added")["TargetY"].Raw=="120","the new message is not under probe()");
+        Require(at("two-shape","TargetY")=="160","two() did not make room for the message above it");
+        Require(view["Notes"].Items.Single()["Y"].StringValue()=="200","the note is not under two() where it now is: "+view["Notes"].Items.Single()["Y"].StringValue());
+        // three() moves by both: 40 for the message, 48 + 40 for the note.
+        Require(at("three-shape","TargetY")=="288","three() did not move by both rooms: "+at("three-shape","TargetY"));
+        Require(at(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Length")=="328","a bar across both did not grow by both");
+        Require(package.ShiftedShapes.Count(x=>x.ShapeId=="three-shape")==1,"a shape was moved twice");
+    }
     public static void Run()
     {
+        TwoRuns();
         RenamedMessage();
         AddedBranch();
         TrimmedBranch();

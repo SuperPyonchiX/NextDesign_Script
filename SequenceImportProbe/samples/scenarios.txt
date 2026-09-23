@@ -34,3 +34,7 @@ Note 本文の変更 | structure-note-after.puml | structure-note-text-after.pum
 混在: 名前の変更と末尾への追加 | structure-message-after.puml | structure-mix-rename-append-after.puml
 混在: メッセージ削除と名前の変更 | structure-wrap-before.puml | structure-mix-delete-rename-after.puml
 混在: Note の追加と名前の変更 | structure-wrap-before.puml | structure-mix-note-rename-after.puml
+混在: 2か所への挿入 | structure-wrap-before.puml | structure-mix-two-inserts-after.puml
+混在: 続けて2本の挿入 | structure-wrap-before.puml | structure-mix-inserts-chain-after.puml
+混在: 挿入と Note の追加 | structure-wrap-before.puml | structure-mix-insert-note-after.puml
+混在: Note と ref を2か所に追加 | structure-wrap-before.puml | structure-mix-two-notes-after.puml

@@ -1,0 +1,22 @@
+@startuml
+participant A
+participant B
+activate A
+A -> B : first()
+activate B
+B --> A : firstDone()
+deactivate B
+note over A, B
+one
+end note
+A -> B : second()
+activate B
+B --> A : secondDone()
+deactivate B
+ref over A, B : Two
+A -> B : third()
+activate B
+B --> A : thirdDone()
+deactivate B
+deactivate A
+@enduml
