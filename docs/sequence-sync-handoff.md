@@ -1,4 +1,4 @@
-# SequenceImportProbe 引き継ぎ（2026-09-23 / 0.9.12）
+# SequenceImportProbe 引き継ぎ（2026-09-23 / 0.9.13）
 
 PlantUML を正本に Next Design の既存シーケンス図を差分更新する C# スクリプト拡張。この文書は作業を別セッションへ引き継ぐためのもの。**まず `.local/nd-knowledge/index.md` を読むこと。** K001〜K160 に実機で確かめた事実が入っている。推測で候補を潰す前に、そこと製品ログを見る。
 
@@ -75,6 +75,12 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 - サンプル: `structure-wrap-before.puml` ⇔ `structure-ref-after.puml`（firstDone の下に `ref over A, B : Handshake`）
 - 0.9.12: ユーザー指摘で、Note・ref の下端から次のメッセージまでを 16 → 1段（40）に広げた。生成器と構造更新の両方。メッセージの本文は線の約20上に描かれるため、16 では接して見えた
 
+### 0.9.13: 枠を外す（実機未確認）
+
+- 囲む変更の逆。相互作用直下の枠とそのオペランドをすべて消し、中のメッセージと実行区間は相互作用直下に同じ順序で残す。単独の更新に限る。入れ子の枠・中に Note/ref がある枠は停止
+- 座標は動かさない（見出しとガードの分の隙間は、ほかの削除と同じく残る）。オペランドからメッセージへの OperandTargetMessage はオペランドと一緒に消える
+- サンプル: `structure-wrap-after.puml` → `structure-wrap-before.puml`
+
 ## 3. 未解決（A15）: メッセージ・フラグメントを追加した更新の Undo で製品が停止する
 
 - 例外: `System.ArgumentOutOfRangeException` at `DensoCreate.Indio.IMF.Kernel.IML.AddListItemAction<T>.InternalUnExecute()`
@@ -90,7 +96,8 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 
 | 項目 | 見込み実機回数 |
 |---|---|
-| move: 順序の入れ替え・枠から出す | 3〜5 |
+| move: 枠を外す（0.9.13 実装済み・実機未確認） | 1〜2 |
+| move: 順序の入れ替え | 3〜5 |
 | オペランド単独の追加・削除 | 2〜3 |
 | create/destroy | 未定（A10 の正規化が前提） |
 | 実行区間削除の取り直し | 1 |

@@ -149,6 +149,13 @@ public static class PayloadTest {
    var refDropGate=SequenceStructurePreflight.Check(refed,SequenceNotePolicy.Build(refed,noteBase,()=>Guid.NewGuid().ToString()));
    if(!refDropGate.Candidate || refDropGate.DeleteRefs.Count!=1 || refDropGate.Targets!=1)
        throw new Exception("removing a ref was not a single candidate: "+refDropGate.ToJson());
+   // The frame taken away again, keeping what it held.
+   var unwrapGate=SequenceStructurePreflight.Check(wrapInput,SyncPlan.Build(wrapInput,wrapBefore,()=>Guid.NewGuid().ToString()));
+   if(!unwrapGate.Candidate || unwrapGate.UnwrapFragments.Count!=1 || unwrapGate.DeleteOperands.Count!=1 || !unwrapGate.CanCommit())
+       throw new Exception("taking a frame away was not a candidate: "+unwrapGate.ToJson());
+   var dropFrame=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
+   var dropGate2=SequenceStructurePreflight.Check(dropFrame,SyncPlan.Build(dropFrame,SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-after.puml"))),()=>Guid.NewGuid().ToString()));
+   if(dropGate2.UnwrapFragments.Count!=0)throw new Exception("a frame removed with its contents was taken for an unwrap");
    var reconnectBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-before.puml")));
    var reconnectAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-after.puml")));
    var reconnectPlan=SyncPlan.Build(reconnectBefore,reconnectAfter,()=>Guid.NewGuid().ToString());
@@ -279,7 +286,8 @@ public static class PayloadTest {
    keptPlan.Changes.Add(new SequenceChange{Action="delete",Kind="fragment",Id=frame.Id});
    keptPlan.Changes.Add(new SequenceChange{Action="delete",Kind="operand",Id=operand.Id});
    var keptGate=SequenceStructurePreflight.Check(occupied,keptPlan);
-   if(keptGate.DeleteFragments.Count!=0 || !keptGate.Reasons.Any(r=>r.Contains("中に残す要素")))
+   // Keeping the contents is an unwrap now, but this one also reorders them, so it still stops.
+   if(keptGate.Candidate || keptGate.UnwrapFragments.Count!=0 || keptGate.Reasons.Count==0)
        throw new Exception("a fragment whose contents stay was accepted: "+keptGate.ToJson());
 
    int commits=0, cancels=0;

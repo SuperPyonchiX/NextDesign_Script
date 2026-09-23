@@ -25,7 +25,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.12";
+    public const string Title = "シーケンス生成実験 / 0.9.13";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -3633,6 +3633,9 @@ public sealed class SequenceStructurePreflight
     public List<string> DeleteNotes=new List<string>();
     public List<string> AddNotes=new List<string>();
     public List<string> DeleteRefs=new List<string>();
+    // A frame taken away while what it held stays, now owned by the interaction. The frame
+    // and its operands are also in DeleteFragments and DeleteOperands.
+    public List<string> UnwrapFragments=new List<string>();
     public List<string> AddRefs=new List<string>();
     public List<string> WrapFragments=new List<string>();
     public List<string> MoveMessages=new List<string>();
@@ -3999,6 +4002,41 @@ public sealed class SequenceStructurePreflight
                 +"があります。メッセージ・枠・Noteだけを下げる変更に限ります。";
         return null;
     }
+    // The reverse of wrapping: a top-level frame goes, every operand with it, and what the
+    // operands held is kept at the top level in the same order. Positions stay as they are,
+    // so the space the frame's heading took is left, like any removal.
+    static string UnwrapReason(SequenceDocument current,SyncPlan plan,string id)
+    {
+        var before=current.Elements.ToDictionary(e=>e.Id);
+        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        string root=current.Elements.Single(e=>e.Kind=="interaction").Id;
+        if(before[id].Parent!=root)return "外す枠が相互作用の直下にありません。入れ子の枠は対象外です。";
+        var operands=current.Elements.Where(e=>e.Parent==id).ToArray();
+        if(operands.Any(o=>o.Kind!="operand" || after.ContainsKey(o.Id)))return "外す枠のオペランドが残ります。枠ごと外す場合だけ扱います。";
+        foreach(var child in current.Elements.Where(e=>operands.Any(o=>o.Id==e.Parent)))
+        {
+            if(child.Kind!="message" && child.Kind!="execution")return "外す枠の中に"+child.Kind+"があります。メッセージと実行区間だけを扱います。";
+            if(!after.ContainsKey(child.Id) || after[child.Id].Parent!=root)return "外す枠の中の要素が相互作用の直下に残りません。";
+        }
+        var old=Flatten(current).Where(e=>before[e].Kind=="message").ToArray();
+        var now=Flatten(plan.Expected).Where(e=>before.ContainsKey(e) && after[e].Kind=="message").ToArray();
+        if(!old.SequenceEqual(now))return "枠を外す前後でメッセージの順序が変わっています。外すだけの変更に限ります。";
+        return null;
+    }
+    // A bar the frame held keeps its lane and nesting; only its owner and end container,
+    // which named the operand, now name the interaction.
+    static bool FollowsUnwrap(SequenceElement old,SequenceElement next,Dictionary<string,SequenceElement> after,string root)
+    {
+        Func<SequenceElement,string> bare=e=>{
+            var copy=e.Copy();copy.Parent=null;copy.Line=0;copy.Order=0;
+            foreach(string key in new[]{"startAfter","endBefore","endContainer"})copy.Links.Remove(key);
+            return new SequenceDocument{Elements=new List<SequenceElement>{copy}}.ToJson();
+        };
+        if(bare(old)!=bare(next))return false;
+        Func<string,bool> place=id=>id==root || after.ContainsKey(id);
+        return next.Parent!=null && place(next.Parent) && Link(next,"endContainer").All(place)
+            && Link(next,"startAfter").Concat(Link(next,"endBefore")).All(after.ContainsKey);
+    }
     public static SequenceStructurePreflight Check(SequenceDocument current,SyncPlan plan)
     {
         current.Validate();plan.Expected.Validate();
@@ -4074,6 +4112,9 @@ public sealed class SequenceStructurePreflight
             if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
             result.AddExecutions.Add(change.Id);
         }
+        // Whether a frame is being taken away decides how the moves around it are read.
+        string unwrapping=plan.Changes.Where(c=>c.Action=="delete" && c.Kind=="fragment" && before.ContainsKey(c.Id) && !after.ContainsKey(c.Id)
+            && current.Elements.Any(e=>before.ContainsKey(e.Parent??"") && before[e.Parent].Parent==c.Id && after.ContainsKey(e.Id))).Select(c=>c.Id).FirstOrDefault();
         foreach(var change in plan.Changes)
         {
             if(change.Action=="add" && new[]{"execution","participant","message","fragment","operand","note","ref"}.Contains(change.Kind))continue;
@@ -4081,6 +4122,14 @@ public sealed class SequenceStructurePreflight
             {
                 if(Referenced(plan,change.Id))result.Reasons.Add("L"+change.Line+" 参加者への参照が残るため削除できません。");
                 else result.DeleteParticipants.Add(change.Id);
+                continue;
+            }
+            if(change.Action=="delete" && change.Kind=="fragment" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id)
+                && current.Elements.Any(e=>before.ContainsKey(e.Parent??"") && before[e.Parent].Parent==change.Id && after.ContainsKey(e.Id)))
+            {
+                string why=UnwrapReason(current,plan,change.Id);
+                if(why!=null)result.Reasons.Add("L"+change.Line+" "+why);
+                else {result.DeleteFragments.Add(change.Id);result.UnwrapFragments.Add(change.Id);}
                 continue;
             }
             if(change.Action=="delete" && change.Kind=="fragment" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
@@ -4121,6 +4170,16 @@ public sealed class SequenceStructurePreflight
                 else result.DeleteExecutions.Add(change.Id);
                 continue;
             }
+            // Taking a frame away moves what it held back to the top level; the bars follow.
+            if(unwrapping!=null && (change.Action=="move" || (change.Action=="update" && change.Kind=="execution"))
+                && before.TryGetValue(change.Id,out old) && after.TryGetValue(change.Id,out next))
+            {
+                string rootId=current.Elements.Single(e=>e.Kind=="interaction").Id;
+                bool fromFrame=old.Parent!=null && before.ContainsKey(old.Parent) && before[old.Parent].Parent==unwrapping;
+                if(change.Kind=="message" && change.Action=="move" && (fromFrame || old.Parent==next.Parent))continue;
+                if(change.Kind=="execution" && (FollowsUnwrap(old,next,after,rootId) || AnchorsOnly(old,next,after)))continue;
+                result.Reasons.Add(row+change.Kind+" "+change.Action+"は、枠を外す変更と同時には扱えません。");continue;
+            }
             // Wrapping moves the messages into the new operands, and the bars on them follow
             // by position. The top-level elements around the frame only look moved because
             // their neighbours left; WrapReason already checked they keep their order.
@@ -4157,6 +4216,9 @@ public sealed class SequenceStructurePreflight
         // agree on where everything goes.
         if(result.AddNotes.Count+result.AddRefs.Count>1 || (result.AddNotes.Count+result.AddRefs.Count>0 && (result.AddMessages.Count+result.AddFragments.Count>0)))
             result.Reasons.Add("Note・refの追加は1件ずつ、メッセージや枠の追加とは分けて反映してください。");
+        if(result.UnwrapFragments.Count>1 || (result.UnwrapFragments.Count==1 && (result.Targets!=1+result.DeleteOperands.Count
+            || result.DeleteOperands.Any(o=>before[o].Parent!=result.UnwrapFragments[0]))))
+            result.Reasons.Add("枠を外す変更は、ほかの変更と分けて1件ずつ反映してください。");
         if(result.WrapFragments.Count>0)
         {
             string frame=result.WrapFragments[0];
@@ -4178,7 +4240,7 @@ public sealed class SequenceStructurePreflight
             +" / フラグメント削除候補: "+DeleteFragments.Count+" / オペランド削除候補: "+DeleteOperands.Count
             +" / フラグメント追加候補: "+AddFragments.Count+" / オペランド追加候補: "+AddOperands.Count
             +" / 枠で囲むメッセージ候補: "+MoveMessages.Count+" / Note削除候補: "+DeleteNotes.Count+" / Note追加候補: "+AddNotes.Count
-            +" / ref削除候補: "+DeleteRefs.Count+" / ref追加候補: "+AddRefs.Count
+            +" / ref削除候補: "+DeleteRefs.Count+" / ref追加候補: "+AddRefs.Count+" / 外す枠候補: "+UnwrapFragments.Count
             +"\n"+(Reasons.Count>0?"全体を停止: "+Reasons.Count+"件の未対応条件":Candidate?"限定範囲の候補あり。既存図での適用・保持検証は未実施です。":"対象の変更なし")
             +"\n"+string.Join("\n",Reasons.Distinct());
     }
@@ -4190,7 +4252,7 @@ public sealed class SequenceStructurePreflight
         "DeleteOperands",DeleteOperands.ToArray(),
         "AddFragments",AddFragments.ToArray(),"AddOperands",AddOperands.ToArray(),
         "WrapFragments",WrapFragments.ToArray(),"MoveMessages",MoveMessages.ToArray(),"DeleteNotes",DeleteNotes.ToArray(),"AddNotes",AddNotes.ToArray(),
-        "DeleteRefs",DeleteRefs.ToArray(),"AddRefs",AddRefs.ToArray(),
+        "DeleteRefs",DeleteRefs.ToArray(),"AddRefs",AddRefs.ToArray(),"UnwrapFragments",UnwrapFragments.ToArray(),
         "Reasons",Reasons.ToArray())); }
 }
 
@@ -4725,6 +4787,9 @@ public sealed class SequenceStructurePreparation
                 // reference and leaves the lane itself untouched.
                 Require(inside(relation,pair[0])
                     || (V(relation,"TargetId")==pair[0] && V(relation,"MetamodelId")==SequencePayload.Prefix+pair[1])
+                    // Taking a frame away keeps what its operands held; their reference to it goes.
+                    || (gate.UnwrapFragments.Count>0 && V(relation,"SourceId")==pair[0]
+                        && V(relation,"MetamodelId")==SequencePayload.Prefix+"OperandTargetMessage")
                     || (V(relation,"SourceId")==pair[0]
                         && V(relation,"MetamodelId")==SequencePayload.Prefix+"CrossingFragmentCoveredLifeline"),
                     "削除する"+pair[2]+"に未対応の関連が残っています。"+describe(relation,pair[0]));
