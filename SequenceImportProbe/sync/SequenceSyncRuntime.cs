@@ -768,4 +768,3 @@ public static class SequenceBatch
         app.Window.UI.ShowInformationDialog(SequenceExperiment.Summary,title);
     }
 }
-
