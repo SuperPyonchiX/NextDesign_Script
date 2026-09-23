@@ -309,7 +309,7 @@ public static class SequenceSyncRuntime
                     Lap("エクスポート");
                     SequenceFrameTypes frameTypes=null;
                     string rootId=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
-                    if(preflight.AddFragments.Count>0
+                    if(preflight.AddFragments.Count>0 || preflight.AddOperands.Count>0
                         || preflight.AddMessages.Any(id=>plan.Expected.Elements.Single(e=>e.Id==id).Parent!=rootId))
                     {
                         // Resolve the metaclasses only when a frame is being added or a message

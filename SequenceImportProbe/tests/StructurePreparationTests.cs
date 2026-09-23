@@ -949,8 +949,114 @@ public static class StructurePreparationTests
         Require(at(editor["Messages"].Items[0]["Id"].StringValue(),"SourceY")==null,"a message that kept its place moved");
         Require(at(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Y")==null,"the long bar moved");
     }
+    // A frame from 100 to 190 with a branch "ready" (30 below its top) holding inside() at
+    // 140; with two, a second branch "else" (70 below) holds other() at 170. Below it,
+    // after() at 230 when asked for.
+    static SequenceJson BranchSeed(bool twoBranches,bool below,out string editorId,out string[] ids,out SequenceDocument current)
+    {
+        var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
+        var raw=SequenceJson.Parse(seed.Json);ids=seed.Ids;var local=ids;
+        var editor=raw["Editors"].Items.Single();editorId=editor["Id"].StringValue();
+        foreach(var bar in editor["ExecutionSpecifications"].Items){bar.Properties["Length"]=SequenceJson.Parse("250");bar.Properties["Height"]=SequenceJson.Parse("250");}
+        var rows=new List<string[]>{new[]{"inside","140","first-branch"}};
+        if(twoBranches)rows.Add(new[]{"other","170","second-branch"});
+        if(below)rows.Add(new[]{"after","230",null});
+        foreach(var row in rows)
+        {
+            var entity=Clone(raw["Entities"].Items.Single(e=>e["Id"].StringValue()==local[6]));Set(entity,"Id",row[0]);raw["Entities"].Items.Add(entity);
+            foreach(var r in raw["Relations"].Items.Where(r=>r["TargetId"].StringValue()==local[6]).ToArray())
+            {var copy=Clone(r);Set(copy,"Id",r["Id"].StringValue()+"-"+row[0]);Set(copy,"TargetId",row[0]);raw["Relations"].Items.Add(copy);}
+            if(row[2]!=null)raw["Relations"].Items.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id","om-"+row[0],"MetamodelId",SequencePayload.Prefix+"OperandTargetMessage","SourceId",row[2],"TargetId",row[0]))));
+            var wire=Clone(editor["Messages"].Items[0]);Set(wire,"Id",row[0]+"-shape");Set(wire,"ModelId",row[0]);
+            wire.Properties["SourceY"]=SequenceJson.Parse(row[1]);wire.Properties["TargetY"]=SequenceJson.Parse(row[1]);editor["Messages"].Items.Add(wire);
+        }
+        raw["Entities"].Items.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id","the-frame","EntityType","CombinedFragment","MetamodelId","fragment","Name",""))));
+        raw["Relations"].Items.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id","owns-frame","MetamodelId",SequencePayload.Prefix+"___Interaction_CombinedFragment","SourceId",local[0],"TargetId","the-frame"))));
+        var operandShapes=new List<object>();
+        foreach(var b in twoBranches?new[]{new[]{"first-branch","30"},new[]{"second-branch","70"}}:new[]{new[]{"first-branch","30"}})
+        {
+            raw["Entities"].Items.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",b[0],"EntityType","InteractionOperand","MetamodelId","operand","Name",""))));
+            raw["Relations"].Items.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id","branch-"+b[0],"MetamodelId",SequencePayload.Prefix+"___CombinedFragment_InteractionOperand","SourceId","the-frame","TargetId",b[0]))));
+            operandShapes.Add(PumlBuild.Obj("Id",b[0]+"-shape","ModelId",b[0],"Position",int.Parse(b[1])));
+        }
+        editor.Properties["Fragments"]=SequenceJson.Parse(PumlBuild.Json(new object[]{PumlBuild.Obj("Id","the-frame-shape","ModelId","the-frame","X",4,"Y",100,"Width",332,"Height",90)}));
+        editor.Properties["Operands"]=SequenceJson.Parse(PumlBuild.Json(operandShapes.ToArray()));
+        current=new SequenceDocument();
+        current.Elements.Add(new SequenceElement{Id=local[0],Kind="interaction"});
+        current.Elements.Add(new SequenceElement{Id=local[2],Kind="participant",Parent=local[0]});
+        current.Elements.Add(new SequenceElement{Id=local[3],Kind="participant",Parent=local[0]});
+        foreach(string id in new[]{local[4],local[5]})
+        {var e=new SequenceElement{Id=id,Kind="execution",Parent=local[0]};e.Links["participant"]=new[]{id==local[4]?local[2]:local[3]};current.Elements.Add(e);}
+        Func<string,string,int,SequenceElement> message=(id,parent,order)=>{
+            var m=new SequenceElement{Id=id,Kind="message",Parent=parent,Order=order,Text=id};m.Attributes["sort"]="sync";
+            m.Links["sender"]=new[]{local[2]};m.Links["receiver"]=new[]{local[3]};m.Links["sendExecution"]=new[]{local[4]};m.Links["receiveExecution"]=new[]{local[5]};
+            return m;
+        };
+        current.Elements.Add(message(local[6],local[0],0));
+        var box=new SequenceElement{Id="the-frame",Kind="fragment",Parent=local[0],Order=1,Text=""};box.Attributes["operator"]="alt";current.Elements.Add(box);
+        current.Elements.Add(new SequenceElement{Id="first-branch",Kind="operand",Parent="the-frame",Order=0,Text="ready"});
+        current.Elements.Add(message("inside","first-branch",0));
+        if(twoBranches){current.Elements.Add(new SequenceElement{Id="second-branch",Kind="operand",Parent="the-frame",Order=1,Text=""});current.Elements.Add(message("other","second-branch",0));}
+        if(below)current.Elements.Add(message("after",local[0],2));
+        return raw;
+    }
+    static void AddedBranch()
+    {
+        string editorId;string[] ids;SequenceDocument current;
+        var raw=BranchSeed(false,false,out editorId,out ids,out current);
+        var desired=current.Copy();
+        desired.Elements.Add(new SequenceElement{Id="new-branch",Kind="operand",Parent="the-frame",Order=1,Text=""});
+        var m=current.Elements.Single(e=>e.Id=="inside").Copy();m.Id="fallback";m.Parent="new-branch";m.Text="fallback";desired.Elements.Add(m);
+        var plan=new SyncPlan{Expected=desired};
+        plan.Changes.Add(new SequenceChange{Action="add",Kind="operand",Id="new-branch",Line=9});
+        plan.Changes.Add(new SequenceChange{Action="add",Kind="message",Id="fallback",Line=10});
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate && gate.AddOperands.SequenceEqual(new[]{"new-branch"}),"a branch added to a frame was not a candidate: "+gate.ToJson());
+        var types=new SequenceFrameTypes{Fragment="fragment",Operand="operand",Owns=new[]{"owns","Embed","f1"},
+            Branches=new[]{"branches","Embed","f2"},Crossing=new[]{"crossing","Ref","f3"},OperandMessage=new[]{"operand-message","Ref","f4"}};
+        var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan,types);
+        // A sender's bar that ends at 200, above the new message, reaches down to it instead.
+        var shortBar=raw["Editors"].Items.Single()["ExecutionSpecifications"].Items[0];
+        shortBar.Properties["Length"]=SequenceJson.Parse("150");shortBar.Properties["Height"]=SequenceJson.Parse("150");
+        var grownPackage=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan,types);
+        var grownBar=grownPackage.ShiftedShapes.Single(x=>x.Kind=="execution");
+        Require(grownBar.ShapeId==shortBar["Id"].StringValue() && grownBar.Values.SequenceEqual(new[]{"208","208"}),"the sender's bar did not reach the new message");
+        var branch=package.AddedOperands.Single();
+        Require(branch.OwnerId=="the-frame" && branch.Position=="102","the branch did not start 12 under the frame's bottom: "+branch.Position);
+        var view=SequenceJson.Parse(package.ReconnectJson)["Editors"].Items.Single();
+        Require(view["Messages"].Items.Single(sh=>sh["ModelId"].StringValue()=="fallback")["TargetY"].Raw=="242","the branch's message is not under its guard");
+        var frame=package.ShiftedShapes.Single(s=>s.ShapeId=="the-frame-shape");
+        Require(frame.Keys.SequenceEqual(new[]{"Height"}) && frame.Values[0]=="190","the frame did not grow to hold the branch: "+string.Join(",",frame.Values));
+        Require(package.StretchedLifelines.All(l=>l.Length=="340"),"the lanes did not grow with the frame");
+        // The sender's bar ended at 300; the new message at 242 is inside it, the receiver's at 330 too.
+        Require(!package.ShiftedShapes.Any(x=>x.Kind=="execution"),"a bar that already reached the message was grown");
+    }
+    static void TrimmedBranch()
+    {
+        string editorId;string[] ids;SequenceDocument current;
+        var raw=BranchSeed(true,true,out editorId,out ids,out current);
+        var desired=current.Copy();desired.Elements.RemoveAll(e=>e.Id=="second-branch" || e.Id=="other");
+        var plan=new SyncPlan{Expected=desired};
+        plan.Changes.Add(new SequenceChange{Action="delete",Kind="operand",Id="second-branch"});
+        plan.Changes.Add(new SequenceChange{Action="delete",Kind="message",Id="other"});
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate && gate.TrimOperands.SequenceEqual(new[]{"second-branch"}),"taking the last branch away was not a candidate: "+gate.ToJson());
+        var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan);
+        Func<string,string,string> at=(shape,key)=>{
+            var hit=package.ShiftedShapes.Where(s=>s.ShapeId==shape).ToArray();
+            if(hit.Length==0)return null;
+            int i=Array.IndexOf(hit[0].Keys,key);return i<0?null:hit[0].Values[i];
+        };
+        // The branch began at 170, 12 under the first branch's end at 158.
+        Require(at("the-frame-shape","Height")=="58" && at("the-frame-shape","Y")==null,"the frame did not close up to the first branch: "+at("the-frame-shape","Height"));
+        Require(at("after-shape","TargetY")=="198","the message under the frame did not move up by what was removed: "+at("after-shape","TargetY"));
+        Require(at("inside-shape","TargetY")==null,"the message in the kept branch moved");
+        Require(package.DeleteFrameIds.SequenceEqual(new[]{"second-branch"}) && package.DeleteMessageIds.SequenceEqual(new[]{"other"}),"the branch and its message were not deleted");
+    }
     public static void Run()
     {
+        AddedBranch();
+        TrimmedBranch();
         ReorderedMessages();
         DeletedNote();
         UnwrappedMessage();

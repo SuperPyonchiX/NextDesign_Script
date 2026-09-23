@@ -25,7 +25,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.20";
+    public const string Title = "シーケンス生成実験 / 0.9.21";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -1284,7 +1284,7 @@ public static class SequenceSyncRuntime
                     Lap("エクスポート");
                     SequenceFrameTypes frameTypes=null;
                     string rootId=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
-                    if(preflight.AddFragments.Count>0
+                    if(preflight.AddFragments.Count>0 || preflight.AddOperands.Count>0
                         || preflight.AddMessages.Any(id=>plan.Expected.Elements.Single(e=>e.Id==id).Parent!=rootId))
                     {
                         // Resolve the metaclasses only when a frame is being added or a message
@@ -3707,6 +3707,8 @@ public sealed class SequenceStructurePreflight
     public List<string> UnwrapFragments=new List<string>();
     // Top-level messages that change places with each other. Only positions change.
     public List<string> ReorderMessages=new List<string>();
+    // The last branch of a frame that stays, taken away with what it held.
+    public List<string> TrimOperands=new List<string>();
     public List<string> AddRefs=new List<string>();
     public List<string> WrapFragments=new List<string>();
     public List<string> MoveMessages=new List<string>();
@@ -3781,13 +3783,34 @@ public sealed class SequenceStructurePreflight
     }
     static string OperandAddReason(SequenceDocument current,SyncPlan plan,SequenceElement added,HashSet<string> adding)
     {
+        var before=current.Elements.ToDictionary(e=>e.Id);
+        // A new branch on a frame already drawn goes after its last branch, and only when
+        // nothing is drawn below that frame, so the frame can simply grow downward.
+        if(added.Parent!=null && before.ContainsKey(added.Parent) && before[added.Parent].Kind=="fragment")
+        {
+            var branches=plan.Expected.Elements.Where(e=>e.Parent==added.Parent && e.Kind=="operand").OrderBy(e=>e.Order).ToArray();
+            if(branches.Length==0 || branches[branches.Length-1].Id!=added.Id)return "追加するオペランドが枠の最後の分岐ではありません。途中への分岐の追加は対象外です。";
+            var walk=Flatten(current);
+            if(walk.Skip(Array.IndexOf(walk,added.Parent)+1).Any(id=>!IsWithin(current,id,added.Parent)))
+                return "分岐を足す枠の下に既存の要素があります。図の最後にある枠に限ります。";
+            if(added.Links.Count>0)return "追加するオペランドに未対応の接続があります。";
+            if(!plan.Expected.Elements.Any(e=>e.Kind=="message" && e.Parent==added.Id))return "メッセージのないオペランドがあります。空の分岐は対象外です。";
+            if(plan.Expected.Elements.Any(e=>e.Parent==added.Id && before.ContainsKey(e.Id)))return "追加する分岐の中に既存の要素があります。";
+            return null;
+        }
         if(added.Parent==null || !adding.Contains(added.Parent))
-            return "オペランド単独の追加は対象外です。フラグメントごと追加する場合だけ扱います。";
+            return "オペランド単独の追加は、既存の枠の最後の分岐か、フラグメントごと追加する場合だけ扱います。";
         SequenceElement owner;
         if(!plan.Expected.Elements.ToDictionary(e=>e.Id).TryGetValue(added.Parent,out owner) || owner.Kind!="fragment")
             return "追加するオペランドの所有先がフラグメントではありません。";
         if(added.Links.Count>0)return "追加するオペランドに未対応の接続があります。";
         return null;
+    }
+    static bool IsWithin(SequenceDocument doc,string id,string container)
+    {
+        var byId=doc.Elements.ToDictionary(e=>e.Id);
+        for(string at=id;at!=null && byId.ContainsKey(at);at=byId[at].Parent)if(at==container)return true;
+        return false;
     }
     static string FragmentReason(SequenceDocument current,SyncPlan plan,string id)
     {
@@ -4225,8 +4248,19 @@ public sealed class SequenceStructurePreflight
             if(change.Action=="delete" && change.Kind=="operand" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
             {
                 string owner=before[change.Id].Parent;
-                if(owner==null || after.ContainsKey(owner))result.Reasons.Add("L"+change.Line+" オペランド単独の削除は対象外です。フラグメントごと消える場合だけ扱います。");
-                else result.DeleteOperands.Add(change.Id);
+                if(owner!=null && after.ContainsKey(owner))
+                {
+                    // The last branch of a frame that keeps at least one, taken with all it holds.
+                    var branches=current.Elements.Where(e=>e.Parent==owner && e.Kind=="operand").OrderBy(e=>e.Order).ToArray();
+                    var inside=current.Elements.Where(e=>IsWithin(current,e.Id,change.Id) && e.Id!=change.Id).ToArray();
+                    if(branches.Length<2 || branches[branches.Length-1].Id!=change.Id)
+                        result.Reasons.Add("L"+change.Line+" 消せる分岐は、ほかの分岐が残る枠の最後の分岐だけです。");
+                    else if(inside.Any(e=>after.ContainsKey(e.Id) || (e.Kind!="message" && e.Kind!="execution")))
+                        result.Reasons.Add("L"+change.Line+" 消す分岐の中に残る要素か、メッセージ・実行区間以外の要素があります。");
+                    else {result.DeleteOperands.Add(change.Id);result.TrimOperands.Add(change.Id);}
+                    continue;
+                }
+                result.DeleteOperands.Add(change.Id);
                 continue;
             }
             // A note is annotation only: removing it leaves everything else where it is.
@@ -4587,6 +4621,7 @@ public sealed class SequenceStructurePreparation
         Func<double,double> wrapMap=null,wrapInside=null;double wrapGrowth=0;
         var layout=gate.WrapFragments.Count>0?WrapLayout(gate,plan,editor,frameTemplate,current,out wrapMap,out wrapInside,out wrapGrowth)
             :gate.AddFragments.Count>0?FrameLayout(gate,plan,editor,frameTemplate,current)
+            :gate.AddOperands.Count>0?BranchLayout(gate,plan,editor,current)
             :new Dictionary<string,Dictionary<string,double>>(StringComparer.Ordinal);
         var additions=new List<SequenceAddedExecution>();
         var newEntities=new List<SequenceJson>();
@@ -4699,7 +4734,7 @@ public sealed class SequenceStructurePreparation
         {
             var wanted=after[id];
             Require(layout.ContainsKey(id),"追加するオペランドの配置を決められません。");
-            Require(wanted.Parent!=null && gate.AddFragments.Contains(wanted.Parent),
+            Require(wanted.Parent!=null && (gate.AddFragments.Contains(wanted.Parent) || before.ContainsKey(wanted.Parent)),
                 "追加するオペランドの所有先がこの計画のフラグメントではありません。");
             string guard=wanted.Text??"";
             newEntities.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",id,"EntityType","InteractionOperand",
@@ -5121,7 +5156,38 @@ public sealed class SequenceStructurePreparation
         // Wrapping makes room at the top of the run and below it. Every position moves by
         // the same rule, so a bar's two ends are mapped separately and its length follows.
         if(gate.ReorderMessages.Count>0)Reorder(current,plan,editor,patch,shifted);
+        // A frame that got a new branch grows to hold it.
+        foreach(var pair in layout.Where(p=>before.ContainsKey(p.Key) && before[p.Key].Kind=="fragment" && p.Value.ContainsKey("Height")))
+        {
+            var box=editor.Shapes().Single(sh=>V(sh,"ModelId")==pair.Key);
+            string height=Number(pair.Value["Height"]);
+            foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
+                .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items).Where(n=>V(n,"Id")==V(box,"Id")))
+                node.Properties["Height"]=SequenceJson.Parse(height);
+            shifted.Add(new SequenceShiftedShape{ModelId=pair.Key,ShapeId=V(box,"Id"),Kind="fragment",Keys=new[]{"Height"},Values=new[]{height}});
+        }
+        // A bar already drawn that a message in the new branch leaves from or lands on
+        // reaches down to that message, the way the generator extends an open bar.
+        if(gate.AddOperands.Any(id=>before.ContainsKey(after[id].Parent)))
+            foreach(var bar in current.Elements.Where(e=>e.Kind=="execution"))
+            {
+                var ys=gate.AddMessages.Where(id=>layout.ContainsKey(id)
+                    && (Link(after[id],"sendExecution").Contains(bar.Id) || Link(after[id],"receiveExecution").Contains(bar.Id)))
+                    .Select(id=>layout[id]["Y"]).ToArray();
+                if(ys.Length==0)continue;
+                var shape=editor.Shapes().Single(sh=>V(sh,"ModelId")==bar.Id);
+                double top=Read(shape,"Y"),length=Read(shape,"Length"),needed=ys.Max()+16-top;
+                if(needed<=length)continue;
+                string grown=Number(needed);
+                foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
+                    .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items).Where(n=>V(n,"Id")==V(shape,"Id")))
+                {node.Properties["Length"]=SequenceJson.Parse(grown);node.Properties["Height"]=SequenceJson.Parse(grown);}
+                shifted.Add(new SequenceShiftedShape{ModelId=bar.Id,ShapeId=V(shape,"Id"),Kind="execution",Keys=new[]{"Length","Height"},Values=new[]{grown,grown}});
+            }
         if(gate.UnwrapFragments.Count>0)wrapMap=UnwrapLayout(gate,current,editor,out wrapGrowth);
+        else if(gate.TrimOperands.Count==1 && gate.AddNotes.Count+gate.AddRefs.Count+gate.AddMessages.Count+gate.AddFragments.Count
+            +gate.AddOperands.Count+gate.AddExecutions.Count+gate.AddParticipants.Count+gate.MoveMessages.Count==0)
+            wrapMap=BranchCut(gate,current,editor,out wrapGrowth);
         // A note or ref taken out on its own closes the room it took, as a frame does. With
         // anything added or moved in the same update the positions are laid out from what
         // is there now, so the space is left as it is.
@@ -5131,7 +5197,8 @@ public sealed class SequenceStructurePreparation
         if(wrapMap!=null)
         {
             var laneIds=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
-            var leavingShapes=new HashSet<string>(gate.DeleteFragments.Concat(gate.DeleteOperands).Concat(gate.DeleteNotes).Concat(gate.DeleteRefs));
+            var leavingShapes=new HashSet<string>(gate.DeleteFragments.Concat(gate.DeleteOperands).Concat(gate.DeleteNotes).Concat(gate.DeleteRefs)
+                .Concat(gate.DeleteMessages).Concat(gate.DeleteExecutions));
             foreach(var shape in editor.Shapes())
             {
                 string model=V(shape,"ModelId");
@@ -5510,6 +5577,59 @@ public sealed class SequenceStructurePreparation
     }
     static string[] Link(SequenceElement e,string role)
     { string[] ids;return e.Links.TryGetValue(role,out ids)?ids:new string[0]; }
+    // A new branch on a frame already drawn: the guard 12 under the frame's old bottom,
+    // its messages under it with the generator's steps, the frame closing 8 under the last.
+    // Bars in the branch span the messages they touch, as in a new frame.
+    internal static Dictionary<string,Dictionary<string,double>> BranchLayout(SequenceStructurePreflight gate,
+        SyncPlan plan,SequenceEditorDocument editor,SequenceDocument current)
+    {
+        var layout=new Dictionary<string,Dictionary<string,double>>(StringComparer.Ordinal);
+        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        var before=current.Elements.ToDictionary(e=>e.Id);
+        var order=SequenceStructurePreflight.Flatten(plan.Expected);
+        double growth=0;
+        foreach(string operandId in gate.AddOperands.Where(id=>before.ContainsKey(after[id].Parent)))
+        {
+            string frameId=after[operandId].Parent;
+            var box=editor.Shapes().Single(sh=>SequenceEditorDocument.Value(sh,"ModelId")==frameId);
+            double top=Read(box,"Y"),height=Read(box,"Height"),y=top+height+12;
+            var slot=new Dictionary<string,double>();slot["Position"]=y-top;layout[operandId]=slot;
+            y+=40+18*((after[operandId].Text??"").Replace("\r\n","\n").Split('\n').Length-1);
+            foreach(string messageId in order.Where(id=>after[id].Kind=="message" && after[id].Parent==operandId))
+            {var row=new Dictionary<string,double>();row["Y"]=y;layout[messageId]=row;y+=MessageSpacing;}
+            y+=8;
+            var frame=new Dictionary<string,double>();frame["Height"]=y-top;layout[frameId]=frame;
+            growth+=y-top-height;
+        }
+        var span=new Dictionary<string,double>();span["Growth"]=growth;layout[""]=span;
+        foreach(string barId in gate.AddExecutions)
+        {
+            var bar=after[barId];
+            if(bar.Parent==null || !layout.ContainsKey(bar.Parent))continue;
+            var ys=plan.Expected.Elements.Where(e=>e.Kind=="message" && layout.ContainsKey(e.Id)
+                && (Link(e,"sendExecution").Contains(barId) || Link(e,"receiveExecution").Contains(barId))).Select(e=>layout[e.Id]["Y"]).ToArray();
+            if(ys.Length==0)continue;
+            var slot=new Dictionary<string,double>();
+            slot["Y"]=ys.Min();slot["Length"]=Math.Max(40,ys.Max()+16-ys.Min());slot["Height"]=slot["Length"];
+            layout[barId]=slot;
+        }
+        return layout;
+    }
+    // Taking a frame's last branch away closes the frame up to where that branch began, 12
+    // above its guard, and moves everything under the frame up by the same.
+    internal static Func<double,double> BranchCut(SequenceStructurePreflight gate,SequenceDocument current,
+        SequenceEditorDocument editor,out double growth)
+    {
+        string operandId=gate.TrimOperands.Single();
+        string frameId=current.Elements.Single(e=>e.Id==operandId).Parent;
+        var shapes=editor.Shapes();
+        var box=shapes.Single(sh=>SequenceEditorDocument.Value(sh,"ModelId")==frameId);
+        var branch=shapes.Single(sh=>SequenceEditorDocument.Value(sh,"ModelId")==operandId);
+        double top=Read(box,"Y"),bottom=top+Read(box,"Height"),cut=top+Read(branch,"Position")-12;
+        double removed=bottom-cut;
+        growth=-removed;
+        return p=>p<=cut?p:p<=bottom?cut:p-removed;
+    }
     // Where a frame over every lane goes across: the rectangle of an existing frame when
     // there is one, measured on the product, or the lanes' outer edges with a 16px margin.
     static void FrameSpan(SequenceEditorDocument editor,SequenceJson frameTemplate,SequenceDocument current,out double x,out double width)
@@ -5948,6 +6068,19 @@ public sealed class SequenceTrialState
                     +PumlBuild.Json(new[]{branch.Guard,branch.Position});
                 result.ShapeModels[branch.ShapeId]=branch.ModelId;
             }
+        }
+        // A branch added to a frame that was already there.
+        foreach(var branch in prepared.AddedOperands.Where(o=>!prepared.AddedFragments.Any(f=>f.ModelId==o.OwnerId)))
+        {
+            result.Models[branch.ModelId]=PumlBuild.Json(new[]{branch.Metaclass,branch.Name,branch.OwnerId,"False"});
+            string field=branch.RelationFields[0];
+            int index=result.Relations.Count(pair=>pair.Value[0]==branch.OwnerId && result.Field(pair.Key)==field);
+            int reverse=result.Relations.Count(pair=>pair.Value[1]==branch.ModelId && result.Field(pair.Key)==field);
+            result.Relations[branch.RelationIds[0]]=new[]{branch.OwnerId,branch.ModelId,
+                index.ToString(System.Globalization.CultureInfo.InvariantCulture),reverse.ToString(System.Globalization.CultureInfo.InvariantCulture)};
+            result.RelationFields[branch.RelationIds[0]]=field;
+            result.Shapes[branch.ShapeId]=PumlBuild.Json(new string[0])+PumlBuild.Json(new[]{branch.Guard,branch.Position});
+            result.ShapeModels[branch.ShapeId]=branch.ModelId;
         }
         foreach(var note in prepared.AddedNotes)
         {

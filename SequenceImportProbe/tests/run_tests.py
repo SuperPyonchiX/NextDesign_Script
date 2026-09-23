@@ -165,6 +165,17 @@ public static class PayloadTest {
    var reorderGate=SequenceStructurePreflight.Check(wrapBefore,SyncPlan.Build(wrapBefore,swapInput,()=>Guid.NewGuid().ToString()));
    if(!reorderGate.Candidate || reorderGate.ReorderMessages.Count!=4 || !reorderGate.CanCommit())
        throw new Exception("swapping two pairs was not a candidate: "+reorderGate.ToJson());
+   // A branch added to the last frame, and the last branch taken away.
+   var branchBase=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
+   var branchAdd=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-else-add-after.puml")));
+   var branchAddGate=SequenceStructurePreflight.Check(branchBase,SyncPlan.Build(branchBase,branchAdd,()=>Guid.NewGuid().ToString()));
+   if(!branchAddGate.Candidate || branchAddGate.AddOperands.Count!=1 || branchAddGate.AddMessages.Count!=1)
+       throw new Exception("adding a branch was not a candidate: "+branchAddGate.ToJson());
+   var elseBase=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-else-before.puml")));
+   var elseDrop=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-else-drop-after.puml")));
+   var branchDropGate=SequenceStructurePreflight.Check(elseBase,SyncPlan.Build(elseBase,elseDrop,()=>Guid.NewGuid().ToString()));
+   if(!branchDropGate.Candidate || branchDropGate.TrimOperands.Count!=1 || branchDropGate.DeleteMessages.Count!=1)
+       throw new Exception("removing the last branch was not a candidate: "+branchDropGate.ToJson());
    var reconnectBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-before.puml")));
    var reconnectAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-after.puml")));
    var reconnectPlan=SyncPlan.Build(reconnectBefore,reconnectAfter,()=>Guid.NewGuid().ToString());
