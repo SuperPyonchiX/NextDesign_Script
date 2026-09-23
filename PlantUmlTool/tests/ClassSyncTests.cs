@@ -231,5 +231,34 @@ public static class ClassSyncTests
 
         var json = same.ToJson();
         Check(json.Contains("\"Changes\":[]") && json.Contains("\"Expected\""), "plan json");
+
+        DiagramDraft(baseline);
+    }
+
+    // A new diagram from PlantUML: seeds from the template, then an add-only plan.
+    static void DiagramDraft(ClassDocument template)
+    {
+        string input = "@startuml\ntitle 新しい図\npackage \"どこか\" {\nclass \"制御部\" as C\nclass \"Logger\" as L {\n  + write(text : String)\n}\nclass \"Sink\" as S\ninterface \"IOut\" as O\n}\nC --> L : logger\nL --> S : sink\n@enduml\n";
+        var draft = ClassDiagramDraft.Plan(ClassDocument.Parse(input), template, "file");
+        Check(draft.Reasons.Count == 0, "draft reasons: " + string.Join(" / ", draft.Reasons.ToArray()));
+        Check(draft.Title == "新しい図", "draft title: " + draft.Title);
+        Check(draft.ExistingCount == 1 && draft.NewCount == 3, "draft counts: " + draft.ExistingCount + "/" + draft.NewCount);
+        Check(string.Join(",", draft.Seeds.Select(s => s.Name + (s.Existing ? "=" : "~") + template.Elements.Single(e => e.Id == s.TemplateId).Text).ToArray()) == "制御部=制御部,Logger~制御部,IOut~IDriver", "draft seeds: " + string.Join(",", draft.Seeds.Select(s => s.Name).ToArray()));
+        Check(draft.Anchors["Sink"] == "Logger", "draft anchor of Sink: " + draft.Anchors["Sink"]);
+        Check(ClassDiagramDraft.Plan(ClassDocument.Parse("@startuml\nclass A <<Nowhere>>\n@enduml\n"), template, "file").Reasons.Count == 1, "unknown stereotype stops the draft");
+        Check(ClassDiagramDraft.Plan(ClassDocument.Parse("@startuml\nclass A\n@enduml\n"), template, "名前").Title == "名前", "file name as title");
+
+        // The new diagram once the seeds are on it: owners come from the model, the existing
+        // class keeps its members and the product's unlabeled back-reference.
+        var current = ClassDocument.Parse("@startuml\ntitle 新しい図\npackage \"システム\" {\n  class \"制御部\" as Controller <<Unit>> {\n    - state : int\n    + start() : bool\n  }\n  class \"Logger\" as Logger <<Unit>>\n  interface \"IOut\" as IOut\n}\nLogger --> Controller\n@enduml\n");
+        var desired = ClassDocument.Parse(input);
+        draft.Prepare(desired, current);
+        desired.Validate();
+        var plan = Plan(current, desired);
+        Check(plan.Changes.All(c => c.Action == "add"), "draft plan adds only: " + Describe(plan));
+        Check(plan.Changes.Count(c => c.Kind == "class") == 1 && plan.Changes.Count(c => c.Kind == "operation") == 1 && plan.Changes.Count(c => c.Kind == "link") == 2, "draft plan counts: " + Describe(plan));
+        var gate = ClassTextPreflight.Check(current, desired, plan);
+        Check(gate.Candidate && gate.Classes.Single().SiblingAlias == "L", "draft preflight: " + gate.Summary());
+        Check(desired.Elements.Single(e => e.Kind == "class" && e.Text == "Sink").Attr("stereotype") == "Unit", "new class takes the anchor's stereotype");
     }
 }

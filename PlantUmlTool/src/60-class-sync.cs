@@ -1201,3 +1201,120 @@ public static class ClassAudit
     }
     static string Pad(string s,int width) { int length=0;foreach(var ch in s)length+=ch<128?1:2;return s+new string(' ',Math.Max(0,width-length)); }
 }
+
+// A new class diagram made from PlantUML with the open diagram as its template. The runtime
+// puts the seeds on an empty diagram (classes the template already shows, and one new class
+// per kind, made from a template class of that kind), then the ordinary sync adds the rest:
+// each new class goes next to its anchor seed, under the same owner.
+public sealed class ClassDiagramDraft
+{
+    public sealed class Seed { public string Name, Keyword, Stereotype, TemplateId; public bool Existing; }
+    public string Title = "";
+    public List<Seed> Seeds = new List<Seed>();
+    // Input class name -> the seed whose owner and kind it takes.
+    public Dictionary<string,string> Anchors = new Dictionary<string,string>(StringComparer.Ordinal);
+    public List<string> Reasons = new List<string>();
+    public int ExistingCount { get { return Seeds.Count(s=>s.Existing); } }
+    public int NewCount { get { return Anchors.Count-ExistingCount; } }
+    static bool IsClass(ClassElement e) { return e.Kind=="class" && !ClassDocument.IsContainerKeyword(e.Attr("keyword")); }
+    // Package blocks carry no ownership here: the template decides where classes go.
+    public static void Flatten(ClassDocument doc)
+    {
+        var packages=new HashSet<string>(doc.Elements.Where(e=>e.Kind=="package").Select(e=>e.Id),StringComparer.Ordinal);
+        if(packages.Count==0)return;
+        doc.Elements.RemoveAll(e=>packages.Contains(e.Id));
+        foreach(var e in doc.Elements)if(e.Parent!=null && packages.Contains(e.Parent))e.Parent="root";
+    }
+    // template: the open diagram as read. fallbackTitle: the file name, used without a title line.
+    public static ClassDiagramDraft Plan(ClassDocument input,ClassDocument template,string fallbackTitle)
+    {
+        var draft=new ClassDiagramDraft();
+        var doc=input.Copy();Flatten(doc);
+        string title=doc.HasTitle?ClassText.Inline(ClassText.Normalize(doc.Root.Text)):"";
+        if(title.Length==0)title=ClassText.Inline(ClassText.Normalize(fallbackTitle??""));
+        draft.Title=title;
+        if(title.Length==0 || title.Contains("\\n"))draft.Reasons.Add("図の名前を決められません。title 行を書いてください");
+        if(doc.Elements.Any(e=>e.Kind=="class" && ClassDocument.IsContainerKeyword(e.Attr("keyword"))))
+            draft.Reasons.Add("package / component の箱は新しい図では扱えません。クラスだけを書いてください");
+        var classes=doc.Elements.Where(IsClass).OrderBy(e=>e.Order).ToList();
+        if(classes.Count==0)draft.Reasons.Add("クラスがありません");
+        foreach(var cls in classes.Where(c=>c.Parent!="root"))draft.Reasons.Add("入れ子のクラスは新しい図では扱えません: "+cls.Text);
+        foreach(var name in classes.GroupBy(c=>c.Text).Where(g=>g.Count()>1).Select(g=>g.Key))draft.Reasons.Add("同じ名前のクラスが複数あります: "+name);
+        if(draft.Reasons.Count>0)return draft;
+        var shown=template.Elements.Where(IsClass).OrderBy(e=>e.Order).ToList();
+        foreach(var cls in classes)
+        {
+            var same=shown.Where(t=>t.Text==cls.Text).ToList();
+            if(same.Count>1) { draft.Reasons.Add("雛形の図に同じ名前のクラスが複数あります: "+cls.Text);continue; }
+            if(same.Count==1)
+            {
+                draft.Seeds.Add(new Seed{Name=cls.Text,Keyword=same[0].Attr("keyword"),Stereotype=same[0].Attr("stereotype"),TemplateId=same[0].Id,Existing=true});
+                draft.Anchors[cls.Text]=cls.Text;
+                continue;
+            }
+            // No stereotype written: any template class of the keyword, whose stereotype it takes.
+            string keyword=cls.Attr("keyword"),stereotype=cls.Attr("stereotype");
+            var seed=draft.Seeds.FirstOrDefault(s=>!s.Existing && s.Keyword==keyword && (stereotype.Length==0 || s.Stereotype==stereotype));
+            if(seed!=null) { draft.Anchors[cls.Text]=seed.Name;continue; }
+            var model=shown.FirstOrDefault(t=>t.Attr("keyword")==keyword && (stereotype.Length==0 || t.Attr("stereotype")==stereotype));
+            if(model==null)
+            {
+                draft.Reasons.Add("雛形の図に "+keyword+(stereotype.Length>0?" <<"+stereotype+">>":"")+" のクラスがないため、'"+cls.Text+"' の種類を決められません");
+                continue;
+            }
+            draft.Seeds.Add(new Seed{Name=cls.Text,Keyword=keyword,Stereotype=model.Attr("stereotype"),TemplateId=model.Id});
+            draft.Anchors[cls.Text]=cls.Text;
+        }
+        return draft;
+    }
+    // Run against the new diagram as read once the seeds are on it. Each class goes under its
+    // anchor's owner and takes its stereotype when none is written; an existing class written
+    // without a body keeps its members, and relationships already between the diagram's classes
+    // stay even when the input leaves them out, so making a diagram never deletes anything.
+    public void Prepare(ClassDocument desired,ClassDocument current)
+    {
+        Flatten(desired);
+        if(desired.HasTitle)desired.Root.Text=current.Root.Text;
+        var index=current.Elements.ToDictionary(e=>e.Id);
+        var shown=current.Elements.Where(IsClass).GroupBy(e=>e.Text).ToDictionary(g=>g.Key,g=>g.First(),StringComparer.Ordinal);
+        var mine=desired.Elements.Where(IsClass).GroupBy(e=>e.Text).ToDictionary(g=>g.Key,g=>g.First(),StringComparer.Ordinal);
+        Func<string,string> copied=id=>id=="root"?"root":"cp:"+id;
+        var containers=new HashSet<string>(StringComparer.Ordinal);
+        foreach(var cls in shown.Values)for(var at=cls.Parent;at!=null && at!="root" && containers.Add(at);at=index[at].Parent) { }
+        foreach(var e in current.Elements.Where(e=>containers.Contains(e.Id)).ToList())
+        {
+            var copy=e.Copy();copy.Id=copied(e.Id);copy.Parent=copied(e.Parent);copy.Line=0;
+            desired.Elements.Add(copy);
+        }
+        foreach(var cls in mine.Values)
+        {
+            string anchor;ClassElement seed;
+            if(!Anchors.TryGetValue(cls.Text,out anchor) || !shown.TryGetValue(anchor,out seed))continue;
+            if(cls.Parent=="root")cls.Parent=copied(seed.Parent);
+            if(cls.Attr("stereotype").Length==0 && cls.Attr("keyword")==seed.Attr("keyword"))cls.Attributes["stereotype"]=seed.Attr("stereotype");
+        }
+        foreach(var seed in Seeds.Where(s=>s.Existing))
+        {
+            ClassElement written,read;
+            if(!mine.TryGetValue(seed.Name,out written) || !shown.TryGetValue(seed.Name,out read))continue;
+            if(desired.Elements.Any(e=>e.Parent==written.Id && ClassDocument.MemberKinds.Contains(e.Kind)))continue;
+            foreach(var member in current.Elements.Where(e=>e.Parent==read.Id && ClassDocument.MemberKinds.Contains(e.Kind)).OrderBy(e=>e.Order).ToList())
+            {
+                var copy=member.Copy();copy.Id=copied(member.Id);copy.Parent=written.Id;copy.Line=0;
+                desired.Elements.Add(copy);
+            }
+        }
+        var ends=new Dictionary<string,string>(StringComparer.Ordinal);
+        foreach(var pair in shown) { ClassElement written;if(mine.TryGetValue(pair.Key,out written))ends[pair.Value.Id]=written.Id; }
+        foreach(var id in containers)ends[id]=copied(id);
+        foreach(var link in current.Elements.Where(e=>e.Kind=="link").ToList())
+        {
+            string from,to;
+            if(!ends.TryGetValue(link.Link("from")??"",out from) || !ends.TryGetValue(link.Link("to")??"",out to))continue;
+            if(desired.Elements.Any(e=>e.Kind=="link" && e.Link("from")==from && e.Link("to")==to && e.Text==link.Text))continue;
+            var copy=link.Copy();copy.Id=copied(link.Id);copy.Line=0;
+            copy.Links["from"]=new[]{from};copy.Links["to"]=new[]{to};
+            desired.Elements.Add(copy);
+        }
+    }
+}

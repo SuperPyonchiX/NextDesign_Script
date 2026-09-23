@@ -258,6 +258,11 @@ public static class ClassSyncRuntime
     // The diagram a run works on. Set by Run(); null means the ribbon's active editor.
     // Re-reading through the model keeps the reference valid after undo or re-import.
     [ThreadStatic] static string targetModelId, targetEditorId;
+    // Set by ClassDiagramCreator for a diagram it has just made: the line to clone when the
+    // diagram has no connector yet, and for each class it created empty, the class whose
+    // member metaclasses to reuse. Null for an ordinary run.
+    [ThreadStatic] public static ClassJsonNode ConnectorTemplate;
+    [ThreadStatic] public static Dictionary<string,string> MemberTemplates;
     static IEditor Current(IApplication app)
     {
         if(targetEditorId==null)return app.Workspace.CurrentEditor;
@@ -581,11 +586,13 @@ public static class ClassSyncRuntime
             nodes.Items.Add(clone);added++;
             log.AppendLine("node entry for re-import: id="+nodeId+" model="+c.Model.Id+" (template node "+c.SiblingNode.Id+", api node "+(c.Node!=null?"yes":"no")+")");
         }
-        if(connectors==null || connectors.Items==null || connectors.Items.Count==0)
+        if((connectors==null || connectors.Items==null || connectors.Items.Count==0) && ConnectorTemplate==null)
         {
             if(added==0) { log.AppendLine("no connector entries to re-apply");return; }
         }
-        var template=connectors!=null && connectors.Items!=null && connectors.Items.Count>0?connectors.Items[0]:null;
+        var template=connectors!=null && connectors.Items!=null && connectors.Items.Count>0?connectors.Items[0]:ConnectorTemplate;
+        // A diagram made by ClassDiagramCreator may have no Connectors list yet.
+        if((connectors==null || connectors.Items==null) && template!=null) { connectors=new ClassJsonNode{Items=new List<ClassJsonNode>()};unit.Editor.Properties["Connectors"]=connectors; }
         foreach(var c in d.Connectors.Cast<object>().ToList())
         {
             var shape=c as IConnector;if(shape==null || before.Contains(shape.Id))continue;
@@ -843,6 +850,14 @@ public static class ClassSyncRuntime
                 {
                     var created=classes.FirstOrDefault(c=>c.Model!=null && c.Model.Id==owner.Id);
                     if(created!=null)sibling=created.Sibling.GetFieldValues(fieldName).Cast<object>().OfType<IModel>().FirstOrDefault(m=>!m.IsDeleted);
+                    // A class made empty by the diagram creator borrows from the class it copied.
+                    string templateId;
+                    var lender=created!=null?created.Sibling:owner;
+                    if(sibling==null && MemberTemplates!=null && MemberTemplates.TryGetValue(lender.Id,out templateId))
+                    {
+                        var template=project.GetModelById(templateId);
+                        if(template!=null)sibling=template.GetFieldValues(fieldName).Cast<object>().OfType<IModel>().FirstOrDefault(m=>!m.IsDeleted);
+                    }
                 }
                 // The short ClassName is not accepted by AddNewModel(string,string) (K038); pass the
                 // metaclass object from a sibling, or the field's declared type class when the
@@ -980,7 +995,7 @@ public static class ClassSyncRuntime
             catch(Exception ex) { throw new InvalidOperationException("C220: 更新前の図を退避できません。保存済みの状態で実行してください（未保存扱いのときはコピーを開き直してください）。\n"+ex.Message); }
             if(unit.Editor==null || string.IsNullOrEmpty(unit.Schema))throw new InvalidOperationException("C220: 図の Editor JSON を退避できません。");
             var existing=unit.Editor["Connectors"];
-            if(preflight.LinkAddCount>0 && (existing==null || existing.Items==null || existing.Items.Count==0))throw new InvalidOperationException("C220: 図に既存の線がないため、線の雛形を取れません。");
+            if(preflight.LinkAddCount>0 && (existing==null || existing.Items==null || existing.Items.Count==0) && ConnectorTemplate==null)throw new InvalidOperationException("C220: 図に既存の線がないため、線の雛形を取れません。");
             log.AppendLine("editor captured for re-import: schema="+unit.Schema+" connectors="+(existing==null || existing.Items==null?0:existing.Items.Count));
         }
         if(!confirm(confirmation))return "本文更新: 中止（確認で取消）";
@@ -1015,7 +1030,17 @@ public static class ClassSyncRuntime
                 }
                 if(node!=null)
                 {
-                    try { node.SetLocationAt(c.SiblingNode.LocationX+c.SiblingNode.Width+40,c.SiblingNode.LocationY);node.SetSizeAt(c.SiblingNode.Width,c.SiblingNode.Height); }
+                    // Right of the sibling; classes added next to the same sibling stack downward
+                    // instead of landing on each other. A node enclosing the sibling (its package
+                    // or component box) is not an obstacle.
+                    var s=c.SiblingNode;
+                    double x=s.LocationX+s.Width+40,y=s.LocationY,w=s.Width,h=s.Height;
+                    var others=d.Nodes.Cast<object>().OfType<INode>().Where(n=>n.Id!=node.Id
+                        && !(n.Id!=s.Id && n.LocationX<=s.LocationX && n.LocationY<=s.LocationY && s.LocationX+s.Width<=n.LocationX+n.Width && s.LocationY+s.Height<=n.LocationY+n.Height)).ToList();
+                    // Only on a diagram the creator made: its nodes are all top level, while nested
+                    // nodes on other diagrams may not share one coordinate frame (unverified).
+                    for(int guard=0;MemberTemplates!=null && guard<200 && others.Any(n=>n.LocationX<x+w && x<n.LocationX+n.Width && n.LocationY<y+h && y<n.LocationY+n.Height);guard++)y+=h+40;
+                    try { node.SetLocationAt(x,y);node.SetSizeAt(w,h); }
                     catch(Exception ex) { log.AppendLine("node placement failed: "+ex.Message); }
                     c.Node=node;
                     log.AppendLine("class node "+node.Id+" at ("+node.LocationX+","+node.LocationY+") visible="+node.IsVisible);
@@ -1260,7 +1285,9 @@ public static class ClassSyncRuntime
     // Compare the PlantUML text with the editor's diagram; optionally apply (trial rolls
     // back, retain commits). confirm() gates the write; the caller supplies dialogs or an
     // automatic yes. No file dialogs, no result windows: the caller decides what to show.
-    public static Outcome Run(IApplication app,IEditor editor,string pumlText,string sourceLabel,bool trial,bool retain,bool apply,Func<string,bool> confirm)
+    // prepare: lets the diagram creator adjust the parsed input against the diagram as read
+    // (placing classes under the owners of the classes it put there) before the comparison.
+    public static Outcome Run(IApplication app,IEditor editor,string pumlText,string sourceLabel,bool trial,bool retain,bool apply,Func<string,bool> confirm,Action<ClassDocument,ClassDiagramSnapshot,StringBuilder> prepare=null)
     {
         var log=new StringBuilder();var outcome=new Outcome();string screenshot=null;string snapshotNote=null;
         trial=trial||retain;
@@ -1292,6 +1319,7 @@ public static class ClassSyncRuntime
             var snapshot=ClassDiagramSnapshot.Read(diagram,new ClassSyncOptions(),log);
             if(snapshotNote!=null)snapshot.Limitations.Add(snapshotNote);
             var current=snapshot.Document;
+            if(prepare!=null) { prepare(desired,snapshot,log);desired.Validate(); }
             var plan=ClassSyncPlan.Build(current,desired,()=>Guid.NewGuid().ToString());
             outcome.CurrentPuml=ClassPumlWriter.Write(current);
             outcome.ReportJson="{\"version\":1,\"project\":"+ClassJson.Q(project==null?"":project.Id)+",\"diagram\":"+ClassJson.Q(editor.Id)
