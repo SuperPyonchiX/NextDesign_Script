@@ -131,9 +131,20 @@ public static class ClassDiagramCreator
     static IModel ResolvePath(IProject project,IModel group,string[] path,out string problem)
     {
         problem=null;
-        var starts=new List<KeyValuePair<IModel,string[]>>{new KeyValuePair<IModel,string[]>(group,path)};
+        // The exporter writes the owner path from the top, starting with the project name (seen
+        // on a real export: "OnBoardClient/OnBoardClient/ソフトウェア詳細設計/..."), so the head is
+        // not assumed: the path is taken after each place the group's (or the root's) name
+        // appears in it, then as written (a hand-written block naming a model below the group).
+        var starts=new List<KeyValuePair<IModel,string[]>>();
         var root=project.DesignModel;
-        if(root!=null)starts.Add(new KeyValuePair<IModel,string[]>(root,path.Length>1 && path[0]==Name(root)?path.Skip(1).ToArray():path));
+        foreach(var from in new[]{group,root})
+        {
+            if(from==null)continue;
+            for(int i=path.Length-1;i>=0;i--)
+                if(path[i]==Name(from))starts.Add(new KeyValuePair<IModel,string[]>(from,path.Skip(i+1).ToArray()));
+        }
+        starts.Add(new KeyValuePair<IModel,string[]>(group,path));
+        if(root!=null)starts.Add(new KeyValuePair<IModel,string[]>(root,path));
         foreach(var start in starts)
         {
             var at=start.Key;string missing=null;
