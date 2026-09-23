@@ -58,6 +58,23 @@ public static class ClassDiagramCreator
         return result.GroupBy(c=>c.Id).Select(g=>g.First()).ToList();
     }
     static bool HasClassDiagram(IModel m) { return Editors(m).Any(e=>ClassDiagramKind.Reject(e)==null); }
+    // The reference field of the diagram model through which the diagram shows this model:
+    // one whose type accepts it, preferring the field another class diagram in the group
+    // already uses for the same model, then any it uses at all.
+    static IField DisplayField(IModel diagramModel,IModel shown,IModel group,StringBuilder log)
+    {
+        var all=diagramModel.Metaclass.GetFields().Cast<IField>().ToList();
+        var fits=all.Where(f=>f.IsReference && f.TypeClass!=null && f.TypeClass.IsClassOf(shown.Metaclass)).ToList();
+        if(fits.Count==0)
+            throw new InvalidOperationException("C320: 図のモデル（"+diagramModel.ClassName+"）に '"+Name(shown)+"'（"+shown.ClassName+"）を参照できるフィールドがありません。参照フィールド: "
+                +string.Join(", ",all.Where(f=>f.IsReference).Select(f=>f.Name+":"+f.Type).ToArray()));
+        if(fits.Count==1)return fits[0];
+        var others=Children(group).Where(m=>m.Id!=diagramModel.Id && m.Metaclass!=null && m.Metaclass.FullName==diagramModel.Metaclass.FullName).ToList();
+        Func<IField,Func<IModel,bool>,int> uses=(f,which)=>others.Count(o=>{try{return o.GetFieldValues(f.Name).Cast<object>().OfType<IModel>().Any(which);}catch(Exception){return false;}});
+        var chosen=fits.OrderByDescending(f=>uses(f,m=>m.Id==shown.Id)).ThenByDescending(f=>uses(f,m=>true)).First();
+        log.AppendLine("display field candidates for "+shown.ClassName+": "+string.Join(", ",fits.Select(f=>f.Name).ToArray())+" -> "+chosen.Name);
+        return chosen;
+    }
     static IEnumerable<IClass> Concrete(IClass declared)
     {
         var all=new List<IClass>{declared};
@@ -296,8 +313,13 @@ public static class ClassDiagramCreator
                 created=editors.Where(e=>ClassDiagramKind.Reject(e)==null).OfType<IDiagram>().FirstOrDefault();
                 if(created==null)throw new InvalidOperationException("C320: 新しい図のモデルにクラス図のエディタがありません（"+string.Join(", ",editors.Select(e=>e.EditorType+"/"+e.ViewDefinitionName).ToArray())+"）。");
                 var views=project.Profile.ViewDefinitions;var editorDef=((IEditor)created).EditorDefinition;
+                // Outer boxes first: a box or class inside a box already on the diagram is shown
+                // through ownership, while an outermost one is shown only when the diagram model
+                // refers to it (AddNodeShape refused a Domain without it on the real project).
+                Func<IModel,int> depth=m=>{int d=0;for(var o=m.Owner;o!=null && d<64;o=o.Owner)d++;return d;};
+                var onDiagram=new HashSet<string>(StringComparer.Ordinal);
                 double x=40,y=40,rowHeight=0;
-                foreach(var p in seeds)
+                foreach(var p in seeds.OrderBy(s=>s.Model==null?depth(s.Package)+1:depth(s.Model)).ThenBy(s=>s.Item.Order))
                 {
                     if(p.Created)
                     {
@@ -307,18 +329,31 @@ public static class ClassDiagramCreator
                         if(Name(p.Model)!=p.Item.Name)throw new InvalidOperationException("C320: 作成したクラスの名前の読戻しが一致しません: "+p.Item.Name);
                         log.AppendLine("created class "+p.Model.ClassName+" id="+p.Model.Id+" name='"+p.Model.Name+"'");
                     }
+                    bool inside=false;
+                    for(var o=p.Model.Owner;o!=null && !inside;o=o.Owner)inside=onDiagram.Contains(o.Id);
+                    if(!inside)
+                    {
+                        var shows=DisplayField(diagramModel,p.Model,owner,log);
+                        diagramModel.Relate(shows.Name,p.Model);
+                        log.AppendLine("diagram refers to '"+p.Item.Name+"' through "+shows.Name);
+                    }
                     IElementDef def=null;
                     try { def=views.FindElementDefByClass(editorDef,p.Model.Metaclass,null).Cast<IElementDef>().FirstOrDefault(); }
                     catch(Exception ex) { log.AppendLine("FindElementDefByClass failed for "+p.Model.ClassName+": "+ex.Message); }
-                    log.AppendLine("node definition for "+p.Model.ClassName+": "+(def==null?"(none)":def.Type+" "+def.Path));
-                    try { created.AddNodeShape(p.Model,def); } catch(Exception ex) { log.AppendLine("AddNodeShape failed for '"+p.Item.Name+"': "+ex.Message); }
+                    try { created.AddNodeShape(p.Model,def); } catch(Exception ex) { log.AppendLine("AddNodeShape failed for '"+p.Item.Name+"' ("+(def==null?"no definition":def.Type)+"): "+ex.Message); }
                     var node=created.Nodes.Cast<object>().OfType<INode>().FirstOrDefault(n=>{var m=ClassDiagramKind.ModelOf(n);return m!=null && m.Id==p.Model.Id;});
-                    if(node==null)throw new InvalidOperationException("C320: 新しい図にクラス '"+p.Item.Name+"' のノードを置けませんでした（ノード定義 "+(def==null?"なし":def.Path)+"）。");
-                    // Every other column stays free for the classes added next to this one.
-                    if(x>40 && x+node.Width>6000) { x=40;y+=rowHeight+120;rowHeight=0; }
-                    node.SetLocationAt(x,y);x+=2*(node.Width+80);rowHeight=Math.Max(rowHeight,node.Height);
-                    log.AppendLine("seed node "+node.Id+" '"+p.Item.Name+"' at ("+node.LocationX+","+node.LocationY+" "+node.Width+"x"+node.Height+") visible="+node.IsVisible);
+                    if(node==null)throw new InvalidOperationException("C320: 新しい図に '"+p.Item.Name+"'（"+p.Model.ClassName+"）の箱を置けませんでした。"+(inside?"":"図のモデルからの参照は張りました。"));
+                    onDiagram.Add(p.Model.Id);
+                    // Outermost boxes go in rows; boxes inside another stay where the product puts them.
+                    if(!inside)
+                    {
+                        if(x>40 && x+node.Width>6000) { x=40;y+=rowHeight+120;rowHeight=0; }
+                        node.SetLocationAt(x,y);x+=node.Width+160;rowHeight=Math.Max(rowHeight,node.Height);
+                    }
+                    log.AppendLine("node "+node.Id+" '"+p.Item.Name+"' "+(inside?"inside":"outer")+" at ("+node.LocationX+","+node.LocationY+" "+node.Width+"x"+node.Height+") visible="+node.IsVisible);
                 }
+                try { created.Relocate();log.AppendLine("relocated "+created.Nodes.Cast<object>().Count()+" nodes"); }
+                catch(Exception ex) { log.AppendLine("relocate failed: "+ex.Message); }
                 transaction.Commit();
             }
             catch(Exception)
