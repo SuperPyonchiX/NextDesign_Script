@@ -25,7 +25,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.23";
+    public const string Title = "シーケンス生成実験 / 0.9.24";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -4226,10 +4226,11 @@ public sealed class SequenceStructurePreflight
             if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
             result.AddExecutions.Add(change.Id);
         }
-        // Top-level messages trading places, with nothing added, removed or reframed.
+        // Messages trading places within the container they share, with nothing added,
+        // removed or reframed. A message crossing a frame also moves the frame, so that
+        // shows up as a move of another kind and is not taken for this.
         bool reordering=plan.Changes.Any(c=>c.Action=="move" && c.Kind=="message")
             && plan.Changes.All(c=>(c.Action=="move" && c.Kind=="message") || (c.Action=="update" && c.Kind=="execution"))
-            && current.Elements.Where(e=>e.Kind!="interaction" && e.Kind!="participant" && e.Kind!="execution").All(e=>e.Kind=="message" && e.Parent==current.Elements.Single(x=>x.Kind=="interaction").Id)
             && plan.Changes.Where(c=>c.Action=="move").All(c=>before.ContainsKey(c.Id) && after.ContainsKey(c.Id) && before[c.Id].Parent==after[c.Id].Parent);
         // Whether a frame is being taken away decides how the moves around it are read.
         string unwrapping=plan.Changes.Where(c=>c.Action=="delete" && c.Kind=="fragment" && before.ContainsKey(c.Id) && !after.ContainsKey(c.Id)
@@ -5548,13 +5549,20 @@ public sealed class SequenceStructurePreparation
             Require(found.Length==1,"入れ替えるメッセージ・実行区間の図形を一意に取得できません。");
             return found[0];
         };
-        var oldOrder=SequenceStructurePreflight.Flatten(current).Where(id=>before[id].Kind=="message").ToArray();
-        var newOrder=SequenceStructurePreflight.Flatten(plan.Expected).Where(id=>before.ContainsKey(id) && before[id].Kind=="message").ToArray();
-        Require(oldOrder.OrderBy(x=>x).SequenceEqual(newOrder.OrderBy(x=>x)),"入れ替え前後でメッセージの集合が違います。");
-        var oldY=oldOrder.ToDictionary(id=>id,id=>Read(shapeOf(id),"SourceY"));
-        for(int i=1;i<oldOrder.Length;i++)Require(oldY[oldOrder[i]]>oldY[oldOrder[i-1]],"メッセージの縦位置が順序どおりではありません。");
+        var oldAll=SequenceStructurePreflight.Flatten(current).Where(id=>before[id].Kind=="message").ToArray();
+        var newAll=SequenceStructurePreflight.Flatten(plan.Expected).Where(id=>before.ContainsKey(id) && before[id].Kind=="message").ToArray();
+        Require(oldAll.OrderBy(x=>x).SequenceEqual(newAll.OrderBy(x=>x)),"入れ替え前後でメッセージの集合が違います。");
+        var oldY=oldAll.ToDictionary(id=>id,id=>Read(shapeOf(id),"SourceY"));
         var newY=new Dictionary<string,double>();
-        for(int i=0;i<newOrder.Length;i++)newY[newOrder[i]]=oldY[oldOrder[i]];
+        // Rows are traded only among the messages of one container.
+        foreach(var group in oldAll.GroupBy(id=>before[id].Parent))
+        {
+            var oldOrder=group.ToArray();
+            var newOrder=newAll.Where(id=>before[id].Parent==group.Key).ToArray();
+            for(int i=1;i<oldOrder.Length;i++)Require(oldY[oldOrder[i]]>oldY[oldOrder[i-1]],"メッセージの縦位置が順序どおりではありません。");
+            for(int i=0;i<newOrder.Length;i++)newY[newOrder[i]]=oldY[oldOrder[i]];
+        }
+        var oldOrderAll=oldAll;
         Action<SequenceJson,string,List<string>,List<string>> write=(shape,model,keys,values)=>{
             if(keys.Count==0)return;
             foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
@@ -5563,7 +5571,7 @@ public sealed class SequenceStructurePreparation
                 for(int i=0;i<keys.Count;i++)node.Properties[keys[i]]=SequenceJson.Parse(values[i]);
             shifted.Add(new SequenceShiftedShape{ModelId=model,ShapeId=V(shape,"Id"),Kind=before[model].Kind,Keys=keys.ToArray(),Values=values.ToArray()});
         };
-        foreach(string id in oldOrder)
+        foreach(string id in oldOrderAll)
         {
             double delta=newY[id]-oldY[id];
             if(Math.Abs(delta)<1e-9)continue;

@@ -184,6 +184,17 @@ public static class PayloadTest {
    var branchDropGate=SequenceStructurePreflight.Check(elseBase,SyncPlan.Build(elseBase,elseDrop,()=>Guid.NewGuid().ToString()));
    if(!branchDropGate.Candidate || branchDropGate.TrimOperands.Count!=1 || branchDropGate.DeleteMessages.Count!=1)
        throw new Exception("removing the last branch was not a candidate: "+branchDropGate.ToJson());
+   // Two pairs trading places inside a frame's branch.
+   var inFrame=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-inframe-before.puml")));
+   var inFrameSwap=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-inframe-swap-after.puml")));
+   var inFrameGate=SequenceStructurePreflight.Check(inFrame,SyncPlan.Build(inFrame,inFrameSwap,()=>Guid.NewGuid().ToString()));
+   if(!inFrameGate.Candidate || inFrameGate.ReorderMessages.Count!=4)
+       throw new Exception("swapping pairs inside a frame was not a candidate: "+inFrameGate.ToJson());
+   // Moving the pair above the frame to below it crosses the frame, which still stops.
+   var crossing=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-cross-after.puml")));
+   var crossBase=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
+   if(SequenceStructurePreflight.Check(crossBase,SyncPlan.Build(crossBase,crossing,()=>Guid.NewGuid().ToString())).Candidate)
+       throw new Exception("a message moved across a frame was taken for a reorder");
    var reconnectBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-before.puml")));
    var reconnectAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-after.puml")));
    var reconnectPlan=SyncPlan.Build(reconnectBefore,reconnectAfter,()=>Guid.NewGuid().ToString());
