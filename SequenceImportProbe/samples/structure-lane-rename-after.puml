@@ -1,0 +1,18 @@
+@startuml
+participant A
+participant Server
+activate A
+A -> Server : first()
+activate Server
+Server --> A : firstDone()
+deactivate Server
+A -> Server : second()
+activate Server
+Server --> A : secondDone()
+deactivate Server
+A -> Server : third()
+activate Server
+Server --> A : thirdDone()
+deactivate Server
+deactivate A
+@enduml

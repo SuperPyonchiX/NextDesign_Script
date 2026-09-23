@@ -27,3 +27,10 @@ ref の削除 | structure-ref-after.puml | structure-wrap-before.puml
 Note を ref に差し替え | structure-note-after.puml | structure-ref-after.puml
 順序の入れ替え | structure-wrap-before.puml | structure-swap-after.puml
 枠の中での入れ替え | structure-inframe-before.puml | structure-inframe-swap-after.puml
+メッセージ名の変更 | structure-wrap-before.puml | structure-rename-after.puml
+参加者名の変更 | structure-wrap-before.puml | structure-lane-rename-after.puml
+Note 本文の変更 | structure-note-after.puml | structure-note-text-after.puml
+ガードの変更 | structure-else-before.puml | structure-guard-after.puml
+混在: 名前の変更と末尾への追加 | structure-message-after.puml | structure-mix-rename-append-after.puml
+混在: メッセージ削除と名前の変更 | structure-wrap-before.puml | structure-mix-delete-rename-after.puml
+混在: Note の追加と名前の変更 | structure-wrap-before.puml | structure-mix-note-rename-after.puml

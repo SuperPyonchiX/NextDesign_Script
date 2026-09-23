@@ -1066,8 +1066,45 @@ public static class StructurePreparationTests
         Require(at("inside-shape","TargetY")==null,"the message in the kept branch moved");
         Require(package.DeleteFrameIds.SequenceEqual(new[]{"second-branch"}) && package.DeleteMessageIds.SequenceEqual(new[]{"other"}),"the branch and its message were not deleted");
     }
+    // probe() renamed in place: the entity goes back with the same id and its new name,
+    // and the model and shape read back with that text.
+    static void RenamedMessage()
+    {
+        var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
+        var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
+        string editorId=raw["Editors"].Items.Single()["Id"].StringValue();
+        var current=new SequenceDocument();
+        current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
+        current.Elements.Add(new SequenceElement{Id=ids[2],Kind="participant",Parent=ids[0],Text="A"});
+        current.Elements.Add(new SequenceElement{Id=ids[3],Kind="participant",Parent=ids[0],Text="B"});
+        foreach(string id in new[]{ids[4],ids[5]})
+        {var e=new SequenceElement{Id=id,Kind="execution",Parent=ids[0]};e.Links["participant"]=new[]{id==ids[4]?ids[2]:ids[3]};current.Elements.Add(e);}
+        var m=new SequenceElement{Id=ids[6],Kind="message",Parent=ids[0],Order=0,Text="probe()"};m.Attributes["sort"]="sync";
+        m.Links["sender"]=new[]{ids[2]};m.Links["receiver"]=new[]{ids[3]};m.Links["sendExecution"]=new[]{ids[4]};m.Links["receiveExecution"]=new[]{ids[5]};
+        current.Elements.Add(m);
+        var desired=current.Copy();desired.Elements.Single(e=>e.Id==ids[6]).Text="renamed()";desired.Elements.Single(e=>e.Id==ids[3]).Text="Server";
+        var plan=new SyncPlan{Expected=desired};
+        plan.Changes.Add(new SequenceChange{Action="update",Kind="message",Id=ids[6],Line=4});
+        plan.Changes.Add(new SequenceChange{Action="update",Kind="participant",Id=ids[3],Line=3});
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate && gate.Renames.Count==2 && gate.CanCommit(),"renames were not candidates: "+gate.ToJson());
+        var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan);
+        var patch=SequenceJson.Parse(package.ReconnectJson);
+        var entity=patch["Entities"].Items.Single(e=>e["Id"].StringValue()==ids[6]);
+        Require(entity["Name"].StringValue()=="renamed()" && entity["Fields"]["Name"].StringValue()=="renamed()","the message was not written with its new name");
+        Require(entity["Fields"]["MessageSort"].StringValue()=="Sync","the message's other fields were lost");
+        Require(patch["Entities"].Items.Single(e=>e["Id"].StringValue()==ids[3])["Name"].StringValue()=="Server","the lane was not renamed");
+        var state=new SequenceTrialState();
+        state.Models[ids[6]]=PumlBuild.Json(new[]{"message","probe()",ids[0],"False"});
+        var wire=raw["Editors"].Items.Single()["Messages"].Items.Single();
+        state.Shapes[wire["Id"].StringValue()]=PumlBuild.Json(new[]{"probe()","80","80","0"});state.ShapeModels[wire["Id"].StringValue()]=ids[6];
+        var expected=state.Expected(package,plan,false);
+        Require(expected.Models[ids[6]]==PumlBuild.Json(new[]{"message","renamed()",ids[0],"False"}),"the renamed model was not predicted");
+        Require(expected.Shapes[wire["Id"].StringValue()]==PumlBuild.Json(new[]{"renamed()","80","80","0"}),"the renamed shape was not predicted");
+    }
     public static void Run()
     {
+        RenamedMessage();
         AddedBranch();
         TrimmedBranch();
         ReorderedMessages();

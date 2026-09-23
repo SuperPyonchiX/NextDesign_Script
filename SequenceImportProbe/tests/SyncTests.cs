@@ -60,7 +60,9 @@
         Require(!missing.Candidate && missing.Reasons.Any(r=>r.Contains("書込み表現が未確定")),"missing receiver was allowed");
         after.Elements.Single(e=>e.Id==message.Id).Links["receiveExecution"]=new[]{extra.Id};
         after.Elements.Single(e=>e.Id==message.Id).Text="changed";
-        Require(!SequenceStructurePreflight.Check(before,plan).Candidate,"text change silently accepted");
+        var both=SequenceStructurePreflight.Check(before,plan);
+        // A new label on a message whose receiver also moves is both, and both are written.
+        Require(both.Candidate && both.ReconnectMessages.Contains(message.Id) && both.Renames.Contains(message.Id),"text change with a reconnect was not both: "+both.ToJson());
         after.Elements.Single(e=>e.Id==message.Id).Text=message.Text;
         plan.Changes.Add(new SequenceChange{Action="move",Kind="message",Id=message.Id,Line=3});
         Require(!SequenceStructurePreflight.Check(before,plan).Candidate,"supported subset accepted");

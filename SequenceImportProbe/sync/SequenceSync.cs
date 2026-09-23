@@ -273,6 +273,43 @@ public sealed class SyncPlan
                 {bind(a,candidates[0]);progress=true;}
             }
         }
+        // Between two elements already matched, the unmatched ones of a kind on each side
+        // pair up when there is exactly one on each side and it has the same shape
+        // (for a message: sort, sender and receiver). That is an edit in place next to an
+        // addition or removal elsewhere, which the single-candidate rule above cannot see.
+        Func<SequenceElement,SequenceElement,bool> sameShape=(x,y)=>{
+            if(x.Kind!=y.Kind)return false;
+            if(x.Kind!="message")return true;
+            string sx,sy;x.Attributes.TryGetValue("sort",out sx);y.Attributes.TryGetValue("sort",out sy);
+            if(sx!=sy)return false;
+            foreach(string role in new[]{"sender","receiver"})
+            {
+                string[] u,v;x.Links.TryGetValue(role,out u);y.Links.TryGetValue(role,out v);u=u??new string[0];v=v??new string[0];
+                if(u.Length!=v.Length || u.Where((id,i)=>!map.ContainsKey(id) || map[id]!=v[i]).Any())return false;
+            }
+            return true;
+        };
+        foreach(var parent in desired.Elements.Where(e=>map.ContainsKey(e.Id)).ToArray())
+        {
+            var a=desired.Elements.Where(e=>e.Parent==parent.Id && e.Kind!="execution").OrderBy(e=>e.Order).ToArray();
+            var b=current.Elements.Where(e=>e.Parent==map[parent.Id] && e.Kind!="execution").OrderBy(e=>e.Order).ToArray();
+            int i=0,j=0;
+            while(i<=a.Length && j<=b.Length)
+            {
+                int ni=i;while(ni<a.Length && !map.ContainsKey(a[ni].Id))ni++;
+                int nj=ni<a.Length?Array.FindIndex(b,e=>e.Id==map[a[ni].Id]):b.Length;
+                if(nj<j)break;
+                var ua=a.Skip(i).Take(ni-i).ToArray();var ub=b.Skip(j).Take(nj-j).Where(e=>!used.Contains(e.Id)).ToArray();
+                foreach(string kind in ua.Select(e=>e.Kind).Distinct().ToArray())
+                {
+                    var xa=ua.Where(e=>e.Kind==kind && !map.ContainsKey(e.Id)).ToArray();var xb=ub.Where(e=>e.Kind==kind && !used.Contains(e.Id)).ToArray();
+                    // Two or more changed rows side by side are not guessed at; they are recreated.
+                    if(xa.Length!=1 || xb.Length!=1 || !sameShape(xa[0],xb[0]))continue;
+                    for(int k=0;k<xa.Length;k++)bind(xa[k],xb[k]);
+                }
+                i=ni+1;j=nj+1;
+            }
+        }
         align();
         Func<SequenceDocument,SequenceElement,bool,string> incident=(doc,execution,input)=>{
             var tokens=new List<string>();
@@ -727,6 +764,9 @@ public sealed class SequenceStructurePreflight
     public List<string> UnwrapFragments=new List<string>();
     // Top-level messages that change places with each other. Only positions change.
     public List<string> ReorderMessages=new List<string>();
+    // Elements whose text alone changed: a message's label, a lane's name, a note's body,
+    // a ref's text, a branch's guard. Only the model's text is written.
+    public List<string> Renames=new List<string>();
     // The last branch of a frame that stays, taken away with what it held.
     public List<string> TrimOperands=new List<string>();
     public List<string> AddRefs=new List<string>();
@@ -734,7 +774,7 @@ public sealed class SequenceStructurePreflight
     public List<string> MoveMessages=new List<string>();
     public int Targets { get { return ReconnectMessages.Count+DeleteExecutions.Count+AddExecutions.Count
         +AddParticipants.Count+DeleteParticipants.Count+DeleteMessages.Count+AddMessages.Count
-        +DeleteFragments.Count+DeleteOperands.Count+AddFragments.Count+AddOperands.Count+MoveMessages.Count+DeleteNotes.Count+AddNotes.Count+DeleteRefs.Count+AddRefs.Count+ReorderMessages.Count; } }
+        +DeleteFragments.Count+DeleteOperands.Count+AddFragments.Count+AddOperands.Count+MoveMessages.Count+DeleteNotes.Count+AddNotes.Count+DeleteRefs.Count+AddRefs.Count+ReorderMessages.Count+Renames.Count; } }
     public bool Candidate { get { return Reasons.Count==0 && Targets>0; } }
     // The deletion-only mode stays exactly as the product confirmed it. The other mode
     // covers a receiver change together with deletions, additions, or both.
@@ -999,9 +1039,11 @@ public sealed class SequenceStructurePreflight
         if(next.Parent==null || !place(next.Parent) || !Link(next,"endContainer").All(place))return false;
         return Link(next,"startAfter").Concat(Link(next,"endBefore")).All(after.ContainsKey);
     }
-    static string Comparable(SequenceElement e)
+    static string Comparable(SequenceElement e) { return Comparable(e,true); }
+    // Everything but the text, and optionally the receiving bar.
+    static string Comparable(SequenceElement e,bool withoutReceiver)
     {
-        var copy=e.Copy();copy.Links.Remove("receiveExecution");copy.Line=0;copy.Order=0;
+        var copy=e.Copy();if(withoutReceiver)copy.Links.Remove("receiveExecution");copy.Line=0;copy.Order=0;copy.Text="";
         return Canonical(copy);
     }
     // An added execution is only describable when it is a plain receive bar on an
@@ -1353,6 +1395,11 @@ public sealed class SequenceStructurePreflight
                 if(AnchorsOnly(old,next,after,new HashSet<string>(result.AddNotes.Concat(result.AddRefs))))continue;
                 result.Reasons.Add(row+"実行区間の境界以外の変更は今回の構造更新対象外です。");continue;
             }
+            // Text alone: nothing about where the element sits or what it connects changes.
+            if(change.Action=="update" && new[]{"message","participant","note","ref","operand","fragment"}.Contains(change.Kind)
+                && before.TryGetValue(change.Id,out old) && after.TryGetValue(change.Id,out next)
+                && (old.Text??"")!=(next.Text??"") && Comparable(old,false)==Comparable(next,false))
+            {result.Renames.Add(change.Id);continue;}
             if(change.Action!="update" || change.Kind!="message" || !before.TryGetValue(change.Id,out old) || !after.TryGetValue(change.Id,out next))
             { result.Reasons.Add(row+change.Kind+" "+change.Action+"は今回の構造更新対象外です。");continue; }
             var oldPorts=Link(old,"receiveExecution");var newPorts=Link(next,"receiveExecution");
@@ -1365,8 +1412,9 @@ public sealed class SequenceStructurePreflight
             if(!Link(port,"participant").SequenceEqual(Link(next,"receiver")))
             { result.Reasons.Add(row+"受信参加者と接続先実行区間の所属が一致しません。");continue; }
             if(oldPorts.SequenceEqual(newPorts) || Comparable(old)!=Comparable(next))
-            { result.Reasons.Add(row+"受信実行区間以外の変更を含むため対象外です。");continue; }
+            { result.Reasons.Add(row+"受信実行区間と本文以外の変更を含むため対象外です。");continue; }
             result.ReconnectMessages.Add(change.Id);
+            if((old.Text??"")!=(next.Text??""))result.Renames.Add(change.Id);
         }
         // Each of these makes room by moving what is below; two in one update would have to
         // agree on where everything goes.
@@ -1396,7 +1444,7 @@ public sealed class SequenceStructurePreflight
             +" / フラグメント削除候補: "+DeleteFragments.Count+" / オペランド削除候補: "+DeleteOperands.Count
             +" / フラグメント追加候補: "+AddFragments.Count+" / オペランド追加候補: "+AddOperands.Count
             +" / 枠で囲むメッセージ候補: "+MoveMessages.Count+" / Note削除候補: "+DeleteNotes.Count+" / Note追加候補: "+AddNotes.Count
-            +" / ref削除候補: "+DeleteRefs.Count+" / ref追加候補: "+AddRefs.Count+" / 外す枠候補: "+UnwrapFragments.Count+" / 順序を入れ替えるメッセージ候補: "+ReorderMessages.Count
+            +" / ref削除候補: "+DeleteRefs.Count+" / ref追加候補: "+AddRefs.Count+" / 外す枠候補: "+UnwrapFragments.Count+" / 順序を入れ替えるメッセージ候補: "+ReorderMessages.Count+" / 本文変更候補: "+Renames.Count
             +"\n"+(Reasons.Count>0?"全体を停止: "+Reasons.Count+"件の未対応条件":Candidate?"限定範囲の候補あり。既存図での適用・保持検証は未実施です。":"対象の変更なし")
             +"\n"+string.Join("\n",Reasons.Distinct());
     }
@@ -1408,7 +1456,7 @@ public sealed class SequenceStructurePreflight
         "DeleteOperands",DeleteOperands.ToArray(),
         "AddFragments",AddFragments.ToArray(),"AddOperands",AddOperands.ToArray(),
         "WrapFragments",WrapFragments.ToArray(),"MoveMessages",MoveMessages.ToArray(),"DeleteNotes",DeleteNotes.ToArray(),"AddNotes",AddNotes.ToArray(),
-        "DeleteRefs",DeleteRefs.ToArray(),"AddRefs",AddRefs.ToArray(),"UnwrapFragments",UnwrapFragments.ToArray(),"ReorderMessages",ReorderMessages.ToArray(),
+        "DeleteRefs",DeleteRefs.ToArray(),"AddRefs",AddRefs.ToArray(),"UnwrapFragments",UnwrapFragments.ToArray(),"ReorderMessages",ReorderMessages.ToArray(),"Renames",Renames.ToArray(),
         "Reasons",Reasons.ToArray())); }
 }
 
@@ -1536,6 +1584,8 @@ public sealed class SequenceStructurePreparation
     public string InsertedMessageId="";
     public SequenceMovedMessage[] MovedMessages=new SequenceMovedMessage[0];
     public SequenceAddedNote[] AddedNotes=new SequenceAddedNote[0];
+    // Model id and new text of each element renamed in place.
+    public string[][] Renamed=new string[0][];
     public string[] DeleteParticipantIds=new string[0];
     public string[] DeleteMessageIds=new string[0];
     public string[] DeleteFrameIds=new string[0];
@@ -2003,6 +2053,25 @@ public sealed class SequenceStructurePreparation
             Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==id)==1,"削除する参加者の図形を一意に取得できません。");
         }
         var patch=SequenceJson.Parse(editor.ImportJson());
+        // A rename re-imports the element with the same id and its new text; the product
+        // updates it in place. A branch keeps its text as its guard, a note may keep its
+        // body in a field of its own, and both are rewritten where they are.
+        var renamed=new List<string[]>();
+        foreach(string id in gate.Renames)
+        {
+            Require(byId.ContainsKey(id),"本文を変える要素が退避データにありません。");
+            string text=after[id].Text??"";
+            var entity=SequenceJson.Parse(byId[id].ToJsonString());
+            bool operand=before[id].Kind=="operand";
+            if(!operand)entity.Properties["Name"]=SequenceJson.Parse(SequencePayload.Q(text));
+            var fields=entity["Fields"];
+            if(fields!=null && fields.Properties!=null)
+                foreach(string key in operand?new[]{"Guard"}:new[]{"Name","Body","Text"})
+                    if(fields[key]!=null && fields[key].Raw!=null && fields[key].Raw.StartsWith("\"",StringComparison.Ordinal))
+                        fields.Properties[key]=SequenceJson.Parse(SequencePayload.Q(text));
+            patch["Entities"].Items.Add(entity);
+            renamed.Add(new[]{id,text,before[id].Kind});
+        }
         patch["Entities"].Items.AddRange(newEntities);
         patch["Relations"].Items.AddRange(newRelations);
         patch["Relations"].Items.AddRange(changed);
@@ -2356,7 +2425,7 @@ public sealed class SequenceStructurePreparation
             AddedExecutions=additions.ToArray(),AddedParticipants=lanes.ToArray(),AddedMessages=wires.ToArray(),
             AddedFragments=frames.ToArray(),AddedOperands=branches.ToArray(),
             StretchedLifelines=stretched.ToArray(),CreatedCollections=Created.ToArray(),
-            ShiftedShapes=shifted.ToArray(),InsertedMessageId=insertedId,MovedMessages=movedMessages.ToArray(),AddedNotes=notes.ToArray(),
+            ShiftedShapes=shifted.ToArray(),InsertedMessageId=insertedId,MovedMessages=movedMessages.ToArray(),AddedNotes=notes.ToArray(),Renamed=renamed.ToArray(),
             DeleteParticipantIds=gate.DeleteParticipants.ToArray(),DeleteMessageIds=gate.DeleteMessages.ToArray(),
             DeleteFrameIds=gate.DeleteFragments.Concat(gate.DeleteOperands).ToArray(),DeleteNoteIds=gate.DeleteNotes.ToArray(),DeleteRefIds=gate.DeleteRefs.ToArray(),
             ReceiveRelationIds=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage").Select(r=>V(r,"Id")).ToArray()};
@@ -3149,6 +3218,40 @@ public sealed class SequenceTrialState
                 result.Shapes[branch.ShapeId]=PumlBuild.Json(new string[0])
                     +PumlBuild.Json(new[]{branch.Guard,branch.Position});
                 result.ShapeModels[branch.ShapeId]=branch.ModelId;
+            }
+        }
+        // Renamed elements: the model's name, and the text the shape reads back.
+        foreach(var row in prepared.Renamed)
+        {
+            string id=row[0],text=row[1],kind=row[2];
+            string model;
+            if(kind!="operand" && result.Models.TryGetValue(id,out model))
+            {
+                var cells=SequenceJson.Parse(model);
+                if(cells!=null && cells.Items!=null && cells.Items.Count==4)
+                {
+                    var values=cells.Items.Select(c=>c.StringValue()).ToArray();values[1]=text;
+                    result.Models[id]=PumlBuild.Json(values);
+                }
+            }
+            foreach(string shapeId in result.ShapeModels.Where(p=>p.Value==id).Select(p=>p.Key).ToArray())
+            {
+                string measured=result.Shapes[shapeId];
+                if(kind=="message")
+                {
+                    var rows=SequenceJson.Parse(measured).Items.Select(c=>c.StringValue()).ToArray();
+                    rows[rows.Length-4]=text;result.Shapes[shapeId]=PumlBuild.Json(rows);
+                }
+                else if(kind=="operand" && measured.StartsWith("[]",StringComparison.Ordinal))
+                {
+                    var rows=SequenceJson.Parse(measured.Substring(2)).Items.Select(c=>c.StringValue()).ToArray();
+                    rows[0]=text;result.Shapes[shapeId]="[]"+PumlBuild.Json(rows);
+                }
+                else if(kind=="note" || kind=="ref" || kind=="fragment")
+                {
+                    int close=measured.IndexOf(']');
+                    result.Shapes[shapeId]=measured.Substring(0,close+1)+text;
+                }
             }
         }
         // A branch added to a frame that was already there.
