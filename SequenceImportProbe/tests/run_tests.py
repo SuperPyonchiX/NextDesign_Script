@@ -160,6 +160,11 @@ public static class PayloadTest {
    var swapGate=SequenceStructurePreflight.Check(noted,SequenceNotePolicy.Build(noted,refed,()=>Guid.NewGuid().ToString()));
    if(!swapGate.Candidate || swapGate.DeleteNotes.Count!=1 || swapGate.AddRefs.Count!=1)
        throw new Exception("swapping a note for a ref was not a candidate: "+swapGate.ToJson());
+   // Two call-and-reply pairs trading places.
+   var swapInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-swap-after.puml")));
+   var reorderGate=SequenceStructurePreflight.Check(wrapBefore,SyncPlan.Build(wrapBefore,swapInput,()=>Guid.NewGuid().ToString()));
+   if(!reorderGate.Candidate || reorderGate.ReorderMessages.Count!=4 || !reorderGate.CanCommit())
+       throw new Exception("swapping two pairs was not a candidate: "+reorderGate.ToJson());
    var reconnectBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-before.puml")));
    var reconnectAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-after.puml")));
    var reconnectPlan=SyncPlan.Build(reconnectBefore,reconnectAfter,()=>Guid.NewGuid().ToString());

@@ -25,7 +25,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.19";
+    public const string Title = "シーケンス生成実験 / 0.9.20";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -1440,7 +1440,8 @@ public static class SequenceStructureTrial
             +prepared.AddedParticipants.Length+prepared.DeleteParticipantIds.Length
             +prepared.DeleteMessageIds.Length+prepared.AddedMessages.Length
             +prepared.DeleteFrameIds.Length+prepared.AddedFragments.Length+prepared.AddedOperands.Length+reconnectCount
-            +prepared.MovedMessages.Length+prepared.DeleteNoteIds.Length+prepared.AddedNotes.Length+prepared.DeleteRefIds.Length;
+            +prepared.MovedMessages.Length+prepared.DeleteNoteIds.Length+prepared.AddedNotes.Length+prepared.DeleteRefIds.Length
+            +(plan.Changes.Any(c=>c.Action=="move")?prepared.ShiftedShapes.Length:0);
         Func<SequenceChange,bool> supported=c=>
             (c.Action=="delete" && c.Kind=="execution")
             // Boundary anchors shifting with a deletion write nothing. The preflight only
@@ -3704,12 +3705,14 @@ public sealed class SequenceStructurePreflight
     // A frame taken away while what it held stays, now owned by the interaction. The frame
     // and its operands are also in DeleteFragments and DeleteOperands.
     public List<string> UnwrapFragments=new List<string>();
+    // Top-level messages that change places with each other. Only positions change.
+    public List<string> ReorderMessages=new List<string>();
     public List<string> AddRefs=new List<string>();
     public List<string> WrapFragments=new List<string>();
     public List<string> MoveMessages=new List<string>();
     public int Targets { get { return ReconnectMessages.Count+DeleteExecutions.Count+AddExecutions.Count
         +AddParticipants.Count+DeleteParticipants.Count+DeleteMessages.Count+AddMessages.Count
-        +DeleteFragments.Count+DeleteOperands.Count+AddFragments.Count+AddOperands.Count+MoveMessages.Count+DeleteNotes.Count+AddNotes.Count+DeleteRefs.Count+AddRefs.Count; } }
+        +DeleteFragments.Count+DeleteOperands.Count+AddFragments.Count+AddOperands.Count+MoveMessages.Count+DeleteNotes.Count+AddNotes.Count+DeleteRefs.Count+AddRefs.Count+ReorderMessages.Count; } }
     public bool Candidate { get { return Reasons.Count==0 && Targets>0; } }
     // The deletion-only mode stays exactly as the product confirmed it. The other mode
     // covers a receiver change together with deletions, additions, or both.
@@ -4093,6 +4096,14 @@ public sealed class SequenceStructurePreflight
     }
     // A bar the frame held keeps its lane and nesting; only its owner and end container,
     // which named the operand, now name the interaction.
+    static bool FollowsReorder(SequenceElement old,SequenceElement next,Dictionary<string,SequenceElement> after)
+    {
+        Func<SequenceElement,string> bare=e=>{
+            var copy=e.Copy();copy.Line=0;copy.Order=0;copy.Links.Remove("startAfter");copy.Links.Remove("endBefore");
+            return new SequenceDocument{Elements=new List<SequenceElement>{copy}}.ToJson();
+        };
+        return bare(old)==bare(next) && Link(next,"startAfter").Concat(Link(next,"endBefore")).All(after.ContainsKey);
+    }
     static bool FollowsUnwrap(SequenceElement old,SequenceElement next,Dictionary<string,SequenceElement> after,string root)
     {
         Func<SequenceElement,string> bare=e=>{
@@ -4180,6 +4191,11 @@ public sealed class SequenceStructurePreflight
             if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
             result.AddExecutions.Add(change.Id);
         }
+        // Top-level messages trading places, with nothing added, removed or reframed.
+        bool reordering=plan.Changes.Any(c=>c.Action=="move" && c.Kind=="message")
+            && plan.Changes.All(c=>(c.Action=="move" && c.Kind=="message") || (c.Action=="update" && c.Kind=="execution"))
+            && current.Elements.Where(e=>e.Kind!="interaction" && e.Kind!="participant" && e.Kind!="execution").All(e=>e.Kind=="message" && e.Parent==current.Elements.Single(x=>x.Kind=="interaction").Id)
+            && plan.Changes.Where(c=>c.Action=="move").All(c=>before.ContainsKey(c.Id) && after.ContainsKey(c.Id) && before[c.Id].Parent==after[c.Id].Parent);
         // Whether a frame is being taken away decides how the moves around it are read.
         string unwrapping=plan.Changes.Where(c=>c.Action=="delete" && c.Kind=="fragment" && before.ContainsKey(c.Id) && !after.ContainsKey(c.Id)
             && current.Elements.Any(e=>before.ContainsKey(e.Parent??"") && before[e.Parent].Parent==c.Id && after.ContainsKey(e.Id))).Select(c=>c.Id).FirstOrDefault();
@@ -4237,6 +4253,14 @@ public sealed class SequenceStructurePreflight
                     result.Reasons.Add(row+"実行区間への参照が残るため削除できません。");
                 else result.DeleteExecutions.Add(change.Id);
                 continue;
+            }
+            // Messages trading places keep everything but their position; the bars on them
+            // follow, and only their neighbouring-event anchors change.
+            if(reordering && before.TryGetValue(change.Id,out old) && after.TryGetValue(change.Id,out next))
+            {
+                if(change.Action=="move"){result.ReorderMessages.Add(change.Id);continue;}
+                if(FollowsReorder(old,next,after))continue;
+                result.Reasons.Add(row+"実行区間の境界以外の変更を含むため、順序の入れ替えとして扱えません。");continue;
             }
             // Taking a frame away moves what it held back to the top level; the bars follow.
             if(unwrapping!=null && (change.Action=="move" || (change.Action=="update" && change.Kind=="execution"))
@@ -4308,7 +4332,7 @@ public sealed class SequenceStructurePreflight
             +" / フラグメント削除候補: "+DeleteFragments.Count+" / オペランド削除候補: "+DeleteOperands.Count
             +" / フラグメント追加候補: "+AddFragments.Count+" / オペランド追加候補: "+AddOperands.Count
             +" / 枠で囲むメッセージ候補: "+MoveMessages.Count+" / Note削除候補: "+DeleteNotes.Count+" / Note追加候補: "+AddNotes.Count
-            +" / ref削除候補: "+DeleteRefs.Count+" / ref追加候補: "+AddRefs.Count+" / 外す枠候補: "+UnwrapFragments.Count
+            +" / ref削除候補: "+DeleteRefs.Count+" / ref追加候補: "+AddRefs.Count+" / 外す枠候補: "+UnwrapFragments.Count+" / 順序を入れ替えるメッセージ候補: "+ReorderMessages.Count
             +"\n"+(Reasons.Count>0?"全体を停止: "+Reasons.Count+"件の未対応条件":Candidate?"限定範囲の候補あり。既存図での適用・保持検証は未実施です。":"対象の変更なし")
             +"\n"+string.Join("\n",Reasons.Distinct());
     }
@@ -4320,7 +4344,7 @@ public sealed class SequenceStructurePreflight
         "DeleteOperands",DeleteOperands.ToArray(),
         "AddFragments",AddFragments.ToArray(),"AddOperands",AddOperands.ToArray(),
         "WrapFragments",WrapFragments.ToArray(),"MoveMessages",MoveMessages.ToArray(),"DeleteNotes",DeleteNotes.ToArray(),"AddNotes",AddNotes.ToArray(),
-        "DeleteRefs",DeleteRefs.ToArray(),"AddRefs",AddRefs.ToArray(),"UnwrapFragments",UnwrapFragments.ToArray(),
+        "DeleteRefs",DeleteRefs.ToArray(),"AddRefs",AddRefs.ToArray(),"UnwrapFragments",UnwrapFragments.ToArray(),"ReorderMessages",ReorderMessages.ToArray(),
         "Reasons",Reasons.ToArray())); }
 }
 
@@ -5096,6 +5120,7 @@ public sealed class SequenceStructurePreparation
         }
         // Wrapping makes room at the top of the run and below it. Every position moves by
         // the same rule, so a bar's two ends are mapped separately and its length follows.
+        if(gate.ReorderMessages.Count>0)Reorder(current,plan,editor,patch,shifted);
         if(gate.UnwrapFragments.Count>0)wrapMap=UnwrapLayout(gate,current,editor,out wrapGrowth);
         // A note or ref taken out on its own closes the room it took, as a frame does. With
         // anything added or moved in the same update the positions are laid out from what
@@ -5432,6 +5457,59 @@ public sealed class SequenceStructurePreparation
             return moved;
         };
     }
+    // Messages trading places take each other's rows: the n-th top-level message in the
+    // new order goes to the row the n-th one used to have. A bar moves with its messages,
+    // keeping how far above the first and below the last of them it reached.
+    static void Reorder(SequenceDocument current,SyncPlan plan,SequenceEditorDocument editor,SequenceJson patch,List<SequenceShiftedShape> shifted)
+    {
+        var before=current.Elements.ToDictionary(e=>e.Id);
+        var shapes=editor.Shapes();
+        Func<string,SequenceJson> shapeOf=id=>{
+            var found=shapes.Where(sh=>V(sh,"ModelId")==id).ToArray();
+            Require(found.Length==1,"入れ替えるメッセージ・実行区間の図形を一意に取得できません。");
+            return found[0];
+        };
+        var oldOrder=SequenceStructurePreflight.Flatten(current).Where(id=>before[id].Kind=="message").ToArray();
+        var newOrder=SequenceStructurePreflight.Flatten(plan.Expected).Where(id=>before.ContainsKey(id) && before[id].Kind=="message").ToArray();
+        Require(oldOrder.OrderBy(x=>x).SequenceEqual(newOrder.OrderBy(x=>x)),"入れ替え前後でメッセージの集合が違います。");
+        var oldY=oldOrder.ToDictionary(id=>id,id=>Read(shapeOf(id),"SourceY"));
+        for(int i=1;i<oldOrder.Length;i++)Require(oldY[oldOrder[i]]>oldY[oldOrder[i-1]],"メッセージの縦位置が順序どおりではありません。");
+        var newY=new Dictionary<string,double>();
+        for(int i=0;i<newOrder.Length;i++)newY[newOrder[i]]=oldY[oldOrder[i]];
+        Action<SequenceJson,string,List<string>,List<string>> write=(shape,model,keys,values)=>{
+            if(keys.Count==0)return;
+            foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
+                .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items)
+                .Where(n=>V(n,"Id")==V(shape,"Id")))
+                for(int i=0;i<keys.Count;i++)node.Properties[keys[i]]=SequenceJson.Parse(values[i]);
+            shifted.Add(new SequenceShiftedShape{ModelId=model,ShapeId=V(shape,"Id"),Kind=before[model].Kind,Keys=keys.ToArray(),Values=values.ToArray()});
+        };
+        foreach(string id in oldOrder)
+        {
+            double delta=newY[id]-oldY[id];
+            if(Math.Abs(delta)<1e-9)continue;
+            var shape=shapeOf(id);
+            write(shape,id,new List<string>{"SourceY","TargetY"},
+                new List<string>{Number(Read(shape,"SourceY")+delta),Number(Read(shape,"TargetY")+delta)});
+        }
+        foreach(var bar in current.Elements.Where(e=>e.Kind=="execution"))
+        {
+            var mine=plan.Expected.Elements.Where(e=>e.Kind=="message" && oldY.ContainsKey(e.Id)
+                && (Link(e,"sendExecution").Contains(bar.Id) || Link(e,"receiveExecution").Contains(bar.Id))).Select(e=>e.Id).ToArray();
+            if(mine.Length==0)continue;
+            var shape=shapeOf(bar.Id);
+            double top=Read(shape,"Y"),bottom=top+Read(shape,"Length");
+            double newTop=mine.Min(m=>newY[m])+(top-mine.Min(m=>oldY[m]));
+            double newBottom=mine.Max(m=>newY[m])+(bottom-mine.Max(m=>oldY[m]));
+            var keys=new List<string>();var values=new List<string>();
+            if(Math.Abs(newTop-top)>1e-9){keys.Add("Y");values.Add(Number(newTop));}
+            if(Math.Abs((newBottom-newTop)-(bottom-top))>1e-9)
+            {keys.Add("Length");values.Add(Number(newBottom-newTop));keys.Add("Height");values.Add(Number(newBottom-newTop));}
+            write(shape,bar.Id,keys,values);
+        }
+    }
+    static string[] Link(SequenceElement e,string role)
+    { string[] ids;return e.Links.TryGetValue(role,out ids)?ids:new string[0]; }
     // Where a frame over every lane goes across: the rectangle of an existing frame when
     // there is one, measured on the product, or the lanes' outer edges with a 16px margin.
     static void FrameSpan(SequenceEditorDocument editor,SequenceJson frameTemplate,SequenceDocument current,out double x,out double width)

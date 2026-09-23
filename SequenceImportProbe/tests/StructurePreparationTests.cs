@@ -893,8 +893,65 @@ public static class StructurePreparationTests
         foreach(var lane in editor["Lifelines"].Items)Require(at(lane["Id"].StringValue(),"LaneLength")=="152","a lane did not shorten");
         Require(package.DeleteNoteIds.SequenceEqual(new[]{"old-note"}),"the note was not deleted");
     }
+    // probe() at 80, two() at 120 and three() at 160, each answered on its own short bar
+    // on B (80+24, 120+24, 160+24). three() and its bar move above two().
+    static void ReorderedMessages()
+    {
+        var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
+        var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
+        var editor=raw["Editors"].Items.Single();string editorId=editor["Id"].StringValue();
+        var barB=editor["ExecutionSpecifications"].Items[1];
+        barB.Properties["Length"]=SequenceJson.Parse("24");barB.Properties["Height"]=SequenceJson.Parse("24");
+        foreach(var row in new[]{new[]{"two","120"},new[]{"three","160"}})
+        {
+            var entity=Clone(raw["Entities"].Items.Single(e=>e["Id"].StringValue()==ids[6]));Set(entity,"Id",row[0]);raw["Entities"].Items.Add(entity);
+            var bar=Clone(raw["Entities"].Items.Single(e=>e["Id"].StringValue()==ids[5]));Set(bar,"Id",row[0]+"-bar");raw["Entities"].Items.Add(bar);
+            foreach(var r in raw["Relations"].Items.Where(r=>r["TargetId"].StringValue()==ids[6] || r["TargetId"].StringValue()==ids[5]).ToArray())
+            {
+                var copy=Clone(r);Set(copy,"Id",r["Id"].StringValue()+"-"+row[0]);
+                Set(copy,"TargetId",r["TargetId"].StringValue()==ids[6]?row[0]:row[0]+"-bar");
+                if(r["SourceId"].StringValue()==ids[5])Set(copy,"SourceId",row[0]+"-bar");
+                raw["Relations"].Items.Add(copy);
+            }
+            var wire=Clone(editor["Messages"].Items[0]);Set(wire,"Id",row[0]+"-shape");Set(wire,"ModelId",row[0]);
+            wire.Properties["SourceY"]=SequenceJson.Parse(row[1]);wire.Properties["TargetY"]=SequenceJson.Parse(row[1]);editor["Messages"].Items.Add(wire);
+            var barShape=Clone(barB);Set(barShape,"Id",row[0]+"-bar-shape");Set(barShape,"ModelId",row[0]+"-bar");
+            barShape.Properties["Y"]=SequenceJson.Parse(row[1]);editor["ExecutionSpecifications"].Items.Add(barShape);
+        }
+        var current=new SequenceDocument();
+        current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
+        current.Elements.Add(new SequenceElement{Id=ids[2],Kind="participant",Parent=ids[0]});
+        current.Elements.Add(new SequenceElement{Id=ids[3],Kind="participant",Parent=ids[0]});
+        foreach(string id in new[]{ids[4],ids[5],"two-bar","three-bar"})
+        {var e=new SequenceElement{Id=id,Kind="execution",Parent=ids[0]};e.Links["participant"]=new[]{id==ids[4]?ids[2]:ids[3]};current.Elements.Add(e);}
+        foreach(var row in new[]{new[]{ids[6],"0",ids[5]},new[]{"two","1","two-bar"},new[]{"three","2","three-bar"}})
+        {
+            var m=new SequenceElement{Id=row[0],Kind="message",Parent=ids[0],Order=int.Parse(row[1]),Text=row[0]};m.Attributes["sort"]="sync";
+            m.Links["sender"]=new[]{ids[2]};m.Links["receiver"]=new[]{ids[3]};m.Links["sendExecution"]=new[]{ids[4]};m.Links["receiveExecution"]=new[]{row[2]};
+            current.Elements.Add(m);
+        }
+        var desired=current.Copy();
+        desired.Elements.Single(e=>e.Id=="two").Order=2;desired.Elements.Single(e=>e.Id=="three").Order=1;
+        var plan=new SyncPlan{Expected=desired};
+        plan.Changes.Add(new SequenceChange{Action="move",Kind="message",Id="three",Line=5});
+        plan.Changes.Add(new SequenceChange{Action="move",Kind="message",Id="two",Line=7});
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate && gate.ReorderMessages.Count==2,"swapping two messages was not a candidate: "+gate.ToJson());
+        var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan);
+        Func<string,string,string> at=(shape,key)=>{
+            var hit=package.ShiftedShapes.Where(m=>m.ShapeId==shape).ToArray();
+            if(hit.Length==0)return null;
+            int i=Array.IndexOf(hit[0].Keys,key);return i<0?null:hit[0].Values[i];
+        };
+        Require(at("three-shape","SourceY")=="120" && at("two-shape","SourceY")=="160","the messages did not trade rows");
+        Require(at("three-bar-shape","Y")=="120" && at("two-bar-shape","Y")=="160","the bars did not move with their messages");
+        Require(at("three-bar-shape","Length")==null,"a bar changed length when only moving");
+        Require(at(editor["Messages"].Items[0]["Id"].StringValue(),"SourceY")==null,"a message that kept its place moved");
+        Require(at(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Y")==null,"the long bar moved");
+    }
     public static void Run()
     {
+        ReorderedMessages();
         DeletedNote();
         UnwrappedMessage();
         AddedRef();
