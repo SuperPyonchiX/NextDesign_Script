@@ -725,36 +725,58 @@ public static class SequenceBatch
         try
         {
             SequenceExperiment.BatchMode=true;SequenceSyncRuntime.Batch=true;
-            if(apply)Save(app,project);
+            var roots=new Dictionary<string,string>();
+            if(apply)
+            {
+                // Every diagram first, then one save: importing does not need the export,
+                // so each scenario then costs one export and one save instead of two saves.
+                var importClock=System.Diagnostics.Stopwatch.StartNew();
+                foreach(var s in scenarios)
+                {
+                    SequenceExperiment.BatchInput=s[1];SequenceExperiment.LastRoot=null;
+                    try{SequenceExperiment.Run(app,true);}catch(Exception ex){detail.AppendLine("■ "+s[0]+" 取込\n"+ex+"\n");}
+                    if(SequenceExperiment.LastRoot!=null)roots[s[0]]=SequenceExperiment.LastRoot;
+                    else detail.AppendLine("■ "+s[0]+" 取込: "+SequenceExperiment.Summary+"\n");
+                }
+                long imported=importClock.ElapsedMilliseconds;
+                var saveClock=System.Diagnostics.Stopwatch.StartNew();
+                Save(app,project);
+                rows.Add("（取込 "+roots.Count+"/"+scenarios.Count+"件 "+(imported/1000)+"秒 / 保存 "+(saveClock.ElapsedMilliseconds/1000)+"秒）");
+            }
+            else roots=previous;
+            int failedInRow=0;
             foreach(var s in scenarios)
             {
                 var watch=System.Diagnostics.Stopwatch.StartNew();
-                string root=null,result;
+                string root,result,timing="";bool failed=false;
                 try
                 {
+                    if(!roots.TryGetValue(s[0],out root))throw new InvalidOperationException(apply?"取込に失敗しました（診断表示）。":"前回の実行で図が作られていません。");
                     if(apply)
                     {
-                        SequenceExperiment.BatchInput=s[1];SequenceExperiment.LastRoot=null;
-                        SequenceExperiment.Run(app,true);
-                        root=SequenceExperiment.LastRoot;
-                        if(root==null)throw new InvalidOperationException("取込: "+Line(SequenceExperiment.Summary,200));
-                        Save(app,project);
-                        var diagram=DiagramOf(project,root);
-                        SequenceSyncRuntime.BatchDiagram=diagram;SequenceSyncRuntime.BatchInput=s[2];
+                        SequenceSyncRuntime.BatchDiagram=DiagramOf(project,root);SequenceSyncRuntime.BatchInput=s[2];
                         SequenceSyncRuntime.Preview(app,true,true,true,true);
                         bool committed=SequenceSyncRuntime.LastCommitted;
                         string reasons=SequenceSyncRuntime.LastReasons,summary=SequenceExperiment.Summary;
+                        timing=" / 反映 "+(watch.ElapsedMilliseconds/1000)+"秒";
                         detail.AppendLine("■ "+s[0]+"\n"+summary+"\n");
+                        var saveClock=System.Diagnostics.Stopwatch.StartNew();
                         Save(app,project);
+                        timing+=" / 保存 "+(saveClock.ElapsedMilliseconds/1000)+"秒";
                         if(!committed)throw new InvalidOperationException("反映: "+(reasons.Length>0?reasons:Line(summary,200)));
                     }
-                    else if(!previous.TryGetValue(s[0],out root))throw new InvalidOperationException("前回の実行で図が作られていません。");
                     int changes=Compare(app,DiagramOf(project,root),s[2]);
+                    failed=changes!=0;
                     result=changes==0?"成功":changes<0?"照合できず: "+Line(SequenceExperiment.Summary,160):"差分 "+changes+"件";
                 }
-                catch(Exception ex){result="停止: "+Line(ex.Message,200);detail.AppendLine("■ "+s[0]+"\n"+ex+"\n");try{if(apply)Save(app,project);}catch(Exception){}}
-                rows.Add(s[0]+" | "+result+" | "+(watch.ElapsedMilliseconds/1000)+"秒");
-                created.Add(s[0]+"\t"+(root??""));
+                catch(Exception ex){failed=true;result="停止: "+Line(ex.Message,200);detail.AppendLine("■ "+s[0]+"\n"+ex+"\n");try{if(apply)Save(app,project);}catch(Exception){}}
+                rows.Add(s[0]+" | "+result+" | "+(watch.ElapsedMilliseconds/1000)+"秒"+timing);
+                string kept;roots.TryGetValue(s[0],out kept);created.Add(s[0]+"\t"+(kept??""));
+                // Two failures in a row almost always share a cause in the batch itself;
+                // running the rest would only repeat it.
+                failedInRow=failed?failedInRow+1:0;
+                if(failedInRow>=2 && scenarios.IndexOf(s)<scenarios.Count-1)
+                {rows.Add("2件続けて失敗したため、残り "+(scenarios.Count-1-scenarios.IndexOf(s))+"件を実行せずに中断しました。");break;}
             }
         }
         finally {SequenceExperiment.BatchMode=false;SequenceExperiment.BatchInput=null;SequenceSyncRuntime.Batch=false;SequenceSyncRuntime.BatchDiagram=null;SequenceSyncRuntime.BatchInput=null;}

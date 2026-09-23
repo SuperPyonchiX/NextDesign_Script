@@ -1,0 +1,4 @@
+# 一括検証そのものの確認用。全件の一覧を回す前にこれで仕組みを確かめる。
+メッセージの追加（末尾） | structure-message-after.puml | structure-batch-after.puml
+メッセージの挿入（途中） | structure-insert-before.puml | structure-insert-after.puml
+Note の追加 | structure-wrap-before.puml | structure-note-after.puml

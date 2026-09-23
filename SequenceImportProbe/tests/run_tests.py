@@ -196,7 +196,7 @@ public static class PayloadTest {
    if(SequenceStructurePreflight.Check(crossBase,SyncPlan.Build(crossBase,crossing,()=>Guid.NewGuid().ToString())).Candidate)
        throw new Exception("a message moved across a frame was taken for a reorder");
    // Every scenario the batch runs has to be something the structural update accepts.
-   foreach(var line in File.ReadAllLines(Path.Combine(args[1],"scenarios.txt")).Select(l=>l.Trim()).Where(l=>l.Length>0 && !l.StartsWith("#")))
+   foreach(var line in new[]{"scenarios.txt","scenarios-smoke.txt"}.SelectMany(f=>File.ReadAllLines(Path.Combine(args[1],f))).Select(l=>l.Trim()).Where(l=>l.Length>0 && !l.StartsWith("#")))
    {
        var cells=line.Split('|').Select(c=>c.Trim()).ToArray();
        var from=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],cells[1])));
