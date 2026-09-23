@@ -25,7 +25,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.15";
+    public const string Title = "シーケンス生成実験 / 0.9.16";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -1191,8 +1191,20 @@ public static class SequenceSyncRuntime
         try {return project.HasUnsavedChanges() || (project.DesignModel!=null && project.DesignModel.IsDirty);}
         catch(Exception) {return false;}
     }
+    // Milliseconds per stage of the last run, shown with its result so a slow step can be
+    // named from a measurement rather than guessed.
+    internal static readonly List<string> Timings=new List<string>();
+    static System.Diagnostics.Stopwatch clock;
+    internal static void Lap(string stage)
+    {
+        if(clock==null)return;
+        Timings.Add(stage+" "+clock.ElapsedMilliseconds);clock.Restart();
+    }
+    internal static string TimingLine()
+    { return Timings.Count==0?"":"\n処理時間(ms): "+string.Join(" / ",Timings); }
     public static void Preview(IApplication app,bool prepare=false,bool trial=false,bool retain=false,bool reconnectCommit=false)
     {
+        Timings.Clear();clock=null;
         var log=new StringBuilder();string report=null;string screenshot=null;
         retain=retain||reconnectCommit;trial=trial||retain;prepare=prepare||trial;
         try
@@ -1202,12 +1214,18 @@ public static class SequenceSyncRuntime
             string path=app.Window.UI.ShowOpenFileDialog("図全体と比較するPlantUML","PlantUML (*.puml;*.plantuml)|*.puml;*.plantuml");
             if(string.IsNullOrEmpty(path))return;
             if(new FileInfo(path).Length>300000)throw new InvalidOperationException("S210: 入力は300KB以下にしてください。");
+            clock=System.Diagnostics.Stopwatch.StartNew();
             var desired=SequenceDocument.Parse(File.ReadAllText(path,new UTF8Encoding(false,true)));
             var current=DiagramSnapshot.Read(diagram,log);
-            // Resolve only unambiguous references for this non-mutating audit command.
+            Lap("図の読取り");
+            // Resolve only unambiguous references for this non-mutating audit command. That
+            // walks the whole design model, so only an input with a ref pays for it.
             var project=app.Workspace.CurrentProject;
-            var interactions=SequenceMappedUpdate.Tree(project.DesignModel).OfType<IInteraction>()
-                .Select(m=>new SequenceReferenceCandidate{Id=m.Id,Name=m.Name,Path=QualifiedName(m)}).ToArray();
+            var interactions=desired.Elements.Any(e=>e.Kind=="ref")
+                ?SequenceMappedUpdate.Tree(project.DesignModel).OfType<IInteraction>()
+                    .Select(m=>new SequenceReferenceCandidate{Id=m.Id,Name=m.Name,Path=QualifiedName(m)}).ToArray()
+                :new SequenceReferenceCandidate[0];
+            if(interactions.Length>0)Lap("ref参照先の探索");
             foreach(var e in desired.Elements.Where(e=>e.Kind=="ref"))
             {
                 var matches=SequenceReferenceResolver.Find(e.Text,interactions);
@@ -1216,6 +1234,7 @@ public static class SequenceSyncRuntime
             }
             var plan=SequenceNotePolicy.Build(current.Document,desired,()=>Guid.NewGuid().ToString());
             var preflight=SequenceStructurePreflight.Check(current.Document,plan);
+            Lap("差分計画");
             // The snapshot goes through ExportModelUnit, which refuses to run while the
             // project has unsaved changes. Say so before any work instead of letting the
             // export throw halfway. This command never saves for you.
@@ -1257,6 +1276,7 @@ public static class SequenceSyncRuntime
                         if(ex.Message.IndexOf("保存",StringComparison.Ordinal)<0)throw;
                         throw new InvalidOperationException(UnsavedAdvice,ex);
                     }
+                    Lap("エクスポート");
                     SequenceFrameTypes frameTypes=null;
                     string rootId=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
                     if(preflight.AddFragments.Count>0
@@ -1284,6 +1304,7 @@ public static class SequenceSyncRuntime
                         log.AppendLine("ref types: "+refTypes.Class+" / "+PumlBuild.Json(refTypes.Owns)+" / "+PumlBuild.Json(refTypes.Crossing)
                             +" / "+(refTypes.RefersTo==null?"no RefersTo":PumlBuild.Json(refTypes.RefersTo)));
                     }
+                    Lap("型の解決");
                     var preparation=SequenceStructurePreparation.Build(exported,diagram.Id,current.Document,plan,frameTypes,noteTypes,refTypes);
                     var raw=SequenceJson.Parse(exported);
                     var exportedRelations=new HashSet<string>(raw["Relations"].Items.Select(r=>SequenceEditorDocument.Value(r,"Id")));
@@ -1298,6 +1319,7 @@ public static class SequenceSyncRuntime
                     if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=diagram.Id
                         || DiagramSnapshot.Read(diagram,new StringBuilder()).Document.ToJson()!=current.Document.ToJson())
                         throw new InvalidOperationException("S220: 準備中に対象の図が変化しました。");
+                    Lap("準備");
                     string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.SequenceSync","prepared",Guid.NewGuid().ToString("N"));
                     Directory.CreateDirectory(directory);
                     // ready.json is written last. Partial directories must never be used as a package.
@@ -1458,14 +1480,17 @@ public static class SequenceStructureTrial
                 +"メッセージやフラグメントを追加する更新は確定後にUndoできません（製品側の不具合）。取り消すときは保存せずに開き直してください。\n"
                 +"自動保存はしません。実行しますか？"
             : "コピーのプロジェクトで実行してください。\n受信接続変更と実行区間削除を一時適用し、照合後に必ず取り消します。\n自動保存・変更の確定は行いません。試行しますか？";
+        SequenceSyncRuntime.Lap("照合の用意");
         if(!app.Window.UI.ShowConfirmDialog(confirmation,SequenceExperiment.Title))
             return caseId+": キャンセル / 図への変更なし";
+        SequenceSyncRuntime.Lap("確認画面（操作待ち）");
         if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=editorId
             || Rounded(project,rootId,fresh,newShapes).Signature()!=original)
             throw new InvalidOperationException("S230: 確認中に対象の図が変化しました。");
         // Serialized attributes are checked before starting; export is unavailable after a write.
         if(SequenceEditorCapture.Read(project,root,diagram,log).Fingerprint()!=SequenceEditorDocument.Read(exported,rootId,editorId).Fingerprint())
             throw new InvalidOperationException("S230: 確認中に表示設定が変化しました。");
+        SequenceSyncRuntime.Lap("再エクスポート");
         SequenceExperiment.Write(Path.Combine(directory,"trial-before-sdk.json"),original);
         SequenceExperiment.Write(Path.Combine(directory,"trial-expected-sdk.json"),expectedFinal.Signature());
         string stage="トランザクション開始";
@@ -1567,6 +1592,8 @@ public static class SequenceStructureTrial
                 +"\n変更の確定・プロジェクト保存: していません\nスタイルの適用後読戻し・保存再読込: 未検証"
                 +(trial.Restored?"":"\n保存せずコピーを開き直してください。")+"\nこの結果と診断表示を撮影してください。";
         }
+        SequenceSyncRuntime.Lap("反映と照合");
+        summary+=SequenceSyncRuntime.TimingLine();
         summary+="\n今回の対象: 受信接続変更 "+reconnectCount+"件 / 実行区間削除 "+prepared.DeleteIds.Length+"件"
             +" / 実行区間追加 "+prepared.AddedExecutions.Length+"件"
             +" / 参加者追加 "+prepared.AddedParticipants.Length+"件 / 参加者削除 "+prepared.DeleteParticipantIds.Length+"件"
