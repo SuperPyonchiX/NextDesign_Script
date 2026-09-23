@@ -171,6 +171,14 @@ public static class PayloadTest {
    var branchAddGate=SequenceStructurePreflight.Check(branchBase,SyncPlan.Build(branchBase,branchAdd,()=>Guid.NewGuid().ToString()));
    if(!branchAddGate.Candidate || branchAddGate.AddOperands.Count!=1 || branchAddGate.AddMessages.Count!=1)
        throw new Exception("adding a branch was not a candidate: "+branchAddGate.ToJson());
+   // The diagram reader adds a bar's outer link last, the parser first. The order a
+   // bar's links were written in must not make it look changed.
+   var readOrder=branchBase.Copy();
+   foreach(var bar in readOrder.Elements.Where(e=>e.Kind=="execution" && e.Links.ContainsKey("outer")))
+   {var outer=bar.Links["outer"];var rest=bar.Links.Where(p=>p.Key!="outer").ToList();bar.Links=new Dictionary<string,string[]>(StringComparer.Ordinal);foreach(var p in rest)bar.Links[p.Key]=p.Value;bar.Links["outer"]=outer;}
+   var readOrderGate=SequenceStructurePreflight.Check(readOrder,SyncPlan.Build(readOrder,branchAdd,()=>Guid.NewGuid().ToString()));
+   if(!readOrderGate.Candidate)
+       throw new Exception("the order of a bar's links was taken for a change: "+readOrderGate.ToJson());
    var elseBase=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-else-before.puml")));
    var elseDrop=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-else-drop-after.puml")));
    var branchDropGate=SequenceStructurePreflight.Check(elseBase,SyncPlan.Build(elseBase,elseDrop,()=>Guid.NewGuid().ToString()));

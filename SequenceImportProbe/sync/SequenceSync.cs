@@ -950,6 +950,15 @@ public sealed class SequenceStructurePreflight
             return "追加する参加者が右端ではありません。途中への挿入は図全体の再配置になるため対象外です。";
         return null;
     }
+    // One element as text for comparison. The reader and the parser add links in a
+    // different order, so the links are sorted first; only what they hold matters.
+    static string Canonical(SequenceElement e)
+    {
+        var copy=e.Copy();
+        copy.Links=e.Links.OrderBy(p=>p.Key,StringComparer.Ordinal).ToDictionary(p=>p.Key,p=>p.Value.ToArray(),StringComparer.Ordinal);
+        copy.Attributes=e.Attributes.OrderBy(p=>p.Key,StringComparer.Ordinal).ToDictionary(p=>p.Key,p=>p.Value,StringComparer.Ordinal);
+        return new SequenceDocument{Elements=new List<SequenceElement>{copy}}.ToJson();
+    }
     static string[] Link(SequenceElement e,string role)
     { string[] ids;return e.Links.TryGetValue(role,out ids)?ids:new string[0]; }
     // startAfter and endBefore name the neighbouring events; they have no model field of
@@ -963,7 +972,7 @@ public sealed class SequenceStructurePreflight
     {
         Func<SequenceElement,string> bare=e=>{
             var copy=e.Copy();copy.Links.Remove("startAfter");copy.Links.Remove("endBefore");copy.Line=0;copy.Order=0;
-            return new SequenceDocument{Elements=new List<SequenceElement>{copy}}.ToJson();
+            return Canonical(copy);
         };
         if(bare(old)!=bare(next))return false;
         foreach(string role in new[]{"startAfter","endBefore"})
@@ -983,7 +992,7 @@ public sealed class SequenceStructurePreflight
         Func<SequenceElement,string> bare=e=>{
             var copy=e.Copy();copy.Parent=null;copy.Line=0;copy.Order=0;
             foreach(string key in new[]{"startAfter","endBefore","endContainer"})copy.Links.Remove(key);
-            return new SequenceDocument{Elements=new List<SequenceElement>{copy}}.ToJson();
+            return Canonical(copy);
         };
         if(bare(old)!=bare(next))return false;
         Func<string,bool> place=id=>id==old.Parent || (after.ContainsKey(id) && after[id].Kind=="operand" && after[id].Parent==frame);
@@ -993,7 +1002,7 @@ public sealed class SequenceStructurePreflight
     static string Comparable(SequenceElement e)
     {
         var copy=e.Copy();copy.Links.Remove("receiveExecution");copy.Line=0;copy.Order=0;
-        return new SequenceDocument{Elements=new List<SequenceElement>{copy}}.ToJson();
+        return Canonical(copy);
     }
     // An added execution is only describable when it is a plain receive bar on an
     // existing participant: owned by the interaction, optionally nested in one of that
@@ -1143,7 +1152,7 @@ public sealed class SequenceStructurePreflight
     {
         Func<SequenceElement,string> bare=e=>{
             var copy=e.Copy();copy.Line=0;copy.Order=0;copy.Links.Remove("startAfter");copy.Links.Remove("endBefore");
-            return new SequenceDocument{Elements=new List<SequenceElement>{copy}}.ToJson();
+            return Canonical(copy);
         };
         return bare(old)==bare(next) && Link(next,"startAfter").Concat(Link(next,"endBefore")).All(after.ContainsKey);
     }
@@ -1152,7 +1161,7 @@ public sealed class SequenceStructurePreflight
         Func<SequenceElement,string> bare=e=>{
             var copy=e.Copy();copy.Parent=null;copy.Line=0;copy.Order=0;
             foreach(string key in new[]{"startAfter","endBefore","endContainer"})copy.Links.Remove(key);
-            return new SequenceDocument{Elements=new List<SequenceElement>{copy}}.ToJson();
+            return Canonical(copy);
         };
         if(bare(old)!=bare(next))return false;
         Func<string,bool> place=id=>id==root || after.ContainsKey(id);
