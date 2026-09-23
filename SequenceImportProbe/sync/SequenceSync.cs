@@ -1655,7 +1655,14 @@ public sealed class SequenceStructurePreparation
                 {
                     double top=Read(shape,"Y"),bottom=top+Read(shape,"Length");
                     if(top>at) {keys.Add("Y");values.Add(Number(top+MessageSpacing));}
-                    else if(bottom>=at) {keys.Add("Length");values.Add(Number(Read(shape,"Length")+MessageSpacing));}
+                    else if(bottom>=at)
+                    {
+                        // A bar carries its length as both Height and Length, and the
+                        // product keeps the pair in step. Writing only one is ignored.
+                        string grown=Number(Read(shape,"Length")+MessageSpacing);
+                        keys.Add("Length");values.Add(grown);
+                        if(shape["Height"]!=null) {keys.Add("Height");values.Add(grown);}
+                    }
                 }
                 else if(shape["LaneLength"]!=null)
                 {keys.Add("LaneLength");values.Add(Number(Read(shape,"LaneLength")+MessageSpacing));}
@@ -2108,6 +2115,7 @@ public sealed class SequenceTrialState
     static int Slot(string key,int count)
     {
         if(key=="Y")return 1;
+        if(key=="Height")return 3;
         if(key=="Length")return count-1;
         if(key=="SourceY")return count-3;
         if(key=="TargetY")return count-2;
