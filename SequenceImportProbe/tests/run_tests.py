@@ -111,7 +111,8 @@ public static class PayloadTest {
    var frameBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
    foreach(var pair in new[]{new[]{"structure-fragment-before.puml","structure-insert-frame-after.puml"},
        new[]{"structure-fragment-before.puml","structure-insert-inframe-after.puml"},
-       new[]{"structure-insert-frame-after.puml","structure-insert-inframe-next.puml"}})
+       new[]{"structure-insert-frame-after.puml","structure-insert-inframe-next.puml"},
+       new[]{"structure-else-before.puml","structure-else-insert-after.puml"}})
    {
        string sample=pair[1];
        frameBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],pair[0])));
