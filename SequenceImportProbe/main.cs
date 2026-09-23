@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.28";
+    public const string Title = "シーケンス生成実験 / 0.9.29";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1761,6 +1761,8 @@ public static class SequenceBatch
                         if(!committed)throw new InvalidOperationException("反映: "+(reasons.Length>0?reasons:Line(summary,200)));
                     }
                     int changes=Compare(app,DiagramOf(project,root),s[2]);
+                    // What the comparison found goes to the details, so a difference can be read.
+                    if(changes!=0)detail.AppendLine("■ "+s[0]+" 比較\n"+SequenceExperiment.Details.Split('\f').First()+"\n");
                     failed=changes!=0;
                     result=changes==0?"成功":changes<0?"照合できず: "+Line(SequenceExperiment.Summary,160):"差分 "+changes+"件";
                 }
@@ -1770,7 +1772,7 @@ public static class SequenceBatch
                 // Two failures in a row almost always share a cause in the batch itself;
                 // running the rest would only repeat it.
                 failedInRow=failed?failedInRow+1:0;
-                if(failedInRow>=2 && scenarios.IndexOf(s)<scenarios.Count-1)
+                if(apply && failedInRow>=2 && scenarios.IndexOf(s)<scenarios.Count-1)
                 {rows.Add("2件続けて失敗したため、残り "+(scenarios.Count-1-scenarios.IndexOf(s))+"件を実行せずに中断しました。");break;}
             }
         }

@@ -781,6 +781,8 @@ public static class SequenceBatch
                         if(!committed)throw new InvalidOperationException("反映: "+(reasons.Length>0?reasons:Line(summary,200)));
                     }
                     int changes=Compare(app,DiagramOf(project,root),s[2]);
+                    // What the comparison found goes to the details, so a difference can be read.
+                    if(changes!=0)detail.AppendLine("■ "+s[0]+" 比較\n"+SequenceExperiment.Details.Split('\f').First()+"\n");
                     failed=changes!=0;
                     result=changes==0?"成功":changes<0?"照合できず: "+Line(SequenceExperiment.Summary,160):"差分 "+changes+"件";
                 }
@@ -790,7 +792,7 @@ public static class SequenceBatch
                 // Two failures in a row almost always share a cause in the batch itself;
                 // running the rest would only repeat it.
                 failedInRow=failed?failedInRow+1:0;
-                if(failedInRow>=2 && scenarios.IndexOf(s)<scenarios.Count-1)
+                if(apply && failedInRow>=2 && scenarios.IndexOf(s)<scenarios.Count-1)
                 {rows.Add("2件続けて失敗したため、残り "+(scenarios.Count-1-scenarios.IndexOf(s))+"件を実行せずに中断しました。");break;}
             }
         }
