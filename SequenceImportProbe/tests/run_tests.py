@@ -156,6 +156,10 @@ public static class PayloadTest {
    var dropFrame=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
    var dropGate2=SequenceStructurePreflight.Check(dropFrame,SyncPlan.Build(dropFrame,SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-after.puml"))),()=>Guid.NewGuid().ToString()));
    if(dropGate2.UnwrapFragments.Count!=0)throw new Exception("a frame removed with its contents was taken for an unwrap");
+   // A note swapped for a ref in the same spot.
+   var swapGate=SequenceStructurePreflight.Check(noted,SequenceNotePolicy.Build(noted,refed,()=>Guid.NewGuid().ToString()));
+   if(!swapGate.Candidate || swapGate.DeleteNotes.Count!=1 || swapGate.AddRefs.Count!=1)
+       throw new Exception("swapping a note for a ref was not a candidate: "+swapGate.ToJson());
    var reconnectBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-before.puml")));
    var reconnectAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-after.puml")));
    var reconnectPlan=SyncPlan.Build(reconnectBefore,reconnectAfter,()=>Guid.NewGuid().ToString());

@@ -25,7 +25,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.13";
+    public const string Title = "シーケンス生成実験 / 0.9.14";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -4944,6 +4944,19 @@ public sealed class SequenceStructurePreparation
             Require(previousShapes.Length==1,"Noteの直前のメッセージの図形を一意に取得できません。");
             double at=Read(previousShapes[0],"TargetY"),top=at+MessageSpacing;
             double height=Math.Max(48,16+20*text.Replace("\r\n","\n").Split('\n').Length),room=height+MessageSpacing;
+            // A note or ref this update removes from the same spot gives its space to the new
+            // one, which then only makes up the difference in height. Otherwise the removed
+            // box would leave its gap under the new one.
+            var oldWalk=SequenceStructurePreflight.Flatten(current);
+            int oldAt=System.Array.IndexOf(oldWalk,previous);
+            string replaced=oldAt>=0 && oldAt+1<oldWalk.Length && (gate.DeleteNotes.Contains(oldWalk[oldAt+1]) || gate.DeleteRefs.Contains(oldWalk[oldAt+1]))
+                ?oldWalk[oldAt+1]:null;
+            if(replaced!=null)
+            {
+                var replacedShapes=editor.Shapes().Where(sh=>V(sh,"ModelId")==replaced).ToArray();
+                Require(replacedShapes.Length==1,"置き換えるNote・refの図形を一意に取得できません。");
+                top=Read(replacedShapes[0],"Y");room=height-Read(replacedShapes[0],"Height");
+            }
             var noteLaneIds=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
             var noteLanes=editor.Shapes().Where(sh=>noteLaneIds.Contains(V(sh,"ModelId")) && sh["X"]!=null && sh["Width"]!=null).ToArray();
             Require(noteLanes.Length>0,"参加者の図形がないためNoteの幅を決められません。");
@@ -4988,6 +5001,7 @@ public sealed class SequenceStructurePreparation
                 string model=V(existing,"ModelId");
                 string kind=before.ContainsKey(model)?before[model].Kind:"";
                 var keys=new List<string>();var values=new List<string>();
+                if(model==replaced || room==0)continue;
                 if(kind=="message" && Read(existing,"TargetY")>at)
                 {
                     keys.Add("SourceY");values.Add(Number(Read(existing,"SourceY")+room));
