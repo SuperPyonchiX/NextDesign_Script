@@ -52,7 +52,21 @@ public static class ClassDiagramCreator
         if(parent==null) { try { parent=app.Window.EditorPage.CurrentModel; } catch(Exception) { } }
         if(parent==null)throw new InvalidOperationException("C310: クラス図を追加するモデル（クラス図グループなど）をナビゲータで選ぶか、雛形にするクラス図を開いてから実行してください。");
         var trace=new StringBuilder();
-        template=FindTemplate(parent,trace);
+        var unloaded=new List<IEditor>();
+        template=FindTemplate(parent,trace,unloaded);
+        // A diagram never opened in this session reports no nodes (2.3.3 on a real project).
+        // Selecting its model in the navigator opens it; read it again afterwards.
+        foreach(var candidate in unloaded.Take(3))
+        {
+            if(template!=null)break;
+            var model=ClassDiagramKind.ModelOf(candidate);
+            try { app.Window.EditorPage.CurrentNavigator.Select(model,false); }
+            catch(Exception ex) { trace.AppendLine("ナビゲータで選べません: "+ex.Message);continue; }
+            var current=app.Workspace.CurrentEditor;
+            if(ClassDiagramKind.Reject(current)==null && ShowsClass(current) && ClassDiagramKind.ModelOf(current)!=null && ClassDiagramKind.ModelOf(current).Id==model.Id)template=current;
+            else if(ShowsClass(candidate))template=candidate;
+            else trace.AppendLine("'"+ClassText.Normalize(model.Name)+"' を開いてもノードを読めません（表示中のエディタ: "+(current==null?"なし":current.EditorType+"/"+current.ViewDefinitionName)+"）");
+        }
         if(template==null)throw new InvalidOperationException("C310: '"+ClassText.Normalize(parent.Name)+"' の直下に、雛形にできるクラス図（クラスが 1 つ以上載っているもの）がありません。雛形にするクラス図を開いてから実行してください。\n"+trace.ToString().TrimEnd());
         var metaclass=ClassDiagramKind.ModelOf(template).Metaclass;
         ownerField=parent.Metaclass.GetFields().Cast<IField>().FirstOrDefault(f=>f.IsEmbedded && f.TypeClass!=null && f.TypeClass.IsClassOf(metaclass));
@@ -63,7 +77,13 @@ public static class ClassDiagramCreator
     // Only the direct children are searched: walking the tree reads every model's editors and
     // took too long on a real project. trace collects what was seen, for the message when
     // nothing is found.
-    static IEditor FindTemplate(IModel parent,StringBuilder trace)
+    static bool ShowsClass(IEditor e)
+    {
+        try { return ((IDiagram)e).Nodes.Cast<object>().OfType<INode>().Any(n=>ClassDiagramKind.ModelOf(n)!=null); }
+        catch(Exception) { return false; }
+    }
+    // unloaded: class diagrams found without nodes, which may just not be loaded yet.
+    static IEditor FindTemplate(IModel parent,StringBuilder trace,List<IEditor> unloaded)
     {
         int models=0,editors=0;var kinds=new List<string>();string firstError=null;
         List<IModel> children;
@@ -82,6 +102,7 @@ public static class ClassDiagramCreator
                     try { shown=((IDiagram)e).Nodes.Cast<object>().OfType<INode>().Any(n=>ClassDiagramKind.ModelOf(n)!=null); }
                     catch(Exception ex) { if(firstError==null)firstError="Nodes: "+ex.Message; }
                     if(shown)return e;
+                    unloaded.Add(e);
                     if(kinds.Count<8)kinds.Add("'"+ClassText.Normalize(m.Name)+"' "+e.EditorType+"/"+e.ViewDefinitionName+" ノードなし");
                 }
             }
