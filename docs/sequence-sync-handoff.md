@@ -1,4 +1,4 @@
-# SequenceImportProbe 引き継ぎ（2026-09-23 / 0.9.4）
+# SequenceImportProbe 引き継ぎ（2026-09-23 / 0.9.5）
 
 PlantUML を正本に Next Design の既存シーケンス図を差分更新する C# スクリプト拡張。この文書は作業を別セッションへ引き継ぐためのもの。**まず `.local/nd-knowledge/index.md` を読むこと。** K001〜K160 に実機で確かめた事実が入っている。推測で候補を潰す前に、そこと製品ログを見る。
 
@@ -42,6 +42,13 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 - 枠の中へ挿入（`structure-insert-inframe-next.puml`）は 0.9.3〜0.9.4 で確定・保存再読込・差分0件まで確認済み
 - 残り: オペランドが2つ以上ある枠で後ろのオペランドを下げる処理。`structure-else-before.puml` → `structure-else-insert-after.puml`
 
+### 0.9.5: 既存メッセージを枠で囲む（実機未確認）
+
+- 対象: 相互作用直下で連続する既存メッセージを、新しい枠（オペランドは新規・1つ以上）で囲む。単独の更新に限る。入れ子の枠・新しいメッセージや実行区間を同時に足す形は停止
+- 配置: 枠上端＝最初のメッセージの10上。見出しとガードの分（最初60、以降のオペランド境界ごとに60、ガード複数行は1行18）だけ中を下げ、枠より下は中の増分＋38下げる。枠より上は動かさない。バーは上端と下端を別々に写す
+- モデル: 枠・オペランドを新規作成し、囲むメッセージへ OperandTargetMessage を張る。メッセージ自体は作り直さない。バーの所属は位置で決まるので書かない
+- サンプル: `structure-wrap-before.puml` → `structure-wrap-after.puml`（3組の呼出しの2組目を alt で囲む）
+
 ## 3. 未解決（A15）: メッセージ・フラグメントを追加した更新の Undo で製品が停止する
 
 - 例外: `System.ArgumentOutOfRangeException` at `DensoCreate.Indio.IMF.Kernel.IML.AddListItemAction<T>.InternalUnExecute()`
@@ -57,8 +64,8 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 
 | 項目 | 見込み実機回数 |
 |---|---|
-| 枠を含む挿入・枠の中への挿入（複数オペランドだけ残り） | 1 |
-| move（所有先の変更・順序の入れ替え）。既存メッセージを枠で囲む形 | 5〜10 |
+| move: 既存メッセージを枠で囲む（0.9.5 実装済み・実機未確認） | 1〜3 |
+| move: 順序の入れ替え・枠から出す | 3〜5 |
 | Note の追加・削除 | 3〜5 |
 | ref の追加・削除（RefersTo リンク） | 3〜5 |
 | オペランド単独の追加・削除 | 2〜3 |

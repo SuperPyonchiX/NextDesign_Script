@@ -381,7 +381,8 @@ public static class SequenceStructureTrial
         int touched=prepared.DeleteIds.Length+prepared.AddedExecutions.Length
             +prepared.AddedParticipants.Length+prepared.DeleteParticipantIds.Length
             +prepared.DeleteMessageIds.Length+prepared.AddedMessages.Length
-            +prepared.DeleteFrameIds.Length+prepared.AddedFragments.Length+prepared.AddedOperands.Length+reconnectCount;
+            +prepared.DeleteFrameIds.Length+prepared.AddedFragments.Length+prepared.AddedOperands.Length+reconnectCount
+            +prepared.MovedMessages.Length;
         Func<SequenceChange,bool> supported=c=>
             (c.Action=="delete" && c.Kind=="execution")
             // Boundary anchors shifting with a deletion write nothing. The preflight only
@@ -390,6 +391,8 @@ public static class SequenceStructureTrial
             || (reconnectCommit && c.Action=="update" && c.Kind=="message")
             || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message"
                 || c.Kind=="fragment" || c.Kind=="operand"))
+            // A wrap moves messages into the new frame, and bars follow them by position.
+            || (reconnectCommit && c.Action=="move" && (c.Kind=="message" || c.Kind=="execution"))
             || (reconnectCommit && c.Action=="delete"
                 && (c.Kind=="participant" || c.Kind=="message" || c.Kind=="fragment" || c.Kind=="operand"));
         if(retain && (touched==0 || (!reconnectCommit && touched!=prepared.DeleteIds.Length)
@@ -541,6 +544,7 @@ public static class SequenceStructureTrial
             +" / フラグメント追加 "+prepared.AddedFragments.Length+"件 / オペランド追加 "+prepared.AddedOperands.Length+"件"
             +" / タイムラインを伸ばした参加者 "+prepared.StretchedLifelines.Length+"件"
             +(prepared.InsertedMessageId.Length>0?" / 途中への挿入で下げた図形 "+prepared.ShiftedShapes.Length+"件":"")
+            +(prepared.MovedMessages.Length>0?" / 枠で囲んだメッセージ "+prepared.MovedMessages.Length+"件 / 下げた図形 "+prepared.ShiftedShapes.Length+"件":"")
             // Committing an addition works, but the product crashes undoing a message or a
             // frame added this way, so say so here rather than leaving it to be discovered.
             // Undo after adding only bars or participants has not been tried.

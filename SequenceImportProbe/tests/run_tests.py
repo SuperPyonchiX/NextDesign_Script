@@ -97,8 +97,17 @@ public static class PayloadTest {
    var frameWrapInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-framewrap-after.puml")));
    var frameWrapGate=SequenceStructurePreflight.Check(frameAddModel,
        SyncPlan.Build(frameAddModel,frameWrapInput,()=>Guid.NewGuid().ToString()));
-   if(frameWrapGate.Candidate)
-       throw new Exception("wrapping existing messages was accepted: "+frameWrapGate.ToJson());
+   if(!frameWrapGate.Candidate || frameWrapGate.WrapFragments.Count!=1 || frameWrapGate.MoveMessages.Count!=2 || !frameWrapGate.CanCommit())
+       throw new Exception("wrapping existing messages was not a candidate: "+frameWrapGate.ToJson());
+   // A frame around a run in the middle, with the bars written out, and one that is not a run.
+   var wrapBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-wrap-before.puml")));
+   var wrapInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-wrap-after.puml")));
+   var wrapGate=SequenceStructurePreflight.Check(wrapBefore,SyncPlan.Build(wrapBefore,wrapInput,()=>Guid.NewGuid().ToString()));
+   if(!wrapGate.Candidate || wrapGate.MoveMessages.Count!=2 || wrapGate.AddOperands.Count!=1)
+       throw new Exception("wrapping a run in the middle was not a candidate: "+wrapGate.ToJson());
+   var wrapMixed=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-wrap-after.puml")).Replace("alt ready","alt ready\\nA -> B : extra()"));
+   if(SequenceStructurePreflight.Check(wrapBefore,SyncPlan.Build(wrapBefore,wrapMixed,()=>Guid.NewGuid().ToString())).Candidate)
+       throw new Exception("a wrap that also adds a message was accepted");
 
    // A message inserted between two that already exist, onto bars already open there.
    var insertModel=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-insert-before.puml")));

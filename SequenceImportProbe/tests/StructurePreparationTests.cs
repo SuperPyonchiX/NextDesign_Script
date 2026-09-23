@@ -521,8 +521,105 @@ public static class StructurePreparationTests
             "operand readback not predicted: "+expected.Shapes["second-shape"]);
         Require(expected.Shapes["first-shape"]=="[]"+PumlBuild.Json(new[]{"ready","30"}),"the first operand readback changed");
     }
+    // Three messages at 80, 130 and 180 on bars from 50 to 250 and 80 to 230. The middle
+    // one gets a frame around it.
+    static void WrappedMessage()
+    {
+        var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
+        var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
+        var editor=raw["Editors"].Items.Single();string editorId=editor["Id"].StringValue();
+        editor["ExecutionSpecifications"].Items[0].Properties["Length"]=SequenceJson.Parse("200");
+        editor["ExecutionSpecifications"].Items[0].Properties["Height"]=SequenceJson.Parse("200");
+        editor["ExecutionSpecifications"].Items[1].Properties["Length"]=SequenceJson.Parse("150");
+        editor["ExecutionSpecifications"].Items[1].Properties["Height"]=SequenceJson.Parse("150");
+        foreach(var pair in new[]{new[]{"wrapped","130"},new[]{"after","180"}})
+        {
+            var entity=Clone(raw["Entities"].Items.Single(e=>e["Id"].StringValue()==ids[6]));Set(entity,"Id",pair[0]);raw["Entities"].Items.Add(entity);
+            foreach(var r in raw["Relations"].Items.Where(r=>r["TargetId"].StringValue()==ids[6]).ToArray())
+            {var copy=Clone(r);Set(copy,"Id",r["Id"].StringValue()+"-"+pair[0]);Set(copy,"TargetId",pair[0]);raw["Relations"].Items.Add(copy);}
+            var wire=Clone(editor["Messages"].Items[0]);Set(wire,"Id",pair[0]+"-shape");Set(wire,"ModelId",pair[0]);
+            wire.Properties["SourceY"]=SequenceJson.Parse(pair[1]);wire.Properties["TargetY"]=SequenceJson.Parse(pair[1]);editor["Messages"].Items.Add(wire);
+        }
+        var current=new SequenceDocument();
+        current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
+        current.Elements.Add(new SequenceElement{Id=ids[2],Kind="participant",Parent=ids[0]});
+        current.Elements.Add(new SequenceElement{Id=ids[3],Kind="participant",Parent=ids[0]});
+        foreach(string id in new[]{ids[4],ids[5]})
+        {var e=new SequenceElement{Id=id,Kind="execution",Parent=ids[0]};e.Links["participant"]=new[]{id==ids[4]?ids[2]:ids[3]};current.Elements.Add(e);}
+        int order=0;
+        foreach(var pair in new[]{new[]{ids[6],"probe()"},new[]{"wrapped","wrapped()"},new[]{"after","after()"}})
+        {
+            var m=new SequenceElement{Id=pair[0],Kind="message",Parent=ids[0],Order=order++,Text=pair[1]};m.Attributes["sort"]="sync";
+            m.Links["sender"]=new[]{ids[2]};m.Links["receiver"]=new[]{ids[3]};m.Links["sendExecution"]=new[]{ids[4]};m.Links["receiveExecution"]=new[]{ids[5]};
+            current.Elements.Add(m);
+        }
+        var desired=current.Copy();
+        var box=new SequenceElement{Id="wrap-frame",Kind="fragment",Parent=ids[0],Order=1,Text="alt"};box.Attributes["operator"]="alt";desired.Elements.Add(box);
+        desired.Elements.Add(new SequenceElement{Id="wrap-operand",Kind="operand",Parent="wrap-frame",Order=0,Text="ready"});
+        var inner=desired.Elements.Single(e=>e.Id=="wrapped");inner.Parent="wrap-operand";inner.Order=0;
+        desired.Elements.Single(e=>e.Id=="after").Order=2;
+        var plan=new SyncPlan{Expected=desired};
+        plan.Changes.Add(new SequenceChange{Action="add",Kind="fragment",Id="wrap-frame",Line=5});
+        plan.Changes.Add(new SequenceChange{Action="add",Kind="operand",Id="wrap-operand",Line=5});
+        plan.Changes.Add(new SequenceChange{Action="move",Kind="message",Id="wrapped",Line=6});
+        plan.Changes.Add(new SequenceChange{Action="move",Kind="message",Id="after",Line=8});
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate && gate.MoveMessages.SequenceEqual(new[]{"wrapped"}) && gate.WrapFragments.Count==1 && gate.CanCommit(),
+            "a frame around one existing message was not a candidate: "+gate.ToJson());
+        var types=new SequenceFrameTypes{Fragment="fragment",Operand="operand",Owns=new[]{"owns","Embed","f1"},
+            Branches=new[]{"branches","Embed","f2"},Crossing=new[]{"crossing","Ref","f3"},OperandMessage=new[]{"operand-message","Ref","f4"}};
+        types.Operators["alt"]="Alt";
+        var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan,types);
+        Require(package.MovedMessages.Length==1 && package.MovedMessages[0].OperandId=="wrap-operand","the wrapped message was not moved into the operand");
+        Func<string,string,string> moved=(shape,key)=>{
+            var hit=package.ShiftedShapes.Where(m=>m.ShapeId==shape).ToArray();
+            if(hit.Length==0)return null;
+            int i=Array.IndexOf(hit[0].Keys,key);return i<0?null:hit[0].Values[i];
+        };
+        string first=editor["Messages"].Items[0]["Id"].StringValue();
+        Require(moved(first,"TargetY")==null,"a message above the frame moved");
+        Require(moved("wrapped-shape","TargetY")=="190" && moved("wrapped-shape","SourceY")=="190","the wrapped message did not go under the guard");
+        Require(moved("after-shape","TargetY")=="278","the message below did not clear the frame: "+moved("after-shape","TargetY"));
+        string barA=editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),barB=editor["ExecutionSpecifications"].Items[1]["Id"].StringValue();
+        Require(moved(barA,"Y")==null && moved(barA,"Length")=="298" && moved(barA,"Height")=="298","a bar open across the frame did not grow by the room made");
+        Require(moved(barB,"Y")==null && moved(barB,"Length")=="248","the other bar did not grow");
+        foreach(var lane in editor["Lifelines"].Items)Require(moved(lane["Id"].StringValue(),"LaneLength")=="338","a lane did not follow the growth");
+        var patch=SequenceJson.Parse(package.ReconnectJson);
+        var frameShape=patch["Editors"].Items.Single()["Fragments"].Items.Single();
+        Require(frameShape["X"].StringValue()=="4" && frameShape["Y"].StringValue()=="120" && frameShape["Width"].StringValue()=="332" && frameShape["Height"].StringValue()=="128",
+            "frame not drawn around the message: "+frameShape.ToJsonString());
+        Require(patch["Editors"].Items.Single()["Operands"].Items.Single()["Position"].StringValue()=="30","guard not at the generator's offset");
+        Require(patch["Relations"].Items.Count(r=>r["MetamodelId"].StringValue()=="operand-message" && r["SourceId"].StringValue()=="wrap-operand"
+            && r["TargetId"].StringValue()=="wrapped")==1,"the operand does not point at the wrapped message");
+        Require(!patch["Entities"].Items.Any(e=>e["Id"].StringValue()=="wrapped"),"the wrapped message was recreated");
+
+        var state=new SequenceTrialState();
+        foreach(var e in raw["Entities"].Items)state.Models[e["Id"].StringValue()]=e.ToJsonString();
+        foreach(var r in raw["Relations"].Items)
+        {
+            string id=r["Id"].StringValue();
+            state.Relations[id]=new[]{r["SourceId"].StringValue(),r["TargetId"].StringValue(),r["SourceIndex"].Raw,r["TargetIndex"].Raw};
+            state.RelationFields[id]=r["MetamodelId"].StringValue();
+        }
+        foreach(var sh in SequenceEditorDocument.Read(raw.ToJsonString(),ids[0],editorId).Shapes())
+        {string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        foreach(var wire in editor["Messages"].Items)
+            state.Shapes[wire["Id"].StringValue()]=PumlBuild.Json(new[]{"m",wire["TargetY"].Raw,wire["TargetY"].Raw,"0"});
+        foreach(var bar in editor["ExecutionSpecifications"].Items)
+            state.Shapes[bar["Id"].StringValue()]=PumlBuild.Json(new[]{bar["X"].Raw,bar["Y"].Raw,"16",bar["Height"].Raw,bar["Length"].Raw});
+        foreach(var lane in editor["Lifelines"].Items)
+            state.Shapes[lane["Id"].StringValue()]=PumlBuild.Json(new[]{lane["X"].Raw,"0","100","40"})+lane["LaneLength"].Raw;
+        foreach(string id in new[]{ids[6],"wrapped","after"})state.Ports[id]=new[]{ids[4],ids[5],ids[2],ids[3],"sync"};
+        var expected=state.Expected(package,plan,false);
+        var link=expected.Relations[package.MovedMessages[0].RelationId];
+        Require(link.SequenceEqual(new[]{"wrap-operand","wrapped","0","0"}),"the operand reference was not predicted: "+string.Join(",",link));
+        Require(expected.Shapes["after-shape"]==PumlBuild.Json(new[]{"m","278","278","0"}),"the moved message readback was not predicted");
+        Require(expected.Shapes[barA]==PumlBuild.Json(new[]{"70","50","16","298","298"}),"the grown bar readback was not predicted: "+expected.Shapes[barA]);
+        Require(expected.Models.ContainsKey("wrap-frame") && expected.Models.ContainsKey("wrap-operand"),"the frame was not predicted");
+    }
     public static void Run()
     {
+        WrappedMessage();
         AddedMessage();
         InsertedAroundFrame(false);
         InsertedAroundFrame(true);
