@@ -37,7 +37,8 @@ public static class ClassDiagramCreator
     static string Name(IModel m) { return m==null?"":ClassText.Inline(ClassText.Normalize(m.Name)); }
     static List<IModel> Children(IModel m)
     {
-        try { return m.GetChildren().Cast<IModel>().Where(c=>c!=null && !c.IsDeleted).ToList(); }
+        // Distinct by id: on the real project every class came back twice (2.4.2).
+        try { return m.GetChildren().Cast<IModel>().Where(c=>c!=null && !c.IsDeleted).GroupBy(c=>c.Id).Select(g=>g.First()).ToList(); }
         catch(Exception) { return new List<IModel>(); }
     }
     static List<IEditor> Editors(IModel m)
@@ -54,7 +55,7 @@ public static class ClassDiagramCreator
             level=level.SelectMany(Children).ToList();
             result.AddRange(level);
         }
-        return result;
+        return result.GroupBy(c=>c.Id).Select(g=>g.First()).ToList();
     }
     static bool HasClassDiagram(IModel m) { return Editors(m).Any(e=>ClassDiagramKind.Reject(e)==null); }
     static IEnumerable<IClass> Concrete(IClass declared)
@@ -214,7 +215,14 @@ public static class ClassDiagramCreator
                 var same=Children(package).Where(c=>Name(c)==item.Name).ToList();
                 // The exporter writes a class owned by another class at the depth of the nearest box.
                 if(same.Count==0)same=Below(package,3).Where(c=>Name(c)==item.Name && c.Metaclass!=null && !ClassDocument.IsContainerKeyword(KeywordOf(c.Metaclass,options))).ToList();
-                if(same.Count>1) { reasons.Add("'"+Name(package)+"' に '"+item.Name+"' が複数あります");continue; }
+                if(same.Count>1)
+                {
+                    // Same name, different models: the keyword and stereotype written in the input decide.
+                    var fitting=same.Where(c=>c.Metaclass!=null && KeywordOf(c.Metaclass,options)==item.Keyword
+                        && (item.Stereotype.Length==0 || StereotypeOf(c.Metaclass,item.Keyword,options)==item.Stereotype)).ToList();
+                    if(fitting.Count==1)same=fitting;
+                    else { reasons.Add("'"+Name(package)+"' に '"+item.Name+"' が複数あります: "+string.Join(", ",same.Select(c=>c.ClassName+" id="+c.Id).ToArray()));continue; }
+                }
                 if(same.Count==1) { p.Model=same[0];placed.Add(p);continue; }
                 List<Kind> available;
                 if(!kinds.TryGetValue(package.Id,out available))
