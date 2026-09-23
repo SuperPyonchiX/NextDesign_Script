@@ -269,8 +269,7 @@ public static class SequenceSyncRuntime
             // project has unsaved changes. Say so before any work instead of letting the
             // export throw halfway. This command never saves for you.
             if(prepare && Unsaved(project))throw new InvalidOperationException(UnsavedAdvice);
-            if(retain && !preflight.CanCommit())
-                throw new InvalidOperationException("S231: 反映できない差分が含まれています。停止理由は「診断表示」で確認してください。");
+
             report="{\"version\":1,\"project\":"+SequencePayload.Q(project.Id)+",\"diagram\":"+SequencePayload.Q(diagram.Id)
                 +",\"current\":"+current.Document.ToJson()+",\"desired\":"+desired.ToJson()+",\"plan\":"+plan.ToJson()
                 +",\"structurePreflight\":"+preflight.ToJson()+",\"expected\":"+plan.Expected.ToJson()+",\"limitations\":"+PumlBuild.Json(current.Limitations.ToArray())
@@ -288,6 +287,10 @@ public static class SequenceSyncRuntime
             log.AppendLine(screenshot);
             SequenceExperiment.Summary=SequenceAudit.Summary(plan,current.Limitations.Count)+"\n構造更新の停止理由: "+preflight.Reasons.Count+"件（診断表示）";
             log.AppendLine("Scope: "+project.Id+" / "+diagram.ModelId+" / "+diagram.Id);
+            // Checked after the comparison is logged, so the reasons reach the diagnostics.
+            if(retain && !preflight.CanCommit())
+                throw new InvalidOperationException("S231: 反映できない差分が含まれています。"
+                    +(preflight.Reasons.Count>0?"\n"+string.Join("\n",preflight.Reasons.Distinct()):"\n構造更新の対象がありません。"));
             if(prepare)
             {
                 if(!preflight.Candidate)
