@@ -1,4 +1,4 @@
-# SequenceImportProbe 引き継ぎ（2026-09-23 / 0.9.9）
+# SequenceImportProbe 引き継ぎ（2026-09-23 / 0.9.10）
 
 PlantUML を正本に Next Design の既存シーケンス図を差分更新する C# スクリプト拡張。この文書は作業を別セッションへ引き継ぐためのもの。**まず `.local/nd-knowledge/index.md` を読むこと。** K001〜K160 に実機で確かめた事実が入っている。推測で候補を潰す前に、そこと製品ログを見る。
 
@@ -62,6 +62,7 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 - メッセージや枠の追加と同じ更新では扱わない
 - 0.9.8 の応答の関連（ExecutionSpecificationReplyMessage）を、メッセージ削除で許可する関連に加えた
 - サンプル: `structure-wrap-before.puml` ⇔ `structure-note-after.puml`（firstDone の下に Note）
+- 0.9.9 実機: 追加は反映できたが、再比較で B の最初のバーの endBefore が Note → second() に変わった。直前のメッセージの直後で閉じるバーまで「挿入位置をまたぐ」として伸ばしていたため。0.9.10 で、伸ばすのは次の段まで開いているバー（と、挿入するメッセージがつながるバー）に限った。途中へのメッセージ挿入にも同じ誤りがあった
 
 ## 3. 未解決（A15）: メッセージ・フラグメントを追加した更新の Undo で製品が停止する
 

@@ -25,7 +25,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.9";
+    public const string Title = "シーケンス生成実験 / 0.9.10";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -4777,7 +4777,9 @@ public sealed class SequenceStructurePreparation
                 {
                     double top=Read(shape,"Y"),bottom=top+Read(shape,"Length");
                     if(top>at) {keys.Add("Y");values.Add(Number(top+MessageSpacing));}
-                    else if(bottom>=at)
+                    // Only a bar still open at the next step grows, or one the new message lands
+                    // on. A bar that closes right after the message above ends before the new one.
+                    else if(bottom>=at+MessageSpacing || ports.Contains(model))
                     {
                         // A bar carries its length as both Height and Length, and the
                         // product keeps the pair in step. Writing only one is ignored.
@@ -4849,7 +4851,8 @@ public sealed class SequenceStructurePreparation
                 {
                     double y=Read(existing,"Y"),length=Read(existing,"Length");
                     if(y>at){keys.Add("Y");values.Add(Number(y+room));}
-                    else if(y+length>=at){keys.Add("Length");values.Add(Number(length+room));keys.Add("Height");values.Add(Number(length+room));}
+                    // A bar that closes right after the message above ends before the note.
+                    else if(y+length>=at+MessageSpacing){keys.Add("Length");values.Add(Number(length+room));keys.Add("Height");values.Add(Number(length+room));}
                 }
                 else if((kind=="fragment" || kind=="note" || kind=="ref") && Read(existing,"Y")>at)
                 {keys.Add("Y");values.Add(Number(Read(existing,"Y")+room));}

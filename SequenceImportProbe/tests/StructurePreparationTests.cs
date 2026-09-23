@@ -643,12 +643,17 @@ public static class StructurePreparationTests
         {var copy=Clone(r);Set(copy,"Id",r["Id"].StringValue()+"-later");Set(copy,"TargetId","later");raw["Relations"].Items.Add(copy);}
         var wire=Clone(editor["Messages"].Items[0]);Set(wire,"Id","later-shape");Set(wire,"ModelId","later");
         wire.Properties["SourceY"]=SequenceJson.Parse("130");wire.Properties["TargetY"]=SequenceJson.Parse("130");editor["Messages"].Items.Add(wire);
+        // A bar that closes right after the message at 80, the way a reply's bar does.
+        var closing=Clone(editor["ExecutionSpecifications"].Items[1]);Set(closing,"Id","closing-shape");Set(closing,"ModelId","closing-bar");
+        closing.Properties["Y"]=SequenceJson.Parse("80");closing.Properties["Length"]=SequenceJson.Parse("24");closing.Properties["Height"]=SequenceJson.Parse("24");
+        editor["ExecutionSpecifications"].Items.Add(closing);
         var current=new SequenceDocument();
         current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
         current.Elements.Add(new SequenceElement{Id=ids[2],Kind="participant",Parent=ids[0]});
         current.Elements.Add(new SequenceElement{Id=ids[3],Kind="participant",Parent=ids[0]});
         foreach(string id in new[]{ids[4],ids[5]})
         {var e=new SequenceElement{Id=id,Kind="execution",Parent=ids[0]};e.Links["participant"]=new[]{id==ids[4]?ids[2]:ids[3]};current.Elements.Add(e);}
+        {var e=new SequenceElement{Id="closing-bar",Kind="execution",Parent=ids[0]};e.Links["participant"]=new[]{ids[3]};current.Elements.Add(e);}
         int order=0;
         foreach(var pair in new[]{new[]{ids[6],"probe()"},new[]{"later","later()"}})
         {
@@ -686,6 +691,7 @@ public static class StructurePreparationTests
         Require(moved(editor["Messages"].Items[0]["Id"].StringValue(),"TargetY")==null,"the message above the note moved");
         Require(moved("later-shape","TargetY")=="194","the message below did not make room for the note");
         Require(moved(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Length")=="264","a bar open across the note did not grow");
+        Require(moved("closing-shape","Length")==null && moved("closing-shape","Y")==null,"a bar closed above the note grew past it");
         var afterDelete=SequenceJson.Parse(package.EditorAfterDeleteJson)["Editors"].Items.Single();
         Require(afterDelete["Notes"]!=null && afterDelete["Notes"].Items.Count==1,"the delete stage editor lost the note");
         var state=new SequenceTrialState();
