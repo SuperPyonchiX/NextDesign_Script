@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.27";
+    public const string Title = "シーケンス生成実験 / 0.9.28";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1258,7 +1258,7 @@ public static class SequenceSyncRuntime
             // The snapshot goes through ExportModelUnit, which refuses to run while the
             // project has unsaved changes. Say so before any work instead of letting the
             // export throw halfway. This command never saves for you.
-            if(prepare && Unsaved(project))throw new InvalidOperationException(UnsavedAdvice);
+            if(prepare && SequenceEditorCapture.BatchSource==null && Unsaved(project))throw new InvalidOperationException(UnsavedAdvice);
 
             report="{\"version\":1,\"project\":"+SequencePayload.Q(project.Id)+",\"diagram\":"+SequencePayload.Q(diagram.Id)
                 +",\"current\":"+current.Document.ToJson()+",\"desired\":"+desired.ToJson()+",\"plan\":"+plan.ToJson()
@@ -1721,7 +1721,25 @@ public static class SequenceBatch
                 long imported=importClock.ElapsedMilliseconds;
                 var saveClock=System.Diagnostics.Stopwatch.StartNew();
                 Save(app,project);
-                rows.Add("（取込 "+roots.Count+"/"+scenarios.Count+"件 "+(imported/1000)+"秒 / 保存 "+(saveClock.ElapsedMilliseconds/1000)+"秒）");
+                long saved=saveClock.ElapsedMilliseconds;
+                // One export for every scenario: each diagram is cut out of it in its turn,
+                // so no save is needed between them.
+                var exportClock=System.Diagnostics.Stopwatch.StartNew();
+                var host=(app.Workspace.CurrentEditor as ISequenceDiagram).Model;
+                string file=Path.Combine(Path.GetTempPath(),"SequenceBatch-"+Guid.NewGuid().ToString("N")+".nmdl");
+                try
+                {
+                    project.UnitManager.ExportModelUnit(host.ModelUnit,file);
+                    SequenceEditorCapture.BatchSource=SequenceJson.Parse(File.ReadAllText(file,new UTF8Encoding(false,true)));
+                }
+                finally{try{File.Delete(file);}catch(Exception){}}
+                foreach(var pair in roots)
+                {
+                    var made=project.GetModelById(pair.Value);
+                    if(made==null || made.ModelUnit==null || !ReferenceEquals(made.ModelUnit,host.ModelUnit) && made.ModelUnit.TopElementId!=host.ModelUnit.TopElementId)
+                        throw new InvalidOperationException("作った図が開いている図と別のモデルユニットにあります: "+pair.Key);
+                }
+                rows.Add("（取込 "+roots.Count+"/"+scenarios.Count+"件 "+(imported/1000)+"秒 / 保存 "+(saved/1000)+"秒 / 書き出し "+(exportClock.ElapsedMilliseconds/1000)+"秒）");
             }
             else roots=previous;
             int failedInRow=0;
@@ -1740,16 +1758,13 @@ public static class SequenceBatch
                         string reasons=SequenceSyncRuntime.LastReasons,summary=SequenceExperiment.Summary;
                         timing=" / 反映 "+(watch.ElapsedMilliseconds/1000)+"秒";
                         detail.AppendLine("■ "+s[0]+"\n"+summary+"\n");
-                        var saveClock=System.Diagnostics.Stopwatch.StartNew();
-                        Save(app,project);
-                        timing+=" / 保存 "+(saveClock.ElapsedMilliseconds/1000)+"秒";
                         if(!committed)throw new InvalidOperationException("反映: "+(reasons.Length>0?reasons:Line(summary,200)));
                     }
                     int changes=Compare(app,DiagramOf(project,root),s[2]);
                     failed=changes!=0;
                     result=changes==0?"成功":changes<0?"照合できず: "+Line(SequenceExperiment.Summary,160):"差分 "+changes+"件";
                 }
-                catch(Exception ex){failed=true;result="停止: "+Line(ex.Message,200);detail.AppendLine("■ "+s[0]+"\n"+ex+"\n");try{if(apply)Save(app,project);}catch(Exception){}}
+                catch(Exception ex){failed=true;result="停止: "+Line(ex.Message,200);detail.AppendLine("■ "+s[0]+"\n"+ex+"\n");}
                 rows.Add(s[0]+" | "+result+" | "+(watch.ElapsedMilliseconds/1000)+"秒"+timing);
                 string kept;roots.TryGetValue(s[0],out kept);created.Add(s[0]+"\t"+(kept??""));
                 // Two failures in a row almost always share a cause in the batch itself;
@@ -1759,10 +1774,23 @@ public static class SequenceBatch
                 {rows.Add("2件続けて失敗したため、残り "+(scenarios.Count-1-scenarios.IndexOf(s))+"件を実行せずに中断しました。");break;}
             }
         }
-        finally {SequenceExperiment.BatchMode=false;SequenceExperiment.BatchInput=null;SequenceSyncRuntime.Batch=false;SequenceSyncRuntime.BatchDiagram=null;SequenceSyncRuntime.BatchInput=null;}
+        catch(Exception ex){rows.Add("中断: "+Line(ex.Message,200));detail.AppendLine(ex.ToString());}
+        finally {SequenceEditorCapture.BatchSource=null;SequenceExperiment.BatchMode=false;SequenceExperiment.BatchInput=null;SequenceSyncRuntime.Batch=false;SequenceSyncRuntime.BatchDiagram=null;SequenceSyncRuntime.BatchInput=null;}
         if(apply)
+        {
             try{File.WriteAllLines(resultPath,created,new UTF8Encoding(false));}
             catch(Exception ex){rows.Add("前回結果の保存に失敗: "+ex.Message);}
+            // Saved once at the end, with what the product says before and after, since the
+            // last run's changes did not come back after reopening.
+            try
+            {
+                bool dirtyBefore=project.HasUnsavedChanges();
+                var saveClock=System.Diagnostics.Stopwatch.StartNew();
+                Save(app,project);
+                rows.Add("（最後の保存 "+(saveClock.ElapsedMilliseconds/1000)+"秒 / 保存前の未保存変更="+dirtyBefore+" 保存後="+project.HasUnsavedChanges()+"）");
+            }
+            catch(Exception ex){rows.Add("最後の保存に失敗: "+ex.Message);}
+        }
         int passed=rows.Count(r=>r.Contains(" | 成功 | "));
         SequenceExperiment.Summary=(apply?"シナリオ一括検証（反映）":"シナリオ一括検証（再検証）")+": "+passed+"/"+scenarios.Count+"件成功 / "+(clock.ElapsedMilliseconds/1000)+"秒\n"
             +string.Join("\n",rows)+(apply?"\n\nプロジェクトを閉じて開き直し、もう一度このボタンで「いいえ」（再検証）を実行してください。":"");
@@ -2112,9 +2140,13 @@ public static class SequenceEditorCapture
         differences++;
         if(differences<=20)log.AppendLine("Geometry representations differ: shape="+id+", property="+property+", SDK="+actual.ToString("R",System.Globalization.CultureInfo.InvariantCulture)+", JSON="+serialized);
     }
+    // A whole unit exported once by the scenario batch, parsed, for every diagram it made:
+    // none of them is touched until its own turn, so each can be cut out of it.
+    public static SequenceJson BatchSource;
     internal static string Trim(string exported,HashSet<string> kept,StringBuilder log)
+    { return Trim(SequenceJson.Parse(exported),exported.Length,kept,log); }
+    internal static string Trim(SequenceJson document,long length,HashSet<string> kept,StringBuilder log)
     {
-        var document=SequenceJson.Parse(exported);
         if(document==null || document.Properties==null)throw new InvalidOperationException("E180: 図のエクスポートがJSONオブジェクトではありません。");
         var trimmed=new SequenceJson{Properties=new Dictionary<string,SequenceJson>(StringComparer.Ordinal)};
         int entities=0,relations=0,editors=0;
@@ -2135,7 +2167,7 @@ public static class SequenceEditorCapture
         }
         string result=trimmed.ToJsonString();
         log.AppendLine("Editor snapshot trimmed: entities "+entities+"→"+trimmed["Entities"].Items.Count+", relations "+relations+"→"+trimmed["Relations"].Items.Count
-            +", editors "+editors+"→"+trimmed["Editors"].Items.Count+", chars "+exported.Length+"→"+result.Length);
+            +", editors "+editors+"→"+trimmed["Editors"].Items.Count+", chars "+length+"→"+result.Length);
         return result;
     }
     static bool Shows(SequenceJson node,HashSet<string> kept)
@@ -2155,14 +2187,23 @@ public static class SequenceEditorCapture
         try
         {
             if(root.ModelUnit==null)throw new InvalidOperationException("E180: 図のモデルユニットを取得できません。");
-            log.AppendLine("Editor snapshot export: unit type="+root.ModelUnit.Type);
-            project.UnitManager.ExportModelUnit(root.ModelUnit,path);
-            if(!File.Exists(path) || new FileInfo(path).Length>100000000)throw new InvalidOperationException("E180: 図のエクスポートを取得できないか100MBを超えています。");
-            // The unit can hold far more than this diagram. Keep only the interaction's own
-            // models, every relation touching them and the editors that show them, so each
-            // later parse, check and saved file deals with this diagram alone.
-            string exported=Trim(File.ReadAllText(path,new UTF8Encoding(false,true)),
-                new HashSet<string>(SequenceMappedUpdate.Tree(root).Select(m=>m.Id)),log);
+            var kept=new HashSet<string>(SequenceMappedUpdate.Tree(root).Select(m=>m.Id));
+            string exported;
+            if(BatchSource!=null)
+            {
+                log.AppendLine("Editor snapshot: cut from the batch's one export");
+                exported=Trim(BatchSource,0,kept,log);
+            }
+            else
+            {
+                log.AppendLine("Editor snapshot export: unit type="+root.ModelUnit.Type);
+                project.UnitManager.ExportModelUnit(root.ModelUnit,path);
+                if(!File.Exists(path) || new FileInfo(path).Length>100000000)throw new InvalidOperationException("E180: 図のエクスポートを取得できないか100MBを超えています。");
+                // The unit can hold far more than this diagram. Keep only the interaction's own
+                // models, every relation touching them and the editors that show them, so each
+                // later parse, check and saved file deals with this diagram alone.
+                exported=Trim(File.ReadAllText(path,new UTF8Encoding(false,true)),kept,log);
+            }
             var snapshot=SequenceEditorDocument.Read(exported,root.Id,diagram.Id);
             var shapes=snapshot.Shapes().ToDictionary(n=>SequenceEditorDocument.Value(n,"Id"));
             if(!new HashSet<string>(diagram.Shapes.Select(n=>n.Id+":"+n.ModelId)).SetEquals(shapes.Values.Select(n=>SequenceEditorDocument.Value(n,"Id")+":"+SequenceEditorDocument.Value(n,"ModelId"))))

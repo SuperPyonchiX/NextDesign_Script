@@ -278,7 +278,7 @@ public static class SequenceSyncRuntime
             // The snapshot goes through ExportModelUnit, which refuses to run while the
             // project has unsaved changes. Say so before any work instead of letting the
             // export throw halfway. This command never saves for you.
-            if(prepare && Unsaved(project))throw new InvalidOperationException(UnsavedAdvice);
+            if(prepare && SequenceEditorCapture.BatchSource==null && Unsaved(project))throw new InvalidOperationException(UnsavedAdvice);
 
             report="{\"version\":1,\"project\":"+SequencePayload.Q(project.Id)+",\"diagram\":"+SequencePayload.Q(diagram.Id)
                 +",\"current\":"+current.Document.ToJson()+",\"desired\":"+desired.ToJson()+",\"plan\":"+plan.ToJson()
@@ -741,7 +741,25 @@ public static class SequenceBatch
                 long imported=importClock.ElapsedMilliseconds;
                 var saveClock=System.Diagnostics.Stopwatch.StartNew();
                 Save(app,project);
-                rows.Add("（取込 "+roots.Count+"/"+scenarios.Count+"件 "+(imported/1000)+"秒 / 保存 "+(saveClock.ElapsedMilliseconds/1000)+"秒）");
+                long saved=saveClock.ElapsedMilliseconds;
+                // One export for every scenario: each diagram is cut out of it in its turn,
+                // so no save is needed between them.
+                var exportClock=System.Diagnostics.Stopwatch.StartNew();
+                var host=(app.Workspace.CurrentEditor as ISequenceDiagram).Model;
+                string file=Path.Combine(Path.GetTempPath(),"SequenceBatch-"+Guid.NewGuid().ToString("N")+".nmdl");
+                try
+                {
+                    project.UnitManager.ExportModelUnit(host.ModelUnit,file);
+                    SequenceEditorCapture.BatchSource=SequenceJson.Parse(File.ReadAllText(file,new UTF8Encoding(false,true)));
+                }
+                finally{try{File.Delete(file);}catch(Exception){}}
+                foreach(var pair in roots)
+                {
+                    var made=project.GetModelById(pair.Value);
+                    if(made==null || made.ModelUnit==null || !ReferenceEquals(made.ModelUnit,host.ModelUnit) && made.ModelUnit.TopElementId!=host.ModelUnit.TopElementId)
+                        throw new InvalidOperationException("作った図が開いている図と別のモデルユニットにあります: "+pair.Key);
+                }
+                rows.Add("（取込 "+roots.Count+"/"+scenarios.Count+"件 "+(imported/1000)+"秒 / 保存 "+(saved/1000)+"秒 / 書き出し "+(exportClock.ElapsedMilliseconds/1000)+"秒）");
             }
             else roots=previous;
             int failedInRow=0;
@@ -760,16 +778,13 @@ public static class SequenceBatch
                         string reasons=SequenceSyncRuntime.LastReasons,summary=SequenceExperiment.Summary;
                         timing=" / 反映 "+(watch.ElapsedMilliseconds/1000)+"秒";
                         detail.AppendLine("■ "+s[0]+"\n"+summary+"\n");
-                        var saveClock=System.Diagnostics.Stopwatch.StartNew();
-                        Save(app,project);
-                        timing+=" / 保存 "+(saveClock.ElapsedMilliseconds/1000)+"秒";
                         if(!committed)throw new InvalidOperationException("反映: "+(reasons.Length>0?reasons:Line(summary,200)));
                     }
                     int changes=Compare(app,DiagramOf(project,root),s[2]);
                     failed=changes!=0;
                     result=changes==0?"成功":changes<0?"照合できず: "+Line(SequenceExperiment.Summary,160):"差分 "+changes+"件";
                 }
-                catch(Exception ex){failed=true;result="停止: "+Line(ex.Message,200);detail.AppendLine("■ "+s[0]+"\n"+ex+"\n");try{if(apply)Save(app,project);}catch(Exception){}}
+                catch(Exception ex){failed=true;result="停止: "+Line(ex.Message,200);detail.AppendLine("■ "+s[0]+"\n"+ex+"\n");}
                 rows.Add(s[0]+" | "+result+" | "+(watch.ElapsedMilliseconds/1000)+"秒"+timing);
                 string kept;roots.TryGetValue(s[0],out kept);created.Add(s[0]+"\t"+(kept??""));
                 // Two failures in a row almost always share a cause in the batch itself;
@@ -779,10 +794,23 @@ public static class SequenceBatch
                 {rows.Add("2件続けて失敗したため、残り "+(scenarios.Count-1-scenarios.IndexOf(s))+"件を実行せずに中断しました。");break;}
             }
         }
-        finally {SequenceExperiment.BatchMode=false;SequenceExperiment.BatchInput=null;SequenceSyncRuntime.Batch=false;SequenceSyncRuntime.BatchDiagram=null;SequenceSyncRuntime.BatchInput=null;}
+        catch(Exception ex){rows.Add("中断: "+Line(ex.Message,200));detail.AppendLine(ex.ToString());}
+        finally {SequenceEditorCapture.BatchSource=null;SequenceExperiment.BatchMode=false;SequenceExperiment.BatchInput=null;SequenceSyncRuntime.Batch=false;SequenceSyncRuntime.BatchDiagram=null;SequenceSyncRuntime.BatchInput=null;}
         if(apply)
+        {
             try{File.WriteAllLines(resultPath,created,new UTF8Encoding(false));}
             catch(Exception ex){rows.Add("前回結果の保存に失敗: "+ex.Message);}
+            // Saved once at the end, with what the product says before and after, since the
+            // last run's changes did not come back after reopening.
+            try
+            {
+                bool dirtyBefore=project.HasUnsavedChanges();
+                var saveClock=System.Diagnostics.Stopwatch.StartNew();
+                Save(app,project);
+                rows.Add("（最後の保存 "+(saveClock.ElapsedMilliseconds/1000)+"秒 / 保存前の未保存変更="+dirtyBefore+" 保存後="+project.HasUnsavedChanges()+"）");
+            }
+            catch(Exception ex){rows.Add("最後の保存に失敗: "+ex.Message);}
+        }
         int passed=rows.Count(r=>r.Contains(" | 成功 | "));
         SequenceExperiment.Summary=(apply?"シナリオ一括検証（反映）":"シナリオ一括検証（再検証）")+": "+passed+"/"+scenarios.Count+"件成功 / "+(clock.ElapsedMilliseconds/1000)+"秒\n"
             +string.Join("\n",rows)+(apply?"\n\nプロジェクトを閉じて開き直し、もう一度このボタンで「いいえ」（再検証）を実行してください。":"");
