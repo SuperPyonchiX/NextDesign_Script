@@ -1633,6 +1633,11 @@ public sealed class SequenceStructurePreparation
             // A message inside a frame is owned by the interaction and also pointed at by
             // the operand it sits in, the way the generator writes it.
             if(wanted.Parent!=root)wiring.Add(new[]{"OperandTargetMessage",wanted.Parent});
+            // A reply is also tied to the bar it returns from, when the sample reply is and that
+            // bar has no reply yet. Without it the product shrinks the bar on its next layout.
+            if(relations.Any(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ExecutionSpecificationReplyMessage" && V(r,"TargetId")==template)
+                && !relations.Any(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ExecutionSpecificationReplyMessage" && V(r,"SourceId")==send))
+                wiring.Add(new[]{"ExecutionSpecificationReplyMessage",send});
             foreach(var pair in wiring)
             {
                 string relationId=Guid.NewGuid().ToString();

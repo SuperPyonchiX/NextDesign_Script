@@ -18,7 +18,7 @@ public static class PumlTests
         File.WriteAllText(Path.Combine(directory,"update-changed.json"),changed);
         var profile=new PumlProfile();
         foreach(string type in new[]{"Interaction","Frame","Lifeline","ExecutionSpecification","Message","CombinedFragment","InteractionOperand","InteractionUse","InteractionNote","MessageEnd","Destruction"})profile.Types[type]="fake-"+type;
-        foreach(string key in new[]{"Frame","Lifelines","ExecutionSpecifications","Messages","OwnedExecutionSpecification","SendMessage","ReceiveMessage","Fragments","Operands","CrossingFragmentCoveredLifeline","OperandTargetMessage","NestedInteractionFragment","InteractionUses","Notes","MessageEnds","Destructions","DestructionTargetLifeline"})profile.Relations[key]=key;
+        foreach(string key in new[]{"Frame","Lifelines","ExecutionSpecifications","Messages","OwnedExecutionSpecification","SendMessage","ReceiveMessage","Fragments","Operands","CrossingFragmentCoveredLifeline","OperandTargetMessage","NestedInteractionFragment","InteractionUses","Notes","MessageEnds","Destructions","DestructionTargetLifeline","ReplyMessage"})profile.Relations[key]=key;
         foreach(string op in new[]{"alt","opt","loop","par","break","critical","group"})profile.Operators[op]=op.ToUpperInvariant();
         foreach(var file in Directory.GetFiles(samples,"*.puml"))
         {
@@ -34,6 +34,17 @@ public static class PumlTests
                 if(replacement.Ids.Intersect(again.Ids).Count()!=2)throw new Exception("Replacement reused child IDs");
             }
             File.WriteAllText(Path.Combine(directory,Path.GetFileNameWithoutExtension(file)+".json"),payload.Json);
+            // Each call answered from its own bar: the reply is tied back to the bar it leaves,
+            // as a hand-drawn reply is, and no bar is tied to two replies.
+            if(Path.GetFileName(file)=="structure-wrap-before.puml")
+            {
+                var built=SequenceJson.Parse(payload.Json)["Relations"].Items;
+                var replies=built.Where(r=>r["MetamodelId"].StringValue()=="ReplyMessage").ToArray();
+                if(replies.Length!=3 || replies.Select(r=>r["SourceId"].StringValue()).Distinct().Count()!=3
+                    || replies.Any(r=>!built.Any(x=>x["MetamodelId"].StringValue()=="SendMessage"
+                        && x["SourceId"].StringValue()==r["SourceId"].StringValue() && x["TargetId"].StringValue()==r["TargetId"].StringValue())))
+                    throw new Exception("replies are not tied to the bars they leave");
+            }
         }
         var cases=new[]{
             "activate A", "deactivate A", "destroy B\nA -> B : reuse", "destroy B\ndestroy B", "skinparam unknownOption value", "!include remote.puml",

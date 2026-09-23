@@ -25,7 +25,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.7";
+    public const string Title = "シーケンス生成実験 / 0.9.8";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -762,7 +762,14 @@ public static class PumlRuntime
         for(int i=0;i<keys.Length;i++)p.Relations[keys[i]]=SequencePayload.Prefix+SequencePayload.RelationTypes[i];
         p.Sync=Literal(source[6],"MessageSort","Sync");
         if(plan.All().Any(n=>n.Kind=="async"))p.Async=Literal(source[6],"MessageSort","Async");
-        if(plan.All().Any(n=>n.Kind=="reply"))p.Reply=Literal(source[6],"MessageSort","Reply");
+        if(plan.All().Any(n=>n.Kind=="reply"))
+        {
+            p.Reply=Literal(source[6],"MessageSort","Reply");
+            // A reply drawn by hand is also tied to the bar it returns from. Without that
+            // the product ends the bar at its minimum length the next time it lays the
+            // diagram out, and the reply is left starting on the bare lifeline.
+            Child(p,source[4],"ReplyMessage","ReplyMessage","ExecutionSpecificationReplyMessage");
+        }
         var classes=new List<IClass>(source);
         if(plan.All().Any(n=>n.Kind=="destroy"))
         {
@@ -2187,6 +2194,7 @@ public class PumlBuild
     // inserted messages with the same step (SequenceStructurePreparation.MessageSpacing).
     public const int MessagePitch=40;
     private PumlProfile profile; private SequencePayload payload;
+    private HashSet<string> replied=new HashSet<string>();
     private List<object> entities=new List<object>(), relations=new List<object>();
     private Dictionary<string,List<object>> shapes=new Dictionary<string,List<object>>();
     private Dictionary<string,string> lifelines=new Dictionary<string,string>(), active=new Dictionary<string,string>();
@@ -2302,6 +2310,9 @@ public class PumlBuild
                 foreach(var pair in activities)if(pair.Value.Count>0 && active.ContainsKey(pair.Key))Extend(active[pair.Key],targetY);
                 string id=Entity("Message",n.Text,Obj("Name",n.Text,"MessageSort",n.Kind=="reply"?profile.Reply:n.Kind=="sync"?profile.Sync:profile.Async)); Owned("Messages",id);
                 Link("SendMessage",send,id,false,0); Link("ReceiveMessage",receive,id,false,0);
+                // One reply per bar: the one that closes it. A second reply from the same bar
+                // stays a plain message rather than taking the first one's place.
+                if(n.Kind=="reply" && send!=null && executions.ContainsKey(send) && replied.Add(send))Link("ReplyMessage",send,id,false,0);
                 Shape("Messages",id,"SourceY",y,"TargetY",targetY,"IsRightAtFrame",false,"SelfloopBendsX",self?Math.Max((int)executions[send]["X"],(int)executions[receive]["X"])+80:0);
                 if(operand!=null)Link("OperandTargetMessage",operand,id,false,0);
                 payload.Expected.Add(new PumlExpected{Id=id,Kind=n.Kind,Text=n.Text,Left=incoming?null:lifelines[n.Left],Right=outgoing?null:lifelines[n.Right],Owner=operand,SendPort=send,ReceivePort=receive,Y=y,EndY=targetY});
@@ -4476,6 +4487,11 @@ public sealed class SequenceStructurePreparation
             // A message inside a frame is owned by the interaction and also pointed at by
             // the operand it sits in, the way the generator writes it.
             if(wanted.Parent!=root)wiring.Add(new[]{"OperandTargetMessage",wanted.Parent});
+            // A reply is also tied to the bar it returns from, when the sample reply is and that
+            // bar has no reply yet. Without it the product shrinks the bar on its next layout.
+            if(relations.Any(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ExecutionSpecificationReplyMessage" && V(r,"TargetId")==template)
+                && !relations.Any(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ExecutionSpecificationReplyMessage" && V(r,"SourceId")==send))
+                wiring.Add(new[]{"ExecutionSpecificationReplyMessage",send});
             foreach(var pair in wiring)
             {
                 string relationId=Guid.NewGuid().ToString();
