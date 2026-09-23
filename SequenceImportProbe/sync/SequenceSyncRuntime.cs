@@ -847,7 +847,7 @@ public static class SequenceBatch
             }
             catch(Exception ex){rows.Add("最後の保存に失敗: "+ex.Message);}
         }
-        int passed=rows.Count(r=>r.Contains(" | 成功 | "));
+        int passed=rows.Count(r=>r.Contains(" | 成功 | ") || r.Contains(" | 成功（2回目: 変化なし） | "));
         SequenceExperiment.Summary=(apply?"シナリオ一括検証（反映）":"シナリオ一括検証（再検証）")+": "+passed+"/"+scenarios.Count+"件成功 / "+(clock.ElapsedMilliseconds/1000)+"秒\n"
             +string.Join("\n",rows)+(apply?"\n\nプロジェクトを閉じて開き直し、もう一度このボタンで「いいえ」（再検証）を実行してください。":"");
         SequenceExperiment.Details=SequenceExperiment.Summary+"\f"+detail;

@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.38";
+    public const string Title = "シーケンス生成実験 / 0.9.39";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1827,7 +1827,7 @@ public static class SequenceBatch
             }
             catch(Exception ex){rows.Add("最後の保存に失敗: "+ex.Message);}
         }
-        int passed=rows.Count(r=>r.Contains(" | 成功 | "));
+        int passed=rows.Count(r=>r.Contains(" | 成功 | ") || r.Contains(" | 成功（2回目: 変化なし） | "));
         SequenceExperiment.Summary=(apply?"シナリオ一括検証（反映）":"シナリオ一括検証（再検証）")+": "+passed+"/"+scenarios.Count+"件成功 / "+(clock.ElapsedMilliseconds/1000)+"秒\n"
             +string.Join("\n",rows)+(apply?"\n\nプロジェクトを閉じて開き直し、もう一度このボタンで「いいえ」（再検証）を実行してください。":"");
         SequenceExperiment.Details=SequenceExperiment.Summary+"\f"+detail;
