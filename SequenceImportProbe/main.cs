@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.29";
+    public const string Title = "シーケンス生成実験 / 0.9.30";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1666,6 +1666,21 @@ public static class SequenceBatch
     {
         if(!app.Workspace.SaveProject(project,false))throw new InvalidOperationException("プロジェクトを保存できません。");
     }
+    // After a project is opened, a diagram nobody has shown yet reads back with no shapes
+    // at all. Selecting its model in the navigator is tried first so the product loads it;
+    // if it still reads empty, that is reported instead of counted as a difference.
+    static ISequenceDiagram Loaded(IApplication app,IProject project,string root,StringBuilder detail)
+    {
+        var model=project.GetModelById(root) as IInteraction;
+        if(model==null)throw new InvalidOperationException("図のモデルが見つかりません: "+root);
+        try {app.Window.EditorPage.CurrentNavigator.Select(model,false);}
+        catch(Exception ex){detail.AppendLine("ナビゲータで選択できません: "+ex.Message);}
+        var open=app.Workspace.CurrentEditor as ISequenceDiagram;
+        var diagram=open!=null && open.Model!=null && open.Model.Id==root?open:DiagramOf(project,root);
+        if(!diagram.Lifelines.Any() && model.Lifelines.Any())
+            throw new InvalidOperationException("図が読み込まれていません（モデルには参加者がありますが図形が0件です）。この図を開いてから再検証してください。");
+        return diagram;
+    }
     static int Compare(IApplication app,ISequenceDiagram diagram,string after)
     {
         SequenceSyncRuntime.BatchDiagram=diagram;SequenceSyncRuntime.BatchInput=after;
@@ -1760,7 +1775,7 @@ public static class SequenceBatch
                         detail.AppendLine("■ "+s[0]+"\n"+summary+"\n");
                         if(!committed)throw new InvalidOperationException("反映: "+(reasons.Length>0?reasons:Line(summary,200)));
                     }
-                    int changes=Compare(app,DiagramOf(project,root),s[2]);
+                    int changes=Compare(app,apply?DiagramOf(project,root):Loaded(app,project,root,detail),s[2]);
                     // What the comparison found goes to the details, so a difference can be read.
                     if(changes!=0)detail.AppendLine("■ "+s[0]+" 比較\n"+string.Join("\n",SequenceExperiment.Details.Split('\f').Where(page=>!page.StartsWith("接続の実測",StringComparison.Ordinal)))+"\n");
                     failed=changes!=0;
