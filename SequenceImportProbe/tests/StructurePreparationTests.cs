@@ -627,8 +627,92 @@ public static class StructurePreparationTests
         Require(expected.Shapes[barA]==PumlBuild.Json(new[]{"70","50","16","298","298"}),"the grown bar readback was not predicted: "+expected.Shapes[barA]);
         Require(expected.Models.ContainsKey("wrap-frame") && expected.Models.ContainsKey("wrap-operand"),"the frame was not predicted");
     }
+    // A note under the message at 80, above another at 130, on bars 50-250 and 80-230.
+    static void AddedNote()
+    {
+        var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
+        var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
+        var editor=raw["Editors"].Items.Single();string editorId=editor["Id"].StringValue();
+        foreach(var bar in editor["ExecutionSpecifications"].Items)
+        {
+            string length=bar==editor["ExecutionSpecifications"].Items[0]?"200":"150";
+            bar.Properties["Length"]=SequenceJson.Parse(length);bar.Properties["Height"]=SequenceJson.Parse(length);
+        }
+        var entity=Clone(raw["Entities"].Items.Single(e=>e["Id"].StringValue()==ids[6]));Set(entity,"Id","later");raw["Entities"].Items.Add(entity);
+        foreach(var r in raw["Relations"].Items.Where(r=>r["TargetId"].StringValue()==ids[6]).ToArray())
+        {var copy=Clone(r);Set(copy,"Id",r["Id"].StringValue()+"-later");Set(copy,"TargetId","later");raw["Relations"].Items.Add(copy);}
+        var wire=Clone(editor["Messages"].Items[0]);Set(wire,"Id","later-shape");Set(wire,"ModelId","later");
+        wire.Properties["SourceY"]=SequenceJson.Parse("130");wire.Properties["TargetY"]=SequenceJson.Parse("130");editor["Messages"].Items.Add(wire);
+        var current=new SequenceDocument();
+        current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
+        current.Elements.Add(new SequenceElement{Id=ids[2],Kind="participant",Parent=ids[0]});
+        current.Elements.Add(new SequenceElement{Id=ids[3],Kind="participant",Parent=ids[0]});
+        foreach(string id in new[]{ids[4],ids[5]})
+        {var e=new SequenceElement{Id=id,Kind="execution",Parent=ids[0]};e.Links["participant"]=new[]{id==ids[4]?ids[2]:ids[3]};current.Elements.Add(e);}
+        int order=0;
+        foreach(var pair in new[]{new[]{ids[6],"probe()"},new[]{"later","later()"}})
+        {
+            var m=new SequenceElement{Id=pair[0],Kind="message",Parent=ids[0],Order=order++,Text=pair[1]};m.Attributes["sort"]="sync";
+            m.Links["sender"]=new[]{ids[2]};m.Links["receiver"]=new[]{ids[3]};m.Links["sendExecution"]=new[]{ids[4]};m.Links["receiveExecution"]=new[]{ids[5]};
+            current.Elements.Add(m);
+        }
+        var desired=current.Copy();
+        desired.Elements.Single(e=>e.Id=="later").Order=2;
+        var note=new SequenceElement{Id="new-note",Kind="note",Parent=ids[0],Order=1,Text="checked"};
+        note.Links["targets"]=new string[0];note.Attributes["position"]="free";desired.Elements.Add(note);
+        var plan=new SyncPlan{Expected=desired};
+        plan.Changes.Add(new SequenceChange{Action="add",Kind="note",Id="new-note",Line=6});
+        plan.Changes.Add(new SequenceChange{Action="move",Kind="message",Id="later",Line=9});
+        var gate=SequenceStructurePreflight.Check(current,plan);
+        Require(!gate.Candidate,"a note that also reorders was accepted");
+        plan.Changes.RemoveAt(1);
+        gate=SequenceStructurePreflight.Check(current,plan);
+        Require(gate.Candidate && gate.AddNotes.SequenceEqual(new[]{"new-note"}) && gate.CanCommit(),"an added note was not a candidate: "+gate.ToJson());
+        var types=new SequenceNoteTypes{Class="note-class",Field="Body",Storage="String",Owns=new[]{"owns-note","Embed","fields"}};
+        var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan,null,types);
+        Require(package.AddedNotes.Length==1,"the note was not prepared");
+        var patch=SequenceJson.Parse(package.ReconnectJson);
+        var built=patch["Entities"].Items.Single(e=>e["Id"].StringValue()=="new-note");
+        Require(built["MetamodelId"].StringValue()=="note-class" && built["Fields"]["Body"].StringValue()=="checked","the note body was not written");
+        Require(patch["Relations"].Items.Count(r=>r["MetamodelId"].StringValue()=="owns-note" && r["SourceId"].StringValue()==ids[0])==1,"the note is not owned by the interaction");
+        var shape=patch["Editors"].Items.Single()["Notes"].Items.Single();
+        Require(shape["X"].StringValue()=="20" && shape["Y"].StringValue()=="120" && shape["Width"].StringValue()=="300" && shape["Height"].StringValue()=="48",
+            "the note is not one step under the message across both lanes: "+shape.ToJsonString());
+        Func<string,string,string> moved=(id,key)=>{
+            var hit=package.ShiftedShapes.Where(m=>m.ShapeId==id).ToArray();
+            if(hit.Length==0)return null;
+            int i=Array.IndexOf(hit[0].Keys,key);return i<0?null:hit[0].Values[i];
+        };
+        Require(moved(editor["Messages"].Items[0]["Id"].StringValue(),"TargetY")==null,"the message above the note moved");
+        Require(moved("later-shape","TargetY")=="194","the message below did not make room for the note");
+        Require(moved(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Length")=="264","a bar open across the note did not grow");
+        var afterDelete=SequenceJson.Parse(package.EditorAfterDeleteJson)["Editors"].Items.Single();
+        Require(afterDelete["Notes"]!=null && afterDelete["Notes"].Items.Count==1,"the delete stage editor lost the note");
+        var state=new SequenceTrialState();
+        foreach(var e in raw["Entities"].Items)state.Models[e["Id"].StringValue()]=e.ToJsonString();
+        foreach(var r in raw["Relations"].Items)
+        {
+            string id=r["Id"].StringValue();
+            state.Relations[id]=new[]{r["SourceId"].StringValue(),r["TargetId"].StringValue(),r["SourceIndex"].Raw,r["TargetIndex"].Raw};
+            state.RelationFields[id]=r["MetamodelId"].StringValue();
+        }
+        foreach(var sh in SequenceEditorDocument.Read(raw.ToJsonString(),ids[0],editorId).Shapes())
+        {string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        foreach(var w in editor["Messages"].Items)state.Shapes[w["Id"].StringValue()]=PumlBuild.Json(new[]{"m",w["TargetY"].Raw,w["TargetY"].Raw,"0"});
+        foreach(var bar in editor["ExecutionSpecifications"].Items)
+            state.Shapes[bar["Id"].StringValue()]=PumlBuild.Json(new[]{bar["X"].Raw,bar["Y"].Raw,"16",bar["Height"].Raw,bar["Length"].Raw});
+        foreach(var lane in editor["Lifelines"].Items)
+            state.Shapes[lane["Id"].StringValue()]=PumlBuild.Json(new[]{lane["X"].Raw,"0","100","40"})+lane["LaneLength"].Raw;
+        foreach(string id in new[]{ids[6],"later"})state.Ports[id]=new[]{ids[4],ids[5],ids[2],ids[3],"sync"};
+        var expected=state.Expected(package,plan,false);
+        var added=package.AddedNotes[0];
+        Require(expected.Models["new-note"]==PumlBuild.Json(new[]{"note-class","checked",ids[0],"False"}),"the note model was not predicted");
+        Require(expected.Shapes[added.ShapeId]==PumlBuild.Json(new[]{"20","120","300","48"})+"checked","the note readback was not predicted");
+        Require(expected.Relations[added.RelationId].SequenceEqual(new[]{ids[0],"new-note","0","0"}),"the note ownership was not predicted");
+    }
     public static void Run()
     {
+        AddedNote();
         WrappedMessage();
         AddedMessage();
         InsertedAroundFrame(false);

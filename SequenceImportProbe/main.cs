@@ -25,7 +25,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.8";
+    public const string Title = "シーケンス生成実験 / 0.9.9";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     public static void Show(IApplication app) { app.Window.UI.ShowInformationDialog(Summary, Title); }
@@ -718,6 +718,26 @@ public static class PumlRuntime
         return new[]{f.RelationshipClass.Id,embed?"Embed":"Ref",
             PumlBuild.Json(new[]{f.Id,back==null?"":back.Id})};
     }
+    // What a new note is built from when the diagram may hold none to copy: the class the
+    // view places, the interaction's ownership of it, and the field its text goes in.
+    // Same resolution as the generator uses for a note.
+    public static SequenceNoteTypes NoteTypes(ISequenceDiagram diagram,IProject project)
+    {
+        var source=BaseTypes(diagram);
+        var interaction=source[0];
+        var declaredNote=Child(new PumlProfile(),interaction,"Notes","Notes","___Interaction_InteractionNote");
+        var note=Resolve(diagram,new[]{"InteractionNote","Note","Notes"},
+            diagram.Notes.Select(n=>n.Model),declaredNote!=null && declaredNote.IsAbstract
+                ?(Anywhere(project,declaredNote) ?? Sibling(interaction,declaredNote)
+                    ?? Pin(interaction,declaredNote,"Note") ?? Remembered(diagram,interaction,declaredNote,"Note") ?? Descend(project,declaredNote,"Note"))
+                :declaredNote,"Note");
+        Learn(diagram,"Note",note);
+        var f=Field(note,"Body") ?? Field(note,"Text") ?? Field(note,"Name");
+        if(f==null)throw new InvalidOperationException("E121: Note本文フィールドを取得できません。");
+        if(f.Type!="String" && f.Type!="RichText")throw new InvalidOperationException("E121: Note本文の型が未対応です。");
+        return new SequenceNoteTypes{Class=note.Id,Owns=Wiring(interaction,note,"Notes","___Interaction_InteractionNote",true),
+            Field=f.Name,Storage=f.Type};
+    }
     public static SequenceFrameTypes FrameTypes(ISequenceDiagram diagram,IProject project)
     {
         var source=BaseTypes(diagram);
@@ -1228,7 +1248,14 @@ public static class SequenceSyncRuntime
                         catch(Exception ex) {throw new InvalidOperationException("S220: フラグメントの型を解決できません: "+ex.Message,ex);}
                         log.AppendLine("frame types: "+frameTypes.ToJson());
                     }
-                    var preparation=SequenceStructurePreparation.Build(exported,diagram.Id,current.Document,plan,frameTypes);
+                    SequenceNoteTypes noteTypes=null;
+                    if(preflight.AddNotes.Count>0)
+                    {
+                        try {noteTypes=PumlRuntime.NoteTypes(diagram,project);}
+                        catch(Exception ex) {throw new InvalidOperationException("S220: Noteの型を解決できません: "+ex.Message,ex);}
+                        log.AppendLine("note types: "+noteTypes.Class+" / "+PumlBuild.Json(noteTypes.Owns)+" / "+noteTypes.Field+":"+noteTypes.Storage);
+                    }
+                    var preparation=SequenceStructurePreparation.Build(exported,diagram.Id,current.Document,plan,frameTypes,noteTypes);
                     var raw=SequenceJson.Parse(exported);
                     var exportedRelations=new HashSet<string>(raw["Relations"].Items.Select(r=>SequenceEditorDocument.Value(r,"Id")));
                     foreach(string id in preflight.DeleteExecutions.Concat(preflight.ReconnectMessages))
@@ -1357,19 +1384,19 @@ public static class SequenceStructureTrial
             +prepared.AddedParticipants.Length+prepared.DeleteParticipantIds.Length
             +prepared.DeleteMessageIds.Length+prepared.AddedMessages.Length
             +prepared.DeleteFrameIds.Length+prepared.AddedFragments.Length+prepared.AddedOperands.Length+reconnectCount
-            +prepared.MovedMessages.Length;
+            +prepared.MovedMessages.Length+prepared.DeleteNoteIds.Length+prepared.AddedNotes.Length;
         Func<SequenceChange,bool> supported=c=>
             (c.Action=="delete" && c.Kind=="execution")
             // Boundary anchors shifting with a deletion write nothing. The preflight only
             // lets a plan through when that is all an execution update amounts to.
             || (c.Action=="update" && c.Kind=="execution")
             || (reconnectCommit && c.Action=="update" && c.Kind=="message")
-            || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message"
+            || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message" || c.Kind=="note"
                 || c.Kind=="fragment" || c.Kind=="operand"))
             // A wrap moves messages into the new frame, and bars follow them by position.
             || (reconnectCommit && c.Action=="move" && (c.Kind=="message" || c.Kind=="execution"))
             || (reconnectCommit && c.Action=="delete"
-                && (c.Kind=="participant" || c.Kind=="message" || c.Kind=="fragment" || c.Kind=="operand"));
+                && (c.Kind=="participant" || c.Kind=="message" || c.Kind=="fragment" || c.Kind=="operand" || c.Kind=="note"));
         if(retain && (touched==0 || (!reconnectCommit && touched!=prepared.DeleteIds.Length)
             || plan.Changes.Any(c=>!supported(c))))
             throw new InvalidOperationException("S231: 確定モードの対象外の差分があります。");
@@ -1380,11 +1407,12 @@ public static class SequenceStructureTrial
             .Concat(prepared.AddedMessages.Select(a=>a.ShapeId))
             .Concat(prepared.AddedFragments.Select(a=>a.ShapeId))
             .Concat(prepared.AddedOperands.Select(a=>a.ShapeId))
+            .Concat(prepared.AddedNotes.Select(a=>a.ShapeId))
             // Written this run too, so the same rounding applies to them.
             .Concat(prepared.StretchedLifelines.Select(a=>a.ShapeId))
             .Concat(prepared.ShiftedShapes.Select(a=>a.ShapeId)).ToArray();
         var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
-            .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).ToArray();
+            .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).Concat(prepared.DeleteNoteIds).ToArray();
         var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
         var expectedReconnect=before.Expected(prepared,plan,false);
         var expectedFinal=before.Expected(prepared,plan,true);
@@ -1515,7 +1543,7 @@ public static class SequenceStructureTrial
             +" / 参加者追加 "+prepared.AddedParticipants.Length+"件 / 参加者削除 "+prepared.DeleteParticipantIds.Length+"件"
             +" / メッセージ削除 "+prepared.DeleteMessageIds.Length+"件"
             +" / メッセージ追加 "+prepared.AddedMessages.Length+"件"
-            +" / フラグメント関連の削除 "+prepared.DeleteFrameIds.Length+"件"
+            +" / フラグメント関連の削除 "+prepared.DeleteFrameIds.Length+"件 / Note削除 "+prepared.DeleteNoteIds.Length+"件 / Note追加 "+prepared.AddedNotes.Length+"件"
             +" / フラグメント追加 "+prepared.AddedFragments.Length+"件 / オペランド追加 "+prepared.AddedOperands.Length+"件"
             +" / タイムラインを伸ばした参加者 "+prepared.StretchedLifelines.Length+"件"
             +(prepared.InsertedMessageId.Length>0?" / 途中への挿入で下げた図形 "+prepared.ShiftedShapes.Length+"件":"")
@@ -3573,11 +3601,13 @@ public sealed class SequenceStructurePreflight
     // A new frame drawn around messages that are already there, and those messages in
     // the order they end up in. The frame and its operands are also in AddFragments and
     // AddOperands; the messages move into it without being recreated.
+    public List<string> DeleteNotes=new List<string>();
+    public List<string> AddNotes=new List<string>();
     public List<string> WrapFragments=new List<string>();
     public List<string> MoveMessages=new List<string>();
     public int Targets { get { return ReconnectMessages.Count+DeleteExecutions.Count+AddExecutions.Count
         +AddParticipants.Count+DeleteParticipants.Count+DeleteMessages.Count+AddMessages.Count
-        +DeleteFragments.Count+DeleteOperands.Count+AddFragments.Count+AddOperands.Count+MoveMessages.Count; } }
+        +DeleteFragments.Count+DeleteOperands.Count+AddFragments.Count+AddOperands.Count+MoveMessages.Count+DeleteNotes.Count+AddNotes.Count; } }
     public bool Candidate { get { return Reasons.Count==0 && Targets>0; } }
     // The deletion-only mode stays exactly as the product confirmed it. The other mode
     // covers a receiver change together with deletions, additions, or both.
@@ -3778,6 +3808,10 @@ public sealed class SequenceStructurePreflight
     // their own. When they differ only because those neighbours are being deleted, the
     // execution itself is unchanged and nothing has to be written.
     static bool AnchorsOnly(SequenceElement old,SequenceElement next,Dictionary<string,SequenceElement> after)
+    { return AnchorsOnly(old,next,after,null); }
+    // An anchor may also move to a note this plan adds, which now sits between the bar and
+    // the event it used to name.
+    static bool AnchorsOnly(SequenceElement old,SequenceElement next,Dictionary<string,SequenceElement> after,HashSet<string> notes)
     {
         Func<SequenceElement,string> bare=e=>{
             var copy=e.Copy();copy.Links.Remove("startAfter");copy.Links.Remove("endBefore");copy.Line=0;copy.Order=0;
@@ -3788,6 +3822,7 @@ public sealed class SequenceStructurePreflight
         {
             var was=Link(old,role);var now=Link(next,role);
             if(was.SequenceEqual(now))continue;
+            if(notes!=null && now.Length==1 && notes.Contains(now[0]))continue;
             if(was.Any(id=>after.ContainsKey(id)))return false;
         }
         return true;
@@ -3905,6 +3940,31 @@ public sealed class SequenceStructurePreflight
         if(!kept.SequenceEqual(now))return "枠の外の要素の順序も変わっています。囲むだけの変更に限ります。";
         return null;
     }
+    // A new note goes right under an existing top-level message and pushes what is below
+    // it down, as the generator lays one out. It spans every lane: a new note carries no
+    // anchors (SequenceNotePolicy), so there is nothing narrower to place it by.
+    static string NoteAddReason(SequenceDocument current,SyncPlan plan,SequenceElement added)
+    {
+        var before=current.Elements.ToDictionary(e=>e.Id);
+        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        string root=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
+        if(added.Parent!=root)return "追加するNoteの所有先が相互作用ではありません。枠の中へのNote追加は対象外です。";
+        // A bar's neighbouring-event anchors may now name the note; they are read from
+        // positions and write nothing. Anything else pointing at it is a real reference.
+        if(plan.Expected.Elements.Any(e=>e.Parent==added.Id
+            || e.Links.Where(p=>!(e.Kind=="execution" && (p.Key=="startAfter" || p.Key=="endBefore"))).SelectMany(p=>p.Value).Contains(added.Id)))
+            return "追加するNoteを参照する要素があります。";
+        var walk=Flatten(plan.Expected);
+        int at=Array.IndexOf(walk,added.Id);
+        SequenceElement previous;
+        if(at<1 || !after.TryGetValue(walk[at-1],out previous) || previous.Kind!="message" || !before.ContainsKey(previous.Id) || previous.Parent!=root)
+            return "追加するNoteの直前は、相互作用直下の既存メッセージにしてください。図の先頭・枠の直後へのNote追加は対象外です。";
+        var below=walk.Skip(at+1).Where(before.ContainsKey).Select(id=>after[id]).ToArray();
+        if(below.Any(e=>e.Kind!="message" && e.Kind!="fragment" && e.Kind!="operand" && e.Kind!="note"))
+            return "追加するNoteより下に"+below.First(e=>e.Kind!="message" && e.Kind!="fragment" && e.Kind!="operand" && e.Kind!="note").Kind
+                +"があります。メッセージ・枠・Noteだけを下げる変更に限ります。";
+        return null;
+    }
     public static SequenceStructurePreflight Check(SequenceDocument current,SyncPlan plan)
     {
         current.Validate();plan.Expected.Validate();
@@ -3953,6 +4013,15 @@ public sealed class SequenceStructurePreflight
             if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
             result.AddMessages.Add(change.Id);
         }
+        foreach(var change in plan.Changes.Where(c=>c.Action=="add" && c.Kind=="note"))
+        {
+            SequenceElement added;
+            if(before.ContainsKey(change.Id) || !after.TryGetValue(change.Id,out added))
+            { result.Reasons.Add("L"+change.Line+" 追加するNoteを期待状態から取得できません。");continue; }
+            string why=NoteAddReason(current,plan,added);
+            if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
+            result.AddNotes.Add(change.Id);
+        }
         foreach(var change in plan.Changes.Where(c=>c.Action=="add" && c.Kind=="participant"))
         {
             SequenceElement added;
@@ -3973,7 +4042,7 @@ public sealed class SequenceStructurePreflight
         }
         foreach(var change in plan.Changes)
         {
-            if(change.Action=="add" && new[]{"execution","participant","message","fragment","operand"}.Contains(change.Kind))continue;
+            if(change.Action=="add" && new[]{"execution","participant","message","fragment","operand","note"}.Contains(change.Kind))continue;
             if(change.Action=="delete" && change.Kind=="participant" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
             {
                 if(Referenced(plan,change.Id))result.Reasons.Add("L"+change.Line+" 参加者への参照が残るため削除できません。");
@@ -3991,6 +4060,13 @@ public sealed class SequenceStructurePreflight
                 string owner=before[change.Id].Parent;
                 if(owner==null || after.ContainsKey(owner))result.Reasons.Add("L"+change.Line+" オペランド単独の削除は対象外です。フラグメントごと消える場合だけ扱います。");
                 else result.DeleteOperands.Add(change.Id);
+                continue;
+            }
+            // A note is annotation only: removing it leaves everything else where it is.
+            if(change.Action=="delete" && change.Kind=="note" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
+            {
+                if(Referenced(plan,change.Id))result.Reasons.Add("L"+change.Line+" Noteへの参照が残るため削除できません。");
+                else result.DeleteNotes.Add(change.Id);
                 continue;
             }
             if(change.Action=="delete" && change.Kind=="message" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
@@ -4023,7 +4099,7 @@ public sealed class SequenceStructurePreflight
             if(change.Action=="update" && change.Kind=="execution"
                 && before.TryGetValue(change.Id,out old) && after.TryGetValue(change.Id,out next))
             {
-                if(AnchorsOnly(old,next,after))continue;
+                if(AnchorsOnly(old,next,after,new HashSet<string>(result.AddNotes)))continue;
                 result.Reasons.Add(row+"実行区間の境界以外の変更は今回の構造更新対象外です。");continue;
             }
             if(change.Action!="update" || change.Kind!="message" || !before.TryGetValue(change.Id,out old) || !after.TryGetValue(change.Id,out next))
@@ -4041,12 +4117,16 @@ public sealed class SequenceStructurePreflight
             { result.Reasons.Add(row+"受信実行区間以外の変更を含むため対象外です。");continue; }
             result.ReconnectMessages.Add(change.Id);
         }
+        // Each of these makes room by moving what is below; two in one update would have to
+        // agree on where everything goes.
+        if(result.AddNotes.Count>1 || (result.AddNotes.Count>0 && (result.AddMessages.Count+result.AddFragments.Count>0)))
+            result.Reasons.Add("Noteの追加は1件ずつ、メッセージや枠の追加とは分けて反映してください。");
         if(result.WrapFragments.Count>0)
         {
             string frame=result.WrapFragments[0];
             if(result.ReconnectMessages.Count+result.DeleteExecutions.Count+result.AddExecutions.Count+result.AddParticipants.Count
                 +result.DeleteParticipants.Count+result.DeleteMessages.Count+result.AddMessages.Count+result.DeleteFragments.Count
-                +result.DeleteOperands.Count>0 || result.AddFragments.Count!=1
+                +result.DeleteOperands.Count+result.DeleteNotes.Count>0 || result.AddFragments.Count!=1
                 || result.AddOperands.Any(id=>after[id].Parent!=frame))
                 result.Reasons.Add("既存のメッセージを枠で囲む変更は、ほかの変更と分けて1件ずつ反映してください。");
         }
@@ -4061,6 +4141,7 @@ public sealed class SequenceStructurePreflight
             +" / メッセージ削除候補: "+DeleteMessages.Count+" / メッセージ追加候補: "+AddMessages.Count
             +" / フラグメント削除候補: "+DeleteFragments.Count+" / オペランド削除候補: "+DeleteOperands.Count
             +" / フラグメント追加候補: "+AddFragments.Count+" / オペランド追加候補: "+AddOperands.Count
+            +" / 枠で囲むメッセージ候補: "+MoveMessages.Count+" / Note削除候補: "+DeleteNotes.Count+" / Note追加候補: "+AddNotes.Count
             +"\n"+(Reasons.Count>0?"全体を停止: "+Reasons.Count+"件の未対応条件":Candidate?"限定範囲の候補あり。既存図での適用・保持検証は未実施です。":"対象の変更なし")
             +"\n"+string.Join("\n",Reasons.Distinct());
     }
@@ -4071,6 +4152,7 @@ public sealed class SequenceStructurePreflight
         "AddMessages",AddMessages.ToArray(),"DeleteFragments",DeleteFragments.ToArray(),
         "DeleteOperands",DeleteOperands.ToArray(),
         "AddFragments",AddFragments.ToArray(),"AddOperands",AddOperands.ToArray(),
+        "WrapFragments",WrapFragments.ToArray(),"MoveMessages",MoveMessages.ToArray(),"DeleteNotes",DeleteNotes.ToArray(),"AddNotes",AddNotes.ToArray(),
         "Reasons",Reasons.ToArray())); }
 }
 
@@ -4145,6 +4227,19 @@ public sealed class SequenceShiftedShape
 
 // A message already drawn that a new frame now holds: only the operand's reference to
 // it is new. Its model, owner and ends stay as they are.
+// What a new note is built from, resolved from the view and profile (PumlRuntime.NoteTypes).
+// Owns is {relation metaclass, "Embed", field signature}.
+public sealed class SequenceNoteTypes
+{
+    public string Class, Field, Storage;
+    public string[] Owns;
+}
+
+public sealed class SequenceAddedNote
+{
+    public string ModelId, Metaclass, Name, OwnerId, ShapeId, RelationId, Field, Geometry, Text;
+}
+
 public sealed class SequenceMovedMessage
 {
     public string ModelId, OperandId, RelationId, Field;
@@ -4174,9 +4269,11 @@ public sealed class SequenceStructurePreparation
     public SequenceShiftedShape[] ShiftedShapes=new SequenceShiftedShape[0];
     public string InsertedMessageId="";
     public SequenceMovedMessage[] MovedMessages=new SequenceMovedMessage[0];
+    public SequenceAddedNote[] AddedNotes=new SequenceAddedNote[0];
     public string[] DeleteParticipantIds=new string[0];
     public string[] DeleteMessageIds=new string[0];
     public string[] DeleteFrameIds=new string[0];
+    public string[] DeleteNoteIds=new string[0];
     static string V(SequenceJson n,string key) { return SequenceEditorDocument.Value(n,key); }
     static SequenceJson[] Array(SequenceJson n,string key)
     {
@@ -4188,6 +4285,8 @@ public sealed class SequenceStructurePreparation
     public static SequenceStructurePreparation Build(string exported,string editorId,SequenceDocument current,SyncPlan plan)
     { return Build(exported,editorId,current,plan,null); }
     public static SequenceStructurePreparation Build(string exported,string editorId,SequenceDocument current,SyncPlan plan,SequenceFrameTypes types)
+    { return Build(exported,editorId,current,plan,types,null); }
+    public static SequenceStructurePreparation Build(string exported,string editorId,SequenceDocument current,SyncPlan plan,SequenceFrameTypes types,SequenceNoteTypes noteTypes)
     {
         var gate=SequenceStructurePreflight.Check(current,plan);
         Require(gate.Candidate,"未対応の変更があるか、構造更新の候補がありません。");
@@ -4241,7 +4340,7 @@ public sealed class SequenceStructurePreparation
         // A relation with both ends leaving is going away too, so it never blocks. That
         // covers the links a frame holds to the messages inside it.
         var leaving=new HashSet<string>(gate.DeleteExecutions.Concat(gate.DeleteParticipants)
-            .Concat(gate.DeleteMessages).Concat(gate.DeleteFragments).Concat(gate.DeleteOperands));
+            .Concat(gate.DeleteMessages).Concat(gate.DeleteFragments).Concat(gate.DeleteOperands).Concat(gate.DeleteNotes));
         Func<SequenceJson,string,bool> inside=(relation,id)=>
             leaving.Contains(V(relation,"SourceId")) && leaving.Contains(V(relation,"TargetId"));
         // Name the relation that blocked a deletion. Guessing which one it is has cost
@@ -4348,6 +4447,7 @@ public sealed class SequenceStructurePreparation
         var branches=new List<SequenceAddedOperand>();
         var newFrameShapes=new List<SequenceJson>();
         var newOperandShapes=new List<SequenceJson>();
+        var newNoteShapes=new List<SequenceJson>();
         Func<string[],string,string,string,SequenceJson> relate=(row,relationId,from,to)=>
             SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",relationId,"RelationType",row[1],
                 "MetamodelId",row[0],"SourceId",from,"TargetId",to)));
@@ -4581,13 +4681,25 @@ public sealed class SequenceStructurePreparation
         foreach(string id in gate.DeleteMessages)
         {
             Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="Message","削除対象が退避データ内のメッセージではありません。");
-            var allowed=new[]{"___Interaction_Message","SendMessage","ReceiveMessage"};
+            // A reply is also tied to the bar it returns from; that goes with the message.
+            var allowed=new[]{"___Interaction_Message","SendMessage","ReceiveMessage","ExecutionSpecificationReplyMessage"};
             foreach(var relation in relations.Where(r=>V(r,"SourceId")==id || V(r,"TargetId")==id))
                 Require(inside(relation,id)
                     || (V(relation,"TargetId")==id
                         && allowed.Any(kind=>V(relation,"MetamodelId")==SequencePayload.Prefix+kind)),
                     "削除するメッセージに未対応の関連が残っています。"+describe(relation,id));
             Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==id)==1,"削除するメッセージの図形を一意に取得できません。");
+        }
+        foreach(string id in gate.DeleteNotes)
+        {
+            Require(byId.ContainsKey(id),"削除するNoteが退避データにありません。");
+            // Only the interaction's ownership is expected. Anything else is named so the
+            // next run can say what a note is tied to.
+            foreach(var relation in relations.Where(r=>V(r,"SourceId")==id || V(r,"TargetId")==id))
+                Require(inside(relation,id)
+                    || (V(relation,"TargetId")==id && V(relation,"MetamodelId")==SequencePayload.Prefix+"___Interaction_InteractionNote"),
+                    "削除するNoteに未対応の関連が残っています。"+describe(relation,id));
+            Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==id)==1,"削除するNoteの図形を一意に取得できません。");
         }
         foreach(string id in gate.DeleteParticipants)
         {
@@ -4687,6 +4799,70 @@ public sealed class SequenceStructurePreparation
             Require(ports.All(port=>shifted.Any(s=>s.ModelId==port)),
                 "挿入位置をまたぐ実行区間がありません。既に開いているバーの間に挿入してください。");
         }
+        // A new note goes one message step under the message above it, as tall as its text,
+        // and what was below moves down by that height and the generator's 16 gap. A bar open
+        // across the point grows; the lanes follow.
+        var notes=new List<SequenceAddedNote>();
+        foreach(string id in gate.AddNotes)
+        {
+            Require(noteTypes!=null && noteTypes.Owns!=null && noteTypes.Owns.Length==3,"Noteの型情報が解決できていません。");
+            var wanted=after[id];string text=wanted.Text??"";
+            var walk=SequenceStructurePreflight.Flatten(plan.Expected);
+            string previous=walk[System.Array.IndexOf(walk,id)-1];
+            var previousShapes=editor.Shapes().Where(sh=>V(sh,"ModelId")==previous).ToArray();
+            Require(previousShapes.Length==1,"Noteの直前のメッセージの図形を一意に取得できません。");
+            double at=Read(previousShapes[0],"TargetY"),top=at+MessageSpacing;
+            double height=Math.Max(48,16+20*text.Replace("\r\n","\n").Split('\n').Length),room=height+16;
+            var noteLaneIds=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
+            var noteLanes=editor.Shapes().Where(sh=>noteLaneIds.Contains(V(sh,"ModelId")) && sh["X"]!=null && sh["Width"]!=null).ToArray();
+            Require(noteLanes.Length>0,"参加者の図形がないためNoteの幅を決められません。");
+            double left=noteLanes.Min(sh=>Read(sh,"X")+Read(sh,"Width")/2),right=noteLanes.Max(sh=>Read(sh,"X")+Read(sh,"Width")/2);
+            double x=left-50,width=Math.Max(160,right-left+100);
+            var fields=new Dictionary<string,object>{{"Name",text}};
+            // A rich-text body is shown from the name, as the generator writes it.
+            if(noteTypes.Field!="Name" && noteTypes.Storage=="String")fields[noteTypes.Field]=text;
+            // The patch is already assembled by now, so the note goes straight into it.
+            patch["Entities"].Items.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",id,"EntityType","InteractionNote",
+                "MetamodelId",noteTypes.Class,"Name",text,"Fields",fields))));
+            string relationId=Guid.NewGuid().ToString();
+            patch["Relations"].Items.Add(relate(noteTypes.Owns,relationId,root,id));
+            string shapeId=Guid.NewGuid().ToString();
+            var shape=SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,
+                "X",Number(x),"Y",Number(top),"Width",Number(width),"Height",Number(height))));
+            Collection(patch["Editors"].Items.Single(),"Notes").Items.Add(shape);
+            newNoteShapes.Add(shape);
+            notes.Add(new SequenceAddedNote{ModelId=id,Metaclass=noteTypes.Class,Name=text,OwnerId=root,ShapeId=shapeId,
+                RelationId=relationId,Field=noteTypes.Owns[2],Text=text,
+                Geometry=PumlBuild.Json(new[]{Number(x),Number(top),Number(width),Number(height)})});
+            var laneShapeIds=new HashSet<string>(noteLanes.Select(sh=>V(sh,"Id")));
+            foreach(var existing in editor.Shapes())
+            {
+                string model=V(existing,"ModelId");
+                string kind=before.ContainsKey(model)?before[model].Kind:"";
+                var keys=new List<string>();var values=new List<string>();
+                if(kind=="message" && Read(existing,"TargetY")>at)
+                {
+                    keys.Add("SourceY");values.Add(Number(Read(existing,"SourceY")+room));
+                    keys.Add("TargetY");values.Add(Number(Read(existing,"TargetY")+room));
+                }
+                else if(kind=="execution")
+                {
+                    double y=Read(existing,"Y"),length=Read(existing,"Length");
+                    if(y>at){keys.Add("Y");values.Add(Number(y+room));}
+                    else if(y+length>=at){keys.Add("Length");values.Add(Number(length+room));keys.Add("Height");values.Add(Number(length+room));}
+                }
+                else if((kind=="fragment" || kind=="note" || kind=="ref") && Read(existing,"Y")>at)
+                {keys.Add("Y");values.Add(Number(Read(existing,"Y")+room));}
+                else if(laneShapeIds.Contains(V(existing,"Id")) && existing["LaneLength"]!=null)
+                {keys.Add("LaneLength");values.Add(Number(Read(existing,"LaneLength")+room));}
+                if(keys.Count==0)continue;
+                foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
+                    .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items)
+                    .Where(n=>V(n,"Id")==V(existing,"Id")))
+                    for(int i=0;i<keys.Count;i++)node.Properties[keys[i]]=SequenceJson.Parse(values[i]);
+                shifted.Add(new SequenceShiftedShape{ModelId=model,ShapeId=V(existing,"Id"),Kind=kind,Keys=keys.ToArray(),Values=values.ToArray()});
+            }
+        }
         // Wrapping makes room at the top of the run and below it. Every position moves by
         // the same rule, so a bar's two ends are mapped separately and its length follows.
         if(wrapMap!=null)
@@ -4765,16 +4941,16 @@ public sealed class SequenceStructurePreparation
         }
         return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),ReconnectCount=changed.Count,
             EditorAfterDeleteJson=Deleted(editor,newShapes,newLaneShapes,newMessageShapes,
-                newFrameShapes,newOperandShapes,stretched,shifted,gate.DeleteExecutions,
+                newFrameShapes,newOperandShapes,newNoteShapes,stretched,shifted,gate.DeleteExecutions,
                 gate.DeleteParticipants.Concat(gate.DeleteMessages)
-                    .Concat(gate.DeleteFragments).Concat(gate.DeleteOperands).ToList()),
+                    .Concat(gate.DeleteFragments).Concat(gate.DeleteOperands).Concat(gate.DeleteNotes).ToList()),
             DeleteIds=gate.DeleteExecutions.ToArray(),
             AddedExecutions=additions.ToArray(),AddedParticipants=lanes.ToArray(),AddedMessages=wires.ToArray(),
             AddedFragments=frames.ToArray(),AddedOperands=branches.ToArray(),
             StretchedLifelines=stretched.ToArray(),CreatedCollections=Created.ToArray(),
-            ShiftedShapes=shifted.ToArray(),InsertedMessageId=insertedId,MovedMessages=movedMessages.ToArray(),
+            ShiftedShapes=shifted.ToArray(),InsertedMessageId=insertedId,MovedMessages=movedMessages.ToArray(),AddedNotes=notes.ToArray(),
             DeleteParticipantIds=gate.DeleteParticipants.ToArray(),DeleteMessageIds=gate.DeleteMessages.ToArray(),
-            DeleteFrameIds=gate.DeleteFragments.Concat(gate.DeleteOperands).ToArray(),
+            DeleteFrameIds=gate.DeleteFragments.Concat(gate.DeleteOperands).ToArray(),DeleteNoteIds=gate.DeleteNotes.ToArray(),
             ReceiveRelationIds=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage").Select(r=>V(r,"Id")).ToArray()};
     }
     // A diagram that has never held a frame has no Fragments collection at all, so the
@@ -5012,26 +5188,33 @@ public sealed class SequenceStructurePreparation
     internal const double LaneSpacing=240;
     internal const double MessageSpacing=PumlBuild.MessagePitch;
     static string Deleted(SequenceEditorDocument editor,List<SequenceJson> addedShapes,List<SequenceJson> addedLanes,
-        List<SequenceJson> addedWires,List<SequenceJson> addedFrames,List<SequenceJson> addedBranches,
+        List<SequenceJson> addedWires,List<SequenceJson> addedFrames,List<SequenceJson> addedBranches,List<SequenceJson> addedNotes,
         List<SequenceStretchedLifeline> stretched,List<SequenceShiftedShape> shifted,
         List<string> removed,List<string> removedLanes)
     {
         var json=SequenceJson.Parse(editor.ImportJson());
         var view=json["Editors"].Items.Single();
         var gone=new HashSet<string>(removed.Concat(removedLanes));
+        // A connector drawn to a removed shape, such as a note's anchor, has no model of its
+        // own; it goes when either end does.
+        var goneShapes=new HashSet<string>(editor.Shapes().Where(sh=>gone.Contains(SequenceEditorDocument.Value(sh,"ModelId")))
+            .Select(sh=>SequenceEditorDocument.Value(sh,"Id")));
+        Func<SequenceJson,bool> dangling=node=>node.Properties!=null
+            && node.Properties.Any(p=>p.Key!="Id" && p.Value!=null && p.Value.Raw!=null && p.Value.Raw.StartsWith("\"",StringComparison.Ordinal)
+                && goneShapes.Contains(p.Value.StringValue()));
         foreach(var property in view.Properties)
         {
             var array=property.Value;
             if(array==null || array.Items==null)continue;
             for(int i=array.Items.Count-1;i>=0;i--)
-                if(gone.Contains(SequenceEditorDocument.Value(array.Items[i],"ModelId")))array.Items.RemoveAt(i);
+                if(gone.Contains(SequenceEditorDocument.Value(array.Items[i],"ModelId")) || dangling(array.Items[i]))array.Items.RemoveAt(i);
         }
         Action<string,List<SequenceJson>> append=(collection,shapes)=>{
             if(shapes.Count==0)return;
             Collection(view,collection).Items.AddRange(shapes.Select(sh=>SequenceJson.Parse(sh.ToJsonString())));
         };
         append("ExecutionSpecifications",addedShapes);append("Lifelines",addedLanes);append("Messages",addedWires);
-        append("Fragments",addedFrames);append("Operands",addedBranches);
+        append("Fragments",addedFrames);append("Operands",addedBranches);append("Notes",addedNotes);
         // This editor is rebuilt from the original export, so the stretched timelines have
         // to be written here as well or the delete stage puts the old lengths back.
         if(stretched.Count>0)
@@ -5374,6 +5557,17 @@ public sealed class SequenceTrialState
                 result.ShapeModels[branch.ShapeId]=branch.ModelId;
             }
         }
+        foreach(var note in prepared.AddedNotes)
+        {
+            result.Models[note.ModelId]=PumlBuild.Json(new[]{note.Metaclass,note.Name,note.OwnerId,"False"});
+            int index=result.Relations.Count(pair=>pair.Value[0]==note.OwnerId && result.Field(pair.Key)==note.Field);
+            result.Relations[note.RelationId]=new[]{note.OwnerId,note.ModelId,
+                index.ToString(System.Globalization.CultureInfo.InvariantCulture),"0"};
+            result.RelationFields[note.RelationId]=note.Field;
+            // A note reads back as its rectangle followed by its text.
+            result.Shapes[note.ShapeId]=note.Geometry+note.Text;
+            result.ShapeModels[note.ShapeId]=note.ModelId;
+        }
         // A wrapped message gains only the operand's reference, appended in run order.
         foreach(var move in prepared.MovedMessages)
         {
@@ -5435,7 +5629,8 @@ public sealed class SequenceTrialState
                 || prepared.AddedMessages.Any(a=>a.RelationIds.Contains(id))
                 || prepared.AddedFragments.Any(a=>a.RelationIds.Contains(id))
                 || prepared.AddedOperands.Any(a=>a.RelationIds.Contains(id))
-                || prepared.MovedMessages.Any(a=>a.RelationId==id))continue;
+                || prepared.MovedMessages.Any(a=>a.RelationId==id)
+                || prepared.AddedNotes.Any(a=>a.RelationId==id))continue;
             if(!result.Relations.ContainsKey(id) || result.Relations[id][1]!=target || !result.Ports.ContainsKey(target))throw new InvalidOperationException("S230: 変更前の受信関連が一致しません。");
             // SourceIndex belongs to the source endpoint collection, not to the relationship identity.
             // Omitted indices append on import. An explicit index inserts at that position.
@@ -5457,7 +5652,7 @@ public sealed class SequenceTrialState
         if(delete)
         {
             var removed=new HashSet<string>(prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
-                .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds));
+                .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).Concat(prepared.DeleteNoteIds));
             foreach(string id in removed)result.Models.Remove(id);
             foreach(string id in prepared.DeleteMessageIds)result.Ports.Remove(id);
             // Measured on the product: deleting a model closes the gap it leaves in the

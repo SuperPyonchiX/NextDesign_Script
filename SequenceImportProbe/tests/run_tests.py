@@ -132,6 +132,15 @@ public static class PayloadTest {
            throw new Exception(sample+" must be a single insertion: "+framedPlan.ToJson()+framedGate.ToJson());
    }
 
+   // A note put in under a message, and taken out again.
+   var noteBase=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-wrap-before.puml")));
+   var noted=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-note-after.puml")));
+   var noteAddGate=SequenceStructurePreflight.Check(noteBase,SequenceNotePolicy.Build(noteBase,noted,()=>Guid.NewGuid().ToString()));
+   if(!noteAddGate.Candidate || noteAddGate.AddNotes.Count!=1 || noteAddGate.Targets!=1)
+       throw new Exception("adding a note was not a single candidate: "+noteAddGate.ToJson());
+   var noteDropGate=SequenceStructurePreflight.Check(noted,SequenceNotePolicy.Build(noted,noteBase,()=>Guid.NewGuid().ToString()));
+   if(!noteDropGate.Candidate || noteDropGate.DeleteNotes.Count!=1 || noteDropGate.Targets!=1)
+       throw new Exception("removing a note was not a single candidate: "+noteDropGate.ToJson());
    var reconnectBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-before.puml")));
    var reconnectAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-reconnect-after.puml")));
    var reconnectPlan=SyncPlan.Build(reconnectBefore,reconnectAfter,()=>Guid.NewGuid().ToString());

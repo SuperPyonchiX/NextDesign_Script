@@ -1,4 +1,4 @@
-# SequenceImportProbe 引き継ぎ（2026-09-23 / 0.9.8）
+# SequenceImportProbe 引き継ぎ（2026-09-23 / 0.9.9）
 
 PlantUML を正本に Next Design の既存シーケンス図を差分更新する C# スクリプト拡張。この文書は作業を別セッションへ引き継ぐためのもの。**まず `.local/nd-knowledge/index.md` を読むこと。** K001〜K160 に実機で確かめた事実が入っている。推測で候補を潰す前に、そこと製品ログを見る。
 
@@ -55,6 +55,14 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 - 生成（PlantUML取込）のメッセージ間隔を 50 → 40 に詰めた（`PumlBuild.MessagePitch`）。同期側の挿入・追加の間隔（`MessageSpacing`）も同じ定数を使う。既存の図は間隔50のままで、挿入はそこへ40で入る
 - A16（応答の起点がバーから外れる）: 「接続の実測」で、手描きの応答だけが送信元のバーから `ExecutionSpecificationReplyMessage`（フィールド ReplyMessage / RepliedExecutionSpecification）を持つと判明。0.9.8 で生成器が応答ごとに張る（1本のバーに1本まで）。構造更新で応答を追加するときも、見本の応答がこの関連を持ち、送信元のバーがまだ応答を持たなければ張る。既に取り込んだ図は直らない（取り込み直すか、修復機能を別途作る）
 
+### 0.9.9: Note の追加・削除（実機未確認）
+
+- 削除: 相互作用の所有関連だけを持つ Note を消す。それ以外の関連があれば名指しで停止。消えた図形を指すコネクタ（Note のアンカー）もエディタから外す。隙間は詰めない
+- 追加: 相互作用直下の既存メッセージの直後に1件。新しい Note はアンカーを持たない（SequenceNotePolicy）ので全レーンにまたがる幅で置き、高さ＋16 だけ下を下げる。型・所有関連・本文フィールドは `PumlRuntime.NoteTypes` で見本なしに解決
+- メッセージや枠の追加と同じ更新では扱わない
+- 0.9.8 の応答の関連（ExecutionSpecificationReplyMessage）を、メッセージ削除で許可する関連に加えた
+- サンプル: `structure-wrap-before.puml` ⇔ `structure-note-after.puml`（firstDone の下に Note）
+
 ## 3. 未解決（A15）: メッセージ・フラグメントを追加した更新の Undo で製品が停止する
 
 - 例外: `System.ArgumentOutOfRangeException` at `DensoCreate.Indio.IMF.Kernel.IML.AddListItemAction<T>.InternalUnExecute()`
@@ -72,7 +80,7 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 |---|---|
 | move: 既存メッセージを枠で囲む（0.9.6 の見た目確認だけ残り） | 1 |
 | move: 順序の入れ替え・枠から出す | 3〜5 |
-| Note の追加・削除 | 3〜5 |
+| Note の追加・削除（0.9.9 実装済み・実機未確認） | 1〜3 |
 | ref の追加・削除（RefersTo リンク） | 3〜5 |
 | オペランド単独の追加・削除 | 2〜3 |
 | create/destroy | 未定（A10 の正規化が前提） |
