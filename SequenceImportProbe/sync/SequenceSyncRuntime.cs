@@ -244,9 +244,12 @@ public static class SequenceSyncRuntime
                         throw new InvalidOperationException(UnsavedAdvice,ex);
                     }
                     SequenceFrameTypes frameTypes=null;
-                    if(preflight.AddFragments.Count>0)
+                    string rootId=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
+                    if(preflight.AddFragments.Count>0
+                        || preflight.AddMessages.Any(id=>plan.Expected.Elements.Single(e=>e.Id==id).Parent!=rootId))
                     {
-                        // Resolve the metaclasses only when a frame is actually being added,
+                        // Resolve the metaclasses only when a frame is being added or a message
+                        // goes into an operand, which needs the operand-to-message relation,
                         // so a diagram without them still runs every other change.
                         try {frameTypes=PumlRuntime.FrameTypes(diagram,project);}
                         catch(Exception ex) {throw new InvalidOperationException("S220: フラグメントの型を解決できません: "+ex.Message,ex);}
