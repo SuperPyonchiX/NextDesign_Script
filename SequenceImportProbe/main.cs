@@ -30,7 +30,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.11.11";
+    public const string Title = "シーケンス生成実験 / 0.11.12";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -2217,7 +2217,8 @@ public static class SequenceBatch
                 }
                 long imported=importClock.ElapsedMilliseconds;
                 var saveClock=System.Diagnostics.Stopwatch.StartNew();
-                Save(app,project);
+                // Only the one export needs a saved project; snapshots built from the SDK do not.
+                if(!SequenceSyncRuntime.ForceSdkSnapshot)Save(app,project);
                 long saved=saveClock.ElapsedMilliseconds;
                 // One export for every scenario: each diagram is cut out of it in its turn,
                 // so no save is needed between them.

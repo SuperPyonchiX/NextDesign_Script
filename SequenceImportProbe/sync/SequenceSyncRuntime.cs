@@ -1157,7 +1157,8 @@ public static class SequenceBatch
                 }
                 long imported=importClock.ElapsedMilliseconds;
                 var saveClock=System.Diagnostics.Stopwatch.StartNew();
-                Save(app,project);
+                // Only the one export needs a saved project; snapshots built from the SDK do not.
+                if(!SequenceSyncRuntime.ForceSdkSnapshot)Save(app,project);
                 long saved=saveClock.ElapsedMilliseconds;
                 // One export for every scenario: each diagram is cut out of it in its turn,
                 // so no save is needed between them.
