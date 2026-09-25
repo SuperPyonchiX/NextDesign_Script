@@ -1013,6 +1013,14 @@ public static class SequenceBatch
         Directory.CreateDirectory(directory);
         var rows=new List<string>();var detail=new StringBuilder();var clock=System.Diagnostics.Stopwatch.StartNew();
         int passed=0,index=0;var tally=new Dictionary<string,int>();
+        // What kinds of difference and stop occur, in how many diagrams: the lines of the
+        // residual breakdown with line numbers and anonymous numbers taken out. No names.
+        var patterns=new Dictionary<string,List<int>>(StringComparer.Ordinal);
+        Action<string,int> note=(pattern,at)=>{List<int> seenIn;if(!patterns.TryGetValue(pattern,out seenIn))patterns[pattern]=seenIn=new List<int>();if(!seenIn.Contains(at))seenIn.Add(at);};
+        Func<string,IEnumerable<string>> breakdown=text=>text.Replace("\f","\n").Split('\n').Select(l=>l.Trim())
+            .Where(l=>Regex.IsMatch(l,@"^L\d+ "))
+            .Select(l=>Regex.Replace(Regex.Replace(l,@"^L\d+ ",""),@"#\d+",""))
+            .Distinct();
         try
         {
             SequenceExperiment.BatchMode=true;SequenceSyncRuntime.Batch=true;
@@ -1039,16 +1047,18 @@ public static class SequenceBatch
                         else if(changes>0)
                         {
                             result="差分 "+changes+"件";kind="差分あり";
+                            foreach(string pattern in breakdown(SequenceExperiment.Details))note(pattern,index);
                             detail.AppendLine("■ "+index+" "+label+"（"+Path.GetFileName(file)+"）\n"+string.Join("\n",SequenceExperiment.Details.Split('\f').Where(page=>!page.StartsWith("接続の実測",StringComparison.Ordinal) && !page.StartsWith("実行区間とメッセージの縦位置",StringComparison.Ordinal)))+"\n");
                         }
                         else
                         {
                             result="読取りで停止: "+Line(SequenceExperiment.Summary,200);kind="停止";
+                            note("停止: "+Regex.Replace(Line(SequenceExperiment.Summary,60),@"[0-9a-f]{8}-[0-9a-f-]{27}","<id>"),index);
                             detail.AppendLine("■ "+index+" "+label+"（"+Path.GetFileName(file)+"）\n"+SequenceExperiment.Details+"\n");
                         }
                     }
                 }
-                catch(Exception ex){result="停止: "+Line(ex.Message,200);kind="停止";detail.AppendLine("■ "+index+" "+label+"\n"+ex+"\n");}
+                catch(Exception ex){result="停止: "+Line(ex.Message,200);kind="停止";detail.AppendLine("■ "+index+" "+label+"\n"+ex+"\n");note("停止: "+Regex.Replace(Line(ex.Message,60),@"[0-9a-f]{8}-[0-9a-f-]{27}","<id>"),index);}
                 int n;tally.TryGetValue(kind,out n);tally[kind]=n+1;
                 rows.Add(index+"\t"+label+"\t"+result);
             }
@@ -1056,13 +1066,19 @@ public static class SequenceBatch
         finally {SequenceExperiment.BatchMode=false;SequenceSyncRuntime.Batch=false;SequenceSyncRuntime.BatchDiagram=null;SequenceSyncRuntime.BatchInput=null;}
         File.WriteAllText(Path.Combine(directory,"result.tsv"),string.Join("\n",rows)+"\n",new UTF8Encoding(false));
         File.WriteAllText(Path.Combine(directory,"detail.txt"),detail.ToString(),new UTF8Encoding(false));
+        var ranked=patterns.OrderByDescending(p=>p.Value.Count).ThenBy(p=>p.Key,StringComparer.Ordinal).ToList();
+        string kinds="ずれの種類（図の枚数順・図の名前なし。例の番号は result.tsv の番号）\n"
+            +string.Join("\n",ranked.Take(40).Select(p=>p.Value.Count+"枚: "+p.Key+"  例 "+string.Join(",",p.Value.Take(3))));
+        File.WriteAllText(Path.Combine(directory,"kinds.txt"),kinds+"\n\n"+string.Join("\n",ranked.Select(p=>p.Value.Count+"\t"+p.Key+"\t"+string.Join(",",p.Value))),new UTF8Encoding(false));
         string summary="全図チェック（書込みなし）: "+diagrams.Count+"枚 / "+(clock.ElapsedMilliseconds/1000)+"秒\n"
             +string.Join(" / ",tally.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>p.Key+" "+p.Value))+"\n"
             +"結果: "+directory+"\n\n"
             +string.Join("\n",rows.Where(r=>!r.EndsWith("\t差分0件",StringComparison.Ordinal)).Take(40).Select(r=>r.Replace('\t',' ')));
         SequenceExperiment.Summary=summary;
-        SequenceExperiment.Details=summary+"\f"+detail;
-        app.Window.UI.ShowInformationDialog(summary.Length>3000?summary.Substring(0,3000)+"\n…（続きは結果フォルダ）":summary,title);
+        SequenceExperiment.Details=kinds+"\f"+summary+"\f"+detail;
+        string head="全図チェック（書込みなし）: "+diagrams.Count+"枚 / "+(clock.ElapsedMilliseconds/1000)+"秒 / "
+            +string.Join(" / ",tally.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>p.Key+" "+p.Value))+"\n\n"+kinds;
+        app.Window.UI.ShowInformationDialog(head.Length>3000?head.Substring(0,3000)+"\n…（続きは結果フォルダの kinds.txt）":head,title);
     }
     public static void Run(IApplication app)
     {
