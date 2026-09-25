@@ -431,14 +431,51 @@ public static class SequenceSimulator
         }
         return null;
     }
+    // What Next Design makes of a diagram once anything on it is moved (seen on the device):
+    // a bar a reply ends stops at that reply. (Where a bar that starts with a send moves its
+    // top to is not measured yet.) The reading must not depend on the generator's margins.
+    public static string Settle(string json)
+    {
+        var data=SequenceJson.Parse(json);
+        var relations=data["Relations"].Items.ToArray();
+        var view=data["Editors"].Items.Single();
+        if(view["ExecutionSpecifications"]==null || view["Messages"]==null)return json;
+        var wires=view["Messages"].Items.ToDictionary(w=>V(w,"ModelId"));
+        var entities=data["Entities"].Items.ToDictionary(e=>V(e,"Id"));
+        Func<string,bool> isReply=id=>entities[id]["Fields"]!=null && (V(entities[id]["Fields"],"MessageSort")??"").ToLowerInvariant()=="reply";
+        foreach(var bar in view["ExecutionSpecifications"].Items)
+        {
+            string id=V(bar,"ModelId");
+            var uses=relations.Where(r=>(V(r,"MetamodelId")==P+"SendMessage" || V(r,"MetamodelId")==P+"ReceiveMessage") && V(r,"SourceId")==id && wires.ContainsKey(V(r,"TargetId")))
+                .Select(r=>new{Send=V(r,"MetamodelId")==P+"SendMessage",Id=V(r,"TargetId"),At=V(r,"MetamodelId")==P+"SendMessage"?D(wires[V(r,"TargetId")],"SourceY"):D(wires[V(r,"TargetId")],"TargetY")})
+                .OrderBy(u=>u.At).ToArray();
+            if(uses.Length==0)continue;
+            double top=D(bar,"Y"),bottom=top+D(bar,"Length");
+            var last=uses.Last();
+            if(last.Send && isReply(last.Id))bottom=last.At;
+            string length=(bottom-top).ToString("R",System.Globalization.CultureInfo.InvariantCulture);
+            bar.Properties["Y"]=SequenceJson.Parse(top.ToString("R",System.Globalization.CultureInfo.InvariantCulture));
+            bar.Properties["Length"]=SequenceJson.Parse(length);bar.Properties["Height"]=SequenceJson.Parse(length);
+        }
+        return data.ToJsonString();
+    }
     // One scenario end to end. Returns null when the diagram reads back as the input and a
     // second pass finds nothing to do; otherwise what went wrong.
-    public static string Run(string beforePuml,string afterPuml)
+    public static string Run(string beforePuml,string afterPuml,bool settled=false)
     {
         string stage="出力";
         try
         {
             string before=Export(beforePuml);
+            if(settled && beforePuml.Contains("participant "))
+            {
+                before=Settle(before);
+                stage="整えた図の読取り";
+                var drawn=SequenceDocument.Parse(beforePuml);
+                foreach(var e in drawn.Elements.Where(e=>e.Kind=="ref"))e.Attributes["reference"]="";
+                var same=SequenceNotePolicy.Build(Read(before),drawn,()=>"sim-check");
+                if(same.Changes.Count>0)return "製品が整えた図が入力と違って読める: "+string.Join(", ",same.Changes.Select(c=>c.Kind+" "+c.Action+" L"+c.Line))+"\n"+SequenceAudit.Reasons(Read(before),SequenceDocument.Parse(beforePuml),same).Replace("\f","\n");
+            }
             stage="読取り";
             var current=Read(before);
             var desired=SequenceDocument.Parse(afterPuml);
@@ -495,8 +532,11 @@ public static class SimulatorTests
             .SelectMany(f=>File.ReadAllLines(Path.Combine(samples,f))).Select(l=>l.Trim()).Where(l=>l.Length>0 && !l.StartsWith("#")).Distinct())
         {
             var cells=line.Split('|').Select(c=>c.Trim()).ToArray();
-            string result=SequenceSimulator.Run(File.ReadAllText(Path.Combine(samples,cells[1])),File.ReadAllText(Path.Combine(samples,cells[2])));
-            if(result==null)passed++;else failures.Add(cells[0]+" ("+cells[1]+" → "+cells[2]+"): "+result);
+            foreach(bool settled in new[]{false,true})
+            {
+                string result=SequenceSimulator.Run(File.ReadAllText(Path.Combine(samples,cells[1])),File.ReadAllText(Path.Combine(samples,cells[2])),settled);
+                if(result==null)passed++;else failures.Add((settled?"[整えた図] ":"")+cells[0]+" ("+cells[1]+" → "+cells[2]+"): "+result);
+            }
         }
         Console.WriteLine("Simulated scenarios: "+passed+" passed, "+failures.Count+" failed");
         foreach(var f in failures)Console.WriteLine("  SIM FAIL "+f);

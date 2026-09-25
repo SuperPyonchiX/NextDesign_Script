@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.10";
+    public const string Title = "シーケンス生成実験 / 0.10.11";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1047,6 +1047,39 @@ public sealed class DiagramSnapshot
     public Dictionary<string,string> ShapeIds=new Dictionary<string,string>();
     public Dictionary<string,object> Geometry=new Dictionary<string,object>();
     public List<string> Limitations=new List<string>();
+    // Where each bar starts and ends against the messages on it, in the diagram's own numbers,
+    // to measure how Next Design lays bars out once the diagram is edited by hand. Lanes and
+    // messages are numbered, never named.
+    public string BarTimeline()
+    {
+        var lanes=Document.Elements.Where(e=>e.Kind=="participant").OrderBy(e=>e.Order).Select(e=>e.Id).ToList();
+        var messages=Document.Elements.Where(e=>e.Kind=="message" && Geometry.ContainsKey(e.Id)).OrderBy(e=>Y[e.Id]).ToList();
+        Func<string,string,double> at=(id,key)=>Convert.ToDouble(((Dictionary<string,object>)Geometry[id])[key],System.Globalization.CultureInfo.InvariantCulture);
+        Func<string[],string> lane=l=>l==null || l.Length==0?"外":"L"+lanes.IndexOf(l[0]);
+        var rows=new List<Tuple<double,int,string>>();
+        for(int i=0;i<messages.Count;i++)
+        {
+            var m=messages[i];string[] from,to;m.Links.TryGetValue("sender",out from);m.Links.TryGetValue("receiver",out to);
+            string sort;m.Attributes.TryGetValue("sort",out sort);
+            double source=at(m.Id,"SourceY"),target=at(m.Id,"TargetY");
+            rows.Add(Tuple.Create(source,1,"M"+i+" "+sort+" "+lane(from)+"→"+lane(to)+(Math.Abs(target-source)>1e-6?" 受信Y="+target.ToString("0.#"):"")));
+        }
+        var bars=Document.Elements.Where(e=>e.Kind=="execution" && Geometry.ContainsKey(e.Id)).OrderBy(e=>at(e.Id,"Y")).ToList();
+        for(int i=0;i<bars.Count;i++)
+        {
+            var b=bars[i];string[] owner;b.Links.TryGetValue("participant",out owner);
+            var uses=new List<string>();
+            for(int k=0;k<messages.Count;k++)
+            {
+                string[] v;
+                if(messages[k].Links.TryGetValue("sendExecution",out v) && v.Contains(b.Id))uses.Add("送M"+k);
+                if(messages[k].Links.TryGetValue("receiveExecution",out v) && v.Contains(b.Id))uses.Add("受M"+k);
+            }
+            rows.Add(Tuple.Create(at(b.Id,"Y"),0,"┌E"+i+" "+lane(owner)+" X="+at(b.Id,"X").ToString("0.#")+" ["+string.Join(",",uses)+"]"));
+            rows.Add(Tuple.Create(at(b.Id,"Y")+at(b.Id,"Height"),2,"└E"+i+" 長さ="+at(b.Id,"Height").ToString("0.#")));
+        }
+        return "実行区間とメッセージの縦位置（Y順）\n"+string.Join("\n",rows.OrderBy(r=>r.Item1).ThenBy(r=>r.Item2).Select(r=>r.Item1.ToString("0.#").PadLeft(7)+"  "+r.Item3));
+    }
     public static DiagramSnapshot Read(ISequenceDiagram diagram, StringBuilder log)
     {
         var root=diagram.Model as IInteraction;
@@ -1339,7 +1372,7 @@ public static class SequenceSyncRuntime
                 +",\"geometry\":"+PumlBuild.Json(current.Geometry)+"}";
             foreach(var c in plan.Changes)log.AppendLine(c.Action+" "+c.Kind+" line="+c.Line+" id="+c.Id);
             foreach(var warning in current.Limitations)log.AppendLine("要照合: "+warning);
-            screenshot=(trial?"適用前の比較結果（更新後の残差ではありません）\n":"現在の図と入力の比較結果\n")+SequenceAudit.Reasons(current.Document,desired,plan)+"\f"+preflight.Summary();
+            screenshot=(trial?"適用前の比較結果（更新後の残差ではありません）\n":"現在の図と入力の比較結果\n")+SequenceAudit.Reasons(current.Document,desired,plan)+"\f"+preflight.Summary()+"\f"+current.BarTimeline();
             // Only the comparison shows it; applying already has enough pages.
             if(!prepare)
             {
