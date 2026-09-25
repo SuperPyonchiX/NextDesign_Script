@@ -149,8 +149,20 @@
         Doc("activate A\nA -> B : call()\nactivate B\nB -> A : callback()\nactivate A\nA -> B : inner()\nactivate B\ndeactivate B\ndeactivate A\ndeactivate B\ndeactivate A");
         Doc("activate A\nA -> B : plain()\nA -> B : again()\ndeactivate A");
     }
+    // The export writes a two-line lane name on one line. That is the same name, so an update
+    // with another change must not rewrite it and lose the diagram's line break.
+    static void FoldedNames()
+    {
+        var model=Doc("activate A\nA -> B : call\nactivate B\nB --> A : done\ndeactivate B\ndeactivate A");Ids(model);
+        model.Elements.First(e=>e.Kind=="participant").Text="AUTOSAR AP :\nara::core";
+        var input=SequenceDocument.Parse("@startuml\nparticipant \"AUTOSAR AP : ara::core\" as A\nparticipant B\nactivate A\nA -> B : renamed\nactivate B\nB --> A : done\ndeactivate B\ndeactivate A\n@enduml");
+        var plan=Plan(model,input);
+        var gate=SequenceStructurePreflight.Check(model,plan);
+        Require(gate.Renames.Count==1 && model.Elements.First(e=>e.Id==gate.Renames[0]).Kind=="message","a folded lane name was taken as a rename: "+gate.ToJson());
+    }
     public static void Run()
     {
+        FoldedNames();
         StructurePreflight();
         AddedExecutionPreflight();
         OmittedActivations();

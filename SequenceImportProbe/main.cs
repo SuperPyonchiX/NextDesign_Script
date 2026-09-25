@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.20";
+    public const string Title = "シーケンス生成実験 / 0.10.21";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -4759,6 +4759,7 @@ public sealed class SequenceStructurePreflight
     }
     internal static string Attribute(SequenceElement e)
     { string value;return e.Attributes.TryGetValue("sort",out value)?value:""; }
+    static string Lines(string value) { return (value??"").Replace("\r\n","\n").Replace('\r','\n'); }
     static string[] Link(SequenceElement e,string role)
     { string[] ids;return e.Links.TryGetValue(role,out ids)?ids:new string[0]; }
     static string Attr(SequenceElement e,string key)
@@ -4821,7 +4822,11 @@ public sealed class SequenceStructurePreflight
         foreach(var e in plan.Expected.Elements.Where(e=>before.ContainsKey(e.Id) && e.Kind!="interaction"))
         {
             var old=before[e.Id];
-            bool textChanged=(old.Text??"")!=(e.Text??"");
+            // The same test the plan uses: names folded for lanes, refs and guards, line ends
+            // only for the rest. A difference the plan does not see is not written, so a name
+            // the export put on one line keeps its line breaks in the diagram.
+            bool folded=e.Kind=="participant" || e.Kind=="ref" || e.Kind=="operand";
+            bool textChanged=folded?SequenceLabels.Fold(old.Text)!=SequenceLabels.Fold(e.Text):Lines(old.Text)!=Lines(e.Text);
             bool parentChanged=old.Parent!=e.Parent;
             bool orderChanged=kept.Contains(e.Id) && !stable.Contains(e.Id);
             switch(e.Kind)
