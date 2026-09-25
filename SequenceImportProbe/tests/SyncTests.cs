@@ -171,8 +171,19 @@
         Require(plan.IsEmpty,"the late bar reads differently: "+plan.ToJson());
     }
     const string LateText="@startuml\nparticipant C\nparticipant A\nparticipant B\nactivate C\nC -> A : start()\nactivate A\nA ->> B : spawn()\nactivate B\nA -> A : notify()\nactivate A\ndeactivate A\nB -> B : detect()\nA --> C : done()\ndeactivate A\nactivate B\ndeactivate B\nref over B : Handle\ndeactivate B\ndeactivate C\n@enduml";
+    // A frame belongs to the branch its top edge falls in, even when its box runs past the
+    // branch below; a branch of a frame beside it at the same height does not claim it.
+    static void FrameNesting()
+    {
+        var left=new SequenceRegion{Id="left-branch",Fragment="left-frame",X=0,Y=100,Width=300,Height=200};
+        var right=new SequenceRegion{Id="right-branch",Fragment="right-frame",X=400,Y=100,Width=300,Height=200};
+        var inner=new SequenceRegion{Id="inner-frame",X=20,Y=150,Width=200,Height=300};
+        var found=SequenceRegion.Nesting(new[]{left,right},new[]{inner}).ToArray();
+        Require(found.Length==1 && found[0].Parent=="left-branch","side-by-side branches both claimed a frame: "+string.Join(",",found.Select(m=>m.Parent)));
+    }
     public static void Run()
     {
+        FrameNesting();
         FoldedNames();
         LateSelfBar();
         StructurePreflight();

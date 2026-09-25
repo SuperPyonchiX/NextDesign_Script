@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.24";
+    public const string Title = "シーケンス生成実験 / 0.10.25";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -4565,9 +4565,11 @@ public sealed class SequenceRegion
     public static IEnumerable<SequenceMembership> Nesting(IEnumerable<SequenceRegion> operands,IEnumerable<SequenceRegion> fragments)
     {
         // As the PlantUML export places them: by where the top edge falls, whatever the box
-        // reaches past, since the export closes a frame and enters a branch by Y alone.
+        // reaches past below, since the export enters a branch by Y. Across, it must sit inside
+        // the branch, or frames side by side would each claim the other.
         foreach(var fragment in fragments)foreach(var operand in operands)
-            if(operand.Fragment!=fragment.Id && fragment.Y>=operand.Y-0.5 && fragment.Y<operand.Y+operand.Height-0.5)
+            if(operand.Fragment!=fragment.Id && fragment.Y>=operand.Y-0.5 && fragment.Y<operand.Y+operand.Height-0.5
+                && fragment.X>=operand.X-0.5 && fragment.X+fragment.Width<=operand.X+operand.Width+0.5)
                 yield return new SequenceMembership{Child=fragment.Id,Parent=operand.Id,Evidence="diagram top edge within branch"};
     }
 }
