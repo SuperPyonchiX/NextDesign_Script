@@ -242,7 +242,8 @@ public static class SequenceSyncRuntime
         var ordered=matches.OrderByDescending(shared).ThenBy(c=>c.Path,StringComparer.Ordinal).ToArray();
         for(int i=0;i<ordered.Length;i++)
             if(app.Window.UI.ShowConfirmDialog("ref「"+text+"」（入力 "+line+"行目）の参照先の候補が "+ordered.Length+"件あります。\n\n候補 "+(i+1)+"/"+ordered.Length+":\n"+ordered[i].Path
-                +"\n\nこの相互作用を参照先にしますか？\n（「いいえ」で次の候補。すべて「いいえ」なら参照先なしで作成します）",SequenceExperiment.Title))
+                +"\n\nこの相互作用を参照先にしますか？\nOK: この相互作用を参照先にします。
+キャンセル: 次の候補を表示します（最後の候補でキャンセルすると参照先なしで作成します）。",SequenceExperiment.Title))
             {log.AppendLine("ref参照先 "+line+"行: "+ordered.Length+"候補から選択 "+(i+1)+"番目");return ordered[i].Id;}
         log.AppendLine("ref参照先 "+line+"行: "+ordered.Length+"候補（選択なし・参照先なしで作成）");
         return null;
@@ -941,8 +942,8 @@ public static class SequenceBatch
             scenarios.Add(new[]{parts[0],Path.Combine(folder,parts[1]),Path.Combine(folder,parts[2])});
         }
         bool apply=app.Window.UI.ShowConfirmDialog("シナリオ "+scenarios.Count+"件。\n"
-            +"「はい」: 実験用のコピーのプロジェクトで、各シナリオの図を新しく作り、反映して照合します。途中でプロジェクトを自動保存します。\n"
-            +"「いいえ」: 前回の実行で作った図を、保存せずに再検証します（開き直した後に使います）。",title);
+            +"「OK」: 実験用のコピーのプロジェクトで、各シナリオの図を新しく作り、反映して照合します。途中でプロジェクトを自動保存します。\n"
+            +"「キャンセル」: 前回の実行で作った図を、保存せずに再検証します（開き直した後に使います）。",title);
         var rows=new List<string>();var detail=new StringBuilder();var created=new List<string>();
         var clock=System.Diagnostics.Stopwatch.StartNew();
         var previous=new Dictionary<string,string>();
@@ -1074,7 +1075,7 @@ public static class SequenceBatch
         }
         int passed=rows.Count(r=>r.Contains(" | 成功 | ") || r.Contains(" | 成功（2回目: 変化なし） | "));
         SequenceExperiment.Summary=(apply?"シナリオ一括検証（反映）":"シナリオ一括検証（再検証）")+": "+passed+"/"+scenarios.Count+"件成功 / "+(clock.ElapsedMilliseconds/1000)+"秒\n"
-            +string.Join("\n",rows)+(apply?"\n\nプロジェクトを閉じて開き直し、もう一度このボタンで「いいえ」（再検証）を実行してください。":"");
+            +string.Join("\n",rows)+(apply?"\n\nプロジェクトを閉じて開き直し、もう一度このボタンで「キャンセル」（再検証）を選んでください。":"");
         SequenceExperiment.Details=SequenceExperiment.Summary+"\f"+detail;
         app.Window.UI.ShowInformationDialog(SequenceExperiment.Summary,title);
     }

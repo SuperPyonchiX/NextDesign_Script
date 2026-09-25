@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.17";
+    public const string Title = "シーケンス生成実験 / 0.10.18";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1298,7 +1298,8 @@ public static class SequenceSyncRuntime
         var ordered=matches.OrderByDescending(shared).ThenBy(c=>c.Path,StringComparer.Ordinal).ToArray();
         for(int i=0;i<ordered.Length;i++)
             if(app.Window.UI.ShowConfirmDialog("ref「"+text+"」（入力 "+line+"行目）の参照先の候補が "+ordered.Length+"件あります。\n\n候補 "+(i+1)+"/"+ordered.Length+":\n"+ordered[i].Path
-                +"\n\nこの相互作用を参照先にしますか？\n（「いいえ」で次の候補。すべて「いいえ」なら参照先なしで作成します）",SequenceExperiment.Title))
+                +"\n\nこの相互作用を参照先にしますか？\nOK: この相互作用を参照先にします。
+キャンセル: 次の候補を表示します（最後の候補でキャンセルすると参照先なしで作成します）。",SequenceExperiment.Title))
             {log.AppendLine("ref参照先 "+line+"行: "+ordered.Length+"候補から選択 "+(i+1)+"番目");return ordered[i].Id;}
         log.AppendLine("ref参照先 "+line+"行: "+ordered.Length+"候補（選択なし・参照先なしで作成）");
         return null;
@@ -1997,8 +1998,8 @@ public static class SequenceBatch
             scenarios.Add(new[]{parts[0],Path.Combine(folder,parts[1]),Path.Combine(folder,parts[2])});
         }
         bool apply=app.Window.UI.ShowConfirmDialog("シナリオ "+scenarios.Count+"件。\n"
-            +"「はい」: 実験用のコピーのプロジェクトで、各シナリオの図を新しく作り、反映して照合します。途中でプロジェクトを自動保存します。\n"
-            +"「いいえ」: 前回の実行で作った図を、保存せずに再検証します（開き直した後に使います）。",title);
+            +"「OK」: 実験用のコピーのプロジェクトで、各シナリオの図を新しく作り、反映して照合します。途中でプロジェクトを自動保存します。\n"
+            +"「キャンセル」: 前回の実行で作った図を、保存せずに再検証します（開き直した後に使います）。",title);
         var rows=new List<string>();var detail=new StringBuilder();var created=new List<string>();
         var clock=System.Diagnostics.Stopwatch.StartNew();
         var previous=new Dictionary<string,string>();
@@ -2130,7 +2131,7 @@ public static class SequenceBatch
         }
         int passed=rows.Count(r=>r.Contains(" | 成功 | ") || r.Contains(" | 成功（2回目: 変化なし） | "));
         SequenceExperiment.Summary=(apply?"シナリオ一括検証（反映）":"シナリオ一括検証（再検証）")+": "+passed+"/"+scenarios.Count+"件成功 / "+(clock.ElapsedMilliseconds/1000)+"秒\n"
-            +string.Join("\n",rows)+(apply?"\n\nプロジェクトを閉じて開き直し、もう一度このボタンで「いいえ」（再検証）を実行してください。":"");
+            +string.Join("\n",rows)+(apply?"\n\nプロジェクトを閉じて開き直し、もう一度このボタンで「キャンセル」（再検証）を選んでください。":"");
         SequenceExperiment.Details=SequenceExperiment.Summary+"\f"+detail;
         app.Window.UI.ShowInformationDialog(SequenceExperiment.Summary,title);
     }
@@ -2227,7 +2228,9 @@ public static class SequenceMappedUpdate
                         return message!=null && ((message.Sender!=null && message.Sender.Id==candidate.Model.Id) || (message.Receiver!=null && message.Receiver.Id==candidate.Model.Id));
                     }).OrderBy(m=>m.SourceY).Take(4).Select(m=>m.Model.Name));
                     detail.AppendLine("Participant candidate id="+candidate.Model.Id+", name="+PumlBuild.Json(candidate.Model.Name)+", text="+PumlBuild.Json(candidate.Text));
-                    if(app.Window.UI.ShowConfirmDialog("参加者の対応先を選んでください。\nPlantUML: "+plan.Names[i]+"\n別名: "+plan.Aliases[i]+"\n図の表示: "+candidate.Text+"\nモデル名: "+candidate.Model.Name+"\n図内X位置: "+Number(candidate.LocationX)+"\n接続メッセージ例:\n"+context+"\nこの参加者に対応付けますか？「いいえ」で次の候補。全候補を断るとキャンセルします。",SequenceExperiment.Title))
+                    if(app.Window.UI.ShowConfirmDialog("参加者の対応先を選んでください。\nPlantUML: "+plan.Names[i]+"\n別名: "+plan.Aliases[i]+"\n図の表示: "+candidate.Text+"\nモデル名: "+candidate.Model.Name+"\n図内X位置: "+Number(candidate.LocationX)+"\n接続メッセージ例:\n"+context+"\nこの参加者に対応付けますか？
+OK: 対応付けます。
+キャンセル: 次の候補を表示します（全候補をキャンセルすると処理を中止します）。",SequenceExperiment.Title))
                     { chosen=candidate.Model.Id;break; }
                 }
                 if(chosen==null)throw new OperationCanceledException();
