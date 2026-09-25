@@ -440,6 +440,11 @@ public static class StructurePreparationTests
         var openedView=SequenceJson.Parse(openedPackage.ReconnectJson)["Editors"].Items.Single();
         Require(openedView["Messages"].Items.Single(sh=>sh["ModelId"].StringValue()==wire)["TargetY"].Raw=="120","the message on a new bar is not one step below");
         Require(openedView["ExecutionSpecifications"].Items.Single(sh=>sh["ModelId"].StringValue()=="fresh-bar")["Y"].Raw=="120","the new bar does not start at its message");
+        // A destroy message is written as a call: a call is its sample, and no literal is looked up.
+        opened.Elements.Single(e=>e.Id==wire).Attributes["sort"]="destroy";
+        SequenceStructurePreparation.SortLiterals.Clear();
+        var destroyPackage=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,openedPlan);
+        Require(destroyPackage.AddedMessages.Single().TemplateModelId==ids[6],"a destroy message did not take a call as its sample");
     }
     // A frame holding one operand pair, drawn below the sample message: a frame from 100
     // to 190, operands 30 and 70 below its top, and one message inside the first at 140.

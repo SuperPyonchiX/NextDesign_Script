@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.45";
+    public const string Title = "シーケンス生成実験 / 0.9.46";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -5335,7 +5335,9 @@ public sealed class SequenceStructurePreparation
             var walk=SequenceStructurePreflight.Flatten(plan.Expected);
             var earlier=walk.Take(System.Array.IndexOf(walk,id)).Where(after.ContainsKey).Select(e=>after[e])
                 .Where(e=>e.Kind=="message" && byId.ContainsKey(e.Id)).ToArray();
-            var sameSort=earlier.Where(e=>SequenceStructurePreflight.Attribute(e)==SequenceStructurePreflight.Attribute(wanted)).ToArray();
+            // A destroy message is written as a call; the destruction's relation marks it.
+            Func<SequenceElement,string> written=e=>{string v=SequenceStructurePreflight.Attribute(e);return v=="destroy"?"sync":v;};
+            var sameSort=earlier.Where(e=>written(e)==written(wanted)).ToArray();
             Require(earlier.Length>0,"見本にできる既存メッセージがありません。");
             string template=(sameSort.Length>0?sameSort[sameSort.Length-1]:earlier[earlier.Length-1]).Id;
             string sort=SequenceStructurePreflight.Attribute(wanted);
@@ -5365,7 +5367,7 @@ public sealed class SequenceStructurePreparation
             {
                 // No sample of this sort: write the profile's literal for it.
                 string literal;
-                Require(SortLiterals.TryGetValue(sort,out literal),"メッセージ種別 "+sort+" の値をプロファイルから決められません。");
+                Require(SortLiterals.TryGetValue(written(wanted),out literal),"メッセージ種別 "+written(wanted)+" の値をプロファイルから決められません。");
                 Require(entity["Fields"]!=null && entity["Fields"].Properties!=null,"メッセージの見本に種別の欄がありません。");
                 entity["Fields"].Properties["MessageSort"]=SequenceJson.Parse(SequencePayload.Q(literal));
             }
