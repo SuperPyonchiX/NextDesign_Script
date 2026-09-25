@@ -460,6 +460,10 @@ public static class SequenceSimulator
             var again=SequenceNotePolicy.Build(read,desired,newId);
             if(again.Changes.Count>0)
                 return "反映後の差分 "+again.Changes.Count+"件: "+string.Join(", ",again.Changes.Select(c=>c.Kind+" "+c.Action))
+                    +" / "+string.Join(" ; ",again.Changes.Where(c=>c.Kind=="execution").Select(c=>{
+                        var want=again.Expected.Elements.First(e=>e.Id==c.Id);var got=read.Elements.First(e=>e.Id==c.Id);
+                        Func<SequenceElement,string> show=e=>string.Join(" ",e.Links.OrderBy(p=>p.Key).Select(p=>p.Key+"="+string.Join(",",p.Value.Select(v=>{var x=read.Elements.FirstOrDefault(r=>r.Id==v);return x==null?v:x.Kind+":"+x.Text;}))));
+                        return "期待 "+show(want)+" / 実測 "+show(got);}))
                     +"\n"+SequenceAudit.Reasons(read,desired,again).Replace("\f","\n");
             return null;
         }

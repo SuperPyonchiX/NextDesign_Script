@@ -4,7 +4,7 @@
 実行区間の削除 | structure-trial-before.puml | structure-trial-after.puml
 接続変更と区間削除（複数） | structure-batch-before.puml | structure-batch-after.puml
 実行区間の非末尾削除 | structure-batch-before.puml | structure-nontail-after.puml
-実行区間の追加 | structure-batch-after.puml | structure-occupied-before.puml
+実行区間の追加 | gap-exec-add-before.puml | gap-exec-add-after.puml
 参加者の追加 | structure-batch-after.puml | structure-participant-after.puml
 参加者の削除 | structure-participant-after.puml | structure-batch-after.puml
 メッセージの削除 | structure-batch-after.puml | structure-message-after.puml

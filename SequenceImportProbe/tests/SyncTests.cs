@@ -21,7 +21,9 @@
         // Stating a different extent for a bar is not an omission, and stays a difference.
         var mixed=Doc("activate A\nA -> B : m1\nactivate B\nB --> A : m2\ndeactivate B\ndeactivate A");Ids(mixed);
         var shortened=Plan(mixed,Doc("A -> B : m1\nactivate B\ndeactivate B\nB --> A : m2"));
-        Require(shortened.Changes.Count(c=>c.Kind=="execution" && c.Action=="update")==1,"shortened bar extent was swallowed by inheritance");
+        // A reply answers the call the bar received and leaves from it, even when the input
+        // deactivates the bar first, so this states the same extent as the diagram.
+        Require(shortened.IsEmpty,"a reply after its bar's deactivate did not leave from that bar: "+shortened.ToJson());
         Require(!shortened.Changes.Any(c=>c.Kind=="execution" && (c.Action=="add" || c.Action=="delete")),"shortened bar extent recreated bars");
         var inherited=Plan(model,Doc("A -> B : call\nB --> A : done"));
         Require(inherited.InheritedPorts.Count>0 && inherited.InheritRefusals.Count==0,"inheritance was not reported");
@@ -33,7 +35,9 @@
         // The confirmed way to delete a bar: leave the enclosing activate open.
         var nested=Doc("activate A\nactivate B\nA -> B : call\nactivate B\ndeactivate B\nB --> A : done\ndeactivate B\ndeactivate A");Ids(nested);
         var dropped=Plan(nested,Doc("activate A\nactivate B\nA -> B : call\nB --> A : done\ndeactivate B\ndeactivate A"));
-        Require(dropped.Changes.Count(c=>c.Kind=="execution" && c.Action=="delete")==1,"inner bar deletion lost");
+        // done() answers the call the inner bar received, so that bar holds both messages and
+        // is the one the input's bar matches; the outer bar holds nothing and is carried.
+        Require(dropped.Changes.Count(c=>c.Kind=="execution" && c.Action=="delete")==0 && dropped.CarriedExecutions.Count==1,"inner bar deletion lost: "+dropped.ToJson());
         Require(!dropped.Changes.Any(c=>c.Kind=="execution" && c.Action=="add"),"inner bar deletion recreated bars");
         var idle=Doc("activate A\nA -> B : call\nactivate B\ndeactivate B\nactivate B\ndeactivate B\ndeactivate A");Ids(idle);
         Require(Plan(idle,Doc("activate A\nA -> B : call\nactivate B\ndeactivate B\ndeactivate A"))
@@ -317,7 +321,9 @@
         var portNew=Doc(portBody.Replace("hidden-label\nactivate B\ndeactivate B","hidden-label"));
         portOld.Elements.Single(e=>e.Kind=="ref").Attributes["reference"]="secret-target";
         string portReport=SequenceAudit.Reasons(portOld,portNew,Plan(portOld,portNew));
-        Require(portReport.Contains("receiveExecution") && portReport.Contains("入力=未解決"),"port and reference diagnostics missing >>>"+portReport.Replace("","|"));
+        // The reply answers the call the inner bar received, so dropping that bar shows as where
+        // the remaining bar starts rather than as a receiver change.
+        Require(portReport.Contains("実行区間") && portReport.Contains("入力=未解決"),"port and reference diagnostics missing >>>"+portReport.Replace("","|"));
         Require(!portReport.Contains("secret-target") && !portReport.Contains("hidden-label") && !portReport.Contains("hidden-ref"),"residual details disclosed source data");
         var spaceRefs=new[]{new SequenceReferenceCandidate{Id="wide",Name="Task　Start",Path="Area　One::Task　Start"},new SequenceReferenceCandidate{Id="other",Name="Task  Start",Path="Else::Task  Start"}};
         Require(SequenceReferenceResolver.Find("Task Start",spaceRefs).Length==2,"normalized ambiguity hidden");
