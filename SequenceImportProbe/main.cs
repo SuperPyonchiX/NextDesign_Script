@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.15";
+    public const string Title = "シーケンス生成実験 / 0.10.16";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1030,7 +1030,18 @@ public static class PumlRuntime
             else if(e.Kind=="ref")
             {
                 var shape=d.InteractionUses.SingleOrDefault(v=>v.Model.Id==e.Id);
-                Require(shape!=null && Normalize(shape.Text)==Normalize(e.Text),"ref本文");
+                // A ref linked to an interaction may show that interaction's name instead of its own
+                // text; either is the ref the input asked for. Anything else says what was read.
+                var use=model as IInteractionUse;var target=use==null?null:use.RefersTo;
+                var shown=new List<string>{Normalize(e.Text)};
+                if(target!=null)
+                {
+                    shown.Add(Normalize(target.Name));
+                    var parts=new List<string>();for(IModel at=target;at!=null && parts.Count<64;at=at.Owner)parts.Insert(0,at.Name);
+                    shown.Add(Normalize(string.Join("::",parts)));
+                }
+                Require(shape!=null && shown.Contains(Normalize(shape.Text)),"ref本文（入力="+e.Text+" / 表示="+(shape==null?"図形なし":shape.Text)
+                    +" / モデル名="+model.Name+" / 参照先="+(target==null?"なし":target.Name)+"）");
             }
             else if(e.Kind=="note")
             {
