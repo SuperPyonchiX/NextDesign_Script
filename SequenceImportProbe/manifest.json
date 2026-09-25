@@ -40,6 +40,12 @@
                   "type": "Button",
                   "label": "差分を検証",
                   "command": "SequenceImportProbe.SyncPreview"
+                },
+                {
+                  "id": "SequenceImportProbe.SweepButton",
+                  "type": "Button",
+                  "label": "全図チェック",
+                  "command": "SequenceImportProbe.Sweep"
                 }
               ]
             },
@@ -85,6 +91,10 @@
       {
         "id": "SequenceImportProbe.Batch",
         "execFunc": "RunScenarioBatch"
+      },
+      {
+        "id": "SequenceImportProbe.Sweep",
+        "execFunc": "CheckAllSequences"
       }
     ]
   }

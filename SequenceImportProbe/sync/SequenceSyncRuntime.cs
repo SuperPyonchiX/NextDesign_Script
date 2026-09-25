@@ -963,6 +963,85 @@ public static class SequenceBatch
         SequenceExperiment.Details=SequenceExperiment.Summary+"\f"+detail;
         app.Window.UI.ShowInformationDialog(SequenceExperiment.Summary.Length>3000?SequenceExperiment.Summary.Substring(0,3000)+"\n…（続きは診断表示）":SequenceExperiment.Summary,title);
     }
+    // Every sequence diagram of the project: exported the way PlantUmlTool exports it, read back
+    // and compared with the diagram it came from. Nothing is written, applied or saved, so it
+    // runs on a real project. A diagram that differs or stops is what the update would get wrong.
+    public static void Sweep(IApplication app,IContext context)
+    {
+        string title=SequenceExperiment.Title;
+        var project=app.Workspace.CurrentProject;
+        if(project==null){app.Window.UI.ShowInformationDialog("プロジェクトを開いてから実行してください。",title);return;}
+        // Diagrams never opened have no shapes to read unless inactive editors are loaded.
+        context.ContextOption.EditorAccessMode=EditorAccessMode.GetInactiveValue;
+        var diagrams=new List<ISequenceDiagram>();var seen=new HashSet<string>(StringComparer.Ordinal);
+        foreach(var model in new[]{(IModel)project}.Concat(((IModel)project).GetAllChildren().Cast<IModel>()))
+        {
+            if(model==null || model.IsDeleted || model.IsProxy)continue;
+            foreach(var editor in model.GetEditors())
+            {
+                var d=editor as ISequenceDiagram;
+                if(d==null || editor.EditorType!="SequenceDiagram" || !seen.Add(d.Id))continue;
+                diagrams.Add(d);
+            }
+        }
+        if(diagrams.Count==0){app.Window.UI.ShowInformationDialog("シーケンス図がありません。",title);return;}
+        if(!app.Window.UI.ShowConfirmDialog("プロジェクトのシーケンス図 "+diagrams.Count+" 枚を、PlantUML 出力と同じ変換で書き出して元の図と比べます。\n"
+            +"図・モデル・プロジェクトには一切書き込みません（保存もしません）。\n\nOK: 実行 / キャンセル: 中止",title))return;
+        string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.SequenceSync","sweep",DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+        Directory.CreateDirectory(directory);
+        var rows=new List<string>();var detail=new StringBuilder();var clock=System.Diagnostics.Stopwatch.StartNew();
+        int passed=0,index=0;var tally=new Dictionary<string,int>();
+        try
+        {
+            SequenceExperiment.BatchMode=true;SequenceSyncRuntime.Batch=true;
+            foreach(var d in diagrams)
+            {
+                index++;
+                var owner=d.Model;
+                string label=owner==null?d.Id:(string.IsNullOrEmpty(owner.ModelPath)?owner.Name:owner.ModelPath);
+                string result,kind;
+                try
+                {
+                    var interaction=owner as IInteraction;
+                    if(!d.Lifelines.Any()){result="参加者なし（対象外）";kind="対象外";}
+                    else if(interaction!=null && interaction.Lifelines.Count()!=d.Lifelines.Count()){result="図形を読めない（一度開いてから再実行）";kind="図を読めない";}
+                    else
+                    {
+                        string uml=new SequencePlantUmlExporter(d,new PlantUmlOptions()).Export();
+                        string file=Path.Combine(directory,index.ToString("D4")+".puml");
+                        File.WriteAllText(file,uml,new UTF8Encoding(false));
+                        SequenceSyncRuntime.BatchDiagram=d;SequenceSyncRuntime.BatchInput=file;
+                        SequenceSyncRuntime.Preview(app);
+                        int changes=SequenceSyncRuntime.LastChanges;
+                        if(changes==0){result="差分0件";kind="一致";passed++;}
+                        else if(changes>0)
+                        {
+                            result="差分 "+changes+"件";kind="差分あり";
+                            detail.AppendLine("■ "+index+" "+label+"（"+Path.GetFileName(file)+"）\n"+string.Join("\n",SequenceExperiment.Details.Split('\f').Where(page=>!page.StartsWith("接続の実測",StringComparison.Ordinal) && !page.StartsWith("実行区間とメッセージの縦位置",StringComparison.Ordinal)))+"\n");
+                        }
+                        else
+                        {
+                            result="読取りで停止: "+Line(SequenceExperiment.Summary,200);kind="停止";
+                            detail.AppendLine("■ "+index+" "+label+"（"+Path.GetFileName(file)+"）\n"+SequenceExperiment.Details+"\n");
+                        }
+                    }
+                }
+                catch(Exception ex){result="停止: "+Line(ex.Message,200);kind="停止";detail.AppendLine("■ "+index+" "+label+"\n"+ex+"\n");}
+                int n;tally.TryGetValue(kind,out n);tally[kind]=n+1;
+                rows.Add(index+"\t"+label+"\t"+result);
+            }
+        }
+        finally {SequenceExperiment.BatchMode=false;SequenceSyncRuntime.Batch=false;SequenceSyncRuntime.BatchDiagram=null;SequenceSyncRuntime.BatchInput=null;}
+        File.WriteAllText(Path.Combine(directory,"result.tsv"),string.Join("\n",rows)+"\n",new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(directory,"detail.txt"),detail.ToString(),new UTF8Encoding(false));
+        string summary="全図チェック（書込みなし）: "+diagrams.Count+"枚 / "+(clock.ElapsedMilliseconds/1000)+"秒\n"
+            +string.Join(" / ",tally.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>p.Key+" "+p.Value))+"\n"
+            +"結果: "+directory+"\n\n"
+            +string.Join("\n",rows.Where(r=>!r.EndsWith("\t差分0件",StringComparison.Ordinal)).Take(40).Select(r=>r.Replace('\t',' ')));
+        SequenceExperiment.Summary=summary;
+        SequenceExperiment.Details=summary+"\f"+detail;
+        app.Window.UI.ShowInformationDialog(summary.Length>3000?summary.Substring(0,3000)+"\n…（続きは結果フォルダ）":summary,title);
+    }
     public static void Run(IApplication app)
     {
         string title=SequenceExperiment.Title;
