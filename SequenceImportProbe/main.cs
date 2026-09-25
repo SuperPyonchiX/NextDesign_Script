@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.22";
+    public const string Title = "シーケンス生成実験 / 0.10.23";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1652,6 +1652,7 @@ public static class SequenceStructureTrial
     {
         var state=new SequenceTrialState();
         var tree=SequenceMappedUpdate.Tree(root).ToArray();
+        var inTree=new HashSet<string>(tree.Select(m=>m.Id));
         Action<IModel> record=m=>state.Models[m.Id]=PumlBuild.Json(new[]{m.Metaclass.Id,m.Name,m.Owner==null?"":m.Owner.Id,m.IsDeleted.ToString()});
         foreach(var model in tree)
         {
@@ -1660,7 +1661,9 @@ public static class SequenceStructureTrial
             {
                 state.Relations[r.Id]=new[]{r.Source.Id,r.Target.Id,r.SourceIndex.ToString(System.Globalization.CultureInfo.InvariantCulture),r.TargetIndex.ToString(System.Globalization.CultureInfo.InvariantCulture)};
                 state.RelationFields[r.Id]=PumlBuild.Json(new[]{FieldId(r.SourceField),FieldId(r.TargetField)});
-                record(r.Source);record(r.Target);
+                // Only models of this diagram: an operation a message refers to is not part of it,
+                // and goes out of reach once the message is deleted.
+                if(inTree.Contains(r.Source.Id))record(r.Source);if(inTree.Contains(r.Target.Id))record(r.Target);
             }
         }
         foreach(var m in root.Messages)
@@ -5266,11 +5269,15 @@ public sealed class SequenceStructurePreparation
         foreach(string id in leaving)
         {
             Require(byId.ContainsKey(id),"削除対象が退避データにありません: "+id);
-            // What a model is tied to inside this diagram goes with it. A tie to anything
-            // outside, such as a trace link from elsewhere in the project, stops the update.
+            // What a model is tied to inside this diagram goes with it. So does a reference it
+            // holds itself, such as the operation a message calls or the class a lane stands for
+            // (its type): deleting it removes that link only, never what it points at. A tie
+            // from anything outside, such as a trace link from elsewhere in the project, would
+            // be lost silently, so that stops the update.
             foreach(var relation in relations.Where(r=>V(r,"SourceId")==id || V(r,"TargetId")==id))
             {
                 string other=V(relation,"SourceId")==id?V(relation,"TargetId"):V(relation,"SourceId");
+                if(V(relation,"SourceId")==id && V(relation,"RelationType")!="Embed")continue;
                 Require(inside.Contains(other),"削除する要素が図の外のモデルと関連しています。 関連="+V(relation,"MetamodelId")
                     +" 相手の型="+(byId.ContainsKey(other)?V(byId[other],"EntityType"):"不明（退避範囲外）"));
             }

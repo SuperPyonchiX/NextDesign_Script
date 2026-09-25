@@ -1551,11 +1551,15 @@ public sealed class SequenceStructurePreparation
         foreach(string id in leaving)
         {
             Require(byId.ContainsKey(id),"削除対象が退避データにありません: "+id);
-            // What a model is tied to inside this diagram goes with it. A tie to anything
-            // outside, such as a trace link from elsewhere in the project, stops the update.
+            // What a model is tied to inside this diagram goes with it. So does a reference it
+            // holds itself, such as the operation a message calls or the class a lane stands for
+            // (its type): deleting it removes that link only, never what it points at. A tie
+            // from anything outside, such as a trace link from elsewhere in the project, would
+            // be lost silently, so that stops the update.
             foreach(var relation in relations.Where(r=>V(r,"SourceId")==id || V(r,"TargetId")==id))
             {
                 string other=V(relation,"SourceId")==id?V(relation,"TargetId"):V(relation,"SourceId");
+                if(V(relation,"SourceId")==id && V(relation,"RelationType")!="Embed")continue;
                 Require(inside.Contains(other),"削除する要素が図の外のモデルと関連しています。 関連="+V(relation,"MetamodelId")
                     +" 相手の型="+(byId.ContainsKey(other)?V(byId[other],"EntityType"):"不明（退避範囲外）"));
             }

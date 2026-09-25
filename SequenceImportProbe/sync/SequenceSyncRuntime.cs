@@ -596,6 +596,7 @@ public static class SequenceStructureTrial
     {
         var state=new SequenceTrialState();
         var tree=SequenceMappedUpdate.Tree(root).ToArray();
+        var inTree=new HashSet<string>(tree.Select(m=>m.Id));
         Action<IModel> record=m=>state.Models[m.Id]=PumlBuild.Json(new[]{m.Metaclass.Id,m.Name,m.Owner==null?"":m.Owner.Id,m.IsDeleted.ToString()});
         foreach(var model in tree)
         {
@@ -604,7 +605,9 @@ public static class SequenceStructureTrial
             {
                 state.Relations[r.Id]=new[]{r.Source.Id,r.Target.Id,r.SourceIndex.ToString(System.Globalization.CultureInfo.InvariantCulture),r.TargetIndex.ToString(System.Globalization.CultureInfo.InvariantCulture)};
                 state.RelationFields[r.Id]=PumlBuild.Json(new[]{FieldId(r.SourceField),FieldId(r.TargetField)});
-                record(r.Source);record(r.Target);
+                // Only models of this diagram: an operation a message refers to is not part of it,
+                // and goes out of reach once the message is deleted.
+                if(inTree.Contains(r.Source.Id))record(r.Source);if(inTree.Contains(r.Target.Id))record(r.Target);
             }
         }
         foreach(var m in root.Messages)

@@ -315,6 +315,14 @@
         Require(gate.Candidate && gate.DeleteMessages.SequenceEqual(new[]{ids[6]}),"message deletion was not a candidate");
         Require(gate.CanCommit(),"commit modes accepted the wrong scope for a message");
 
+        // A message drawn by hand refers to the operation it calls, outside the diagram. That
+        // reference is the message's own and goes with it; a trace link to it from outside stops.
+        var typed=Clone(raw);
+        typed["Relations"].Items.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id","type-link","MetamodelId","System.Design.___InstanceTypeRelationship","RelationType","Ref","SourceId",ids[6],"TargetId","operation-outside"))));
+        SequenceStructurePreparation.Build(typed.ToJsonString(),editorId,current,plan);
+        var traced=Clone(raw);
+        traced["Relations"].Items.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id","trace-link","MetamodelId","trace","RelationType","Ref","SourceId","requirement-outside","TargetId",ids[6]))));
+        Reject(()=>SequenceStructurePreparation.Build(traced.ToJsonString(),editorId,current,plan),"a trace link from outside to a deleted message was dropped silently");
         var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan);
         Require(package.DeleteMessageIds.SequenceEqual(new[]{ids[6]}),"message was not prepared for deletion");
         Require(SequenceJson.Parse(package.ReconnectJson)["Relations"].Items.Count==0,"an unrelated patch was built");
