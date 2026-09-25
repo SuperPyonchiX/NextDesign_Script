@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.14";
+    public const string Title = "シーケンス生成実験 / 0.10.15";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -142,6 +142,7 @@ public static class SequenceExperiment
             {
                 stage = "PlantUML生成データの構築";
                 var profile = PumlRuntime.Profile(diagram, sources, plan, project);
+                if(profile.Relations.ContainsKey("RefersTo"))SequenceSyncRuntime.ResolveReferences(project,plan.All().Where(n=>n.Kind=="ref"),profile.References,detail);
                 // Metaclass ids are fixed per profile, so one run is enough to pin them.
                 detail.AppendLine("Resolved types (label / id / full name):");
                 foreach (string row in profile.Resolved) detail.AppendLine("  " + row);
@@ -941,6 +942,9 @@ public static class PumlRuntime
                     :declaredUse,"相互作用の利用");
             Learn(diagram,"相互作用の利用",c); p.Resolved.Add("相互作用の利用\t"+c.Id+"\t"+c.FullName);
             p.Types["InteractionUse"]=c.Id; classes.Add(c);
+            // Double-clicking a ref opens what it refers to, through this relation.
+            var refers=Field(c,"RefersTo");
+            if(refers!=null && refers.RelationshipClass!=null)p.Relations["RefersTo"]=refers.RelationshipClass.Id;
         }
         if(plan.All().Any(n=>n.Kind=="note"))
         {
@@ -1250,6 +1254,21 @@ public static class SequenceSyncRuntime
         var parts=new List<string>();var visited=new HashSet<string>();
         while(model!=null) {if(!visited.Add(model.Id))throw new InvalidOperationException("S210: モデルの所有関係が循環しています。");parts.Add(model.Name);model=model.Owner;}
         parts.Reverse();return string.Join("::",parts);
+    }
+    // What each ref of a new diagram refers to, the way the update resolves it: an interaction
+    // of the project named by the ref's text, when exactly one is. Keyed by the input line.
+    public static void ResolveReferences(IProject project,IEnumerable<PumlNode> refs,Dictionary<int,string> into,StringBuilder log)
+    {
+        var wanted=refs.ToArray();
+        if(wanted.Length==0)return;
+        var interactions=SequenceMappedUpdate.Tree(project.DesignModel).OfType<IInteraction>()
+            .Select(m=>new SequenceReferenceCandidate{Id=m.Id,Name=m.Name,Path=QualifiedName(m)}).ToArray();
+        foreach(var n in wanted)
+        {
+            var matches=SequenceReferenceResolver.Find(n.Text,interactions);
+            if(matches.Length==1)into[n.Line]=matches[0].Id;
+            log.AppendLine("ref参照先 "+n.Line+"行: "+(matches.Length==1?"解決":matches.Length+"候補（参照先なしで作成）"));
+        }
     }
     const string UnsavedAdvice="S220: 退避データを取得できません。プロジェクトを保存してから実行してください。"
         +"この操作は自動保存しません。";
@@ -2696,7 +2715,9 @@ public class PumlPlan
         }
         if (fragments.Count!=0) throw Error(lines.Length,"endが不足しています。");
         if (!started || !ended) throw Error(1,"@startumlと@endumlが必要です。");
-        if (p.Aliases.Count<1 || p.All().Count()>500) throw Error(1,"参加者は1本以上、要素は500件以下にしてください。");
+        if (p.Aliases.Count<1) throw Error(1,"参加者を1本以上書いてください。");
+        // activate / deactivate are not elements of their own; the reading allows 2000 elements.
+        if (p.All().Count(n=>n.Kind!="activate" && n.Kind!="deactivate")>2000) throw Error(1,"要素は2000件以下にしてください。");
         foreach (var n in p.All()) foreach (var target in n.Targets) if (!p.Aliases.Contains(target)) throw Error(n.Line,"note/refの参加者が未定義です。");
         // Mapping reads an existing diagram; it does not build execution intervals.
         // Preserve every activity node for structural comparison instead of applying
@@ -2779,6 +2800,8 @@ public class PumlProfile
     public Dictionary<string,string> Relations = new Dictionary<string,string>();
     public Dictionary<string,string> Operators = new Dictionary<string,string>();
     public string NoteField = "Body", NoteStorage = "String", Sync="Sync", Async="Async", Reply="Reply", Destroy=null;
+    // The interaction each ref refers to, by its input line; a ref without one is drawn unlinked.
+    public Dictionary<int,string> References = new Dictionary<int,string>();
     // Label, id and full name of every concrete type this run settled on.
     public List<string> Resolved = new List<string>();
 }
@@ -2996,6 +3019,8 @@ public class PumlBuild
                 string id=Entity("InteractionUse",n.Text); Owned("InteractionUses",id);
                 foreach(string t in n.Targets)Link("CrossingFragmentCoveredLifeline",id,lifelines[t]);
                 if(operand!=null)Link("NestedInteractionFragment",operand,id);
+                string target;
+                if(profile.Relations.ContainsKey("RefersTo") && profile.References.TryGetValue(n.Line,out target))Link("RefersTo",id,target);
                 Shape("InteractionUses",id,"X",left-55,"Y",y,"Width",Math.Max(150,right-left+110),"Height",Math.Max(48,16+20*n.Text.Split('\n').Length));
                 payload.Expected.Add(new PumlExpected{Id=id,Kind="ref",Text=n.Text});
             }

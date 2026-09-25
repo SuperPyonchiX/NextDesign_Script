@@ -20,6 +20,35 @@
         foreach(string type in new[]{"Interaction","Frame","Lifeline","ExecutionSpecification","Message","CombinedFragment","InteractionOperand","InteractionUse","InteractionNote","MessageEnd","Destruction"})profile.Types[type]="fake-"+type;
         foreach(string key in new[]{"Frame","Lifelines","ExecutionSpecifications","Messages","OwnedExecutionSpecification","SendMessage","ReceiveMessage","Fragments","Operands","CrossingFragmentCoveredLifeline","OperandTargetMessage","NestedInteractionFragment","InteractionUses","Notes","MessageEnds","Destructions","DestructionTargetLifeline","ReplyMessage","DestroyMessage"})profile.Relations[key]=key;
         foreach(string op in new[]{"alt","opt","loop","par","break","critical","group"})profile.Operators[op]=op.ToUpperInvariant();
+        // A large diagram (well over the old 500-line limit) imports and reads back in reasonable time.
+        {
+            var big=new StringBuilder("@startuml\nparticipant A\nparticipant B\nparticipant C\nactivate A\n");
+            for(int i=0;i<200;i++)
+            {
+                big.Append("A -> B : call"+i+"()\nactivate B\n");
+                if(i%10==0)big.Append("opt case"+i+"\nB -> C : ask"+i+"()\nactivate C\nC --> B : told"+i+"()\ndeactivate C\nend\n");
+                big.Append("B --> A : done"+i+"()\ndeactivate B\n");
+            }
+            big.Append("deactivate A\n@enduml\n");
+            var clock=System.Diagnostics.Stopwatch.StartNew();
+            var bigPayload=PumlBuild.Build(PumlPlan.Parse(big.ToString()),profile,"fake-view","13.0");
+            var bigDoc=SequenceDocument.Parse(big.ToString());
+            if(SyncPlan.Build(bigDoc,SequenceDocument.Parse(big.ToString()),()=>Guid.NewGuid().ToString()).Changes.Count!=0)throw new Exception("a large diagram does not read as itself");
+            if(clock.Elapsed.TotalSeconds>20)throw new Exception("a large diagram took "+clock.Elapsed.TotalSeconds+"s");
+            Console.WriteLine("Large diagram: "+bigDoc.Elements.Count+" elements in "+clock.Elapsed.TotalSeconds.ToString("0.0")+"s");
+        }
+        // A ref whose target the runtime resolved links to it, so double-clicking it opens it.
+        {
+            var linked=new PumlProfile();
+            foreach(var pair in profile.Types)linked.Types[pair.Key]=pair.Value;
+            foreach(var pair in profile.Relations)linked.Relations[pair.Key]=pair.Value;
+            linked.Relations["RefersTo"]="RefersTo";
+            var refPlan=PumlPlan.Parse("@startuml\nparticipant A\nparticipant B\nref over A, B : Handshake\nref over A, B : Unknown\n@enduml");
+            linked.References[4]="existing-interaction";
+            var built=SequenceJson.Parse(PumlBuild.Build(refPlan,linked,"fake-view","13.0").Json);
+            var links=built["Relations"].Items.Where(r=>r["MetamodelId"].StringValue()=="RefersTo").ToArray();
+            if(links.Length!=1 || links[0]["TargetId"].StringValue()!="existing-interaction")throw new Exception("a resolved ref was not linked to its target");
+        }
         // gap-empty stands for a diagram with nothing on it, which only the sync can start from.
         foreach(var file in Directory.GetFiles(samples,"*.puml").Where(f=>!Path.GetFileName(f).StartsWith("gap-empty")))
         {

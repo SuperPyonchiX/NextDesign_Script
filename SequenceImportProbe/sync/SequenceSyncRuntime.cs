@@ -210,6 +210,21 @@ public static class SequenceSyncRuntime
         while(model!=null) {if(!visited.Add(model.Id))throw new InvalidOperationException("S210: モデルの所有関係が循環しています。");parts.Add(model.Name);model=model.Owner;}
         parts.Reverse();return string.Join("::",parts);
     }
+    // What each ref of a new diagram refers to, the way the update resolves it: an interaction
+    // of the project named by the ref's text, when exactly one is. Keyed by the input line.
+    public static void ResolveReferences(IProject project,IEnumerable<PumlNode> refs,Dictionary<int,string> into,StringBuilder log)
+    {
+        var wanted=refs.ToArray();
+        if(wanted.Length==0)return;
+        var interactions=SequenceMappedUpdate.Tree(project.DesignModel).OfType<IInteraction>()
+            .Select(m=>new SequenceReferenceCandidate{Id=m.Id,Name=m.Name,Path=QualifiedName(m)}).ToArray();
+        foreach(var n in wanted)
+        {
+            var matches=SequenceReferenceResolver.Find(n.Text,interactions);
+            if(matches.Length==1)into[n.Line]=matches[0].Id;
+            log.AppendLine("ref参照先 "+n.Line+"行: "+(matches.Length==1?"解決":matches.Length+"候補（参照先なしで作成）"));
+        }
+    }
     const string UnsavedAdvice="S220: 退避データを取得できません。プロジェクトを保存してから実行してください。"
         +"この操作は自動保存しません。";
     // What each message and bar is tied to, as the product holds it: the port shapes, every
