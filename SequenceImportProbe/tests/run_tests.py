@@ -38,8 +38,9 @@ public static class PayloadTest {
    var trialAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-trial-after.puml")));
    var trialPlan=SyncPlan.Build(trialBefore,trialAfter,()=>Guid.NewGuid().ToString());
    var trialGate=SequenceStructurePreflight.Check(trialBefore,trialPlan);
-   if(!trialGate.Candidate || trialPlan.Changes.Count!=1 || trialGate.DeleteExecutions.Count!=1 || trialGate.ReconnectMessages.Count!=0)
-       throw new Exception("trial sample is not exactly one execution deletion");
+   // A bar always holds a message, so deleting one moves that message to the bar around it.
+   if(!trialGate.Candidate || trialGate.DeleteExecutions.Count!=1 || trialPlan.Changes.Any(c=>c.Kind=="execution" && c.Action=="add"))
+       throw new Exception("trial sample is not one execution deletion: "+trialPlan.ToJson());
 
    var bareModel=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"roundtrip-probe.puml")));
    var bareInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"omitted-roundtrip.puml")));

@@ -185,6 +185,24 @@ public sealed class SequenceDocument
             }
         };
         visit(parsed.Nodes,"root");
+        // A bar no message uses has nothing to show in Next Design, which fails laying one out;
+        // the generator leaves it out, and so does the reading. What it held nests one level up.
+        {
+            var used=new HashSet<string>(result.Elements.Where(e=>e.Kind=="message")
+                .SelectMany(e=>new[]{"sendExecution","receiveExecution"}.Where(e.Links.ContainsKey).SelectMany(r=>e.Links[r])));
+            var empty=result.Elements.Where(e=>e.Kind=="execution" && !used.Contains(e.Id)).ToDictionary(e=>e.Id);
+            foreach(var e in result.Elements.Where(e=>e.Kind=="execution" && !empty.ContainsKey(e.Id)))
+            {
+                string[] outer;
+                while(e.Links.TryGetValue("outer",out outer) && outer.Length==1 && empty.ContainsKey(outer[0]))
+                {
+                    string[] up;
+                    if(empty[outer[0]].Links.TryGetValue("outer",out up) && up.Length==1)e.Links["outer"]=up.ToArray();
+                    else e.Links.Remove("outer");
+                }
+            }
+            result.Elements.RemoveAll(e=>empty.ContainsKey(e.Id));
+        }
         foreach(var e in result.Elements.Where(e=>e.Kind=="execution"))
         {
             int start=int.Parse(e.Attributes["start"],System.Globalization.CultureInfo.InvariantCulture);

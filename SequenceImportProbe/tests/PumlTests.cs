@@ -35,6 +35,10 @@
                 if(replacement.Ids.Intersect(again.Ids).Count()!=2)throw new Exception("Replacement reused child IDs");
             }
             File.WriteAllText(Path.Combine(directory,Path.GetFileNameWithoutExtension(file)+".json"),payload.Json);
+            // Next Design fails laying out a bar no message uses.
+            foreach(var bar in payload.Expected.Where(e=>e.Kind=="execution"))
+                if(!payload.Expected.Any(e=>e.SendPort==bar.Id || e.ReceivePort==bar.Id))
+                    throw new Exception(Path.GetFileName(file)+": a bar holds no message");
             // Next Design refuses every edit to a diagram whose bar goes on after a reply leaves it.
             foreach(var reply in payload.Expected.Where(e=>e.Kind=="reply" && e.SendPort!=null))
             {

@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.8";
+    public const string Title = "シーケンス生成実験 / 0.10.9";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -2980,6 +2980,27 @@ public class PumlBuild
         // A bar is tied to the reply that closes it: the last message on that bar, when it is a
         // reply leaving it. Tied to a reply with more messages on the bar after it, the product
         // ends the bar there when it next lays the diagram out, and refuses every edit.
+        // A bar no message uses has nothing to show, and Next Design fails laying one out
+        // (FrameLayout.PlaceInducedExecutionSpecifications takes the first message of each bar).
+        // Such bars go; the bars they held are drawn at their own depth again.
+        var used=new HashSet<string>(b.sent.SelectMany(m=>new[]{m[1],m[2]}).Where(x=>x!=null));
+        foreach(string bar in b.executions.Keys.Where(k=>!used.Contains(k)).ToList())
+        {
+            b.entities.RemoveAll(e=>(string)((Dictionary<string,object>)e)["Id"]==bar);
+            b.relations.RemoveAll(r=>(string)((Dictionary<string,object>)r)["SourceId"]==bar || (string)((Dictionary<string,object>)r)["TargetId"]==bar);
+            b.shapes["ExecutionSpecifications"].Remove(b.executions[bar]);
+            b.executions.Remove(bar);b.executionAliases.Remove(bar);
+        }
+        foreach(var group in b.relations.Cast<Dictionary<string,object>>().GroupBy(r=>(string)r["MetamodelId"]+"|"+(string)r["SourceId"]))
+        {int order=0;foreach(var r in group)r["SourceIndex"]=order++;}
+        var opened=b.executions.Keys.ToList();
+        foreach(var pair in b.executions)
+        {
+            string lane=b.executionAliases[pair.Key];int top=(int)pair.Value["Y"],bottom=top+(int)pair.Value["Length"];
+            int depth=b.executions.Count(o=>o.Key!=pair.Key && b.executionAliases[o.Key]==lane && (int)o.Value["Y"]<=top && (int)o.Value["Y"]+(int)o.Value["Length"]>=bottom
+                && ((int)o.Value["Y"]<top || (int)o.Value["Y"]+(int)o.Value["Length"]>bottom || opened.IndexOf(o.Key)<opened.IndexOf(pair.Key)));
+            pair.Value["X"]=b.x[lane]+8*depth;
+        }
         if(profile.Relations.ContainsKey("ReplyMessage"))
             foreach(string bar in b.executions.Keys)
             {
@@ -3652,6 +3673,24 @@ public sealed class SequenceDocument
             }
         };
         visit(parsed.Nodes,"root");
+        // A bar no message uses has nothing to show in Next Design, which fails laying one out;
+        // the generator leaves it out, and so does the reading. What it held nests one level up.
+        {
+            var used=new HashSet<string>(result.Elements.Where(e=>e.Kind=="message")
+                .SelectMany(e=>new[]{"sendExecution","receiveExecution"}.Where(e.Links.ContainsKey).SelectMany(r=>e.Links[r])));
+            var empty=result.Elements.Where(e=>e.Kind=="execution" && !used.Contains(e.Id)).ToDictionary(e=>e.Id);
+            foreach(var e in result.Elements.Where(e=>e.Kind=="execution" && !empty.ContainsKey(e.Id)))
+            {
+                string[] outer;
+                while(e.Links.TryGetValue("outer",out outer) && outer.Length==1 && empty.ContainsKey(outer[0]))
+                {
+                    string[] up;
+                    if(empty[outer[0]].Links.TryGetValue("outer",out up) && up.Length==1)e.Links["outer"]=up.ToArray();
+                    else e.Links.Remove("outer");
+                }
+            }
+            result.Elements.RemoveAll(e=>empty.ContainsKey(e.Id));
+        }
         foreach(var e in result.Elements.Where(e=>e.Kind=="execution"))
         {
             int start=int.Parse(e.Attributes["start"],System.Globalization.CultureInfo.InvariantCulture);

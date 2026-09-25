@@ -4,6 +4,7 @@ participant B
 activate A
 A -> B : work()
 activate B
+B -> B : step()
 B --> A : done()
 deactivate B
 deactivate A

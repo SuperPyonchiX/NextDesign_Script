@@ -4,9 +4,10 @@ participant B
 activate A
 A -> B : work()
 activate B
-B --> A : done()
+B -> B : step()
 activate B
 deactivate B
+B --> A : done()
 deactivate B
 deactivate A
 @enduml

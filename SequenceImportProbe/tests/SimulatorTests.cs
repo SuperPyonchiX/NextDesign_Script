@@ -418,6 +418,10 @@ public static class SequenceSimulator
         var y=wires.Items.ToDictionary(w=>V(w,"ModelId"),w=>D(w,"SourceY"));
         Func<string,string,string> port=(kind,message)=>relations.Where(r=>V(r,"MetamodelId")==P+kind && V(r,"TargetId")==message).Select(r=>V(r,"SourceId")).FirstOrDefault();
         var entities=data["Entities"].Items.ToDictionary(e=>V(e,"Id"));
+        // Next Design fails laying out a bar no message uses.
+        foreach(var bar in entities.Values.Where(e=>V(e,"EntityType")=="ExecutionSpecification"))
+            if(!relations.Any(r=>(V(r,"MetamodelId")==P+"SendMessage" || V(r,"MetamodelId")==P+"ReceiveMessage") && V(r,"SourceId")==V(bar,"Id")))
+                return "メッセージのないバーがあります: "+V(bar,"Id");
         foreach(var reply in y.Keys.Where(id=>entities.ContainsKey(id) && entities[id]["Fields"]!=null && (V(entities[id]["Fields"],"MessageSort")??"").ToLowerInvariant()=="reply"))
         {
             string bar=port("SendMessage",reply);

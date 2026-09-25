@@ -36,10 +36,15 @@
         var nested=Doc("activate A\nactivate B\nA -> B : call\nactivate B\ndeactivate B\nB --> A : done\ndeactivate B\ndeactivate A");Ids(nested);
         var dropped=Plan(nested,Doc("activate A\nactivate B\nA -> B : call\nB --> A : done\ndeactivate B\ndeactivate A"));
         // done() answers the call the inner bar received, so that bar holds both messages and
-        // is the one the input's bar matches; the outer bar holds nothing and goes.
-        Require(dropped.Changes.Count(c=>c.Kind=="execution" && c.Action=="delete")==1 && dropped.CarriedExecutions.Count==0,"inner bar deletion lost: "+dropped.ToJson());
+        // is the one the input's bar matches. The outer bar holds nothing, and a bar no message
+        // uses is never read (Next Design fails laying one out), so there is nothing to delete.
+        Require(nested.Elements.Count(e=>e.Kind=="execution")==2,"a bar without messages was read");
+        Require(!dropped.Changes.Any(c=>c.Kind=="execution" && c.Action!="update") && dropped.CarriedExecutions.Count==0,"inner bar was recreated: "+dropped.ToJson());
         Require(!dropped.Changes.Any(c=>c.Kind=="execution" && c.Action=="add"),"inner bar deletion recreated bars");
-        var idle=Doc("activate A\nA -> B : call\nactivate B\ndeactivate B\nactivate B\ndeactivate B\ndeactivate A");Ids(idle);
+        // A diagram can still hold a bar no message uses (earlier versions drew them); the
+        // input never states one, so the update deletes it.
+        var idle=Doc("activate A\nA -> B : call\nactivate B\ndeactivate B\ndeactivate A");
+        var spare=idle.Elements.Last(e=>e.Kind=="execution").Copy();spare.Id="idle";spare.Order+=1;spare.Links.Remove("startAfter");idle.Elements.Add(spare);Ids(idle);
         Require(Plan(idle,Doc("activate A\nA -> B : call\nactivate B\ndeactivate B\ndeactivate A"))
             .Changes.Count(c=>c.Kind=="execution" && c.Action=="delete")==1,"idle bar deletion lost");
         // A bar cannot be kept when the frame that owns it is going away.
