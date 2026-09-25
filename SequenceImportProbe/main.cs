@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.43";
+    public const string Title = "シーケンス生成実験 / 0.9.44";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -856,7 +856,9 @@ public static class PumlRuntime
             var sortField=Field(source[6],"MessageSort");
             var destroyLiteral=sortField==null || sortField.TypeEnum==null?null:sortField.TypeEnum.Literals
                 .FirstOrDefault(l=>l.Name.IndexOf("Destroy",StringComparison.OrdinalIgnoreCase)>=0 || l.Name.IndexOf("Delete",StringComparison.OrdinalIgnoreCase)>=0);
-            if(destroyLiteral!=null)p.Destroy=destroyLiteral.Name;
+            // The sort is left as written: the import check compares it, and the destroy is carried
+            // by the relation above, which is how the reader tells one.
+            if(destroyLiteral!=null)p.Resolved.Add("破棄メッセージの種別候補\t"+destroyLiteral.Name);
         }
         if(plan.All().Any(n=>n.Left=="[" || n.Right=="]"))
         {
@@ -5349,7 +5351,8 @@ public sealed class SequenceStructurePreparation
                 y=placedY[id];
                 var run=runs.Single(r=>r.Items.Contains(id));
                 // The bars it uses have to be open where its run starts; they are grown to it.
-                foreach(string port in new[]{send,receive})
+                // A bar this update adds starts at the message itself; only existing bars are checked.
+                foreach(string port in new[]{send,receive}.Where(b=>!gate.AddExecutions.Contains(b)))
                 {
                     var bar=shapes4.Where(sh=>V(sh,"ModelId")==port).ToArray();
                     Require(bar.Length==1,"接続先の実行区間の図形を一意に取得できません。");

@@ -424,6 +424,22 @@ public static class StructurePreparationTests
         var grown=reached.ShiftedShapes.Single(x=>x.ShapeId==shortBar["Id"].StringValue());
         Require(grown.Keys.SequenceEqual(new[]{"Length","Height"}) && grown.Values.SequenceEqual(new[]{"56","56"}),"the bar did not reach the appended message: "+string.Join(",",grown.Values));
         Require(!reached.ShiftedShapes.Any(x=>x.Kind=="participant"),"lanes grew although the diagram did not go lower");
+        // The message received on a bar this update also adds, as a destroy message is: the
+        // bar has no shape yet, so it is not held to the existing bars' check.
+        var opened=desired.Copy();
+        var fresh=new SequenceElement{Id="fresh-bar",Kind="execution",Parent=ids[0]};
+        fresh.Links["participant"]=new[]{ids[3]};fresh.Links["endContainer"]=new[]{ids[0]};opened.Elements.Add(fresh);
+        opened.Elements.Single(e=>e.Id==wire).Links["receiveExecution"]=new[]{"fresh-bar"};
+        var openedPlan=new SyncPlan{Expected=opened};
+        openedPlan.Changes.Add(new SequenceChange{Action="add",Kind="execution",Id="fresh-bar",Line=6});
+        openedPlan.Changes.AddRange(plan.Changes);
+        var openedGate=SequenceStructurePreflight.Check(current,openedPlan);
+        Require(openedGate.Candidate && openedGate.AddExecutions.Contains("fresh-bar") && openedGate.AddMessages.Contains(wire),
+            "a message on a new bar was not a candidate: "+openedGate.ToJson());
+        var openedPackage=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,openedPlan);
+        var openedView=SequenceJson.Parse(openedPackage.ReconnectJson)["Editors"].Items.Single();
+        Require(openedView["Messages"].Items.Single(sh=>sh["ModelId"].StringValue()==wire)["TargetY"].Raw=="120","the message on a new bar is not one step below");
+        Require(openedView["ExecutionSpecifications"].Items.Single(sh=>sh["ModelId"].StringValue()=="fresh-bar")["Y"].Raw=="120","the new bar does not start at its message");
     }
     // A frame holding one operand pair, drawn below the sample message: a frame from 100
     // to 190, operands 30 and 70 below its top, and one message inside the first at 140.

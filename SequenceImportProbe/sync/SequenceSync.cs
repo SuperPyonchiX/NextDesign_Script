@@ -2008,7 +2008,8 @@ public sealed class SequenceStructurePreparation
                 y=placedY[id];
                 var run=runs.Single(r=>r.Items.Contains(id));
                 // The bars it uses have to be open where its run starts; they are grown to it.
-                foreach(string port in new[]{send,receive})
+                // A bar this update adds starts at the message itself; only existing bars are checked.
+                foreach(string port in new[]{send,receive}.Where(b=>!gate.AddExecutions.Contains(b)))
                 {
                     var bar=shapes4.Where(sh=>V(sh,"ModelId")==port).ToArray();
                     Require(bar.Length==1,"接続先の実行区間の図形を一意に取得できません。");
