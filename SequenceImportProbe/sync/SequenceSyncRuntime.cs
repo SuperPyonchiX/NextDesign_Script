@@ -500,6 +500,8 @@ public static class SequenceStructureTrial
         foreach(var l in diagram.Lifelines)state.Shapes[l.Id]+=Number(l.TimelineLength);
         return state;
     }
+    // What the last failed check found, for the summary: a batch shows only that.
+    internal static string LastMismatch="";
     static void Verify(SequenceTrialState expected,SequenceTrialState actual,string phase,StringBuilder log)
     {
         string differences=expected.DifferenceCounts(actual);log.AppendLine(phase+": "+differences);
@@ -507,6 +509,15 @@ public static class SequenceStructureTrial
         if(relationDetails.Length>0)log.AppendLine("\f関連の照合内訳 / "+phase+"\n"+relationDetails+"\f");
         string shapeDetails=expected.ShapeDifferences(actual);
         if(shapeDetails.Length>0)log.AppendLine("\f図形の照合内訳 / "+phase+"\n"+shapeDetails+"\f");
+        if(expected.Signature()!=actual.Signature())
+        {
+            var ports=expected.Ports.Keys.Union(actual.Ports.Keys).Where(k=>!expected.Ports.ContainsKey(k) || !actual.Ports.ContainsKey(k)
+                || PumlBuild.Json(expected.Ports[k])!=PumlBuild.Json(actual.Ports[k])).Take(6)
+                .Select(k=>k+" "+(expected.Ports.ContainsKey(k)?PumlBuild.Json(expected.Ports[k]):"-")+" / "+(actual.Ports.ContainsKey(k)?PumlBuild.Json(actual.Ports[k]):"-"));
+            var models=expected.Models.Keys.Union(actual.Models.Keys).Where(k=>!expected.Models.ContainsKey(k) || !actual.Models.ContainsKey(k) || expected.Models[k]!=actual.Models[k]).Take(6)
+                .Select(k=>k+" "+(expected.Models.ContainsKey(k)?expected.Models[k]:"-")+" / "+(actual.Models.ContainsKey(k)?actual.Models[k]:"-"));
+            LastMismatch=phase+": "+differences+"\n"+relationDetails+"\n"+shapeDetails+"\n送受信(期待/実測): "+string.Join(" ; ",ports)+"\nモデル(期待/実測): "+string.Join(" ; ",models);
+        }
         if(expected.Signature()!=actual.Signature())throw new InvalidOperationException("S230: "+phase+"の照合が不一致です。"+differences);
     }
     static void Import(IProject project,string json,StringBuilder log)
@@ -532,6 +543,7 @@ public static class SequenceStructureTrial
         if(retain && (touched==0 || !reconnectCommit))
             throw new InvalidOperationException("S231: 確定モードの対象外の差分があります。");
         string caseId=reconnectCommit?"UPDATE007":retain?"UPDATE006":"UPDATE005";
+        LastMismatch="";
         var root=diagram.Model as IInteraction;
         var newShapes=prepared.AddedExecutions.Select(a=>a.ShapeId)
             .Concat(prepared.AddedParticipants.Select(a=>a.ShapeId))
@@ -610,9 +622,10 @@ public static class SequenceStructureTrial
                 {
                     var found=tree.SelectMany(m=>m.GetRelationsWhere((r,f)=>r.Id==id)).FirstOrDefault();
                     if(found==null)throw new InvalidOperationException("S230: 解除する関連が見つかりません。");
-                    if(found.SourceField==null)throw new InvalidOperationException("S230: 解除する関連のフィールドを取得できません。");
+                    // The relation itself is taken off: SourceField names the field on the target side,
+                    // so it cannot be handed to the source's UnRelate.
                     log.AppendLine("unrelate: "+found.Metaclass.Id+" "+found.Source.Id+" -> "+found.Target.Id);
-                    found.Source.UnRelate(found.SourceField.Name,found.Target);
+                    found.UnRelate();
                 }
             }
             var connected=Rounded(project,rootId,fresh,newShapes);expectedReconnect.Loosen(prepared.LooseShapeIds,connected);
@@ -673,6 +686,13 @@ public static class SequenceStructureTrial
                     if(!undone || !redone)cycle+="\n保存せずコピーを開き直してください。";
                 }
                 else cycle="\nUndo/Redo: このコマンドの実行中は履歴へ積まれないため自動確認できません。手で1回ずつ確認してください。";
+            }
+            // A stop says why: the exception, and what the check found when it was a mismatch.
+            if(!completion.Committed)
+            {
+                var cause=completion.ApplyError??completion.CommitError;
+                if(cause!=null)cycle+="\n原因: "+cause.GetType().Name+": "+cause.Message+(cause.InnerException!=null?" / "+cause.InnerException.Message:"");
+                if(LastMismatch.Length>0)cycle+="\n照合の内訳:\n"+(LastMismatch.Length>3000?LastMismatch.Substring(0,3000)+"…":LastMismatch);
             }
             summary="ケース: "+caseId+" / "+(completion.Committed?"構造更新・SDK照合・変更確定: 成功":"停止段階: "+stage)
                 +cycle
