@@ -1,0 +1,10 @@
+# 0.10.2 の全件で実行されなかった7件と、止まった組み合わせ2件（最後）
+図外への送信に切り替え | gap-gate-switch-before.puml | gap-gate-switch-after.puml
+参加者への送信に戻す | gap-gate-switch-after.puml | gap-gate-switch-before.puml
+分岐を別の枠へ移す | gap-branch-move-before.puml | gap-branch-move-after.puml
+分岐を元の枠へ戻す | gap-branch-move-after.puml | gap-branch-move-before.puml
+破棄する参加者の変更 | gap-destroy-lane-before.puml | gap-destroy-lane-after.puml
+閉じる応答の後への呼出しの追加 | gap-reply-extend-before.puml | gap-reply-extend-after.puml
+閉じる応答の後の呼出しの削除 | gap-reply-extend-after.puml | gap-reply-extend-before.puml
+混在: 送信元・参加者の順序・種別の変更 | gap-sender-before.puml | gap-combo3-after.puml
+混在: 上の組み合わせを戻す（3） | gap-combo3-after.puml | gap-sender-before.puml
