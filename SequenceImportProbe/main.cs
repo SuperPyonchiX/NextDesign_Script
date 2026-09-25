@@ -30,7 +30,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.11.18";
+    public const string Title = "シーケンス生成実験 / 0.11.19";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1224,6 +1224,16 @@ public sealed class DiagramSnapshot
             if(nearest.Length>1) {snapshot.Limitations.Add("実行区間境界の所属候補が複数");return root.Id;}
             return nearest.Length==1?nearest[0].Id:root.Id;
         };
+        // A message is in the branch it is drawn in, as the export writes it, even where the model
+        // relates it to another (a frame stretched over it by hand): the drawing wins.
+        foreach(var m in diagram.Messages)
+        {
+            string branch=SequenceRegion.BranchAt(operandRegions,m.SourceY);
+            if(branch==null)continue;
+            string was=byId[m.ModelId].Parent;
+            byId[m.ModelId].Parent=branch.Length==0?root.Id:branch;
+            if(was!=byId[m.ModelId].Parent)log.AppendLine("Message placed by its position: "+m.ModelId+" "+was+" → "+byId[m.ModelId].Parent);
+        }
         // A destruction has no relation to the branch it is drawn in; the export puts it there by
         // where it is, so the reading does too.
         foreach(var d in diagram.Destructions)byId[d.ModelId].Parent=containerAt(d.LocationX+d.Width/2,d.LocationY);
@@ -6199,6 +6209,17 @@ public sealed class SequenceRegion
         return outer.X<=inner.X+eps && outer.Y<=inner.Y+eps
             && outer.X+outer.Width>=inner.X+inner.Width-eps && outer.Y+outer.Height>=inner.Y+inner.Height-eps
             && (outer.Width>inner.Width+eps || outer.Height>inner.Height+eps);
+    }
+    // The branch a message is drawn in, as the export places it: the innermost branch whose
+    // height takes the message's Y, whatever the model's relation says (the user's decision:
+    // the drawing wins). "" when none takes it, null when frames side by side both do.
+    public static string BranchAt(IEnumerable<SequenceRegion> operands,double y)
+    {
+        var taking=operands.Where(o=>y>=o.Y-0.5 && y<o.Y+o.Height-0.5).ToList();
+        if(taking.Count==0)return "";
+        var innermost=taking.Where(o=>!taking.Any(p=>p.Id!=o.Id && p.Y>=o.Y-0.5 && p.Y+p.Height<=o.Y+o.Height+0.5
+            && (p.Y>o.Y+0.5 || p.Y+p.Height<o.Y+o.Height-0.5 || p.Width<o.Width-0.5))).ToList();
+        return innermost.Count==1?innermost[0].Id:null;
     }
     public static IEnumerable<SequenceMembership> Nesting(IEnumerable<SequenceRegion> operands,IEnumerable<SequenceRegion> fragments,IEnumerable<SequenceRegion> annotations=null)
     {

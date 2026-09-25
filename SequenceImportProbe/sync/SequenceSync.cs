@@ -896,6 +896,17 @@ public sealed class SequenceRegion
             && outer.X+outer.Width>=inner.X+inner.Width-eps && outer.Y+outer.Height>=inner.Y+inner.Height-eps
             && (outer.Width>inner.Width+eps || outer.Height>inner.Height+eps);
     }
+    // The branch a message is drawn in, as the export places it: the innermost branch whose
+    // height takes the message's Y, whatever the model's relation says (the user's decision:
+    // the drawing wins). "" when none takes it, null when frames side by side both do.
+    public static string BranchAt(IEnumerable<SequenceRegion> operands,double y)
+    {
+        var taking=operands.Where(o=>y>=o.Y-0.5 && y<o.Y+o.Height-0.5).ToList();
+        if(taking.Count==0)return "";
+        var innermost=taking.Where(o=>!taking.Any(p=>p.Id!=o.Id && p.Y>=o.Y-0.5 && p.Y+p.Height<=o.Y+o.Height+0.5
+            && (p.Y>o.Y+0.5 || p.Y+p.Height<o.Y+o.Height-0.5 || p.Width<o.Width-0.5))).ToList();
+        return innermost.Count==1?innermost[0].Id:null;
+    }
     public static IEnumerable<SequenceMembership> Nesting(IEnumerable<SequenceRegion> operands,IEnumerable<SequenceRegion> fragments,IEnumerable<SequenceRegion> annotations=null)
     {
         // As the PlantUML export places them: by where the top edge falls, whatever the box

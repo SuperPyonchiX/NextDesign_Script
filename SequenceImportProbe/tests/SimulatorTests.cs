@@ -193,6 +193,7 @@ public static class SequenceSimulator
             if(nearest.Length>1)return root;
             return nearest.Length==1?nearest[0].Id:root;
         };
+        foreach(var m in wires){string branch=SequenceRegion.BranchAt(operandRegions,D(m,"SourceY"));if(branch!=null)byId[V(m,"ModelId")].Parent=branch.Length==0?root:branch;}
         foreach(var d in shapes("Destructions"))byId[V(d,"ModelId")].Parent=containerAt(D(d,"X")+D(d,"Width")/2,D(d,"Y"));
         foreach(var shape in bars.Values)
         {

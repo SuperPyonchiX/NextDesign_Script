@@ -164,6 +164,16 @@ public sealed class DiagramSnapshot
             if(nearest.Length>1) {snapshot.Limitations.Add("実行区間境界の所属候補が複数");return root.Id;}
             return nearest.Length==1?nearest[0].Id:root.Id;
         };
+        // A message is in the branch it is drawn in, as the export writes it, even where the model
+        // relates it to another (a frame stretched over it by hand): the drawing wins.
+        foreach(var m in diagram.Messages)
+        {
+            string branch=SequenceRegion.BranchAt(operandRegions,m.SourceY);
+            if(branch==null)continue;
+            string was=byId[m.ModelId].Parent;
+            byId[m.ModelId].Parent=branch.Length==0?root.Id:branch;
+            if(was!=byId[m.ModelId].Parent)log.AppendLine("Message placed by its position: "+m.ModelId+" "+was+" → "+byId[m.ModelId].Parent);
+        }
         // A destruction has no relation to the branch it is drawn in; the export puts it there by
         // where it is, so the reading does too.
         foreach(var d in diagram.Destructions)byId[d.ModelId].Parent=containerAt(d.LocationX+d.Width/2,d.LocationY);

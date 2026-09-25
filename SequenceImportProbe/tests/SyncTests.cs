@@ -186,6 +186,13 @@
         var noted=SequenceRegion.Nesting(new[]{alone},new SequenceRegion[0],new[]{beside}).ToArray();
         Require(noted.Length==1 && noted[0].Parent=="only-branch","a note sticking out of its branch was left outside");
         // Beside two frames side by side, the one it overlaps takes it.
+        // A message is in the innermost branch its Y falls in, whatever the model relates it to.
+        var outerBranch=new SequenceRegion{Id="outer",Fragment="outer-frame",X=0,Y=100,Width=600,Height=400};
+        var innerBranch=new SequenceRegion{Id="inner",Fragment="inner-frame",X=20,Y=200,Width=560,Height=150};
+        Require(SequenceRegion.BranchAt(new[]{outerBranch,innerBranch},250)=="inner","a message in a nested branch was not placed there");
+        Require(SequenceRegion.BranchAt(new[]{outerBranch,innerBranch},400)=="outer","a message under a nested frame was not placed in the outer branch");
+        Require(SequenceRegion.BranchAt(new[]{outerBranch,innerBranch},600)=="","a message below every frame was placed in one");
+        Require(SequenceRegion.BranchAt(new[]{left,right},150)==null,"frames side by side were not left undecided");
         var both=SequenceRegion.Nesting(new[]{left,right},new SequenceRegion[0],new[]{beside}).ToArray();
         Require(both.Length==1 && both[0].Parent=="left-branch","a note between frames side by side: "+string.Join(",",both.Select(m=>m.Parent)));
     }
