@@ -820,9 +820,11 @@ public sealed class SequenceRegion
     }
     public static IEnumerable<SequenceMembership> Nesting(IEnumerable<SequenceRegion> operands,IEnumerable<SequenceRegion> fragments)
     {
+        // As the PlantUML export places them: by where the top edge falls, whatever the box
+        // reaches past, since the export closes a frame and enters a branch by Y alone.
         foreach(var fragment in fragments)foreach(var operand in operands)
-            if(operand.Fragment!=fragment.Id && Contains(operand,fragment))
-                yield return new SequenceMembership{Child=fragment.Id,Parent=operand.Id,Evidence="diagram rectangle containment"};
+            if(operand.Fragment!=fragment.Id && fragment.Y>=operand.Y-0.5 && fragment.Y<operand.Y+operand.Height-0.5)
+                yield return new SequenceMembership{Child=fragment.Id,Parent=operand.Id,Evidence="diagram top edge within branch"};
     }
 }
 

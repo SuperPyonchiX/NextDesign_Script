@@ -223,6 +223,37 @@ public static class SequenceSyncRuntime
             if(chosen!=null)into[n.Line]=chosen;
         }
     }
+    // The exported editor leaves out a size or place a shape has by default (a lane or frame
+    // drawn by hand comes without its Width). The update lays shapes out from those numbers,
+    // so what is missing is taken from the diagram as the SDK reads it. Nothing is changed.
+    internal static string CompleteGeometry(string exported,ISequenceDiagram diagram,StringBuilder log)
+    {
+        var data=SequenceJson.Parse(exported);
+        var editor=data["Editors"]==null?null:data["Editors"].Items.FirstOrDefault(v=>v["Id"]!=null && v["Id"].StringValue()==diagram.Id);
+        if(editor==null || editor.Properties==null)return exported;
+        var nodes=diagram.Shapes.OfType<ISequenceNodeShape>().ToDictionary(n=>n.Id);
+        Func<double,SequenceJson> number=v=>SequenceJson.Parse(v.ToString("R",System.Globalization.CultureInfo.InvariantCulture));
+        int filled=0;
+        foreach(var list in editor.Properties.Values.Where(v=>v!=null && v.Items!=null))
+            foreach(var sh in list.Items.Where(i=>i!=null && i.Properties!=null && i["Id"]!=null && i["Id"].Raw.StartsWith("\"")))
+            {
+                ISequenceNodeShape node;
+                if(!nodes.TryGetValue(sh["Id"].StringValue(),out node))continue;
+                var wanted=new List<KeyValuePair<string,double>>{new KeyValuePair<string,double>("X",node.LocationX),new KeyValuePair<string,double>("Width",node.Width)};
+                if(!(node is ILifelineShape))
+                {
+                    wanted.Add(new KeyValuePair<string,double>("Y",node.LocationY));
+                    var bar=node as IExecutionSpecificationShape;
+                    wanted.Add(new KeyValuePair<string,double>("Height",bar!=null?bar.Length:node.Height));
+                    if(bar!=null)wanted.Add(new KeyValuePair<string,double>("Length",bar.Length));
+                }
+                foreach(var pair in wanted)
+                    if(sh[pair.Key]==null){sh.Properties[pair.Key]=number(pair.Value);filled++;}
+            }
+        if(filled==0)return exported;
+        log.AppendLine("Editor geometry completed from the SDK: "+filled+" values");
+        return data.ToJsonString();
+    }
     internal static SequenceReferenceCandidate[] Interactions(IProject project)
     {
         return SequenceMappedUpdate.Tree(project.DesignModel).OfType<IInteraction>()
@@ -371,6 +402,9 @@ public static class SequenceSyncRuntime
                 e.Attributes["reference"]=chosen??"";
                 if(chosen==null)current.Limitations.Add("ref参照先 "+e.Line+"行: "+matches.Length+"候補");
             }
+            // What the diagram reads as, before a linked ref takes the input's text: the check that
+            // nothing changed while preparing compares a fresh read with this.
+            string readAs=current.Document.ToJson();
             AlignLinkedRefs(project,current.Document,desired);
             var plan=SequenceNotePolicy.Build(current.Document,desired,()=>Guid.NewGuid().ToString());
             LastChanges=plan.Changes.Count;
@@ -427,6 +461,7 @@ public static class SequenceSyncRuntime
                         throw new InvalidOperationException(UnsavedAdvice,ex);
                     }
                     Lap("エクスポート");
+                    exported=CompleteGeometry(exported,diagram,log);
                     SequenceFrameTypes frameTypes=null;
                     string rootId=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
                     var byExpected=plan.Expected.Elements.ToDictionary(e=>e.Id);
@@ -495,7 +530,7 @@ public static class SequenceSyncRuntime
                             throw new InvalidOperationException("S220: 削除対象に退避範囲外の関連があります。");
                     }
                     if(app.Workspace.CurrentProject==null || app.Workspace.CurrentProject.Id!=project.Id || (!Batch && (app.Workspace.CurrentEditor==null || app.Workspace.CurrentEditor.Id!=diagram.Id))
-                        || DiagramSnapshot.Read(diagram,new StringBuilder()).Document.ToJson()!=current.Document.ToJson())
+                        || DiagramSnapshot.Read(diagram,new StringBuilder()).Document.ToJson()!=readAs)
                         throw new InvalidOperationException("S220: 準備中に対象の図が変化しました。");
                     Lap("準備");
                     string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.SequenceSync","prepared",Guid.NewGuid().ToString("N"));
