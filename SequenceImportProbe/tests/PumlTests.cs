@@ -20,7 +20,8 @@ public static class PumlTests
         foreach(string type in new[]{"Interaction","Frame","Lifeline","ExecutionSpecification","Message","CombinedFragment","InteractionOperand","InteractionUse","InteractionNote","MessageEnd","Destruction"})profile.Types[type]="fake-"+type;
         foreach(string key in new[]{"Frame","Lifelines","ExecutionSpecifications","Messages","OwnedExecutionSpecification","SendMessage","ReceiveMessage","Fragments","Operands","CrossingFragmentCoveredLifeline","OperandTargetMessage","NestedInteractionFragment","InteractionUses","Notes","MessageEnds","Destructions","DestructionTargetLifeline","ReplyMessage","DestroyMessage"})profile.Relations[key]=key;
         foreach(string op in new[]{"alt","opt","loop","par","break","critical","group"})profile.Operators[op]=op.ToUpperInvariant();
-        foreach(var file in Directory.GetFiles(samples,"*.puml"))
+        // gap-empty stands for a diagram with nothing on it, which only the sync can start from.
+        foreach(var file in Directory.GetFiles(samples,"*.puml").Where(f=>!Path.GetFileName(f).StartsWith("gap-empty")))
         {
             var plan=PumlPlan.Parse(File.ReadAllText(file));
             if(Path.GetFileName(file).StartsWith("06-") && (plan.StyleDirectives!=3 || !plan.Summary().Contains("既定表示")))throw new Exception("Style compatibility warning missing");

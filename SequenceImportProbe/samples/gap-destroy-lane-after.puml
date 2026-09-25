@@ -1,0 +1,14 @@
+@startuml
+participant A
+participant B
+participant C
+activate A
+A -> B : first()
+activate B
+B --> A : firstDone()
+deactivate B
+A -> C : stop()
+activate C
+destroy C
+deactivate A
+@enduml

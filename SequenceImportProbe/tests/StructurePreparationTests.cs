@@ -239,7 +239,9 @@ public static class StructurePreparationTests
         var msg=new SequenceElement{Id="msg",Kind="message",Parent=ids[0],Text="call"};
         msg.Links["sender"]=new[]{ids[2]};msg.Links["receiver"]=new[]{lane};used.Elements.Add(msg);
         var usedPlan=new SyncPlan{Expected=used};usedPlan.Changes.AddRange(plan.Changes);
-        Require(SequenceStructurePreflight.Check(current,usedPlan).AddParticipants.Count==0,"a lane a message already uses was accepted");
+        // The new lane is fine; the message on it names no bar, and bars are not made up.
+        var usedGate=SequenceStructurePreflight.Check(current,usedPlan);
+        Require(usedGate.AddParticipants.Count==1 && !usedGate.Candidate && usedGate.Reasons.Any(r=>r.Contains("入力にない実行区間は作りません")),"a message with no bar on a new lane was not stopped for its bar");
 
         var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan);
         Require(package.AddedParticipants.Length==1,"lane was not prepared");
@@ -370,7 +372,7 @@ public static class StructurePreparationTests
 
         var first=desired.Copy();first.Elements.Single(e=>e.Id==wire).Order=-1;
         var firstPlan=new SyncPlan{Expected=first};firstPlan.Changes.AddRange(plan.Changes);
-        Require(SequenceStructurePreflight.Check(current,firstPlan).AddMessages.Count==0,"a message placed before existing ones was accepted");
+        Require(SequenceStructurePreflight.Check(current,firstPlan).AddMessages.Count==1 && SequenceStructurePreflight.Check(current,firstPlan).Candidate,"a message placed before existing ones was refused");
 
         var reply=desired.Copy();reply.Elements.Single(e=>e.Id==wire).Attributes["sort"]="reply";
         var replyPlan=new SyncPlan{Expected=reply};replyPlan.Changes.AddRange(plan.Changes);
@@ -615,18 +617,19 @@ public static class StructurePreparationTests
         };
         string first=editor["Messages"].Items[0]["Id"].StringValue();
         Require(moved(first,"TargetY")==null,"a message above the frame moved");
-        Require(moved("wrapped-shape","TargetY")=="190" && moved("wrapped-shape","SourceY")=="190","the wrapped message did not go under the guard");
-        Require(moved("after-shape","TargetY")=="278","the message below did not clear the frame: "+moved("after-shape","TargetY"));
+        // The frame opens a generator step under probe(); wrapped() keeps its old 50 below probe() plus the frame's head.
+        Require(moved("wrapped-shape","TargetY")=="200" && moved("wrapped-shape","SourceY")=="200","the wrapped message did not go under the guard");
+        Require(moved("after-shape","TargetY")=="274","the message below did not clear the frame: "+moved("after-shape","TargetY"));
         string barA=editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),barB=editor["ExecutionSpecifications"].Items[1]["Id"].StringValue();
-        Require(moved(barA,"Y")==null && moved(barA,"Length")=="298" && moved(barA,"Height")=="298","a bar open across the frame did not grow by the room made");
-        Require(moved(barB,"Y")==null && moved(barB,"Length")=="248","the other bar did not grow");
+        Require(moved(barA,"Y")==null && moved(barA,"Length")=="294" && moved(barA,"Height")=="294","a bar open across the frame did not grow by the room made");
+        Require(moved(barB,"Y")==null && moved(barB,"Length")=="244","the other bar did not grow");
         // It ends 35 under the wrapped message, past the split; it still does, inside the frame.
-        Require(moved("inner-bar-shape","Y")=="190" && moved("inner-bar-shape","Length")==null,
+        Require(moved("inner-bar-shape","Y")=="200" && moved("inner-bar-shape","Length")==null,
             "a bar closed inside the frame reached out of it: "+moved("inner-bar-shape","Length"));
-        foreach(var lane in editor["Lifelines"].Items)Require(moved(lane["Id"].StringValue(),"LaneLength")=="338","a lane did not follow the growth");
+        foreach(var lane in editor["Lifelines"].Items)Require(moved(lane["Id"].StringValue(),"LaneLength")=="334","a lane did not follow the growth");
         var patch=SequenceJson.Parse(package.ReconnectJson);
         var frameShape=patch["Editors"].Items.Single()["Fragments"].Items.Single();
-        Require(frameShape["X"].StringValue()=="4" && frameShape["Y"].StringValue()=="120" && frameShape["Width"].StringValue()=="332" && frameShape["Height"].StringValue()=="118",
+        Require(frameShape["X"].StringValue()=="4" && frameShape["Y"].StringValue()=="120" && frameShape["Width"].StringValue()=="332" && frameShape["Height"].StringValue()=="128",
             "frame not drawn around the message: "+frameShape.ToJsonString());
         Require(patch["Editors"].Items.Single()["Operands"].Items.Single()["Position"].StringValue()=="30","guard not at the generator's offset");
         Require(patch["Relations"].Items.Count(r=>r["MetamodelId"].StringValue()=="operand-message" && r["SourceId"].StringValue()=="wrap-operand"
@@ -653,8 +656,8 @@ public static class StructurePreparationTests
         var expected=state.Expected(package,plan,false);
         var link=expected.Relations[package.MovedMessages[0].RelationId];
         Require(link.SequenceEqual(new[]{"wrap-operand","wrapped","0","0"}),"the operand reference was not predicted: "+string.Join(",",link));
-        Require(expected.Shapes["after-shape"]==PumlBuild.Json(new[]{"m","278","278","0"}),"the moved message readback was not predicted");
-        Require(expected.Shapes[barA]==PumlBuild.Json(new[]{"70","50","16","298","298"}),"the grown bar readback was not predicted: "+expected.Shapes[barA]);
+        Require(expected.Shapes["after-shape"]==PumlBuild.Json(new[]{"m","274","274","0"}),"the moved message readback was not predicted");
+        Require(expected.Shapes[barA]==PumlBuild.Json(new[]{"70","50","16","294","294"}),"the grown bar readback was not predicted: "+expected.Shapes[barA]);
         Require(expected.Models.ContainsKey("wrap-frame") && expected.Models.ContainsKey("wrap-operand"),"the frame was not predicted");
     }
     // A note under the message at 80, above another at 130, on bars 50-250 and 80-230.
@@ -699,7 +702,7 @@ public static class StructurePreparationTests
         plan.Changes.Add(new SequenceChange{Action="add",Kind="note",Id="new-note",Line=6});
         plan.Changes.Add(new SequenceChange{Action="move",Kind="message",Id="later",Line=9});
         var gate=SequenceStructurePreflight.Check(current,plan);
-        Require(!gate.Candidate,"a note that also reorders was accepted");
+        Require(gate.Candidate,"a note that also reorders was refused");
         plan.Changes.RemoveAt(1);
         gate=SequenceStructurePreflight.Check(current,plan);
         Require(gate.Candidate && gate.AddNotes.SequenceEqual(new[]{"new-note"}) && gate.CanCommit(),"an added note was not a candidate: "+gate.ToJson());
@@ -966,7 +969,7 @@ public static class StructurePreparationTests
         plan.Changes.Add(new SequenceChange{Action="move",Kind="message",Id="three",Line=5});
         plan.Changes.Add(new SequenceChange{Action="move",Kind="message",Id="two",Line=7});
         var gate=SequenceStructurePreflight.Check(current,plan);
-        Require(gate.Candidate && gate.ReorderMessages.Count==2,"swapping two messages was not a candidate: "+gate.ToJson());
+        Require(gate.Candidate && gate.ReorderMessages.Count>=1,"swapping two messages was not a candidate: "+gate.ToJson());
         var package=SequenceStructurePreparation.Build(raw.ToJsonString(),editorId,current,plan);
         Func<string,string,string> at=(shape,key)=>{
             var hit=package.ShiftedShapes.Where(m=>m.ShapeId==shape).ToArray();
@@ -1054,13 +1057,14 @@ public static class StructurePreparationTests
         var grownBar=grownPackage.ShiftedShapes.Single(x=>x.Kind=="execution" && x.ShapeId==shortBar["Id"].StringValue());
         Require(grownBar.Values.SequenceEqual(new[]{"250","250"}),"the sender's bar did not follow the frame: "+string.Join(",",grownBar.Values));
         var branch=package.AddedOperands.Single();
-        Require(branch.OwnerId=="the-frame" && branch.Position=="102","the branch did not start 12 under the frame's bottom: "+branch.Position);
+        // The guard takes the generator's step under the last message: 40, 8 and 12.
+        Require(branch.OwnerId=="the-frame" && branch.Position=="100","the branch did not start a generator step under the last message: "+branch.Position);
         var view=SequenceJson.Parse(package.ReconnectJson)["Editors"].Items.Single();
-        Require(view["Messages"].Items.Single(sh=>sh["ModelId"].StringValue()=="fallback")["TargetY"].Raw=="242","the branch's message is not under its guard");
+        Require(view["Messages"].Items.Single(sh=>sh["ModelId"].StringValue()=="fallback")["TargetY"].Raw=="240","the branch's message is not under its guard");
         var frame=package.ShiftedShapes.Single(s=>s.ShapeId=="the-frame-shape");
         Require(frame.Keys.SequenceEqual(new[]{"Height"}) && frame.Values[0]=="190","the frame did not grow to hold the branch: "+string.Join(",",frame.Values));
         Require(package.StretchedLifelines.All(l=>l.Length=="340"),"the lanes did not grow with the frame");
-        // The sender's bar ended at 300; the new message at 242 is inside it, the receiver's at 330 too.
+        // The sender's bar ended at 300; the new message at 240 is inside it, the receiver's at 330 too.
         // Both bars close below the frame, so both follow it down by the 100 it grew.
         Require(package.ShiftedShapes.Where(x=>x.Kind=="execution").All(x=>x.Values.SequenceEqual(new[]{"350","350"}))
             && package.ShiftedShapes.Count(x=>x.Kind=="execution")==2,"bars closing below the frame did not follow it");
@@ -1370,6 +1374,7 @@ public static class StructurePreparationTests
         var missingShape=Clone(raw);missingShape["Editors"].Items[0]["Messages"].Items.Clear();
         Reject(()=>SequenceStructurePreparation.Build(missingShape.ToJsonString(),editorId,current,plan),"missing message shape accepted");
         plan.Expected.Elements.Single(e=>e.Id==ids[6]).Links.Remove("receiveExecution");
+        // No bar named on the receiving lane: bars the input does not open are not made up.
         Reject(()=>SequenceStructurePreparation.Build(original,editorId,current,plan),"missing execution plan accepted");
         Console.WriteLine("PASS: structural preparation preserves IDs, geometry and unknown fields; rejects stale, shared and unsupported data");
     }

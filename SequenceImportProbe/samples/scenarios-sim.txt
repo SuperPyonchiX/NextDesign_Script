@@ -1,0 +1,3 @@
+# シミュレーターだけで回す一覧。空の図は一括検証の取込で作れないため、実機では手で作った空の図で確かめる
+空の図への反映 | gap-empty.puml | structure-wrap-before.puml
+枠と Note を含む図の空の図への反映 | gap-empty.puml | gap-frame-note-after.puml

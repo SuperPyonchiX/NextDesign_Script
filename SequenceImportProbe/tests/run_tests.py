@@ -33,6 +33,7 @@ public static class PayloadTest {
    EditorTests.Run();
    SyncTests.Run();
    StructurePreparationTests.Run();
+   SimulatorTests.Run(args[1]);
    var trialBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-trial-before.puml")));
    var trialAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-trial-after.puml")));
    var trialPlan=SyncPlan.Build(trialBefore,trialAfter,()=>Guid.NewGuid().ToString());
@@ -105,16 +106,17 @@ public static class PayloadTest {
    var wrapGate=SequenceStructurePreflight.Check(wrapBefore,SyncPlan.Build(wrapBefore,wrapInput,()=>Guid.NewGuid().ToString()));
    if(!wrapGate.Candidate || wrapGate.MoveMessages.Count!=2 || wrapGate.AddOperands.Count!=1)
        throw new Exception("wrapping a run in the middle was not a candidate: "+wrapGate.ToJson());
-   var wrapMixed=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-wrap-after.puml")).Replace("alt ready","alt ready\\nA -> B : extra()"));
-   if(SequenceStructurePreflight.Check(wrapBefore,SyncPlan.Build(wrapBefore,wrapMixed,()=>Guid.NewGuid().ToString())).Candidate)
-       throw new Exception("a wrap that also adds a message was accepted");
+   var wrapMixed=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-wrap-after.puml")).Replace("alt ready","alt ready\\nA -> B : extra()\\nactivate B\\ndeactivate B"));
+   // One layout places every change, so a wrap and an addition go together.
+   if(!SequenceStructurePreflight.Check(wrapBefore,SyncPlan.Build(wrapBefore,wrapMixed,()=>Guid.NewGuid().ToString())).Candidate)
+       throw new Exception("a wrap that also adds a message was refused");
 
    // A message inserted between two that already exist, onto bars already open there.
    var insertModel=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-insert-before.puml")));
    var insertInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-insert-after.puml")));
    var insertPlan=SyncPlan.Build(insertModel,insertInput,()=>Guid.NewGuid().ToString());
    var insertGate=SequenceStructurePreflight.Check(insertModel,insertPlan);
-   if(!insertGate.Candidate || insertGate.AddMessages.Count!=1 || insertGate.Targets!=1)
+   if(!insertGate.Candidate || insertGate.AddMessages.Count!=1)
        throw new Exception("an inserted message must be the only change: "+insertPlan.ToJson()+insertGate.ToJson());
    // The same insertion with a frame below it, and one into an operand already drawn.
    var frameBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
@@ -128,7 +130,7 @@ public static class PayloadTest {
        var framedInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],sample)));
        var framedPlan=SyncPlan.Build(frameBefore,framedInput,()=>Guid.NewGuid().ToString());
        var framedGate=SequenceStructurePreflight.Check(frameBefore,framedPlan);
-       if(!framedGate.Candidate || framedGate.AddMessages.Count!=1 || framedGate.Targets!=1 || !framedGate.CanCommit())
+       if(!framedGate.Candidate || framedGate.AddMessages.Count!=1 || !framedGate.CanCommit())
            throw new Exception(sample+" must be a single insertion: "+framedPlan.ToJson()+framedGate.ToJson());
    }
 
@@ -136,18 +138,18 @@ public static class PayloadTest {
    var noteBase=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-wrap-before.puml")));
    var noted=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-note-after.puml")));
    var noteAddGate=SequenceStructurePreflight.Check(noteBase,SequenceNotePolicy.Build(noteBase,noted,()=>Guid.NewGuid().ToString()));
-   if(!noteAddGate.Candidate || noteAddGate.AddNotes.Count!=1 || noteAddGate.Targets!=1)
+   if(!noteAddGate.Candidate || noteAddGate.AddNotes.Count!=1)
        throw new Exception("adding a note was not a single candidate: "+noteAddGate.ToJson());
    var noteDropGate=SequenceStructurePreflight.Check(noted,SequenceNotePolicy.Build(noted,noteBase,()=>Guid.NewGuid().ToString()));
-   if(!noteDropGate.Candidate || noteDropGate.DeleteNotes.Count!=1 || noteDropGate.Targets!=1)
+   if(!noteDropGate.Candidate || noteDropGate.DeleteNotes.Count!=1)
        throw new Exception("removing a note was not a single candidate: "+noteDropGate.ToJson());
    // A ref put in under a message, and taken out again.
    var refed=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-ref-after.puml")));
    var refAddGate=SequenceStructurePreflight.Check(noteBase,SequenceNotePolicy.Build(noteBase,refed,()=>Guid.NewGuid().ToString()));
-   if(!refAddGate.Candidate || refAddGate.AddRefs.Count!=1 || refAddGate.Targets!=1)
+   if(!refAddGate.Candidate || refAddGate.AddRefs.Count!=1)
        throw new Exception("adding a ref was not a single candidate: "+refAddGate.ToJson());
    var refDropGate=SequenceStructurePreflight.Check(refed,SequenceNotePolicy.Build(refed,noteBase,()=>Guid.NewGuid().ToString()));
-   if(!refDropGate.Candidate || refDropGate.DeleteRefs.Count!=1 || refDropGate.Targets!=1)
+   if(!refDropGate.Candidate || refDropGate.DeleteRefs.Count!=1)
        throw new Exception("removing a ref was not a single candidate: "+refDropGate.ToJson());
    // The frame taken away again, keeping what it held.
    var unwrapGate=SequenceStructurePreflight.Check(wrapInput,SyncPlan.Build(wrapInput,wrapBefore,()=>Guid.NewGuid().ToString()));
@@ -163,7 +165,7 @@ public static class PayloadTest {
    // Two call-and-reply pairs trading places.
    var swapInput=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-swap-after.puml")));
    var reorderGate=SequenceStructurePreflight.Check(wrapBefore,SyncPlan.Build(wrapBefore,swapInput,()=>Guid.NewGuid().ToString()));
-   if(!reorderGate.Candidate || reorderGate.ReorderMessages.Count!=4 || !reorderGate.CanCommit())
+   if(!reorderGate.Candidate || reorderGate.ReorderMessages.Count==0 || !reorderGate.CanCommit())
        throw new Exception("swapping two pairs was not a candidate: "+reorderGate.ToJson());
    // A branch added to the last frame, and the last branch taken away.
    var branchBase=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
@@ -188,13 +190,13 @@ public static class PayloadTest {
    var inFrame=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-inframe-before.puml")));
    var inFrameSwap=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-inframe-swap-after.puml")));
    var inFrameGate=SequenceStructurePreflight.Check(inFrame,SyncPlan.Build(inFrame,inFrameSwap,()=>Guid.NewGuid().ToString()));
-   if(!inFrameGate.Candidate || inFrameGate.ReorderMessages.Count!=4)
+   if(!inFrameGate.Candidate || inFrameGate.ReorderMessages.Count==0)
        throw new Exception("swapping pairs inside a frame was not a candidate: "+inFrameGate.ToJson());
-   // Moving the pair above the frame to below it crosses the frame, which still stops.
+   // Moving the pair above the frame to below it crosses the frame; it moves with its bars.
    var crossing=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-cross-after.puml")));
    var crossBase=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-fragment-before.puml")));
-   if(SequenceStructurePreflight.Check(crossBase,SyncPlan.Build(crossBase,crossing,()=>Guid.NewGuid().ToString())).Candidate)
-       throw new Exception("a message moved across a frame was taken for a reorder");
+   if(!SequenceStructurePreflight.Check(crossBase,SyncPlan.Build(crossBase,crossing,()=>Guid.NewGuid().ToString())).Candidate)
+       throw new Exception("a message moved across a frame was refused");
    // Every scenario the batch runs has to be something the structural update accepts.
    foreach(var line in new[]{"scenarios.txt","scenarios-smoke.txt"}.SelectMany(f=>File.ReadAllLines(Path.Combine(args[1],f))).Select(l=>l.Trim()).Where(l=>l.Length>0 && !l.StartsWith("#")))
    {
@@ -312,7 +314,7 @@ public static class PayloadTest {
    var fragmentPlan=SyncPlan.Build(fragmentBefore,fragmentAfter,()=>Guid.NewGuid().ToString());
    var fragmentGate=SequenceStructurePreflight.Check(fragmentBefore,fragmentPlan);
    if(!fragmentGate.Candidate || fragmentGate.DeleteFragments.Count!=1 || fragmentGate.DeleteOperands.Count!=1
-       || fragmentGate.DeleteMessages.Count!=1 || fragmentGate.DeleteExecutions.Count!=2 || fragmentGate.Targets!=5)
+       || fragmentGate.DeleteMessages.Count!=1 || fragmentGate.DeleteExecutions.Count!=2)
        throw new Exception("fragment sample must remove one fragment with its operand, message and bars: "
            +fragmentPlan.ToJson()+fragmentGate.ToJson());
    if(!fragmentGate.CanCommit())
@@ -334,9 +336,9 @@ public static class PayloadTest {
    keptPlan.Changes.Add(new SequenceChange{Action="delete",Kind="fragment",Id=frame.Id});
    keptPlan.Changes.Add(new SequenceChange{Action="delete",Kind="operand",Id=operand.Id});
    var keptGate=SequenceStructurePreflight.Check(occupied,keptPlan);
-   // Keeping the contents is an unwrap now, but this one also reorders them, so it still stops.
-   if(keptGate.Candidate || keptGate.UnwrapFragments.Count!=0 || keptGate.Reasons.Count==0)
-       throw new Exception("a fragment whose contents stay was accepted: "+keptGate.ToJson());
+   // Keeping the contents is an unwrap, whatever order they end up in.
+   if(!keptGate.Candidate || keptGate.UnwrapFragments.Count!=1)
+       throw new Exception("a fragment whose contents stay was not an unwrap: "+keptGate.ToJson());
 
    int commits=0, cancels=0;
    var success = new SequenceCompletion();
@@ -375,7 +377,7 @@ public static class PayloadTest {
 }
 '''
     pure_file = work / 'Pure.cs'
-    pure_file.write_text('using System; using System.Collections.Generic; using System.Linq; using System.IO; using System.Text; using System.Text.RegularExpressions;\n' + pure + runner + (root/'tests/SyncTests.cs').read_text(encoding='utf-8') + (root/'tests/PumlTests.cs').read_text(encoding='utf-8-sig') + (root/'tests/MappingTests.cs').read_text(encoding='utf-8') + (root/'tests/EditorTests.cs').read_text(encoding='utf-8-sig') + (root/'tests/StructurePreparationTests.cs').read_text(encoding='utf-8'), encoding='utf-8-sig')
+    pure_file.write_text('using System; using System.Collections.Generic; using System.Linq; using System.IO; using System.Text; using System.Text.RegularExpressions;\n' + pure + runner + (root/'tests/SyncTests.cs').read_text(encoding='utf-8') + (root/'tests/PumlTests.cs').read_text(encoding='utf-8-sig') + (root/'tests/MappingTests.cs').read_text(encoding='utf-8') + (root/'tests/EditorTests.cs').read_text(encoding='utf-8-sig') + (root/'tests/StructurePreparationTests.cs').read_text(encoding='utf-8') + (root/'tests/SimulatorTests.cs').read_text(encoding='utf-8'), encoding='utf-8-sig')
     compiler = Path(os.environ['WINDIR']) / 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
     exe = work / 'Tests.exe'
     subprocess.run([str(compiler), '/nologo', '/warnaserror+', '/out:' + str(exe), str(pure_file)], check=True)

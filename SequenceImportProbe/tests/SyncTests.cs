@@ -57,7 +57,8 @@
         Require(unchanged==before.ToJson()+plan.Expected.ToJson()+plan.ToJson(),"preflight changed diff");
         after.Elements.Single(e=>e.Id==message.Id).Links.Remove("receiveExecution");
         var missing=SequenceStructurePreflight.Check(before,plan);
-        Require(!missing.Candidate && missing.Reasons.Any(r=>r.Contains("書込み表現が未確定")),"missing receiver was allowed");
+        // No bar named on the receiving lane: bars the input does not open are not made up.
+        Require(!missing.Candidate && missing.Reasons.Any(r=>r.Contains("入力にない実行区間は作りません")),"missing receiver was allowed");
         after.Elements.Single(e=>e.Id==message.Id).Links["receiveExecution"]=new[]{extra.Id};
         after.Elements.Single(e=>e.Id==message.Id).Text="changed";
         var both=SequenceStructurePreflight.Check(before,plan);
@@ -65,7 +66,8 @@
         Require(both.Candidate && both.ReconnectMessages.Contains(message.Id) && both.Renames.Contains(message.Id),"text change with a reconnect was not both: "+both.ToJson());
         after.Elements.Single(e=>e.Id==message.Id).Text=message.Text;
         plan.Changes.Add(new SequenceChange{Action="move",Kind="message",Id=message.Id,Line=3});
-        Require(!SequenceStructurePreflight.Check(before,plan).Candidate,"supported subset accepted");
+        // A move that changes nothing about where the message sits is only laid out again.
+        Require(SequenceStructurePreflight.Check(before,plan).Candidate,"a move with nothing to move was refused");
         plan.Changes.RemoveAt(1);
         after.Elements.Single(e=>e.Id==extra.Id).Links["participant"]=message.Links["sender"];
         Require(!SequenceStructurePreflight.Check(before,plan).Candidate,"wrong lifeline accepted");
@@ -97,24 +99,25 @@
             var trial=new SyncPlan{Expected=copy};trial.Changes.AddRange(plan.Changes);
             return SequenceStructurePreflight.Check(before,trial);
         };
-        Require(probe(e=>e.Links["participant"]=new string[0]).AddExecutions.Count==0,"execution without a participant accepted");
-        Require(probe(e=>e.Links["participant"]=new[]{added[0].Id}).AddExecutions.Count==0,"execution owned by a new participant accepted");
+        Require(probe(e=>e.Links["participant"]=new string[0]).Candidate==false,"execution without a participant accepted");
+        Require(probe(e=>e.Links["participant"]=new[]{added[0].Id}).Candidate==false,"execution owned by a new participant accepted");
         string interaction=before.Elements.Single(e=>e.Kind=="interaction").Id;
-        Require(probe(e=>e.Links["outer"]=new[]{interaction}).AddExecutions.Count==0,"nesting in a non-execution accepted");
-        Require(probe(e=>e.Links["note"]=new[]{added[0].Id}).AddExecutions.Count==0,"extra link on a new execution accepted");
+        Require(probe(e=>e.Links["outer"]=new[]{interaction}).Candidate==false,"nesting in a non-execution accepted");
+        Require(probe(e=>e.Links["note"]=new[]{added[0].Id}).Candidate==false,"extra link on a new execution accepted");
         var outerId=before.Elements.First(e=>e.Kind=="execution").Id;
         Require(probe(e=>e.Links["outer"]=new[]{outerId}).AddExecutions.Count==1,"nesting in an existing bar of the same participant rejected");
 
         var sender=before.Elements.First(e=>e.Kind=="message").Links["sender"].Single();
         var wrongLane=plan.Expected.Copy();wrongLane.Elements.Single(e=>e.Id==added[0].Id).Links["outer"]=new[]{outerId};
         wrongLane.Elements.Single(e=>e.Id==added[0].Id).Links["participant"]=new[]{sender};
-        Require(SequenceStructurePreflight.Check(before,new SyncPlan{Expected=wrongLane}).AddExecutions.Count==0,"nesting across lifelines accepted");
+        Require(SequenceStructurePreflight.Check(before,new SyncPlan{Expected=wrongLane}).Candidate==false,"nesting across lifelines accepted");
 
         var unused=plan.Expected.Copy();
         unused.Elements.Single(e=>e.Kind=="message" && e.Links.ContainsKey("receiveExecution")
             && e.Links["receiveExecution"].Contains(added[0].Id)).Links["receiveExecution"]=new[]{outerId};
         var unusedPlan=new SyncPlan{Expected=unused};unusedPlan.Changes.AddRange(plan.Changes);
-        Require(SequenceStructurePreflight.Check(before,unusedPlan).AddExecutions.Count==0,"execution nothing receives on accepted");
+        // An activation that holds no message is still one the generator draws; it is laid out between its neighbours.
+        Require(SequenceStructurePreflight.Check(before,unusedPlan).Candidate,"an empty activation was refused");
     }
     public static void Run()
     {

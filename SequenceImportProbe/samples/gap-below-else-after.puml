@@ -1,0 +1,25 @@
+@startuml
+participant A
+participant B
+activate A
+A -> B : first()
+activate B
+B --> A : firstDone()
+deactivate B
+alt ready
+activate A
+A -> B : guarded()
+activate B
+deactivate B
+deactivate A
+else
+A -> B : fallback()
+activate B
+deactivate B
+end
+A -> B : last()
+activate B
+B --> A : lastDone()
+deactivate B
+deactivate A
+@enduml

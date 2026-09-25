@@ -334,8 +334,9 @@ public static class SequenceSyncRuntime
                     Lap("エクスポート");
                     SequenceFrameTypes frameTypes=null;
                     string rootId=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
-                    if(preflight.AddFragments.Count>0 || preflight.AddOperands.Count>0
-                        || preflight.AddMessages.Any(id=>plan.Expected.Elements.Single(e=>e.Id==id).Parent!=rootId))
+                    var byExpected=plan.Expected.Elements.ToDictionary(e=>e.Id);
+                    if(preflight.AddFragments.Count>0 || preflight.AddOperands.Count>0 || preflight.MoveMessages.Count>0 || preflight.NestChanges.Count>0
+                        || preflight.AddMessages.Concat(preflight.AddRefs).Any(id=>byExpected[id].Parent!=rootId))
                     {
                         // Resolve the metaclasses only when a frame is being added or a message
                         // goes into an operand, which needs the operand-to-message relation,
@@ -359,6 +360,13 @@ public static class SequenceSyncRuntime
                             }
                     }
                     catch(Exception ex){log.AppendLine("message sort literals: "+ex.Message);}
+                    // Metaclasses and relation rows for building what the diagram holds nothing of to
+                    // copy, and for free ends of messages to or from outside the diagram.
+                    SequenceStructurePreparation.BaseTypes=null;
+                    bool needsEnds=preflight.AddMessages.Any(id=>!byExpected[id].Links.ContainsKey("sender") || byExpected[id].Links["sender"].Length==0
+                        || !byExpected[id].Links.ContainsKey("receiver") || byExpected[id].Links["receiver"].Length==0);
+                    try {SequenceStructurePreparation.BaseTypes=PumlRuntime.SyncBaseTypes(diagram,project,needsEnds);}
+                    catch(Exception ex) {log.AppendLine("base types: "+ex.Message);if(needsEnds)throw new InvalidOperationException("S220: 図外の端の型を解決できません: "+ex.Message,ex);}
                     SequenceStructurePreparation.DestroyTypes=null;
                     if(preflight.AddDestroys.Count>0)
                     {
@@ -373,7 +381,7 @@ public static class SequenceSyncRuntime
                         log.AppendLine("note types: "+noteTypes.Class+" / "+PumlBuild.Json(noteTypes.Owns)+" / "+noteTypes.Field+":"+noteTypes.Storage);
                     }
                     SequenceRefTypes refTypes=null;
-                    if(preflight.AddRefs.Count>0)
+                    if(preflight.AddRefs.Count>0 || preflight.RefTargetChanges.Count>0)
                     {
                         try {refTypes=PumlRuntime.RefTypes(diagram,project);}
                         catch(Exception ex) {throw new InvalidOperationException("S220: refの型を解決できません: "+ex.Message,ex);}
@@ -513,28 +521,15 @@ public static class SequenceStructureTrial
     {
         int reconnectCount=prepared.ReconnectCount;
         if(reconnectCommit && !retain)throw new InvalidOperationException("S231: 確定モードが不正です。");
+        // The preflight has already sorted every change into something the package writes;
+        // a package that writes nothing at all is the only thing left to refuse.
         int touched=prepared.DeleteIds.Length+prepared.AddedExecutions.Length
             +prepared.AddedParticipants.Length+prepared.DeleteParticipantIds.Length
             +prepared.DeleteMessageIds.Length+prepared.AddedMessages.Length
             +prepared.DeleteFrameIds.Length+prepared.AddedFragments.Length+prepared.AddedOperands.Length+reconnectCount
             +prepared.MovedMessages.Length+prepared.DeleteNoteIds.Length+prepared.AddedNotes.Length+prepared.DeleteRefIds.Length+prepared.DeleteDestroyIds.Length
-            +(plan.Changes.Any(c=>c.Action=="move")?prepared.ShiftedShapes.Length:0)+prepared.Renamed.Length;
-        Func<SequenceChange,bool> supported=c=>
-            (c.Action=="delete" && c.Kind=="execution")
-            // Boundary anchors shifting with a deletion write nothing. The preflight only
-            // lets a plan through when that is all an execution update amounts to.
-            || (c.Action=="update" && c.Kind=="execution")
-            || (reconnectCommit && c.Action=="update" && c.Kind=="message")
-            // A rename writes only the element's text.
-            || (reconnectCommit && c.Action=="update" && prepared.Renamed.Any(r=>r[0]==c.Id))
-            || (reconnectCommit && c.Action=="add" && (c.Kind=="execution" || c.Kind=="participant" || c.Kind=="message" || c.Kind=="note" || c.Kind=="ref" || c.Kind=="destroy"
-                || c.Kind=="fragment" || c.Kind=="operand"))
-            // A wrap moves messages into the new frame, and bars follow them by position.
-            || (reconnectCommit && c.Action=="move" && (c.Kind=="message" || c.Kind=="execution"))
-            || (reconnectCommit && c.Action=="delete"
-                && (c.Kind=="participant" || c.Kind=="message" || c.Kind=="fragment" || c.Kind=="operand" || c.Kind=="note" || c.Kind=="ref" || c.Kind=="destroy"));
-        if(retain && (touched==0 || (!reconnectCommit && touched!=prepared.DeleteIds.Length)
-            || plan.Changes.Any(c=>!supported(c))))
+            +prepared.ShiftedShapes.Length+prepared.Renamed.Length+prepared.UnrelateIds.Length+prepared.SortChanged.Length+prepared.ShapeTexts.Length+prepared.DeleteEndIds.Length;
+        if(retain && (touched==0 || !reconnectCommit))
             throw new InvalidOperationException("S231: 確定モードの対象外の差分があります。");
         string caseId=reconnectCommit?"UPDATE007":retain?"UPDATE006":"UPDATE005";
         var root=diagram.Model as IInteraction;
@@ -543,12 +538,13 @@ public static class SequenceStructureTrial
             .Concat(prepared.AddedMessages.Select(a=>a.ShapeId))
             .Concat(prepared.AddedFragments.Select(a=>a.ShapeId))
             .Concat(prepared.AddedOperands.Select(a=>a.ShapeId))
-            .Concat(prepared.AddedNotes.Select(a=>a.ShapeId))
+            .Concat(prepared.AddedNotes.Where(a=>a.ShapeId!=null).Select(a=>a.ShapeId))
             // Written this run too, so the same rounding applies to them.
             .Concat(prepared.StretchedLifelines.Select(a=>a.ShapeId))
             .Concat(prepared.ShiftedShapes.Select(a=>a.ShapeId)).ToArray();
         var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
-            .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).Concat(prepared.DeleteNoteIds).Concat(prepared.DeleteRefIds).Concat(prepared.DeleteDestroyIds).ToArray();
+            .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).Concat(prepared.DeleteNoteIds).Concat(prepared.DeleteRefIds).Concat(prepared.DeleteDestroyIds)
+            .Concat(prepared.DeleteEndIds).ToArray();
         var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
         var expectedReconnect=before.Expected(prepared,plan,false);
         var expectedFinal=before.Expected(prepared,plan,true);
@@ -604,7 +600,23 @@ public static class SequenceStructureTrial
             log.AppendLine("created shape collections: "+(prepared.CreatedCollections.Length==0?"none"
                 :string.Join(",",prepared.CreatedCollections)));
             Import(project,prepared.ReconnectJson,log);
-            Verify(expectedReconnect,Rounded(project,rootId,fresh,newShapes),"接続変更後",log);
+            // A reference relation is taken off where a message or frame leaves a branch that
+            // stays, where a ref stops covering a lane, and where a bar's reply changes.
+            if(prepared.UnrelateIds.Length>0)
+            {
+                stage="関連の解除";
+                var tree=SequenceMappedUpdate.Tree(project.GetModelById(rootId)).ToArray();
+                foreach(string id in prepared.UnrelateIds)
+                {
+                    var found=tree.SelectMany(m=>m.GetRelationsWhere((r,f)=>r.Id==id)).FirstOrDefault();
+                    if(found==null)throw new InvalidOperationException("S230: 解除する関連が見つかりません。");
+                    if(found.SourceField==null)throw new InvalidOperationException("S230: 解除する関連のフィールドを取得できません。");
+                    log.AppendLine("unrelate: "+found.Metaclass.Id+" "+found.Source.Id+" -> "+found.Target.Id);
+                    found.Source.UnRelate(found.SourceField.Name,found.Target);
+                }
+            }
+            var connected=Rounded(project,rootId,fresh,newShapes);expectedReconnect.Loosen(prepared.LooseShapeIds,connected);
+            Verify(expectedReconnect,connected,"接続変更後",log);
             log.AppendLine("receiver reconnection count: "+prepared.ReconnectCount
                 +"; added executions: "+prepared.AddedExecutions.Length
                 +"; added participants: "+prepared.AddedParticipants.Length+"; SDK state verified");
@@ -623,6 +635,7 @@ public static class SequenceStructureTrial
                 log.AppendLine("\f所有関連の順序 / 削除段階\n削除前(*が消える関連)\n"+before.OrderReport(deletionOwners,prepared)
                     +"\n削除後 期待\n"+expectedFinal.OrderReport(deletionOwners,prepared)
                     +"\n削除後 実測\n"+afterDelete.OrderReport(deletionOwners,prepared)+"\f");
+            expectedFinal.Loosen(prepared.LooseShapeIds,afterDelete);
             Verify(expectedFinal,afterDelete,"削除後",log);
             log.AppendLine("trial execution deletion and SDK state: verified");
         };

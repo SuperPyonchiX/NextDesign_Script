@@ -469,6 +469,27 @@ public sealed class SyncPlan
                 if(expected.TryGetValue(row[0],out message))message.Links[row[1]]=new string[]{row[2]};
             }
         }
+        // A branch that moves to another frame, or a destruction that moves to another lane,
+        // cannot be moved in place: what owns it is fixed. It is made again under a new id and
+        // the old one goes, which the changes below then say.
+        foreach(var e in plan.Expected.Elements.ToArray())
+        {
+            SequenceElement was;
+            if(!old.TryGetValue(e.Id,out was))continue;
+            string[] a,b;
+            bool moved=(e.Kind=="operand" && was.Parent!=e.Parent)
+                || (e.Kind=="destroy" && (!e.Links.TryGetValue("participant",out a) | !was.Links.TryGetValue("participant",out b) || !a.SequenceEqual(b)));
+            if(!moved)continue;
+            string fresh=newId(),stale=e.Id;
+            if(string.IsNullOrEmpty(fresh) || old.ContainsKey(fresh) || plan.Expected.Elements.Any(x=>x.Id==fresh))throw new InvalidOperationException("S203: 新IDが重複しています。");
+            foreach(var x in plan.Expected.Elements)
+            {
+                if(x.Id==stale)x.Id=fresh;
+                if(x.Parent==stale)x.Parent=fresh;
+                foreach(var key in x.Links.Keys.ToArray())x.Links[key]=x.Links[key].Select(id=>id==stale?fresh:id).ToArray();
+            }
+            foreach(var key in map.Keys.ToArray())if(map[key]==stale)map[key]=fresh;
+        }
         foreach(var e in plan.Expected.Elements)
         {
             SequenceElement before;
@@ -750,6 +771,9 @@ public static class SequenceNotePolicy
 }
 
 // Feasibility only. A candidate is not permission to write the live diagram.
+// Every change the input can express is placed by one layout (SequenceRelayout) and written
+// by one builder, so this only sorts the changes for the builder and the summaries, and stops
+// the few things that cannot be written at all.
 public sealed class SequenceStructurePreflight
 {
     public List<string> Reasons=new List<string>();
@@ -764,746 +788,278 @@ public sealed class SequenceStructurePreflight
     public List<string> DeleteOperands=new List<string>();
     public List<string> AddFragments=new List<string>();
     public List<string> AddOperands=new List<string>();
-    // A new frame drawn around messages that are already there, and those messages in
-    // the order they end up in. The frame and its operands are also in AddFragments and
-    // AddOperands; the messages move into it without being recreated.
     public List<string> DeleteNotes=new List<string>();
     public List<string> AddNotes=new List<string>();
     public List<string> DeleteRefs=new List<string>();
-    // A frame taken away while what it held stays, now owned by the interaction. The frame
-    // and its operands are also in DeleteFragments and DeleteOperands.
+    // A new frame around elements already drawn, and the existing messages that move into
+    // an operand (in, out of, or between frames).
+    public List<string> WrapFragments=new List<string>();
+    public List<string> MoveMessages=new List<string>();
+    // A frame taken away while some of what it held stays.
     public List<string> UnwrapFragments=new List<string>();
-    // Top-level messages that change places with each other. Only positions change.
+    // Elements that keep their container but change places with their neighbours.
     public List<string> ReorderMessages=new List<string>();
-    // Elements whose text alone changed: a message's label, a lane's name, a note's body,
-    // a ref's text, a branch's guard. Only the model's text is written.
+    // Elements whose text alone changed.
     public List<string> Renames=new List<string>();
-    // The last branch of a frame that stays, taken away with what it held.
+    // A branch taken away from a frame that stays.
     public List<string> TrimOperands=new List<string>();
     public List<string> AddDestroys=new List<string>();
     public List<string> DeleteDestroys=new List<string>();
     public List<string> AddRefs=new List<string>();
-    public List<string> WrapFragments=new List<string>();
-    public List<string> MoveMessages=new List<string>();
+    // Messages whose sort changes, and whose sending bar changes.
+    public List<string> SortChanges=new List<string>();
+    public List<string> ResendMessages=new List<string>();
+    // Frames, refs and notes that move into, out of or between frames; lanes that change order;
+    // frames whose operator changes; refs whose lanes change; bars that change lanes.
+    public List<string> NestChanges=new List<string>();
+    public List<string> LaneMoves=new List<string>();
+    public List<string> OperatorChanges=new List<string>();
+    public List<string> RefTargetChanges=new List<string>();
+    // Anything else that only moves: bars whose boundaries change, notes that move.
+    public List<string> Relayouts=new List<string>();
     public int Targets { get { return ReconnectMessages.Count+DeleteExecutions.Count+AddExecutions.Count
         +AddParticipants.Count+DeleteParticipants.Count+DeleteMessages.Count+AddMessages.Count
-        +DeleteFragments.Count+DeleteOperands.Count+AddFragments.Count+AddOperands.Count+MoveMessages.Count+DeleteNotes.Count+AddNotes.Count+DeleteRefs.Count+AddRefs.Count+ReorderMessages.Count+Renames.Count+AddDestroys.Count+DeleteDestroys.Count; } }
+        +DeleteFragments.Count+DeleteOperands.Count+AddFragments.Count+AddOperands.Count+MoveMessages.Count+DeleteNotes.Count+AddNotes.Count+DeleteRefs.Count+AddRefs.Count
+        +ReorderMessages.Count+Renames.Count+AddDestroys.Count+DeleteDestroys.Count+SortChanges.Count+ResendMessages.Count+NestChanges.Count+LaneMoves.Count
+        +OperatorChanges.Count+RefTargetChanges.Count+Relayouts.Count; } }
     public bool Candidate { get { return Reasons.Count==0 && Targets>0; } }
-    // The deletion-only mode stays exactly as the product confirmed it. The other mode
-    // covers a receiver change together with deletions, additions, or both.
-    // One button commits every supported change, a deletion alone included.
-    public bool CanCommit()
-    {
-        return Candidate && Targets>0;
-    }
-    // A fragment goes only as a whole: its operands and everything inside them have to
-    // be leaving in the same plan, so nothing is left without a place to live.
-    // Document order across owners, so "goes last" means the same thing for a message
-    // at the top level and for one inside a new frame. Bars are stored, not sequenced.
+    public bool CanCommit() { return Candidate; }
+    // Document order across owners. Bars are stored, not sequenced.
     internal static string[] Flatten(SequenceDocument doc)
     {
         var order=new List<string>();
+        var children=doc.Elements.Where(n=>n.Kind!="participant" && n.Kind!="execution" && n.Parent!=null)
+            .GroupBy(n=>n.Parent).ToDictionary(g=>g.Key,g=>g.OrderBy(n=>n.Order).ToArray());
         Action<string> walk=null;
         walk=parent=>{
-            foreach(var e in doc.Elements.Where(n=>n.Parent==parent && n.Kind!="participant" && n.Kind!="execution").OrderBy(n=>n.Order))
-            {order.Add(e.Id);walk(e.Id);}
+            SequenceElement[] list;if(!children.TryGetValue(parent,out list))return;
+            foreach(var e in list){order.Add(e.Id);walk(e.Id);}
         };
         walk(doc.Elements.Single(e=>e.Kind=="interaction").Id);
         return order.ToArray();
     }
-    static string Appended(SequenceDocument current,SyncPlan plan,string id,string what)
-    {
-        var order=Flatten(plan.Expected);
-        int at=Array.IndexOf(order,id);
-        if(at<0)return what+"が図の並びに現れません。";
-        var existing=new HashSet<string>(current.Elements.Select(e=>e.Id));
-        for(int i=at+1;i<order.Length;i++)
-            if(existing.Contains(order[i]))return what+"が末尾ではありません。途中への挿入は後続の移動になるため対象外です。";
-        return null;
-    }
-    // A new frame is appended whole: the frame, its operands and everything in them are
-    // all new. Wrapping existing messages would move them into the frame, which is a
-    // different change and not handled here.
-    static string FragmentAddReason(SequenceDocument current,SyncPlan plan,SequenceElement added,HashSet<string> adding)
-    {
-        var before=current.Elements.ToDictionary(e=>e.Id);
-        string root=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
-        if(added.Parent!=root)return "追加するフラグメントの所有先が相互作用ではありません。入れ子のフラグメントは対象外です。";
-        if(added.Links.Count>0)return "追加するフラグメントに未対応の接続があります。";
-        var inside=new List<SequenceElement>();var pending=new List<string>{added.Id};
-        for(int i=0;i<pending.Count;i++)
-        {
-            if(pending.Count>500)return "追加するフラグメントの入れ子が深すぎます。";
-            foreach(var child in plan.Expected.Elements.Where(e=>e.Parent==pending[i])){inside.Add(child);pending.Add(child.Id);}
-        }
-        foreach(var child in inside)
-        {
-            if(before.ContainsKey(child.Id))
-                return "追加するフラグメントの中に既存の要素があります。既存のメッセージを枠で囲む変更は対象外です。";
-            if(child.Kind!="operand" && child.Kind!="message" && child.Kind!="execution")
-                return "追加するフラグメントの中に"+child.Kind+"があるため対象外です。オペランド・メッセージ・実行区間だけを扱います。";
-            if(!adding.Contains(child.Id))return "追加するフラグメントの中に、この計画で追加しない要素があります。";
-        }
-        // A frame needs at least one lane to span.
-        if(!current.Elements.Any(e=>e.Kind=="participant"))return "図に参加者がないため枠を配置できません。";
-        var operands=inside.Where(e=>e.Kind=="operand" && e.Parent==added.Id).ToArray();
-        if(operands.Length==0)return "追加するフラグメントにオペランドがありません。";
-        // The product cannot lay out a frame that encloses no message.
-        foreach(var operand in operands)
-            if(!plan.Expected.Elements.Any(e=>e.Kind=="message" && e.Parent==operand.Id))
-                return "メッセージのないオペランドがあります。空の枠は図形を作れません。";
-        return Appended(current,plan,added.Id,"追加するフラグメント");
-    }
-    static string OperandAddReason(SequenceDocument current,SyncPlan plan,SequenceElement added,HashSet<string> adding)
-    {
-        var before=current.Elements.ToDictionary(e=>e.Id);
-        // A new branch on a frame already drawn goes after its last branch, and only when
-        // nothing is drawn below that frame, so the frame can simply grow downward.
-        if(added.Parent!=null && before.ContainsKey(added.Parent) && before[added.Parent].Kind=="fragment")
-        {
-            var branches=plan.Expected.Elements.Where(e=>e.Parent==added.Parent && e.Kind=="operand").OrderBy(e=>e.Order).ToArray();
-            if(branches.Length==0 || branches[branches.Length-1].Id!=added.Id)return "追加するオペランドが枠の最後の分岐ではありません。途中への分岐の追加は対象外です。";
-            var walk=Flatten(current);
-            if(walk.Skip(Array.IndexOf(walk,added.Parent)+1).Any(id=>!IsWithin(current,id,added.Parent)))
-                return "分岐を足す枠の下に既存の要素があります。図の最後にある枠に限ります。";
-            if(added.Links.Count>0)return "追加するオペランドに未対応の接続があります。";
-            if(!plan.Expected.Elements.Any(e=>e.Kind=="message" && e.Parent==added.Id))return "メッセージのないオペランドがあります。空の分岐は対象外です。";
-            if(plan.Expected.Elements.Any(e=>e.Parent==added.Id && before.ContainsKey(e.Id)))return "追加する分岐の中に既存の要素があります。";
-            return null;
-        }
-        if(added.Parent==null || !adding.Contains(added.Parent))
-            return "オペランド単独の追加は、既存の枠の最後の分岐か、フラグメントごと追加する場合だけ扱います。";
-        SequenceElement owner;
-        if(!plan.Expected.Elements.ToDictionary(e=>e.Id).TryGetValue(added.Parent,out owner) || owner.Kind!="fragment")
-            return "追加するオペランドの所有先がフラグメントではありません。";
-        if(added.Links.Count>0)return "追加するオペランドに未対応の接続があります。";
-        return null;
-    }
-    static bool IsWithin(SequenceDocument doc,string id,string container)
-    {
-        var byId=doc.Elements.ToDictionary(e=>e.Id);
-        for(string at=id;at!=null && byId.ContainsKey(at);at=byId[at].Parent)if(at==container)return true;
-        return false;
-    }
-    static string FragmentReason(SequenceDocument current,SyncPlan plan,string id)
-    {
-        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
-        var inside=new List<SequenceElement>();
-        var pending=new List<string>{id};
-        for(int i=0;i<pending.Count;i++)
-        {
-            if(pending.Count>500)return "フラグメントの入れ子が深すぎます。";
-            foreach(var child in current.Elements.Where(e=>e.Parent==pending[i]))
-            {inside.Add(child);pending.Add(child.Id);}
-        }
-        foreach(var child in inside)
-        {
-            if(after.ContainsKey(child.Id))return "フラグメントの中に残す要素があります。中身ごと消える場合だけ対象です。";
-            // Executions live inside a frame too; they leave with it like anything else.
-            if(child.Kind!="operand" && child.Kind!="message" && child.Kind!="execution")
-                return "フラグメントの中に"+child.Kind+"があるため対象外です。オペランド・メッセージ・実行区間だけを扱います。";
-        }
-        return null;
-    }
-    static bool Referenced(SyncPlan plan,string id)
-    {
-        return plan.Expected.Elements.Any(e=>e.Parent==id || e.Links.Values.SelectMany(v=>v).Contains(id));
-    }
-    // A new message only goes after every existing one, into space the current bars
-    // already cover. Inserting between messages would push the rest of the diagram down.
-    static string MessageReason(SequenceDocument current,SyncPlan plan,SequenceElement added,List<string> addedExecutions,HashSet<string> adding)
-    {
-        var before=current.Elements.ToDictionary(e=>e.Id);
-        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
-        string root=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
-        // A message may also go into an operand that is already drawn. Its frame then has
-        // to grow, so that is always an insertion, even at the very end of the diagram.
-        bool intoFrame=added.Parent!=root && before.ContainsKey(added.Parent) && before[added.Parent].Kind=="operand"
-            && after.ContainsKey(added.Parent) && after[added.Parent].Kind=="operand";
-        if(added.Parent!=root && !intoFrame && !(adding.Contains(added.Parent) && after.ContainsKey(added.Parent) && after[added.Parent].Kind=="operand"))
-            return "追加するメッセージの所有先が相互作用でも、既存のオペランドでも、この計画で追加するオペランドでもありません。";
-        var known=new[]{"sender","receiver","sendExecution","receiveExecution"};
-        if(added.Links.Keys.Any(key=>!known.Contains(key)))return "追加するメッセージに未対応の接続があります。";
-        foreach(var e in plan.Expected.Elements)
-        {
-            if(e.Parent==added.Id)return "追加するメッセージが他の要素を所有しています。";
-            foreach(var pair in e.Links)
-                if(pair.Value.Contains(added.Id))
-                {
-                    // A bar added with the message names it as its own boundary. That is
-                    // the frame being built, not an outside reference to the message.
-                    if(e.Kind=="execution" && (pair.Key=="startAfter" || pair.Key=="endBefore"))continue;
-                    return "追加するメッセージを参照する要素があります。";
-                }
-        }
-        foreach(string role in new[]{"sender","receiver"})
-        {
-            var ends=Link(added,role);
-            if(ends.Length!=1 || !before.ContainsKey(ends[0]) || before[ends[0]].Kind!="participant")
-                return "追加するメッセージの"+role+"が既存の参加者ではありません。図外との送受信は対象外です。";
-        }
-        foreach(string role in new[]{"sendExecution","receiveExecution"})
-        {
-            var ports=Link(added,role);
-            if(ports.Length!=1)return "追加するメッセージの"+role+"が1件ではありません（"+ports.Length
-                +"件）。省略した端点は既存メッセージからしか引き継げません。追加するメッセージは、その端点を含む activate の内側に書いてください。";
-            if(!before.ContainsKey(ports[0]) && !addedExecutions.Contains(ports[0]))
-                return "追加するメッセージの接続先は既存の実行区間か、この計画で追加する実行区間である必要があります。";
-        }
-        // Going last needs no room made for it. Anywhere else, everything below has to
-        // move down: messages and bars move, a frame below moves whole, and a frame the
-        // point falls inside grows, pushing its later operands down. That stays describable
-        // for a message placed right after an existing one in the same container, between
-        // bars that are already open across that point, so no new bar has to be placed.
-        string why=Appended(current,plan,added.Id,"追加するメッセージ");
-        if(why!=null || intoFrame)
-        {
-            if(added.Parent!=root && !intoFrame)return why;
-            foreach(string role in new[]{"sendExecution","receiveExecution"})
-                if(!before.ContainsKey(Link(added,role)[0]))
-                    return "図の途中へ挿入するメッセージは、既に開いている実行区間につないでください。"
-                        +"新しい実行区間を同時に作る挿入は対象外です。";
-            var walk=Flatten(plan.Expected);
-            int at=Array.IndexOf(walk,added.Id);
-            // The room is made below the message just above. That only lands in the right
-            // container when that message shares it: at the head of an operand, or just
-            // after a frame closes, the point would fall on the wrong side of a boundary.
-            // Several new elements may follow one another; the first of them sits under an
-            // existing message, and each is checked on its own.
-            SequenceElement previous;
-            if(at<1 || !after.TryGetValue(walk[at-1],out previous) || previous.Parent!=added.Parent
-                || !((previous.Kind=="message" && before.ContainsKey(previous.Id))
-                    || (adding.Contains(previous.Id) && (previous.Kind=="message" || previous.Kind=="note" || previous.Kind=="ref"))))
-                return "挿入するメッセージの直前は、同じ所有先にある既存のメッセージか、この更新で追加するメッセージ・Note・refにしてください。"
-                    +"オペランドの先頭や、枠の直後への挿入は対象外です。";
-            var below=walk.Skip(at+1).Where(before.ContainsKey).Select(id=>after[id]).ToArray();
-            if(below.Any(e=>e.Kind!="message" && e.Kind!="fragment" && e.Kind!="operand" && e.Kind!="note" && e.Kind!="ref"))
-                return "挿入位置より下に"+below.First(e=>e.Kind!="message" && e.Kind!="fragment" && e.Kind!="operand" && e.Kind!="note" && e.Kind!="ref").Kind
-                    +"があります。メッセージ・枠・Note・refだけを下げる挿入に限ります。";
-        }
-        var order=Flatten(plan.Expected);
-        var earlier=order.Take(Array.IndexOf(order,added.Id)).Select(id=>after[id]).Where(e=>e.Kind=="message").ToArray();
-        if(earlier.Length==0)return "直前のメッセージがありません。最初のメッセージの追加は対象外です。";
-        // Position comes from the message before it; the type and shape come from any
-        // existing message of the same sort, so a reply after a call is still describable.
-        // Any existing message will do as the sample; a different sort is written from the
-        // profile's literal when the update is prepared.
-        if(!earlier.Any(e=>before.ContainsKey(e.Id)))
-            return "既存のメッセージがないため、見本にできません。";
-        return null;
-    }
     internal static string Attribute(SequenceElement e)
     { string value;return e.Attributes.TryGetValue("sort",out value)?value:""; }
-    // A new lane only goes at the right end, where no existing lane has to move.
-    static string ParticipantReason(SequenceDocument current,SyncPlan plan,SequenceElement added)
-    {
-        string root=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
-        if(added.Parent!=root)return "追加する参加者の所有先が相互作用ではありません。";
-        if(added.Links.Count>0)return "追加する参加者に未対応の接続があります。";
-        if(Referenced(plan,added.Id))return "追加する参加者を参照する要素があります。メッセージや実行区間の追加は別途必要です。";
-        var existing=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
-        if(existing.Count==0)return "既存の参加者がないため、新しい参加者を配置できません。";
-        // Anywhere among the lanes: those to its right move over by one lane spacing.
-        return null;
-    }
-    // One element as text for comparison. The reader and the parser add links in a
-    // different order, so the links are sorted first; only what they hold matters.
-    static string Canonical(SequenceElement e)
-    {
-        var copy=e.Copy();
-        copy.Links=e.Links.OrderBy(p=>p.Key,StringComparer.Ordinal).ToDictionary(p=>p.Key,p=>p.Value.ToArray(),StringComparer.Ordinal);
-        copy.Attributes=e.Attributes.OrderBy(p=>p.Key,StringComparer.Ordinal).ToDictionary(p=>p.Key,p=>p.Value,StringComparer.Ordinal);
-        return new SequenceDocument{Elements=new List<SequenceElement>{copy}}.ToJson();
-    }
     static string[] Link(SequenceElement e,string role)
     { string[] ids;return e.Links.TryGetValue(role,out ids)?ids:new string[0]; }
-    // startAfter and endBefore name the neighbouring events; they have no model field of
-    // their own. When they differ only because those neighbours are being deleted, the
-    // execution itself is unchanged and nothing has to be written.
-    static bool AnchorsOnly(SequenceElement old,SequenceElement next,Dictionary<string,SequenceElement> after)
-    { return AnchorsOnly(old,next,after,null); }
-    // An anchor may also move to a note this plan adds, which now sits between the bar and
-    // the event it used to name.
-    static bool AnchorsOnly(SequenceElement old,SequenceElement next,Dictionary<string,SequenceElement> after,HashSet<string> notes)
-    {
-        Func<SequenceElement,string> bare=e=>{
-            var copy=e.Copy();copy.Links.Remove("startAfter");copy.Links.Remove("endBefore");copy.Line=0;copy.Order=0;
-            return Canonical(copy);
-        };
-        if(bare(old)!=bare(next))return false;
-        foreach(string role in new[]{"startAfter","endBefore"})
-        {
-            var was=Link(old,role);var now=Link(next,role);
-            if(was.SequenceEqual(now))continue;
-            if(notes!=null && now.Length==1 && notes.Contains(now[0]))continue;
-            if(was.Any(id=>after.ContainsKey(id)))return false;
-        }
-        return true;
-    }
-    // A bar under a wrap keeps its lane and nesting. Its owner, where it ends and its
-    // neighbouring events may change, but only to places that still exist: the
-    // interaction or one of the new frame's operands.
-    static bool FollowsWrap(SequenceElement old,SequenceElement next,Dictionary<string,SequenceElement> after,string frame)
-    {
-        Func<SequenceElement,string> bare=e=>{
-            var copy=e.Copy();copy.Parent=null;copy.Line=0;copy.Order=0;
-            foreach(string key in new[]{"startAfter","endBefore","endContainer"})copy.Links.Remove(key);
-            return Canonical(copy);
-        };
-        if(bare(old)!=bare(next))return false;
-        Func<string,bool> place=id=>id==old.Parent || (after.ContainsKey(id) && after[id].Kind=="operand" && after[id].Parent==frame);
-        if(next.Parent==null || !place(next.Parent) || !Link(next,"endContainer").All(place))return false;
-        return Link(next,"startAfter").Concat(Link(next,"endBefore")).All(after.ContainsKey);
-    }
-    static string Comparable(SequenceElement e) { return Comparable(e,true); }
-    // Everything but the text, and optionally the receiving bar.
-    static string Comparable(SequenceElement e,bool withoutReceiver)
-    {
-        var copy=e.Copy();if(withoutReceiver)copy.Links.Remove("receiveExecution");copy.Line=0;copy.Order=0;copy.Text="";
-        return Canonical(copy);
-    }
-    // An added execution is only describable when it is a plain receive bar on an
-    // existing participant: owned by the interaction, optionally nested in one of that
-    // participant's existing bars, and referenced by messages as receiveExecution only.
-    static string AddReason(SequenceDocument current,SyncPlan plan,SequenceElement added,HashSet<string> adding)
-    {
-        var before=current.Elements.ToDictionary(e=>e.Id);
-        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
-        string root=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
-        // A bar is owned either by the interaction or by an operand of a frame this plan adds.
-        Func<string,bool> container=id=>id==root
-            || (adding.Contains(id) && after.ContainsKey(id) && after[id].Kind=="operand");
-        if(!container(added.Parent))
-            return "追加する実行区間の所有先が相互作用でも、この計画で追加するオペランドでもありません。";
-        var participant=Link(added,"participant");
-        if(participant.Length!=1 || !before.ContainsKey(participant[0]) || before[participant[0]].Kind!="participant")
-            return "追加する実行区間の参加者が既存の参加者ではありません。";
-        var outer=Link(added,"outer");
-        if(outer.Length>1 || (outer.Length==1 && (!after.ContainsKey(outer[0]) || after[outer[0]].Kind!="execution"
-            || !Link(after[outer[0]],"participant").SequenceEqual(participant))))
-            return "追加する実行区間の入れ子先が同じ参加者の実行区間ではありません。";
-        var known=new[]{"participant","outer","startAfter","endBefore","endContainer"};
-        if(added.Links.Keys.Any(key=>!known.Contains(key)))return "追加する実行区間に未対応の接続があります。";
-        var ends=Link(added,"endContainer");
-        if(ends.Length!=1 || !container(ends[0]))
-            return "追加する実行区間の終了位置が相互作用でも、この計画で追加するオペランドでもありません。";
-        foreach(string key in new[]{"startAfter","endBefore"})
-        {
-            var anchor=Link(added,key);
-            if(anchor.Length>1 || (anchor.Length==1 && !after.ContainsKey(anchor[0])))
-                return "追加する実行区間の境界が期待状態の要素を指していません。";
-        }
-        if(plan.Expected.Elements.Any(e=>e.Parent==added.Id))return "追加する実行区間が他の要素を所有しています。";
-        int links=0;
-        foreach(var e in plan.Expected.Elements)
-            foreach(var pair in e.Links)
-                if(pair.Value.Contains(added.Id))
-                {
-                    if(pair.Key=="outer" && e.Kind=="execution" && adding.Contains(e.Id)){links++;continue;}
-                    if(e.Kind!="message" || (pair.Key!="receiveExecution" && pair.Key!="sendExecution"))
-                        return "追加する実行区間がメッセージの送受信以外から参照されています。";
-                    // Moving an existing message onto a new bar is a reconnection, not an addition.
-                    if(pair.Key=="sendExecution" && !adding.Contains(e.Id))
-                        return "追加する実行区間を送信元にする既存メッセージがあります。既存メッセージの送信元は変えられません。";
-                    links++;
-                }
-        if(links==0)return "追加する実行区間に接続するメッセージがありません。";
-        return null;
-    }
-    // A new frame around messages already drawn. Only the plainest form: the frame sits
-    // directly in the interaction, every operand is new and holds at least one message,
-    // and what it holds is a run of existing top-level messages, in the same order, with
-    // their bars. Nothing else changes in the same update, since the room this makes
-    // moves everything below it.
-    static string WrapReason(SequenceDocument current,SyncPlan plan,SequenceElement added,HashSet<string> adding,List<string> moved)
-    {
-        var before=current.Elements.ToDictionary(e=>e.Id);
-        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
-        string root=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
-        if(added.Parent!=root)return "既存のメッセージを囲む枠は相互作用の直下に置いてください。入れ子の枠で囲む変更は対象外です。";
-        if(added.Links.Count>0)return "追加するフラグメントに未対応の接続があります。";
-        var operands=plan.Expected.Elements.Where(e=>e.Parent==added.Id).OrderBy(e=>e.Order).ToArray();
-        if(operands.Length==0 || operands.Any(o=>o.Kind!="operand" || !adding.Contains(o.Id)))
-            return "既存のメッセージを囲む枠のオペランドは、すべて新しく追加するものに限ります。";
-        foreach(var operand in operands)
-        {
-            var inside=plan.Expected.Elements.Where(e=>e.Parent==operand.Id).ToArray();
-            foreach(var child in inside)
-            {
-                if(child.Kind=="execution" && before.ContainsKey(child.Id))continue;
-                if(child.Kind!="message" || !before.ContainsKey(child.Id))
-                    return "既存のメッセージを囲む枠の中に、新しい要素や"+child.Kind+"があります。囲むだけの変更に限ります。";
-                if(before[child.Id].Parent!=root)return "囲むメッセージは相互作用の直下にあるものに限ります。";
-            }
-            var messages=Flatten(plan.Expected).Where(id=>after[id].Parent==operand.Id).ToArray();
-            if(messages.Length==0)return "メッセージのないオペランドがあります。空の枠は図形を作れません。";
-            moved.AddRange(messages);
-        }
-        // The run has to be contiguous and keep its order, or it is a reordering as well.
-        var old=Flatten(current);
-        int first=Array.IndexOf(old,moved[0]);
-        for(int i=0;i<moved.Count;i++)
-            if(first<0 || first+i>=old.Length || old[first+i]!=moved[i])
-                return "囲むメッセージが元の図で連続していないか、順序が変わっています。囲むだけの変更に限ります。";
-        foreach(string id in old.Skip(first+moved.Count))
-            if(before[id].Kind!="message" && before[id].Kind!="fragment" && before[id].Kind!="operand")
-                return "囲む範囲より下に"+before[id].Kind+"があります。メッセージと枠だけを下げる変更に限ります。";
-        // The rest of the top level keeps its order around the new frame.
-        var inRun=new HashSet<string>(moved);
-        var kept=old.Where(id=>before[id].Parent==root && !inRun.Contains(id)).ToArray();
-        var now=Flatten(plan.Expected).Where(id=>after[id].Parent==root && before.ContainsKey(id)).ToArray();
-        if(!kept.SequenceEqual(now))return "枠の外の要素の順序も変わっています。囲むだけの変更に限ります。";
-        return null;
-    }
-    // A new note goes right under an existing top-level message and pushes what is below
-    // it down, as the generator lays one out. It spans every lane: a new note carries no
-    // anchors (SequenceNotePolicy), so there is nothing narrower to place it by.
-    // A ref is placed the same way; it spans the lanes it names instead.
-    static string NoteAddReason(SequenceDocument current,SyncPlan plan,SequenceElement added)
-    {
-        var before=current.Elements.ToDictionary(e=>e.Id);
-        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
-        string root=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
-        if(added.Parent!=root)return "追加する"+added.Kind+"の所有先が相互作用ではありません。枠の中への追加は対象外です。";
-        if(added.Kind=="ref" && Link(added,"targets").Any(id=>!before.ContainsKey(id) || before[id].Kind!="participant"))
-            return "追加するrefの対象が既存の参加者ではありません。";
-        // A bar's neighbouring-event anchors may now name the note; they are read from
-        // positions and write nothing. Anything else pointing at it is a real reference.
-        if(plan.Expected.Elements.Any(e=>e.Parent==added.Id
-            || e.Links.Where(p=>!(e.Kind=="execution" && (p.Key=="startAfter" || p.Key=="endBefore"))).SelectMany(p=>p.Value).Contains(added.Id)))
-            return "追加する"+added.Kind+"を参照する要素があります。";
-        var walk=Flatten(plan.Expected);
-        int at=Array.IndexOf(walk,added.Id);
-        var adding=new HashSet<string>(plan.Changes.Where(c=>c.Action=="add").Select(c=>c.Id));
-        SequenceElement previous;
-        if(at<1 || !after.TryGetValue(walk[at-1],out previous) || previous.Parent!=root
-            || !((previous.Kind=="message" && before.ContainsKey(previous.Id))
-                || (adding.Contains(previous.Id) && (previous.Kind=="message" || previous.Kind=="note" || previous.Kind=="ref"))))
-            return "追加する"+added.Kind+"の直前は、相互作用直下の既存メッセージか、この更新で追加するメッセージ・Note・refにしてください。図の先頭・枠の直後への追加は対象外です。";
-        var below=walk.Skip(at+1).Where(before.ContainsKey).Select(id=>after[id]).ToArray();
-        if(below.Any(e=>e.Kind!="message" && e.Kind!="fragment" && e.Kind!="operand" && e.Kind!="note" && e.Kind!="ref"))
-            return "追加する"+added.Kind+"より下に"+below.First(e=>e.Kind!="message" && e.Kind!="fragment" && e.Kind!="operand" && e.Kind!="note" && e.Kind!="ref").Kind
-                +"があります。メッセージ・枠・Note・refだけを下げる変更に限ります。";
-        return null;
-    }
-    // The reverse of wrapping: a top-level frame goes, every operand with it, and what the
-    // operands held is kept at the top level in the same order. Positions stay as they are,
-    // so the space the frame's heading took is left, like any removal.
-    static string UnwrapReason(SequenceDocument current,SyncPlan plan,string id)
-    {
-        var before=current.Elements.ToDictionary(e=>e.Id);
-        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
-        string root=current.Elements.Single(e=>e.Kind=="interaction").Id;
-        if(before[id].Parent!=root)return "外す枠が相互作用の直下にありません。入れ子の枠は対象外です。";
-        var operands=current.Elements.Where(e=>e.Parent==id).ToArray();
-        if(operands.Any(o=>o.Kind!="operand" || after.ContainsKey(o.Id)))return "外す枠のオペランドが残ります。枠ごと外す場合だけ扱います。";
-        foreach(var child in current.Elements.Where(e=>operands.Any(o=>o.Id==e.Parent)))
-        {
-            if(child.Kind!="message" && child.Kind!="execution")return "外す枠の中に"+child.Kind+"があります。メッセージと実行区間だけを扱います。";
-            if(!after.ContainsKey(child.Id) || after[child.Id].Parent!=root)return "外す枠の中の要素が相互作用の直下に残りません。";
-        }
-        var old=Flatten(current).Where(e=>before[e].Kind=="message").ToArray();
-        var now=Flatten(plan.Expected).Where(e=>before.ContainsKey(e) && after[e].Kind=="message").ToArray();
-        if(!old.SequenceEqual(now))return "枠を外す前後でメッセージの順序が変わっています。外すだけの変更に限ります。";
-        return null;
-    }
-    // A bar the frame held keeps its lane and nesting; only its owner and end container,
-    // which named the operand, now name the interaction.
-    static bool FollowsReorder(SequenceElement old,SequenceElement next,Dictionary<string,SequenceElement> after)
-    {
-        Func<SequenceElement,string> bare=e=>{
-            var copy=e.Copy();copy.Line=0;copy.Order=0;copy.Links.Remove("startAfter");copy.Links.Remove("endBefore");
-            return Canonical(copy);
-        };
-        return bare(old)==bare(next) && Link(next,"startAfter").Concat(Link(next,"endBefore")).All(after.ContainsKey);
-    }
-    static bool FollowsUnwrap(SequenceElement old,SequenceElement next,Dictionary<string,SequenceElement> after,string root)
-    {
-        Func<SequenceElement,string> bare=e=>{
-            var copy=e.Copy();copy.Parent=null;copy.Line=0;copy.Order=0;
-            foreach(string key in new[]{"startAfter","endBefore","endContainer"})copy.Links.Remove(key);
-            return Canonical(copy);
-        };
-        if(bare(old)!=bare(next))return false;
-        Func<string,bool> place=id=>id==root || after.ContainsKey(id);
-        return next.Parent!=null && place(next.Parent) && Link(next,"endContainer").All(place)
-            && Link(next,"startAfter").Concat(Link(next,"endBefore")).All(after.ContainsKey);
-    }
+    static string Attr(SequenceElement e,string key)
+    { string value;return e.Attributes.TryGetValue(key,out value)?value:""; }
     public static SequenceStructurePreflight Check(SequenceDocument current,SyncPlan plan)
     {
         current.Validate();plan.Expected.Validate();
         var result=new SequenceStructurePreflight();
         var before=current.Elements.ToDictionary(e=>e.Id);
         var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
-        var adding=new HashSet<string>(plan.Changes.Where(c=>c.Action=="add").Select(c=>c.Id));
-        foreach(var change in plan.Changes.Where(c=>c.Action=="add" && c.Kind=="fragment"))
+        string root=plan.Expected.Elements.Single(e=>e.Kind=="interaction").Id;
+        Func<SequenceElement,int> line=e=>{var c=plan.Changes.FirstOrDefault(x=>x.Id==e.Id);return c==null?e.Line:c.Line;};
+        Action<SequenceElement,string> stop=(e,reason)=>result.Reasons.Add("L"+line(e)+" "+reason);
+        foreach(var e in plan.Expected.Elements.Where(e=>!before.ContainsKey(e.Id)))
         {
-            SequenceElement added;
-            if(before.ContainsKey(change.Id) || !after.TryGetValue(change.Id,out added))
-            { result.Reasons.Add("L"+change.Line+" 追加するフラグメントを期待状態から取得できません。");continue; }
-            // A frame holding messages that are already there wraps them rather than adding new ones.
-            var holds=new List<string>();var pending=new List<string>{added.Id};
-            for(int i=0;i<pending.Count && pending.Count<500;i++)
-                foreach(var child in plan.Expected.Elements.Where(e=>e.Parent==pending[i])){holds.Add(child.Id);pending.Add(child.Id);}
-            if(holds.Any(before.ContainsKey))
+            switch(e.Kind)
             {
-                var moved=new List<string>();
-                string reason=WrapReason(current,plan,added,adding,moved);
-                if(reason!=null){result.Reasons.Add("L"+change.Line+" "+reason);continue;}
-                if(result.WrapFragments.Count>0){result.Reasons.Add("L"+change.Line+" 1回の更新で囲める枠は1つです。");continue;}
-                result.AddFragments.Add(change.Id);result.WrapFragments.Add(change.Id);result.MoveMessages.AddRange(moved);
-                continue;
+                case "fragment":
+                    result.AddFragments.Add(e.Id);
+                    if(plan.Expected.Elements.Any(x=>before.ContainsKey(x.Id) && x.Kind!="execution" && IsWithin(plan.Expected,x.Id,e.Id)))result.WrapFragments.Add(e.Id);
+                    break;
+                case "operand":
+                    if(e.Parent==null || !after.ContainsKey(e.Parent) || after[e.Parent].Kind!="fragment"){stop(e,"追加するオペランドの所有先がフラグメントではありません。");break;}
+                    result.AddOperands.Add(e.Id);break;
+                case "message":result.AddMessages.Add(e.Id);break;
+                case "note":result.AddNotes.Add(e.Id);break;
+                case "ref":result.AddRefs.Add(e.Id);break;
+                case "participant":result.AddParticipants.Add(e.Id);break;
+                case "execution":result.AddExecutions.Add(e.Id);break;
+                case "destroy":result.AddDestroys.Add(e.Id);break;
+                default:stop(e,e.Kind+"の追加は対象外です。");break;
             }
-            string why=FragmentAddReason(current,plan,added,adding);
-            if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
-            result.AddFragments.Add(change.Id);
         }
-        foreach(var change in plan.Changes.Where(c=>c.Action=="add" && c.Kind=="operand"))
+        foreach(var e in current.Elements.Where(e=>!after.ContainsKey(e.Id)))
         {
-            SequenceElement added;
-            if(before.ContainsKey(change.Id) || !after.TryGetValue(change.Id,out added))
-            { result.Reasons.Add("L"+change.Line+" 追加するオペランドを期待状態から取得できません。");continue; }
-            string why=OperandAddReason(current,plan,added,adding);
-            if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
-            result.AddOperands.Add(change.Id);
+            switch(e.Kind)
+            {
+                case "execution":result.DeleteExecutions.Add(e.Id);break;
+                case "participant":result.DeleteParticipants.Add(e.Id);break;
+                case "message":result.DeleteMessages.Add(e.Id);break;
+                case "fragment":
+                    result.DeleteFragments.Add(e.Id);
+                    if(current.Elements.Any(x=>after.ContainsKey(x.Id) && x.Kind!="execution" && IsWithin(current,x.Id,e.Id)))result.UnwrapFragments.Add(e.Id);
+                    break;
+                case "operand":
+                    result.DeleteOperands.Add(e.Id);
+                    if(e.Parent!=null && after.ContainsKey(e.Parent))result.TrimOperands.Add(e.Id);
+                    break;
+                case "note":result.DeleteNotes.Add(e.Id);break;
+                case "ref":result.DeleteRefs.Add(e.Id);break;
+                case "destroy":result.DeleteDestroys.Add(e.Id);break;
+                default:stop(e,e.Kind+"の削除は対象外です。");break;
+            }
         }
-        foreach(var change in plan.Changes.Where(c=>c.Action=="add" && c.Kind=="message"))
+        // Elements on both sides: what changed about each.
+        var oldWalk=Flatten(current);var newWalk=Flatten(plan.Expected);
+        var kept=new HashSet<string>(oldWalk.Where(after.ContainsKey).Intersect(newWalk));
+        var oldKept=oldWalk.Where(kept.Contains).ToArray();var newKept=newWalk.Where(kept.Contains).ToArray();
+        var stable=Stable(oldKept,newKept);
+        foreach(var e in plan.Expected.Elements.Where(e=>before.ContainsKey(e.Id) && e.Kind!="interaction"))
         {
-            SequenceElement added;
-            if(before.ContainsKey(change.Id) || !after.TryGetValue(change.Id,out added))
-            { result.Reasons.Add("L"+change.Line+" 追加するメッセージを期待状態から取得できません。");continue; }
-            string why=MessageReason(current,plan,added,
-                plan.Changes.Where(c=>c.Action=="add" && c.Kind=="execution").Select(c=>c.Id).ToList(),adding);
-            if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
-            result.AddMessages.Add(change.Id);
+            var old=before[e.Id];
+            bool textChanged=(old.Text??"")!=(e.Text??"");
+            bool parentChanged=old.Parent!=e.Parent;
+            bool orderChanged=kept.Contains(e.Id) && !stable.Contains(e.Id);
+            switch(e.Kind)
+            {
+                case "message":
+                    if(textChanged)result.Renames.Add(e.Id);
+                    if(Attribute(old)!=Attribute(e) && Attribute(old)!="destroy" && Attribute(e)!="destroy")result.SortChanges.Add(e.Id);
+                    if(!Link(old,"receiveExecution").SequenceEqual(Link(e,"receiveExecution")) || !Link(old,"receiver").SequenceEqual(Link(e,"receiver")))
+                    {
+                        if(Link(e,"receiver").Length>0 && Link(e,"receiveExecution").Length!=1){stop(e,NoBar("受信"));break;}
+                        result.ReconnectMessages.Add(e.Id);
+                    }
+                    if(!Link(old,"sendExecution").SequenceEqual(Link(e,"sendExecution")) || !Link(old,"sender").SequenceEqual(Link(e,"sender")))
+                    {
+                        if(Link(e,"sender").Length>0 && Link(e,"sendExecution").Length!=1){stop(e,NoBar("送信"));break;}
+                        result.ResendMessages.Add(e.Id);
+                    }
+                    if(parentChanged)result.MoveMessages.Add(e.Id);
+                    else if(orderChanged)result.ReorderMessages.Add(e.Id);
+                    break;
+                case "participant":
+                    if(textChanged)result.Renames.Add(e.Id);
+                    if(old.Order!=e.Order && current.Elements.Where(x=>x.Kind=="participant" && after.ContainsKey(x.Id)).OrderBy(x=>x.Order).Select(x=>x.Id)
+                        .SequenceEqual(plan.Expected.Elements.Where(x=>x.Kind=="participant" && before.ContainsKey(x.Id)).OrderBy(x=>x.Order).Select(x=>x.Id))==false)
+                        result.LaneMoves.Add(e.Id);
+                    break;
+                case "fragment":
+                    if(textChanged)result.Renames.Add(e.Id);
+                    if(Attr(old,"operator")!=Attr(e,"operator"))result.OperatorChanges.Add(e.Id);
+                    if(parentChanged)result.NestChanges.Add(e.Id);
+                    else if(orderChanged)result.Relayouts.Add(e.Id);
+                    break;
+                case "operand":
+                    if(textChanged)result.Renames.Add(e.Id);
+                    if(parentChanged)stop(e,"分岐を別の枠へ移す変更は対象外です。分岐を削除して追加してください。");
+                    break;
+                case "note":
+                    if(textChanged)result.Renames.Add(e.Id);
+                    if(parentChanged || orderChanged)result.Relayouts.Add(e.Id);
+                    break;
+                case "ref":
+                    if(textChanged)result.Renames.Add(e.Id);
+                    if(!Link(old,"targets").SequenceEqual(Link(e,"targets")))result.RefTargetChanges.Add(e.Id);
+                    if(Attr(old,"reference")!=Attr(e,"reference") && Attr(e,"reference").Length>0)result.RefTargetChanges.Add(e.Id);
+                    if(parentChanged)result.NestChanges.Add(e.Id);
+                    else if(orderChanged)result.Relayouts.Add(e.Id);
+                    break;
+                case "destroy":
+                    if(!Link(old,"participant").SequenceEqual(Link(e,"participant")))stop(e,"破棄の参加者を替える変更は対象外です。破棄を削除して追加してください。");
+                    else if(parentChanged || orderChanged)result.Relayouts.Add(e.Id);
+                    break;
+                case "execution":
+                    if(!Link(old,"participant").SequenceEqual(Link(e,"participant")))result.NestChanges.Add(e.Id);
+                    else if(Canonical(old)!=Canonical(e))result.Relayouts.Add(e.Id);
+                    break;
+                default:
+                    if(Canonical(old)!=Canonical(e))stop(e,e.Kind+"の変更は対象外です。");
+                    break;
+            }
         }
-        foreach(var change in plan.Changes.Where(c=>c.Action=="add" && (c.Kind=="note" || c.Kind=="ref")))
+        result.RefTargetChanges=result.RefTargetChanges.Distinct().ToList();
+        // What the input says has to hang together before anything is laid out from it.
+        var knownBarLinks=new[]{"participant","outer","startAfter","endBefore","endContainer"};
+        foreach(var bar in plan.Expected.Elements.Where(e=>e.Kind=="execution"))
         {
-            SequenceElement added;
-            if(before.ContainsKey(change.Id) || !after.TryGetValue(change.Id,out added))
-            { result.Reasons.Add("L"+change.Line+" 追加する"+change.Kind+"を期待状態から取得できません。");continue; }
-            string why=NoteAddReason(current,plan,added);
-            if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
-            (change.Kind=="note"?result.AddNotes:result.AddRefs).Add(change.Id);
+            var lane=Link(bar,"participant");
+            if(lane.Length!=1 || !after.ContainsKey(lane[0]) || after[lane[0]].Kind!="participant"){stop(bar,"実行区間の参加者が参加者ではありません。");continue;}
+            var outer=Link(bar,"outer");
+            if(outer.Length>1 || (outer.Length==1 && (!after.ContainsKey(outer[0]) || after[outer[0]].Kind!="execution" || !Link(after[outer[0]],"participant").SequenceEqual(lane))))
+                stop(bar,"実行区間の入れ子先が同じ参加者の実行区間ではありません。");
+            if(bar.Links.Keys.Any(key=>!knownBarLinks.Contains(key)))stop(bar,"実行区間に未対応の接続があります。");
+            var ends=Link(bar,"endContainer");
+            if(ends.Length>1 || (ends.Length==1 && ends[0]!=root && (!after.ContainsKey(ends[0]) || after[ends[0]].Kind!="operand")))
+                stop(bar,"実行区間の終了位置が相互作用でも分岐でもありません。");
+            if(bar.Parent!=root && (!after.ContainsKey(bar.Parent) || after[bar.Parent].Kind!="operand"))stop(bar,"実行区間の所有先が相互作用でも分岐でもありません。");
         }
-        foreach(var change in plan.Changes.Where(c=>c.Action=="add" && c.Kind=="participant"))
+        foreach(var message in plan.Expected.Elements.Where(e=>e.Kind=="message"))
+            foreach(var pair in new[]{new[]{"sendExecution","sender"},new[]{"receiveExecution","receiver"}})
+            {
+                var port=Link(message,pair[0]);
+                if(port.Length==1 && (!after.ContainsKey(port[0]) || after[port[0]].Kind!="execution" || !Link(after[port[0]],"participant").SequenceEqual(Link(message,pair[1]))))
+                    stop(message,(pair[1]=="sender"?"送信":"受信")+"側の実行区間が"+(pair[1]=="sender"?"送信者":"受信者")+"の実行区間ではありません。");
+            }
+        // The product cannot draw a branch that holds nothing.
+        foreach(var operand in plan.Expected.Elements.Where(e=>e.Kind=="operand"))
+            if(!plan.Expected.Elements.Any(x=>x.Kind!="execution" && x.Parent==operand.Id)
+                && (!before.ContainsKey(operand.Id) || current.Elements.Any(x=>x.Kind!="execution" && x.Parent==operand.Id)))
+                stop(operand,"要素のない分岐になります。空の分岐は製品が図形を作れないため対象外です。");
+        foreach(var message in plan.Expected.Elements.Where(e=>e.Kind=="message" && !before.ContainsKey(e.Id)))
         {
-            SequenceElement added;
-            if(before.ContainsKey(change.Id) || !after.TryGetValue(change.Id,out added))
-            { result.Reasons.Add("L"+change.Line+" 追加する参加者を期待状態から取得できません。");continue; }
-            string why=ParticipantReason(current,plan,added);
-            if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
-            result.AddParticipants.Add(change.Id);
+            if(Link(message,"sender").Length==0 && Link(message,"receiver").Length==0)stop(message,"送受信の両方が図外のメッセージは対象外です。");
+            foreach(var pair in new[]{new[]{"sendExecution","sender","送信"},new[]{"receiveExecution","receiver","受信"}})
+                if(Link(message,pair[1]).Length>0 && Link(message,pair[0]).Length!=1)stop(message,NoBar(pair[2]));
         }
-        foreach(var change in plan.Changes.Where(c=>c.Action=="add" && c.Kind=="execution"))
-        {
-            SequenceElement added;
-            if(before.ContainsKey(change.Id) || !after.TryGetValue(change.Id,out added))
-            { result.Reasons.Add("L"+change.Line+" 追加する実行区間を期待状態から取得できません。");continue; }
-            string why=AddReason(current,plan,added,adding);
-            if(why!=null){result.Reasons.Add("L"+change.Line+" "+why);continue;}
-            result.AddExecutions.Add(change.Id);
-        }
-        // Messages trading places within the container they share, with nothing added,
-        // removed or reframed. A message crossing a frame also moves the frame, so that
-        // shows up as a move of another kind and is not taken for this.
-        bool reordering=plan.Changes.Any(c=>c.Action=="move" && c.Kind=="message")
-            && plan.Changes.All(c=>(c.Action=="move" && c.Kind=="message") || (c.Action=="update" && c.Kind=="execution"))
-            && plan.Changes.Where(c=>c.Action=="move").All(c=>before.ContainsKey(c.Id) && after.ContainsKey(c.Id) && before[c.Id].Parent==after[c.Id].Parent);
-        // Whether a frame is being taken away decides how the moves around it are read.
-        string unwrapping=plan.Changes.Where(c=>c.Action=="delete" && c.Kind=="fragment" && before.ContainsKey(c.Id) && !after.ContainsKey(c.Id)
-            && current.Elements.Any(e=>before.ContainsKey(e.Parent??"") && before[e.Parent].Parent==c.Id && after.ContainsKey(e.Id))).Select(c=>c.Id).FirstOrDefault();
-        foreach(var change in plan.Changes)
-        {
-            if(change.Action=="add" && new[]{"execution","participant","message","fragment","operand","note","ref"}.Contains(change.Kind))continue;
-            // A destruction goes at the very end of its lane, right after the message to it.
-            if(change.Kind=="destroy" && change.Action=="add" && after.ContainsKey(change.Id) && !before.ContainsKey(change.Id))
-            {
-                var d=after[change.Id];var walk=Flatten(plan.Expected);int at=Array.IndexOf(walk,change.Id);
-                string lane=Link(d,"participant").FirstOrDefault();
-                SequenceElement killer;
-                if(d.Parent!=current.Elements.Single(e=>e.Kind=="interaction").Id)result.Reasons.Add("L"+change.Line+" "+"枠の中の破棄の追加は対象外です。");
-                else if(lane==null || !before.ContainsKey(lane))result.Reasons.Add("L"+change.Line+" "+"破棄する参加者が既存の参加者ではありません。");
-                else if(at<1 || !after.TryGetValue(walk[at-1],out killer) || killer.Kind!="message" || !Link(killer,"receiver").Contains(lane))
-                    result.Reasons.Add("L"+change.Line+" "+"破棄の直前は、その参加者宛てのメッセージにしてください。");
-                else if(walk.Skip(at+1).Select(id=>after[id]).Any(e=>Link(e,"sender").Contains(lane) || Link(e,"receiver").Contains(lane) || Link(e,"targets").Contains(lane)))
-                    result.Reasons.Add("L"+change.Line+" "+"破棄した参加者を後で使う要素があります。");
-                else result.AddDestroys.Add(change.Id);
-                continue;
-            }
-            if(change.Kind=="destroy" && change.Action=="delete" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
-            {result.DeleteDestroys.Add(change.Id);continue;}
-            if(change.Action=="delete" && change.Kind=="participant" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
-            {
-                if(Referenced(plan,change.Id))result.Reasons.Add("L"+change.Line+" 参加者への参照が残るため削除できません。");
-                else result.DeleteParticipants.Add(change.Id);
-                continue;
-            }
-            if(change.Action=="delete" && change.Kind=="fragment" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id)
-                && current.Elements.Any(e=>before.ContainsKey(e.Parent??"") && before[e.Parent].Parent==change.Id && after.ContainsKey(e.Id)))
-            {
-                string why=UnwrapReason(current,plan,change.Id);
-                if(why!=null)result.Reasons.Add("L"+change.Line+" "+why);
-                else {result.DeleteFragments.Add(change.Id);result.UnwrapFragments.Add(change.Id);}
-                continue;
-            }
-            if(change.Action=="delete" && change.Kind=="fragment" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
-            {
-                string why=FragmentReason(current,plan,change.Id);
-                if(why!=null)result.Reasons.Add("L"+change.Line+" "+why);else result.DeleteFragments.Add(change.Id);
-                continue;
-            }
-            if(change.Action=="delete" && change.Kind=="operand" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
-            {
-                string owner=before[change.Id].Parent;
-                if(owner!=null && after.ContainsKey(owner))
-                {
-                    // The last branch of a frame that keeps at least one, taken with all it holds.
-                    var branches=current.Elements.Where(e=>e.Parent==owner && e.Kind=="operand").OrderBy(e=>e.Order).ToArray();
-                    var inside=current.Elements.Where(e=>IsWithin(current,e.Id,change.Id) && e.Id!=change.Id).ToArray();
-                    if(branches.Length<2 || branches[branches.Length-1].Id!=change.Id)
-                        result.Reasons.Add("L"+change.Line+" 消せる分岐は、ほかの分岐が残る枠の最後の分岐だけです。");
-                    else if(inside.Any(e=>after.ContainsKey(e.Id) || (e.Kind!="message" && e.Kind!="execution")))
-                        result.Reasons.Add("L"+change.Line+" 消す分岐の中に残る要素か、メッセージ・実行区間以外の要素があります。");
-                    else {result.DeleteOperands.Add(change.Id);result.TrimOperands.Add(change.Id);}
-                    continue;
-                }
-                result.DeleteOperands.Add(change.Id);
-                continue;
-            }
-            // A note is annotation only: removing it leaves everything else where it is.
-            if(change.Action=="delete" && (change.Kind=="note" || change.Kind=="ref") && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
-            {
-                if(Referenced(plan,change.Id))result.Reasons.Add("L"+change.Line+" "+change.Kind+"への参照が残るため削除できません。");
-                else if(change.Kind=="ref" && before[change.Id].Parent!=current.Elements.Single(e=>e.Kind=="interaction").Id)
-                    result.Reasons.Add("L"+change.Line+" 枠の中のrefの削除は対象外です。");
-                else (change.Kind=="note"?result.DeleteNotes:result.DeleteRefs).Add(change.Id);
-                continue;
-            }
-            if(change.Action=="delete" && change.Kind=="message" && before.ContainsKey(change.Id) && !after.ContainsKey(change.Id))
-            {
-                if(Referenced(plan,change.Id))result.Reasons.Add("L"+change.Line+" メッセージへの参照が残るため削除できません。");
-                else result.DeleteMessages.Add(change.Id);
-                continue;
-            }
-            string row="L"+change.Line+" ";
-            SequenceElement old,next;
-            if(change.Action=="delete" && change.Kind=="execution" && before.TryGetValue(change.Id,out old) && !after.ContainsKey(change.Id))
-            {
-                // Links include note anchors, nesting and boundary references, not just ports.
-                if(plan.Expected.Elements.Any(e=>e.Parent==change.Id || e.Links.Values.SelectMany(v=>v).Contains(change.Id)))
-                    result.Reasons.Add(row+"実行区間への参照が残るため削除できません。");
-                else result.DeleteExecutions.Add(change.Id);
-                continue;
-            }
-            // Messages trading places keep everything but their position; the bars on them
-            // follow, and only their neighbouring-event anchors change.
-            if(reordering && before.TryGetValue(change.Id,out old) && after.TryGetValue(change.Id,out next))
-            {
-                if(change.Action=="move"){result.ReorderMessages.Add(change.Id);continue;}
-                if(FollowsReorder(old,next,after))continue;
-                result.Reasons.Add(row+"実行区間の境界以外の変更を含むため、順序の入れ替えとして扱えません。");continue;
-            }
-            // Taking a frame away moves what it held back to the top level; the bars follow.
-            if(unwrapping!=null && (change.Action=="move" || (change.Action=="update" && change.Kind=="execution"))
-                && before.TryGetValue(change.Id,out old) && after.TryGetValue(change.Id,out next))
-            {
-                string rootId=current.Elements.Single(e=>e.Kind=="interaction").Id;
-                bool fromFrame=old.Parent!=null && before.ContainsKey(old.Parent) && before[old.Parent].Parent==unwrapping;
-                if(change.Kind=="message" && change.Action=="move" && (fromFrame || old.Parent==next.Parent))continue;
-                if(change.Kind=="execution" && (FollowsUnwrap(old,next,after,rootId) || AnchorsOnly(old,next,after)))continue;
-                result.Reasons.Add(row+change.Kind+" "+change.Action+"は、枠を外す変更と同時には扱えません。");continue;
-            }
-            // Wrapping moves the messages into the new operands, and the bars on them follow
-            // by position. The top-level elements around the frame only look moved because
-            // their neighbours left; WrapReason already checked they keep their order.
-            if(result.WrapFragments.Count>0 && (change.Action=="move" || (change.Action=="update" && change.Kind=="execution"))
-                && before.TryGetValue(change.Id,out old) && after.TryGetValue(change.Id,out next))
-            {
-                if(change.Kind=="message" && change.Action=="move"
-                    && (result.MoveMessages.Contains(change.Id) || old.Parent==next.Parent))continue;
-                if(change.Kind=="execution" && FollowsWrap(old,next,after,result.WrapFragments[0]))continue;
-                result.Reasons.Add(row+change.Kind+" "+change.Action+"は、枠で囲む変更と同時には扱えません。");continue;
-            }
-            if(change.Action=="update" && change.Kind=="execution"
-                && before.TryGetValue(change.Id,out old) && after.TryGetValue(change.Id,out next))
-            {
-                if(AnchorsOnly(old,next,after,new HashSet<string>(result.AddNotes.Concat(result.AddRefs).Concat(adding))))continue;
-                result.Reasons.Add(row+"実行区間の境界以外の変更は今回の構造更新対象外です。");continue;
-            }
-            // Text alone: nothing about where the element sits or what it connects changes.
-            if(change.Action=="update" && new[]{"message","participant","note","ref","operand","fragment"}.Contains(change.Kind)
-                && before.TryGetValue(change.Id,out old) && after.TryGetValue(change.Id,out next)
-                && (old.Text??"")!=(next.Text??"") && Comparable(old,false)==Comparable(next,false))
-            {result.Renames.Add(change.Id);continue;}
-            if(change.Action!="update" || change.Kind!="message" || !before.TryGetValue(change.Id,out old) || !after.TryGetValue(change.Id,out next))
-            { result.Reasons.Add(row+change.Kind+" "+change.Action+"は今回の構造更新対象外です。");continue; }
-            var oldPorts=Link(old,"receiveExecution");var newPorts=Link(next,"receiveExecution");
-            if(newPorts.Length==0)
-            { result.Reasons.Add(row+"受信実行区間なしの書込み表現が未確定です。ライフライン直結や区間の自動補完は行いません。");continue; }
-            SequenceElement port;
-            if(oldPorts.Length!=1 || newPorts.Length!=1 || !after.TryGetValue(newPorts[0],out port) || port.Kind!="execution"
-                || !(before.ContainsKey(newPorts[0]) || result.AddExecutions.Contains(newPorts[0])))
-            { result.Reasons.Add(row+"接続先は既存の実行区間か、この計画で追加する実行区間1件である必要があります。");continue; }
-            if(!Link(port,"participant").SequenceEqual(Link(next,"receiver")))
-            { result.Reasons.Add(row+"受信参加者と接続先実行区間の所属が一致しません。");continue; }
-            if(oldPorts.SequenceEqual(newPorts) || Comparable(old)!=Comparable(next))
-            { result.Reasons.Add(row+"受信実行区間と本文以外の変更を含むため対象外です。");continue; }
-            result.ReconnectMessages.Add(change.Id);
-            if((old.Text??"")!=(next.Text??""))result.Renames.Add(change.Id);
-        }
-        // Messages, notes and refs make room together and compose. A new frame or branch is
-        // laid out from where the diagram ends as it stands, so it cannot share an update
-        // with anything that moves that.
-        // A new frame at the end is laid out under everything, so additions above it just
-        // push it down. A branch on a frame already drawn is laid out from that frame as it
-        // stands, so it still goes on its own.
-        var placedIds=result.AddNotes.Concat(result.AddRefs).Concat(result.AddMessages.Where(id=>!result.AddOperands.Contains(after[id].Parent))).ToList();
-        var flat=Flatten(plan.Expected);
-        int firstFrame=result.AddFragments.Count==0?int.MaxValue:result.AddFragments.Min(id=>Array.IndexOf(flat,id));
-        bool branchOnOld=result.AddOperands.Any(id=>before.ContainsKey(after[id].Parent));
-        if(placedIds.Count>0 && (branchOnOld || result.WrapFragments.Count>0 || placedIds.Any(id=>Array.IndexOf(flat,id)>firstFrame)))
-            result.Reasons.Add("既存の枠への分岐の追加・枠で囲む変更は、ほかの場所への追加と分けて反映してください。新しい枠より後ろへの追加も対象外です。");
-        if(result.UnwrapFragments.Count>1 || (result.UnwrapFragments.Count==1 && (result.Targets!=1+result.DeleteOperands.Count
-            || result.DeleteOperands.Any(o=>before[o].Parent!=result.UnwrapFragments[0]))))
-            result.Reasons.Add("枠を外す変更は、ほかの変更と分けて1件ずつ反映してください。");
-        if(result.WrapFragments.Count>0)
-        {
-            string frame=result.WrapFragments[0];
-            if(result.ReconnectMessages.Count+result.DeleteExecutions.Count+result.AddExecutions.Count+result.AddParticipants.Count
-                +result.DeleteParticipants.Count+result.DeleteMessages.Count+result.AddMessages.Count+result.DeleteFragments.Count
-                +result.DeleteOperands.Count+result.DeleteNotes.Count+result.AddNotes.Count+result.DeleteRefs.Count+result.AddRefs.Count>0 || result.AddFragments.Count!=1
-                || result.AddOperands.Any(id=>after[id].Parent!=frame))
-                result.Reasons.Add("既存のメッセージを枠で囲む変更は、ほかの変更と分けて1件ずつ反映してください。");
-        }
-        // Keep candidates for diagnostics, but never permit applying a supported subset.
         return result;
+    }
+    // A message has to land on a bar the input opens: bars the input does not have are not made up.
+    static string NoBar(string side)
+    {
+        return side+"側の実行区間が1つに決まりません。入力にない実行区間は作りません。"
+            +"その参加者で activate し、メッセージをその内側に書いてください。";
+    }
+    // The ids that keep their relative order: a longest common subsequence of the two walks.
+    internal static HashSet<string> Stable(string[] a,string[] b)
+    {
+        var length=new int[a.Length+1,b.Length+1];
+        for(int i=a.Length-1;i>=0;i--)for(int j=b.Length-1;j>=0;j--)
+            length[i,j]=a[i]==b[j]?1+length[i+1,j+1]:Math.Max(length[i+1,j],length[i,j+1]);
+        var result=new HashSet<string>();int x=0,y=0;
+        while(x<a.Length && y<b.Length)
+        {
+            if(a[x]==b[y]){result.Add(a[x]);x++;y++;}
+            else if(length[x+1,y]>=length[x,y+1])x++;else y++;
+        }
+        return result;
+    }
+    internal static bool IsWithin(SequenceDocument doc,string id,string container)
+    {
+        var byId=doc.Elements.ToDictionary(e=>e.Id);
+        for(string at=byId.ContainsKey(id)?byId[id].Parent:null;at!=null && byId.ContainsKey(at);at=byId[at].Parent)if(at==container)return true;
+        return false;
+    }
+    static string Canonical(SequenceElement e)
+    {
+        var copy=e.Copy();copy.Line=0;copy.Order=0;
+        copy.Links=e.Links.OrderBy(p=>p.Key,StringComparer.Ordinal).ToDictionary(p=>p.Key,p=>p.Value.ToArray(),StringComparer.Ordinal);
+        copy.Attributes=e.Attributes.OrderBy(p=>p.Key,StringComparer.Ordinal).ToDictionary(p=>p.Key,p=>p.Value,StringComparer.Ordinal);
+        return new SequenceDocument{Elements=new List<SequenceElement>{copy}}.ToJson();
     }
     public string Summary()
     {
-        return "構造更新の事前判定（図への反映なし）\n受信接続変更候補: "+ReconnectMessages.Count+" / 実行区間削除候補: "+DeleteExecutions.Count
+        return "構造更新の事前判定（図への反映なし）\n受信接続変更候補: "+ReconnectMessages.Count+" / 送信接続変更候補: "+ResendMessages.Count+" / 実行区間削除候補: "+DeleteExecutions.Count
             +" / 実行区間追加候補: "+AddExecutions.Count
-            +" / 参加者追加候補: "+AddParticipants.Count+" / 参加者削除候補: "+DeleteParticipants.Count
+            +" / 参加者追加候補: "+AddParticipants.Count+" / 参加者削除候補: "+DeleteParticipants.Count+" / 参加者の並べ替え: "+LaneMoves.Count
             +" / メッセージ削除候補: "+DeleteMessages.Count+" / メッセージ追加候補: "+AddMessages.Count
             +" / フラグメント削除候補: "+DeleteFragments.Count+" / オペランド削除候補: "+DeleteOperands.Count
             +" / フラグメント追加候補: "+AddFragments.Count+" / オペランド追加候補: "+AddOperands.Count
-            +" / 枠で囲むメッセージ候補: "+MoveMessages.Count+" / Note削除候補: "+DeleteNotes.Count+" / Note追加候補: "+AddNotes.Count
-            +" / ref削除候補: "+DeleteRefs.Count+" / ref追加候補: "+AddRefs.Count+" / 外す枠候補: "+UnwrapFragments.Count+" / 順序を入れ替えるメッセージ候補: "+ReorderMessages.Count+" / 本文変更候補: "+Renames.Count+" / 破棄の追加候補: "+AddDestroys.Count+" / 破棄の削除候補: "+DeleteDestroys.Count
-            +"\n"+(Reasons.Count>0?"全体を停止: "+Reasons.Count+"件の未対応条件":Candidate?"限定範囲の候補あり。既存図での適用・保持検証は未実施です。":"対象の変更なし")
+            +" / 所属を移すメッセージ候補: "+MoveMessages.Count+" / 所属を移す枠・ref・実行区間: "+NestChanges.Count+" / Note削除候補: "+DeleteNotes.Count+" / Note追加候補: "+AddNotes.Count
+            +" / ref削除候補: "+DeleteRefs.Count+" / ref追加候補: "+AddRefs.Count+" / 外す枠候補: "+UnwrapFragments.Count+" / 順序を入れ替えるメッセージ候補: "+ReorderMessages.Count
+            +" / 本文変更候補: "+Renames.Count+" / 種別変更候補: "+SortChanges.Count+" / 演算子変更候補: "+OperatorChanges.Count+" / ref対象変更候補: "+RefTargetChanges.Count
+            +" / 配置だけの変更: "+Relayouts.Count+" / 破棄の追加候補: "+AddDestroys.Count+" / 破棄の削除候補: "+DeleteDestroys.Count
+            +"\n"+(Reasons.Count>0?"全体を停止: "+Reasons.Count+"件の未対応条件":Candidate?"反映できる変更です。":"対象の変更なし")
             +"\n"+string.Join("\n",Reasons.Distinct());
     }
     public string ToJson()
-    { return PumlBuild.Json(PumlBuild.Obj("Candidate",Candidate,"ReconnectMessages",ReconnectMessages.ToArray(),"DeleteExecutions",DeleteExecutions.ToArray(),
-        "AddExecutions",AddExecutions.ToArray(),"AddParticipants",AddParticipants.ToArray(),
+    { return PumlBuild.Json(PumlBuild.Obj("Candidate",Candidate,"ReconnectMessages",ReconnectMessages.ToArray(),"ResendMessages",ResendMessages.ToArray(),"DeleteExecutions",DeleteExecutions.ToArray(),
+        "AddExecutions",AddExecutions.ToArray(),"AddParticipants",AddParticipants.ToArray(),"LaneMoves",LaneMoves.ToArray(),
         "DeleteParticipants",DeleteParticipants.ToArray(),"DeleteMessages",DeleteMessages.ToArray(),
         "AddMessages",AddMessages.ToArray(),"DeleteFragments",DeleteFragments.ToArray(),
         "DeleteOperands",DeleteOperands.ToArray(),
         "AddFragments",AddFragments.ToArray(),"AddOperands",AddOperands.ToArray(),
-        "WrapFragments",WrapFragments.ToArray(),"MoveMessages",MoveMessages.ToArray(),"DeleteNotes",DeleteNotes.ToArray(),"AddNotes",AddNotes.ToArray(),
-        "DeleteRefs",DeleteRefs.ToArray(),"AddRefs",AddRefs.ToArray(),"UnwrapFragments",UnwrapFragments.ToArray(),"ReorderMessages",ReorderMessages.ToArray(),"Renames",Renames.ToArray(),"AddDestroys",AddDestroys.ToArray(),"DeleteDestroys",DeleteDestroys.ToArray(),
+        "WrapFragments",WrapFragments.ToArray(),"MoveMessages",MoveMessages.ToArray(),"NestChanges",NestChanges.ToArray(),"DeleteNotes",DeleteNotes.ToArray(),"AddNotes",AddNotes.ToArray(),
+        "DeleteRefs",DeleteRefs.ToArray(),"AddRefs",AddRefs.ToArray(),"UnwrapFragments",UnwrapFragments.ToArray(),"TrimOperands",TrimOperands.ToArray(),"ReorderMessages",ReorderMessages.ToArray(),
+        "Renames",Renames.ToArray(),"SortChanges",SortChanges.ToArray(),"OperatorChanges",OperatorChanges.ToArray(),"RefTargetChanges",RefTargetChanges.ToArray(),"Relayouts",Relayouts.ToArray(),
+        "AddDestroys",AddDestroys.ToArray(),"DeleteDestroys",DeleteDestroys.ToArray(),
         "Reasons",Reasons.ToArray())); }
 }
-
 // One added execution, described so the expected state can be computed without
 // reading the export again. Template ids point at an existing execution of the same
 // participant; the live SDK values of those templates supply the bar width and the
@@ -1536,6 +1092,8 @@ public sealed class SequenceFrameTypes
     public Dictionary<string,string> Operators=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
     // Each row is {metaclass id, "Embed" or "Ref", field signature}.
     public string[] Owns, Branches, Crossing, OperandMessage;
+    // A frame or ref inside a branch is also tied to that branch. Null when the profile has none.
+    public string[] Nested;
     public bool Complete()
     {
         return !string.IsNullOrEmpty(Fragment) && !string.IsNullOrEmpty(Operand)
@@ -1571,20 +1129,6 @@ public sealed class SequenceShiftedShape
 {
     public string ModelId, ShapeId, Kind;
     public string[] Keys=new string[0], Values=new string[0];
-}
-
-// New elements placed one after another under one existing message, and the room each
-// takes. Replaced names a note or ref removed from the same spot, whose height is given back.
-public sealed class RoomRun
-{
-    public string Anchor, Replaced;
-    // Something already drawn comes after it, or it goes into a frame that has to grow.
-    public bool Inserted;
-    public double At, ReplacedHeight;
-    public List<string> Items=new List<string>();
-    public List<double> Rooms=new List<double>();
-    public HashSet<string> Ports=new HashSet<string>(StringComparer.Ordinal);
-    public double Room { get { return Rooms.Sum(); } }
 }
 
 // A message already drawn that a new frame now holds: only the operand's reference to
@@ -1657,6 +1201,16 @@ public sealed class SequenceStructurePreparation
     public string[] DeleteNoteIds=new string[0];
     public string[] DeleteDestroyIds=new string[0];
     public string[] DeleteRefIds=new string[0];
+    // Reference relations taken off without deleting either end: IRelationship.UnRelate.
+    public string[] UnrelateIds=new string[0];
+    // Free ends of removed messages, which go with them.
+    public string[] DeleteEndIds=new string[0];
+    // {message id, new sort} and {shape id, new text} for elements rewritten in place.
+    public string[][] SortChanged=new string[0][], ShapeTexts=new string[0][];
+    public string[] SendRelationIds=new string[0];
+    // New shapes built without a sample: the product decides their size, so the check takes
+    // what it reads back for them and only holds them to existing and belonging to their model.
+    public string[] LooseShapeIds=new string[0];
     static string V(SequenceJson n,string key) { return SequenceEditorDocument.Value(n,key); }
     static SequenceJson[] Array(SequenceJson n,string key)
     {
@@ -1672,6 +1226,7 @@ public sealed class SequenceStructurePreparation
     public static SequenceStructurePreparation Build(string exported,string editorId,SequenceDocument current,SyncPlan plan,SequenceFrameTypes types,SequenceNoteTypes noteTypes)
     { return Build(exported,editorId,current,plan,types,noteTypes,null); }
     public static SequenceDestroyTypes DestroyTypes;
+    public static SequenceBaseTypes BaseTypes;
     public static SequenceStructurePreparation Build(string exported,string editorId,SequenceDocument current,SyncPlan plan,SequenceFrameTypes types,SequenceNoteTypes noteTypes,SequenceRefTypes refTypes)
     {
         var gate=SequenceStructurePreflight.Check(current,plan);
@@ -1688,422 +1243,449 @@ public sealed class SequenceStructurePreparation
         Require(byId.ContainsKey(root) && V(byId[root],"EntityType")=="Interaction","退避データに対象の相互作用がありません。");
         Require(Array(source,"Editors").Count(e=>V(e,"ModelId")==root)==1,"同じモデルに複数の図があります。");
         var before=current.Elements.ToDictionary(e=>e.Id);var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
-        var changed=new List<SequenceJson>();
-        var changedIds=new HashSet<string>();
-        Func<string,string,string,SequenceJson> find=(type,from,to)=>{
-            var matches=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+type
-                && (from==null || V(r,"SourceId")==from) && V(r,"TargetId")==to).ToArray();
-            Require(matches.Length==1,"必要な構造関連を一意に取得できません。");return matches[0];
-        };
-        Action<string,string> checkPort=(id,participant)=>{
-            Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="ExecutionSpecification","接続先は退避データ内の実行区間である必要があります。");
-            find("___Interaction_ExecutionSpecification",root,id);
-            find("OwnedExecutionSpecification",participant,id);
-            Require(relations.Count(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"OwnedExecutionSpecification" && V(r,"TargetId")==id)==1,"実行区間の所属が一意ではありません。");
-        };
-        foreach(string id in gate.ReconnectMessages)
+        var shapeOf=new Dictionary<string,SequenceJson>(StringComparer.Ordinal);
+        foreach(var sh in editor.Shapes())
         {
-            var a=before[id];var b=after[id];
-            Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="Message","変更対象のメッセージが退避データにありません。");
-            find("___Interaction_Message",root,id);
-            string oldPort=a.Links["receiveExecution"].Single(),newPort=b.Links["receiveExecution"].Single();
-            checkPort(oldPort,a.Links["receiver"].Single());
-            // A bar this plan adds is not in the export yet; the preflight vouched for it.
-            if(!gate.AddExecutions.Contains(newPort))checkPort(newPort,b.Links["receiver"].Single());
-            var link=find("ReceiveMessage",oldPort,id);
-            Require(relations.Count(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage" && V(r,"TargetId")==id)==1,"受信接続が一意ではありません。");
-            var copy=SequenceJson.Parse(link.ToJsonString());
-            copy.Properties["SourceId"]=SequenceJson.Parse(SequencePayload.Q(newPort));
-            // The order belongs to the collection the relation is leaving, so carrying it
-            // over would ask for a position the destination may not have. Omit it and let
-            // the move append, which is what the product does.
-            copy.Properties.Remove("SourceIndex");
-            // The order belongs to the collection the relation is leaving, so carrying it
-            // over would ask for a position the destination may not have. Omit it and let
-            // the move append, which is what the product does.
-            changed.Add(copy);changedIds.Add(V(link,"Id"));
+            string model=V(sh,"ModelId");
+            if(model==null)continue;
+            Require(!shapeOf.ContainsKey(model),"同じモデルの図形が複数あります。");
+            shapeOf[model]=sh;
         }
-        // A relation with both ends leaving is going away too, so it never blocks. That
-        // covers the links a frame holds to the messages inside it.
-        var leaving=new HashSet<string>(gate.DeleteExecutions.Concat(gate.DeleteParticipants)
-            .Concat(gate.DeleteMessages).Concat(gate.DeleteFragments).Concat(gate.DeleteOperands).Concat(gate.DeleteNotes).Concat(gate.DeleteRefs).Concat(gate.DeleteDestroys));
-        Func<SequenceJson,string,bool> inside=(relation,id)=>
-            leaving.Contains(V(relation,"SourceId")) && leaving.Contains(V(relation,"TargetId"));
-        // Name the relation that blocked a deletion. Guessing which one it is has cost
-        // several runs; the message can simply say.
-        Func<SequenceJson,string,string> describe=(relation,id)=>{
-            string other=V(relation,"SourceId")==id?V(relation,"TargetId"):V(relation,"SourceId");
-            string kind=byId.ContainsKey(other)?V(byId[other],"EntityType"):"不明";
-            return " 関連="+V(relation,"MetamodelId")+" 向き="+(V(relation,"TargetId")==id?"相手→対象":"対象→相手")
-                +" 相手の型="+kind+(leaving.Contains(other)?"（削除対象）":"（残る）");
+        Func<string,string> R=name=>SequencePayload.Prefix+name;
+        Func<string,SequenceJson[]> typed=name=>relations.Where(r=>V(r,"MetamodelId")==R(name)).ToArray();
+        Func<string,string,string,SequenceJson> find=(type,from,to)=>{
+            var matches=relations.Where(r=>V(r,"MetamodelId")==R(type) && (from==null || V(r,"SourceId")==from) && V(r,"TargetId")==to).ToArray();
+            Require(matches.Length==1,"必要な構造関連を一意に取得できません: "+type);return matches[0];
         };
-        foreach(string id in gate.DeleteExecutions)
+        var endIds=new HashSet<string>(entities.Where(e=>V(e,"EntityType")=="MessageEnd").Select(e=>V(e,"Id")));
+        Func<string,string,string> portOf=(role,message)=>{
+            var found=relations.Where(r=>V(r,"MetamodelId")==R(role) && V(r,"TargetId")==message).ToArray();
+            return found.Length==1?V(found[0],"SourceId"):null;
+        };
+        var patch=SequenceJson.Parse(editor.ImportJson());
+        var view=patch["Editors"].Items.Single();
+        var newEntities=new List<SequenceJson>();var newRelations=new List<SequenceJson>();var changed=new List<SequenceJson>();
+        var changedIds=new HashSet<string>(StringComparer.Ordinal);var unrelate=new List<string>();
+        Func<string[],string,string,string,SequenceJson> relate=(row,relationId,from,to)=>
+            SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",relationId,"RelationType",row[1],"MetamodelId",row[0],"SourceId",from,"TargetId",to)));
+        Func<SequenceJson,string,string,string,SequenceJson> copyRelation=(template,relationId,from,to)=>{
+            var copy=SequenceJson.Parse(template.ToJsonString());
+            copy.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(relationId));
+            copy.Properties["SourceId"]=SequenceJson.Parse(SequencePayload.Q(from));
+            copy.Properties["TargetId"]=SequenceJson.Parse(SequencePayload.Q(to));
+            // Omitted order appends, which is what the product does with a new relation.
+            copy.Properties.Remove("SourceIndex");copy.Properties.Remove("TargetIndex");
+            return copy;
+        };
+        // A relation that keeps its id and changes one end is imported again with that end.
+        Action<SequenceJson,string,string> resend=(relation,from,to)=>{
+            var copy=SequenceJson.Parse(relation.ToJsonString());
+            if(from!=null)copy.Properties["SourceId"]=SequenceJson.Parse(SequencePayload.Q(from));
+            if(to!=null)copy.Properties["TargetId"]=SequenceJson.Parse(SequencePayload.Q(to));
+            // The order belongs to the collection the relation is leaving; let the move append.
+            copy.Properties.Remove("SourceIndex");
+            changed.Add(copy);changedIds.Add(V(relation,"Id"));
+        };
+
+        // ---- Removal: every model the input no longer has, and the free ends of removed messages.
+        var removedEnds=new List<string>();
+        foreach(string id in gate.DeleteMessages)
+            foreach(string role in new[]{"SendMessage","ReceiveMessage"})
+            {string end=portOf(role,id);if(end!=null && endIds.Contains(end))removedEnds.Add(end);}
+        var leaving=new HashSet<string>(gate.DeleteExecutions.Concat(gate.DeleteParticipants).Concat(gate.DeleteMessages)
+            .Concat(gate.DeleteFragments).Concat(gate.DeleteOperands).Concat(gate.DeleteNotes).Concat(gate.DeleteRefs).Concat(gate.DeleteDestroys).Concat(removedEnds));
+        var frameEntity=relations.Where(r=>V(r,"MetamodelId")==R("___Interaction_Frame") && V(r,"SourceId")==root).Select(r=>V(r,"TargetId")).ToArray();
+        var inside=new HashSet<string>(current.Elements.Select(e=>e.Id).Concat(endIds).Concat(frameEntity));
+        foreach(string id in leaving)
         {
-            checkPort(id,before[id].Links["participant"].Single());
+            Require(byId.ContainsKey(id),"削除対象が退避データにありません: "+id);
+            // What a model is tied to inside this diagram goes with it. A tie to anything
+            // outside, such as a trace link from elsewhere in the project, stops the update.
             foreach(var relation in relations.Where(r=>V(r,"SourceId")==id || V(r,"TargetId")==id))
             {
-                if(changedIds.Contains(V(relation,"Id")))continue;
-                bool owned=V(relation,"TargetId")==id && (V(relation,"MetamodelId")==SequencePayload.Prefix+"___Interaction_ExecutionSpecification"
-                    || V(relation,"MetamodelId")==SequencePayload.Prefix+"OwnedExecutionSpecification");
-                Require(owned || inside(relation,id),"削除する実行区間に未対応の関連が残っています。"+describe(relation,id));
+                string other=V(relation,"SourceId")==id?V(relation,"TargetId"):V(relation,"SourceId");
+                Require(inside.Contains(other),"削除する要素が図の外のモデルと関連しています。 関連="+V(relation,"MetamodelId")
+                    +" 相手の型="+(byId.ContainsKey(other)?V(byId[other],"EntityType"):"不明（退避範囲外）"));
             }
+            Require(shapeOf.ContainsKey(id),"削除する要素の図形を一意に取得できません: "+id);
         }
-        var affected=new HashSet<string>(gate.DeleteExecutions.Concat(gate.ReconnectMessages));
-        var shapes=editor.Shapes();
-        foreach(string id in affected)Require(shapes.Count(sh=>V(sh,"ModelId")==id)==1,"変更対象の図形を一意に取得できません。");
         foreach(var other in Array(source,"Editors").Where(e=>V(e,"Id")!=editorId))
-            Require(!Mentions(other,affected),"変更対象を別のエディタも参照しています。");
-        // A frame is built from the resolved metaclasses, not copied, so a diagram with no
-        // frame at all can still get one. An existing frame is used only for its rectangle,
-        // which is measured evidence of how wide a frame over these lanes should be.
-        SequenceJson frameTemplate=null;
-        if(gate.AddFragments.Count>0)
+            Require(!Mentions(other,leaving),"削除する要素を別のエディタも参照しています。");
+
+        // ---- Across: lanes.
+        var oldLanes=current.Elements.Where(e=>e.Kind=="participant").OrderBy(e=>e.Order).Select(e=>e.Id).ToArray();
+        var newLanes=plan.Expected.Elements.Where(e=>e.Kind=="participant").OrderBy(e=>e.Order).Select(e=>e.Id).ToArray();
+        Require(oldLanes.All(shapeOf.ContainsKey),"参加者の図形を一意に取得できません。");
+        var oldLaneX=oldLanes.ToDictionary(id=>id,id=>Read(shapeOf[id],"X"));
+        var laneLayout=SequenceLaneLayout.Place(oldLanes,oldLaneX,newLanes,LaneSpacing,190);
+        SequenceJson laneTemplate=oldLanes.Length==0?null:shapeOf[oldLanes.OrderBy(id=>oldLaneX[id]).Last()];
+        Func<string,double> laneWidth=id=>shapeOf.ContainsKey(id)?Read(shapeOf[id],"Width"):laneTemplate!=null?Read(laneTemplate,"Width"):100;
+        Func<string,double> center=id=>laneLayout.X[id]+laneWidth(id)/2;
+        Func<string,double> laneShift=id=>before.ContainsKey(id) && oldLaneX.ContainsKey(id)?laneLayout.X[id]-oldLaneX[id]:0;
+
+        // ---- Down: every row.
+        var oldTokens=SequenceRelayout.Walk(current);
+        Func<string,double> oldOperandTop=null;
         {
-            Require(types!=null && types.Complete(),"フラグメントの型情報が解決できていません。");
-            var sampleFrames=entities.Where(e=>V(e,"MetamodelId")==types.Fragment).Select(e=>V(e,"Id")).ToArray();
-            var frameShapes=editor.Shapes().Where(sh=>sampleFrames.Contains(V(sh,"ModelId"))
-                && sh["X"]!=null && sh["Width"]!=null).ToArray();
-            if(frameShapes.Length>0)frameTemplate=frameShapes[0];
-        }
-        Func<double,double> wrapMap=null,wrapInside=null;double wrapGrowth=0;
-        var layout=gate.WrapFragments.Count>0?WrapLayout(gate,plan,editor,frameTemplate,current,out wrapMap,out wrapInside,out wrapGrowth)
-            :gate.AddFragments.Count>0?FrameLayout(gate,plan,editor,frameTemplate,current)
-            :gate.AddOperands.Count>0?BranchLayout(gate,plan,editor,current)
-            :new Dictionary<string,Dictionary<string,double>>(StringComparer.Ordinal);
-        // Everything new that is placed by the room it takes, rather than by a new frame's
-        // layout, goes in runs: the new elements that follow one existing message, in order.
-        // Each run makes room right under that message, so an original position p moves
-        // down by the room of every run whose message lies above it. New elements stack
-        // under their message one after another. Several runs in one update compose.
-        var runs=new List<RoomRun>();
-        var placedY=new Dictionary<string,double>(StringComparer.Ordinal);
-        string insertedId="";
-        {
-            var walk=SequenceStructurePreflight.Flatten(plan.Expected);
-            var oldWalk=SequenceStructurePreflight.Flatten(current);
-            var placed=new HashSet<string>(gate.AddMessages.Where(id=>!layout.ContainsKey(id)).Concat(gate.AddNotes).Concat(gate.AddRefs));
-            var shapes0=editor.Shapes();
-            RoomRun run=null;
-            for(int i=0;i<walk.Length;i++)
+            var tops=new Dictionary<string,double>(StringComparer.Ordinal);
+            foreach(var fragment in current.Elements.Where(e=>e.Kind=="fragment"))
             {
-                string id=walk[i];
-                if(!placed.Contains(id)){if(before.ContainsKey(id))run=null;continue;}
-                if(run==null)
+                Require(shapeOf.ContainsKey(fragment.Id),"枠の図形を一意に取得できません。");
+                var box=shapeOf[fragment.Id];double fy=Read(box,"Y"),fh=Read(box,"Height");
+                var operands=current.Elements.Where(e=>e.Parent==fragment.Id && e.Kind=="operand").ToArray();
+                Require(operands.All(o=>shapeOf.ContainsKey(o.Id)),"分岐の図形を一意に取得できません。");
+                // The reader takes positions inside the frame as absolute, anything else as offsets.
+                bool absolute=operands.All(o=>Read(shapeOf[o.Id],"Position")>=fy-0.00001 && Read(shapeOf[o.Id],"Position")<=fy+fh+0.00001);
+                foreach(var o in operands)tops[o.Id]=absolute?Read(shapeOf[o.Id],"Position"):fy+Read(shapeOf[o.Id],"Position");
+            }
+            oldOperandTop=id=>tops[id];
+        }
+        foreach(var t in oldTokens)
+        {
+            Require(shapeOf.ContainsKey(t.Id),"図形を一意に取得できません: "+t.Id);
+            var sh=shapeOf[t.Id];
+            switch(t.Kind)
+            {
+                case "M":t.Old=Read(sh,"SourceY");t.Drop=Read(sh,"TargetY")-t.Old;break;
+                case "N":t.Old=Read(sh,"Y");t.Height=Read(sh,"Height");break;
+                case "D":t.Old=Read(sh,"Y");break;
+                case "FO":t.Old=Read(sh,"Y");break;
+                case "FC":t.Old=Read(sh,"Y")+Read(sh,"Height");break;
+                case "OO":t.Old=oldOperandTop(t.Id);break;
+            }
+        }
+        var oldByKey=oldTokens.ToDictionary(t=>t.Key);
+        var newTokens=SequenceRelayout.Walk(plan.Expected);
+        Func<SequenceElement,bool> selfCall=m=>Link(m,"sender").Length==1 && Link(m,"sender").SequenceEqual(Link(m,"receiver"));
+        foreach(var t in newTokens)
+        {
+            SequenceRelayout.Token old;
+            if(oldByKey.TryGetValue(t.Key,out old)){t.Drop=old.Drop;t.Height=old.Height;continue;}
+            if(t.Kind=="M")t.Drop=selfCall(after[t.Id])?24:0;
+            if(t.Kind=="N")t.Height=BoxHeight(after[t.Id].Text);
+        }
+        var rows=SequenceRelayout.Place(oldTokens,newTokens);
+        Func<string,double> messageY=id=>rows.Get("M:"+id).Y;
+        Func<string,double> targetY=id=>{var t=rows.Get("M:"+id);return t.Y+t.Drop;};
+        Func<string,int> depthOf=null;
+        depthOf=id=>{int d=0;for(string at=after[id].Parent;at!=null && after.ContainsKey(at);at=after[at].Parent)if(after[at].Kind=="fragment")d++;return d;};
+        Func<string,int> oldDepth=id=>{int d=0;for(string at=before[id].Parent;at!=null && before.ContainsKey(at);at=before[at].Parent)if(before[at].Kind=="fragment")d++;return d;};
+
+        // ---- Frames, notes and refs: their boxes.
+        var box2=new Dictionary<string,double[]>(StringComparer.Ordinal);   // left, top, right, bottom
+        double baseLeft,baseRight;
+        {
+            var top=current.Elements.FirstOrDefault(e=>e.Kind=="fragment" && e.Parent==root && after.ContainsKey(e.Id) && after[e.Id].Parent==root);
+            if(top!=null){baseLeft=laneLayout.Map(Read(shapeOf[top.Id],"X"));baseRight=laneLayout.Map(Read(shapeOf[top.Id],"X")+Read(shapeOf[top.Id],"Width"));}
+            else if(newLanes.Length>0)
+            {
+                baseLeft=newLanes.Min(id=>laneLayout.X[id])-16;baseRight=newLanes.Max(id=>laneLayout.X[id]+laneWidth(id))+16;
+            }
+            else {baseLeft=20;baseRight=260;}
+        }
+        foreach(var f in plan.Expected.Elements.Where(e=>e.Kind=="fragment"))
+        {
+            double left,right;int d=depthOf(f.Id);
+            if(before.ContainsKey(f.Id) && oldDepth(f.Id)==d)
+            {left=laneLayout.Map(Read(shapeOf[f.Id],"X"));right=laneLayout.Map(Read(shapeOf[f.Id],"X")+Read(shapeOf[f.Id],"Width"));}
+            else {left=baseLeft+16*d;right=baseRight-16*d;if(right-left<60)right=left+60;}
+            box2[f.Id]=new[]{left,rows.Get("FO:"+f.Id).Y,right,rows.Get("FC:"+f.Id).Y};
+        }
+        foreach(var n in plan.Expected.Elements.Where(e=>e.Kind=="note" || e.Kind=="ref"))
+        {
+            var t=rows.Get("N:"+n.Id);double left,right;
+            if(before.ContainsKey(n.Id))
+            {left=laneLayout.Map(Read(shapeOf[n.Id],"X"));right=laneLayout.Map(Read(shapeOf[n.Id],"X")+Read(shapeOf[n.Id],"Width"));}
+            else
+            {
+                // A ref covers the lanes it names; a new note names none and covers them all.
+                var covered=n.Kind=="ref"?Link(n,"targets"):new string[0];
+                var spanned=covered.Length>0?covered:newLanes;
+                Require(spanned.Length>0,"参加者がないため"+n.Kind+"の幅を決められません。");
+                double l=spanned.Min(center),r=spanned.Max(center);
+                // The generator's margins: a note 50 out and at least 160 wide, a ref 55 out and 150.
+                if(n.Kind=="ref"){left=l-55;right=left+Math.Max(150,r-l+110);}else{left=l-50;right=left+Math.Max(160,r-l+100);}
+            }
+            box2[n.Id]=new[]{left,t.Y,right,t.Y+t.Height};
+        }
+        // A frame holds what its branches hold, with room to spare; the deepest go first so a
+        // frame that grows makes the one around it grow too.
+        foreach(var f in plan.Expected.Elements.Where(e=>e.Kind=="fragment").OrderByDescending(e=>depthOf(e.Id)).ToArray())
+        {
+            var mine=box2[f.Id];
+            foreach(var child in plan.Expected.Elements.Where(e=>(e.Kind=="fragment" || e.Kind=="note" || e.Kind=="ref") && e.Parent!=null
+                && after.ContainsKey(e.Parent) && after[e.Parent].Kind=="operand" && after[e.Parent].Parent==f.Id))
+            {
+                var inner=box2[child.Id];double margin=child.Kind=="fragment"?16:8;
+                mine[0]=Math.Min(mine[0],inner[0]-margin);mine[2]=Math.Max(mine[2],inner[2]+margin);
+            }
+        }
+        var operandRegions=new List<SequenceRegion>();var operandTop=new Dictionary<string,double>(StringComparer.Ordinal);
+        foreach(var f in plan.Expected.Elements.Where(e=>e.Kind=="fragment"))
+        {
+            var operands=plan.Expected.Elements.Where(e=>e.Parent==f.Id && e.Kind=="operand").OrderBy(e=>e.Order).ToArray();
+            var b=box2[f.Id];
+            for(int i=0;i<operands.Length;i++)
+            {
+                double top=i==0?b[1]:rows.Get("OO:"+operands[i].Id).Y,bottom=i+1<operands.Length?rows.Get("OO:"+operands[i+1].Id).Y:b[3];
+                operandTop[operands[i].Id]=top;
+                operandRegions.Add(new SequenceRegion{Id=operands[i].Id,Fragment=f.Id,X=b[0],Y=top,Width=b[2]-b[0],Height=bottom-top});
+            }
+        }
+        Func<double,double,string> containerAt=(x,y)=>{
+            var candidates=operandRegions.Where(r=>x>=r.X && x<=r.X+r.Width && y>=r.Y && y<r.Y+r.Height-1.0).ToArray();
+            var nearest=candidates.Where(r=>!candidates.Any(inner=>inner.Id!=r.Id && SequenceRegion.Contains(r,inner))).ToArray();
+            return nearest.Length==1?nearest[0].Id:root;
+        };
+        // The Y the reader orders an element by.
+        Func<string,double> eventY=id=>{
+            var e=after[id];
+            switch(e.Kind)
+            {
+                case "message":return messageY(id);
+                case "fragment":return box2[id][1];
+                case "operand":return operandTop[id];
+                default:return rows.Get((e.Kind=="destroy"?"D:":"N:")+id).Y;
+            }
+        };
+        Func<string,string> tokenKey=id=>{
+            var e=after[id];
+            switch(e.Kind){case "message":return "M:"+id;case "fragment":return "FO:"+id;case "operand":return "OO:"+id;case "destroy":return "D:"+id;default:return "N:"+id;}
+        };
+        var events=plan.Expected.Elements.Where(e=>e.Kind!="participant" && e.Kind!="interaction" && e.Kind!="execution").Select(e=>e.Id).OrderBy(eventY).ToArray();
+        Func<SequenceRelayout.Token,string,bool> within=(t,container)=>container==root || t.Container==container
+            || SequenceStructurePreflight.IsWithin(plan.Expected,t.Container,container) || (t.Kind=="OO" && t.Id==container);
+
+        // ---- Bars.
+        var bars=new Dictionary<string,double[]>(StringComparer.Ordinal);  // x, top, bottom
+        Func<string,int> barDepth=id=>{int d=0;for(var at=after[id];Link(at,"outer").Length==1 && d<32;at=after[Link(at,"outer")[0]])d++;return d;};
+        Func<string,int> oldBarDepth=id=>{int d=0;for(var at=before[id];Link(at,"outer").Length==1 && d<32 && before.ContainsKey(Link(at,"outer")[0]);at=before[Link(at,"outer")[0]])d++;return d;};
+        foreach(var b in plan.Expected.Elements.Where(e=>e.Kind=="execution").OrderBy(e=>barDepth(e.Id)))
+        {
+            string lane=Link(b,"participant").Single();
+            double x;
+            bool had=before.ContainsKey(b.Id) && shapeOf.ContainsKey(b.Id);
+            if(had && Link(before[b.Id],"participant").SequenceEqual(new[]{lane}) && oldBarDepth(b.Id)==barDepth(b.Id))x=Read(shapeOf[b.Id],"X")+laneShift(lane);
+            else x=center(lane)+8*barDepth(b.Id);
+            var sends=plan.Expected.Elements.Where(m=>m.Kind=="message" && Link(m,"sendExecution").Contains(b.Id)).Select(m=>m.Id).ToArray();
+            var receives=plan.Expected.Elements.Where(m=>m.Kind=="message" && Link(m,"receiveExecution").Contains(b.Id)).Select(m=>m.Id).ToArray();
+            string startAfter=Link(b,"startAfter").FirstOrDefault(),endBefore=Link(b,"endBefore").FirstOrDefault();
+            string endIn=Link(b,"endContainer").FirstOrDefault()??root,parent=b.Parent??root;
+            // Top: the message that opens it, or 20 above the row after the event before it.
+            double top;
+            // A bar the reader opens on a message it receives (within 10 of its top) keeps that
+            // message as its start, at the same distance.
+            string opener=null;double openerGap=0;
+            if(had)
+            {
+                double oldTop=Read(shapeOf[b.Id],"Y");
+                var near=receives.Where(m=>before.ContainsKey(m) && shapeOf.ContainsKey(m) && Math.Abs(Read(shapeOf[m],"SourceY")-oldTop)<=10.0)
+                    .OrderBy(m=>Math.Abs(Read(shapeOf[m],"SourceY")-oldTop)).FirstOrDefault();
+                if(near!=null){opener=near;openerGap=oldTop-Read(shapeOf[near],"SourceY");}
+            }
+            // A bar that says nothing about where it starts or ends (no such link at all, as
+            // opposed to an empty one) keeps its place and only reaches over its messages.
+            bool knowsStart=b.Links.ContainsKey("startAfter"),knowsEnd=b.Links.ContainsKey("endBefore");
+            double firstMessage=sends.Select(messageY).Concat(receives.Select(messageY)).DefaultIfEmpty(double.MaxValue).Min();
+            if(opener!=null)top=messageY(opener)+openerGap;
+            else if(had && !knowsStart)top=Math.Min(rows.Map(Read(shapeOf[b.Id],"Y")),firstMessage);
+            else if(startAfter!=null && receives.Contains(startAfter))top=targetY(startAfter);
+            else
+            {
+                double gen;
+                // A new bar that nothing comes before starts where the first message it receives
+                // arrives, when nothing leaves it earlier; otherwise 20 above the first row.
+                var firstReceive=receives.OrderBy(messageY).FirstOrDefault();
+                if(startAfter==null && !had && firstReceive!=null && sends.All(m=>messageY(m)>=messageY(firstReceive)))gen=targetY(firstReceive);
+                else if(startAfter==null)gen=rows.Start-20;
+                else
                 {
-                    var anchor=walk.Take(i).Where(e=>before.ContainsKey(e) && before[e].Kind=="message").LastOrDefault();
-                    Require(anchor!=null,"追加する要素の直前に既存のメッセージがありません。");
-                    var anchorShapes=shapes0.Where(sh=>V(sh,"ModelId")==anchor).ToArray();
-                    Require(anchorShapes.Length==1,"直前のメッセージの図形を一意に取得できません。");
-                    run=new RoomRun{Anchor=anchor,At=Read(anchorShapes[0],"TargetY")};
-                    // A note or ref this update removes from right under the same message gives
-                    // its place to the new one, which then only makes up the difference in height.
-                    int oldAt=System.Array.IndexOf(oldWalk,anchor);
-                    if(oldAt>=0 && oldAt+1<oldWalk.Length && (gate.DeleteNotes.Contains(oldWalk[oldAt+1]) || gate.DeleteRefs.Contains(oldWalk[oldAt+1])))
+                    int k=rows.IndexOf(tokenKey(startAfter));
+                    // Past frames that close after it, unless the bar opens inside them.
+                    while(k+1<rows.Tokens.Count && rows.Tokens[k+1].Kind=="FC" && !(parent==rows.Tokens[k+1].Id
+                        || SequenceStructurePreflight.IsWithin(plan.Expected,parent,rows.Tokens[k+1].Id)))k++;
+                    gen=rows.Tokens[k].After-20;
+                }
+                top=gen;
+                if(had)
+                {
+                    double mapped=rows.Map(Read(shapeOf[b.Id],"Y"));
+                    double first=sends.Concat(receives).Select(messageY).DefaultIfEmpty(double.MaxValue).Min();
+                    bool ok=(startAfter==null || mapped>eventY(startAfter)+1) && mapped<=first
+                        && !receives.Any(m=>Math.Abs(messageY(m)-mapped)<=10.5) && containerAt(x,mapped)==parent;
+                    if(ok)top=mapped;
+                }
+            }
+            // Bottom: under the last row it holds, inside the container it ends in.
+            int stop=endBefore==null?rows.Tokens.Count:rows.IndexOf(tokenKey(endBefore));
+            int last=stop-1;
+            while(last>=0 && !within(rows.Tokens[last],endIn))last--;
+            double bottom;
+            var ender=last>=0?rows.Tokens[last]:null;
+            if(ender!=null && ender.Kind=="D" && Link(after[ender.Id],"participant").Contains(lane))bottom=ender.Y;
+            else bottom=ender!=null?ender.After-16:top+PumlBuild.MinimumBar;
+            double cover=sends.Select(messageY).Concat(receives.Select(targetY)).Select(v=>v+16).DefaultIfEmpty(top+PumlBuild.MinimumBar).Max();
+            if(ender==null || ender.Kind!="D")bottom=Math.Max(bottom,Math.Max(top+PumlBuild.MinimumBar,cover));
+            if(had && !knowsEnd)bottom=Math.Max(rows.Map(Read(shapeOf[b.Id],"Y")+Read(shapeOf[b.Id],"Length")),Math.Max(cover,top+PumlBuild.MinimumBar));
+            // A new nested bar that says nothing about its end closes with the bar around it.
+            else if(!had && !knowsEnd && Link(b,"outer").Length==1 && bars.ContainsKey(Link(b,"outer")[0]))
+                bottom=Math.Max(bars[Link(b,"outer")[0]][2],Math.Max(cover,top+PumlBuild.MinimumBar));
+            else if(had)
+            {
+                double mapped=rows.Map(Read(shapeOf[b.Id],"Y")+Read(shapeOf[b.Id],"Length"));
+                double next=endBefore==null?double.MaxValue:eventY(endBefore);
+                double lastEvent=events.Where(id=>eventY(id)<next && id!=b.Id).Select(eventY).DefaultIfEmpty(double.MinValue).Max();
+                bool ok=mapped>=lastEvent+1 && mapped<=next-1 && mapped>=cover-16+1 && mapped-top>=PumlBuild.MinimumBar-1e-9
+                    && containerAt(x,mapped)==endIn && !(ender!=null && ender.Kind=="D");
+                if(ok)bottom=mapped;
+            }
+            bars[b.Id]=new[]{x,top,bottom};
+        }
+        // A bar reaches over every bar nested in it.
+        foreach(var b in plan.Expected.Elements.Where(e=>e.Kind=="execution").OrderByDescending(e=>barDepth(e.Id)))
+        {
+            var outer=Link(b,"outer");
+            if(outer.Length!=1 || !bars.ContainsKey(outer[0]))continue;
+            var o=bars[outer[0]];var mine=bars[b.Id];
+            o[1]=Math.Min(o[1],mine[1]);o[2]=Math.Max(o[2],mine[2]);
+        }
+
+        // ---- Shapes already drawn: what changes on each.
+        var shifted=new List<SequenceShiftedShape>();
+        Action<string,string,List<string>,List<string>> write=(model,kind,keys,values)=>{
+            if(keys.Count==0)return;
+            var sh=shapeOf[model];
+            foreach(var node in view.Properties.Values.Where(a=>a!=null && a.Items!=null).SelectMany(a=>a.Items).Where(n=>V(n,"Id")==V(sh,"Id")))
+                for(int i=0;i<keys.Count;i++)node.Properties[keys[i]]=SequenceJson.Parse(values[i]);
+            shifted.Add(new SequenceShiftedShape{ModelId=model,ShapeId=V(sh,"Id"),Kind=kind,Keys=keys.ToArray(),Values=values.ToArray()});
+        };
+        Func<List<string>> list=()=>new List<string>();
+        Action<List<string>,List<string>,SequenceJson,string,double> put=(keys,values,sh,key,value)=>{
+            if(sh[key]==null)return;
+            if(Math.Abs(Read(sh,key)-value)>1e-9){keys.Add(key);values.Add(Number(value));}
+        };
+        // Lanes run down to the lowest thing drawn, as far past it as they did before.
+        double oldFloor=0,newFloor=0;
+        foreach(var pair in shapeOf.Where(p=>before.ContainsKey(p.Key) || endIds.Contains(p.Key)))
+        {
+            var sh=pair.Value;
+            foreach(string key in new[]{"TargetY","SourceY"})if(sh[key]!=null)oldFloor=Math.Max(oldFloor,Read(sh,key));
+            if(sh["Y"]!=null)
+            {
+                double bottom=Read(sh,"Y");
+                foreach(string key in new[]{"Length","Height"})if(sh[key]!=null)bottom=Math.Max(bottom,Read(sh,"Y")+Read(sh,key));
+                oldFloor=Math.Max(oldFloor,bottom);
+            }
+        }
+        foreach(var t in rows.Tokens)
+            newFloor=Math.Max(newFloor,t.Kind=="M"?t.Y+t.Drop:t.Kind=="N"?t.Y+t.Height:t.Kind=="D"?t.Y+20:t.Y);
+        foreach(var b in bars.Values)newFloor=Math.Max(newFloor,b[2]);
+        double laneGrowth=newFloor-oldFloor;
+        foreach(var e in plan.Expected.Elements.Where(e=>before.ContainsKey(e.Id) && e.Kind!="interaction"))
+        {
+            if(!shapeOf.ContainsKey(e.Id))continue;
+            var sh=shapeOf[e.Id];var keys=list();var values=list();
+            switch(e.Kind)
+            {
+                case "participant":
+                    put(keys,values,sh,"X",laneLayout.X[e.Id]);
+                    if(sh["LaneLength"]!=null)put(keys,values,sh,"LaneLength",Read(sh,"LaneLength")+laneGrowth);
+                    break;
+                case "message":
+                {
+                    put(keys,values,sh,"SourceY",messageY(e.Id));put(keys,values,sh,"TargetY",targetY(e.Id));
+                    if(sh["SelfloopBendsX"]!=null && Read(sh,"SelfloopBendsX")!=0)
                     {
-                        run.Replaced=oldWalk[oldAt+1];
-                        run.ReplacedHeight=Read(shapes0.Single(sh=>V(sh,"ModelId")==run.Replaced),"Height");
+                        // The loop keeps its distance from the bars it runs between.
+                        var ends=new[]{"sendExecution","receiveExecution"}.SelectMany(role=>Link(e,role)).Where(bars.ContainsKey).ToArray();
+                        double bend=ends.Length>0?ends.Max(id=>bars[id][0])+80:laneLayout.Map(Read(sh,"SelfloopBendsX"));
+                        if(ends.Length>0 && ends.All(id=>before.ContainsKey(id) && shapeOf.ContainsKey(id)))
+                            bend=Read(sh,"SelfloopBendsX")+(ends.Max(id=>bars[id][0])-ends.Max(id=>Read(shapeOf[id],"X")));
+                        put(keys,values,sh,"SelfloopBendsX",bend);
                     }
-                    runs.Add(run);
+                    break;
                 }
-                var wanted=after[id];
-                // A self call drops 24 before it returns, as the generator draws it.
-                bool self=wanted.Kind=="message" && Link(wanted,"sender").SequenceEqual(Link(wanted,"receiver"));
-                double room=wanted.Kind=="message"?MessageSpacing+(self?24:0):BoxHeight(wanted.Text)+MessageSpacing;
-                if(wanted.Kind!="message" && run.Replaced!=null && run.Items.Count==0)room-=run.ReplacedHeight+MessageSpacing;
-                run.Items.Add(id);run.Rooms.Add(room);
-                if(wanted.Kind=="message")foreach(string role in new[]{"sendExecution","receiveExecution"})run.Ports.Add(wanted.Links[role].Single());
-                // Any new element with something already drawn after it is an insertion.
-                if(walk.Skip(i+1).Any(before.ContainsKey) || (after[id].Parent!=root && before.ContainsKey(after[id].Parent))){insertedId=id;run.Inserted=true;}
-            }
-            Func<double,double> above=p=>runs.Where(r=>r.At<p).Sum(r=>r.Room);
-            foreach(var r in runs)
-            {
-                double y=r.At+above(r.At)+MessageSpacing;
-                for(int k=0;k<r.Items.Count;k++){placedY[r.Items[k]]=y;y+=r.Rooms[k];}
-            }
-        }
-        // A new frame goes under everything already drawn. When other additions make room
-        // above it in the same update, it goes down by all of that room.
-        if(gate.AddFragments.Count>0 && gate.WrapFragments.Count==0 && runs.Count>0)
-        {
-            double down=runs.Sum(r=>r.Room);
-            foreach(var pair in layout.Where(p=>p.Key.Length>0 && !before.ContainsKey(p.Key)))
-                if(pair.Value.ContainsKey("Y"))pair.Value["Y"]+=down;
-            if(layout.ContainsKey(""))layout[""]["Growth"]+=down;
-        }
-        var additions=new List<SequenceAddedExecution>();
-        var newEntities=new List<SequenceJson>();
-        var newLaneShapes=new List<SequenceJson>();
-        var newRelations=new List<SequenceJson>();
-        var newShapes=new List<SequenceJson>();
-        foreach(string id in gate.AddExecutions)
-        {
-            var wanted=after[id];
-            string participant=wanted.Links["participant"].Single();
-            var owned=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"OwnedExecutionSpecification" && V(r,"SourceId")==participant).ToArray();
-            Require(owned.Length>0,"追加先の参加者に既存の実行区間がないため、新しい区間を組み立てられません。");
-            string template=V(owned[0],"TargetId");
-            Require(byId.ContainsKey(template) && V(byId[template],"EntityType")=="ExecutionSpecification","実行区間の見本を取得できません。");
-            var ownerLink=find("___Interaction_ExecutionSpecification",root,template);
-            var entity=SequenceJson.Parse(byId[template].ToJsonString());
-            entity.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(id));
-            newEntities.Add(entity);
-            var relationIds=new List<string>();var relationSources=new List<string>();var templateIds=new List<string>();
-            // The lifeline has to be in place first: adding the bar to the interaction makes
-            // the product build its shape, and that lookup needs the owning lifeline.
-            foreach(var origin in new[]{owned[0],ownerLink})
-            {
-                var copy=SequenceJson.Parse(origin.ToJsonString());
-                string relationId=Guid.NewGuid().ToString();
-                copy.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(relationId));
-                copy.Properties["TargetId"]=SequenceJson.Parse(SequencePayload.Q(id));
-                // Omitted order appends, which is what a new bar needs at both ends.
-                copy.Properties.Remove("SourceIndex");copy.Properties.Remove("TargetIndex");
-                newRelations.Add(copy);
-                relationIds.Add(relationId);relationSources.Add(V(origin,"SourceId"));templateIds.Add(V(origin,"Id"));
-            }
-            var shapes2=editor.Shapes();
-            var templateShapes=shapes2.Where(sh=>V(sh,"ModelId")==template).ToArray();
-            Require(templateShapes.Length==1,"実行区間の見本図形を一意に取得できません。");
-            var laneShapes=shapes2.Where(sh=>V(sh,"ModelId")==participant).ToArray();
-            Require(laneShapes.Length==1,"参加者の図形を一意に取得できません。");
-            string shapeId=Guid.NewGuid().ToString();
-            var shape=SequenceJson.Parse(templateShapes[0].ToJsonString());
-            shape.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(shapeId));
-            shape.Properties["ModelId"]=SequenceJson.Parse(SequencePayload.Q(id));
-            Dictionary<string,double> geometry;
-            if(layout.ContainsKey(id))
-            {
-                geometry=new Dictionary<string,double>(layout[id]);
-                geometry["X"]=Read(laneShapes[0],"X")+Read(laneShapes[0],"Width")/2+8*Depth(wanted,after);
-            }
-            else
-            {
-                // A bar opened by a message this update adds starts at that message, where the
-                // runs put it; one ended by a destroy reaches 25 down to it, as generated.
-                var opener=after.Values.FirstOrDefault(e=>e.Kind=="message" && placedY.ContainsKey(e.Id) && Link(e,"receiveExecution").Contains(id));
-                if(opener!=null)
+                case "execution":
                 {
-                    bool destroyed=gate.AddDestroys.Any(d=>Link(after[d],"participant").Contains(participant));
-                    double length=destroyed?25:PumlBuild.MinimumBar;
-                    geometry=new Dictionary<string,double>();
-                    geometry["X"]=Read(laneShapes[0],"X")+Read(laneShapes[0],"Width")/2+8*Depth(wanted,after);
-                    geometry["Y"]=placedY[opener.Id];geometry["Length"]=length;geometry["Height"]=length;
+                    var b=bars[e.Id];
+                    put(keys,values,sh,"X",b[0]);put(keys,values,sh,"Y",b[1]);
+                    // A bar carries its length as both Height and Length; writing one is ignored.
+                    if(Math.Abs(Read(sh,"Length")-(b[2]-b[1]))>1e-9){keys.Add("Length");values.Add(Number(b[2]-b[1]));keys.Add("Height");values.Add(Number(b[2]-b[1]));}
+                    break;
                 }
-                else geometry=Geometry(wanted,after,editor,laneShapes[0],templateShapes[0]);
+                case "fragment":
+                {
+                    var b=box2[e.Id];
+                    put(keys,values,sh,"X",b[0]);put(keys,values,sh,"Y",b[1]);put(keys,values,sh,"Width",b[2]-b[0]);put(keys,values,sh,"Height",b[3]-b[1]);
+                    break;
+                }
+                case "operand":
+                {
+                    double position=rows.Get("OO:"+e.Id).Y-box2[e.Parent][1];
+                    if(Math.Abs(Read(sh,"Position")-position)>1e-9)
+                    {
+                        // An operand written as an absolute position stays absolute.
+                        var owner=shapeOf[before[e.Id].Parent];
+                        bool absolute=Read(sh,"Position")>=Read(owner,"Y")-0.00001 && Read(sh,"Position")<=Read(owner,"Y")+Read(owner,"Height")+0.00001
+                            && current.Elements.Where(o=>o.Parent==before[e.Id].Parent && o.Kind=="operand").All(o=>Read(shapeOf[o.Id],"Position")>=Read(owner,"Y")-0.00001);
+                        double value=absolute?rows.Get("OO:"+e.Id).Y:position;
+                        if(Math.Abs(Read(sh,"Position")-value)>1e-9){keys.Add("Position");values.Add(Number(value));}
+                    }
+                    break;
+                }
+                case "note":
+                case "ref":
+                {
+                    var b=box2[e.Id];
+                    put(keys,values,sh,"X",b[0]);put(keys,values,sh,"Y",b[1]);put(keys,values,sh,"Width",b[2]-b[0]);
+                    break;
+                }
+                case "destroy":
+                {
+                    string lane=Link(e,"participant").Single();
+                    put(keys,values,sh,"X",Read(sh,"X")+laneShift(lane));put(keys,values,sh,"Y",rows.Get("D:"+e.Id).Y);
+                    break;
+                }
             }
-            foreach(var pair in geometry)
-            {
-                Require(shape[pair.Key]!=null,"実行区間の図形に"+pair.Key+"がありません。");
-                shape.Properties[pair.Key]=SequenceJson.Parse(Number(pair.Value));
-            }
-            newShapes.Add(shape);
-            additions.Add(new SequenceAddedExecution{ModelId=id,Metaclass=V(entity,"MetamodelId"),Name=V(entity,"Name")??"",
-                OwnerId=root,ShapeId=shapeId,TemplateShapeId=V(templateShapes[0],"Id"),
-                Geometry=PumlBuild.Json(new[]{Number(geometry["X"]),Number(geometry["Y"]),Number(geometry["Length"])}),
-                RelationIds=relationIds.ToArray(),RelationSources=relationSources.ToArray(),TemplateRelationIds=templateIds.ToArray()});
+            write(e.Id,e.Kind,keys,values);
         }
-        // Frames and their operands are built before the messages inside them, so the
-        // ownership those messages need is already in the same import.
-        var frames=new List<SequenceAddedFragment>();
-        var branches=new List<SequenceAddedOperand>();
-        var newFrameShapes=new List<SequenceJson>();
-        var newOperandShapes=new List<SequenceJson>();
-        var newNoteShapes=new List<SequenceJson>();
-        var newRefShapes=new List<SequenceJson>();
-        var newDestroyShapes=new List<SequenceJson>();
-        var destroyCuts=new Dictionary<string,double>(StringComparer.Ordinal);
-        Func<string[],string,string,string,SequenceJson> relate=(row,relationId,from,to)=>
-            SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",relationId,"RelationType",row[1],
-                "MetamodelId",row[0],"SourceId",from,"TargetId",to)));
-        foreach(string id in gate.AddFragments)
+        // Free ends of messages already drawn follow their message.
+        foreach(string end in endIds.Where(id=>shapeOf.ContainsKey(id) && !leaving.Contains(id)))
         {
-            var wanted=after[id];
-            Require(layout.ContainsKey(id),"追加するフラグメントの配置を決められません。");
-            string name=wanted.Text??"";
-            string operatorName;
-            Require(wanted.Attributes.TryGetValue("operator",out operatorName),"追加するフラグメントに演算子がありません。");
-            string operatorValue;
-            Require(types.Operators.TryGetValue(operatorName,out operatorValue),
-                "この図のプロファイルに演算子 "+operatorName+" がありません。");
-            newEntities.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",id,"EntityType","CombinedFragment",
-                "MetamodelId",types.Fragment,"Name",name,"Fields",PumlBuild.Obj("Name",name,"Operator",operatorValue)))));
-            var relationIds=new List<string>();var relationSources=new List<string>();
-            var relationTargets=new List<string>();var relationFields=new List<string>();
-            // Ownership first, then the lanes the frame spans, as the generator writes them.
-            var wiring=new List<string[][]>{new[]{types.Owns,new[]{root,id}}};
-            foreach(var lane in current.Elements.Where(e=>e.Kind=="participant"))
-                wiring.Add(new[]{types.Crossing,new[]{id,lane.Id}});
-            foreach(var pair in wiring)
-            {
-                string relationId=Guid.NewGuid().ToString();
-                newRelations.Add(relate(pair[0],relationId,pair[1][0],pair[1][1]));
-                relationIds.Add(relationId);relationSources.Add(pair[1][0]);
-                relationTargets.Add(pair[1][1]);relationFields.Add(pair[0][2]);
-            }
-            string shapeId=Guid.NewGuid().ToString();
-            var box=layout[id];
-            newFrameShapes.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,
-                "X",Number(box["X"]),"Y",Number(box["Y"]),"Width",Number(box["Width"]),"Height",Number(box["Height"])))));
-            frames.Add(new SequenceAddedFragment{ModelId=id,Metaclass=types.Fragment,Name=name,OwnerId=root,
-                // The shape carries the operator as written, except for a group, which shows
-                // its own name.
-                ShapeId=shapeId,TemplateShapeId=frameTemplate==null?"":V(frameTemplate,"Id"),
-                Text=operatorName=="group"?name:operatorName,
-                Geometry=PumlBuild.Json(new[]{Number(box["X"]),Number(box["Y"]),Number(box["Width"]),Number(box["Height"])}),
-                RelationIds=relationIds.ToArray(),RelationSources=relationSources.ToArray(),
-                RelationTargets=relationTargets.ToArray(),RelationFields=relationFields.ToArray()});
+            var message=relations.Where(r=>(V(r,"MetamodelId")==R("SendMessage") || V(r,"MetamodelId")==R("ReceiveMessage")) && V(r,"SourceId")==end)
+                .Select(r=>new{Id=V(r,"TargetId"),Send=V(r,"MetamodelId")==R("SendMessage")}).FirstOrDefault();
+            if(message==null || !after.ContainsKey(message.Id))continue;
+            var sh=shapeOf[end];var keys=list();var values=list();
+            var other=Link(after[message.Id],message.Send?"receiveExecution":"sendExecution").FirstOrDefault();
+            put(keys,values,sh,"X",other!=null && bars.ContainsKey(other)?bars[other][0]-60:laneLayout.Map(Read(sh,"X")));
+            put(keys,values,sh,"Y",message.Send?messageY(message.Id):targetY(message.Id));
+            write(end,"messageEnd",keys,values);
         }
-        foreach(string id in gate.AddOperands)
+
+        // ---- Lanes the input adds.
+        var lanes=new List<SequenceAddedParticipant>();var newLaneShapes=new List<SequenceJson>();
+        // Shapes whose size the product decides when there is no sample to copy it from.
+        var loose=new List<string>();
+        foreach(string id in gate.AddParticipants.Where(p=>laneTemplate==null))
         {
-            var wanted=after[id];
-            Require(layout.ContainsKey(id),"追加するオペランドの配置を決められません。");
-            Require(wanted.Parent!=null && (gate.AddFragments.Contains(wanted.Parent) || before.ContainsKey(wanted.Parent)),
-                "追加するオペランドの所有先がこの計画のフラグメントではありません。");
-            string guard=wanted.Text??"";
-            newEntities.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",id,"EntityType","InteractionOperand",
-                "MetamodelId",types.Operand,"Name","","Fields",PumlBuild.Obj("Name","","Guard",guard)))));
+            // A diagram with no lane at all: built from the profile, as the generator builds one.
+            Require(BaseTypes!=null && BaseTypes.Lifeline!=null && BaseTypes.OwnsLifeline!=null,"参加者の型情報が解決できていません。");
+            string name=after[id].Text??"";
+            newEntities.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",id,"EntityType","Lifeline","MetamodelId",BaseTypes.Lifeline,"Name",name,"Fields",PumlBuild.Obj("Name",name)))));
             string relationId=Guid.NewGuid().ToString();
-            newRelations.Add(relate(types.Branches,relationId,wanted.Parent,id));
-            string shapeId=Guid.NewGuid().ToString();
-            string position=Number(layout[id]["Position"]);
-            newOperandShapes.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,"Position",position))));
-            branches.Add(new SequenceAddedOperand{ModelId=id,Metaclass=types.Operand,Name="",OwnerId=wanted.Parent,
-                ShapeId=shapeId,TemplateShapeId="",Guard=guard,Position=position,
-                RelationIds=new[]{relationId},RelationSources=new[]{wanted.Parent},RelationFields=new[]{types.Branches[2]}});
+            newRelations.Add(relate(BaseTypes.OwnsLifeline,relationId,root,id));
+            string laneShapeId=Guid.NewGuid().ToString();
+            newLaneShapes.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",laneShapeId,"ModelId",id,"X",laneLayout.X[id],"Width",100,
+                "LeftPadding",System.Array.IndexOf(newLanes,id)==0?190:140,"LaneLength",newFloor+40))));
+            loose.Add(laneShapeId);
+            lanes.Add(new SequenceAddedParticipant{ModelId=id,Metaclass=BaseTypes.Lifeline,Name=name,OwnerId=root,
+                ShapeId=laneShapeId,TemplateShapeId="",RelationId=relationId,TemplateRelationId="row:"+BaseTypes.OwnsLifeline[2],X=Number(laneLayout.X[id])});
         }
-        // Wrapped messages keep their model and their owner, the interaction. Only the
-        // operand's reference to them is new, written after the operands exist.
-        var movedMessages=new List<SequenceMovedMessage>();
-        foreach(string id in gate.MoveMessages)
+        foreach(string id in gate.AddParticipants.Where(p=>laneTemplate!=null))
         {
-            Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="Message","囲むメッセージが退避データにありません。");
-            Require(!relations.Any(r=>V(r,"MetamodelId")==types.OperandMessage[0] && V(r,"TargetId")==id),"囲むメッセージが既にオペランドに属しています。");
-            string relationId=Guid.NewGuid().ToString();
-            newRelations.Add(relate(types.OperandMessage,relationId,after[id].Parent,id));
-            movedMessages.Add(new SequenceMovedMessage{ModelId=id,OperandId=after[id].Parent,RelationId=relationId,Field=types.OperandMessage[2]});
-        }
-        var wires=new List<SequenceAddedMessage>();
-        var reach=new Dictionary<string,double>(StringComparer.Ordinal);
-        var newMessageShapes=new List<SequenceJson>();
-        foreach(string id in gate.AddMessages)
-        {
-            var wanted=after[id];
-            var walk=SequenceStructurePreflight.Flatten(plan.Expected);
-            var earlier=walk.Take(System.Array.IndexOf(walk,id)).Where(after.ContainsKey).Select(e=>after[e])
-                .Where(e=>e.Kind=="message" && byId.ContainsKey(e.Id)).ToArray();
-            // A destroy message is written as a call; the destruction's relation marks it.
-            Func<SequenceElement,string> written=e=>{string v=SequenceStructurePreflight.Attribute(e);return v=="destroy"?"sync":v;};
-            var sameSort=earlier.Where(e=>written(e)==written(wanted)).ToArray();
-            Require(earlier.Length>0,"見本にできる既存メッセージがありません。");
-            string template=(sameSort.Length>0?sameSort[sameSort.Length-1]:earlier[earlier.Length-1]).Id;
-            string sort=SequenceStructurePreflight.Attribute(wanted);
-            Require(V(byId[template],"EntityType")=="Message","メッセージの見本を取得できません。");
-            string send=wanted.Links["sendExecution"].Single(),receive=wanted.Links["receiveExecution"].Single();
-            var shapes4=editor.Shapes();
-            var templateShapes=shapes4.Where(sh=>V(sh,"ModelId")==template).ToArray();
-            Require(templateShapes.Length==1,"メッセージの見本図形を一意に取得できません。");
-            double y;
-            if(layout.ContainsKey(id))y=layout[id]["Y"];
-            else
-            {
-                y=placedY[id];
-                var run=runs.Single(r=>r.Items.Contains(id));
-                // The bars it uses have to be open where its run starts; they are grown to it.
-                // A bar this update adds starts at the message itself; only existing bars are checked.
-                foreach(string port in new[]{send,receive}.Where(b=>!gate.AddExecutions.Contains(b)))
-                {
-                    var bar=shapes4.Where(sh=>V(sh,"ModelId")==port).ToArray();
-                    Require(bar.Length==1,"接続先の実行区間の図形を一意に取得できません。");
-                    Require(Read(bar[0],"Y")<=run.At,"追加するメッセージが既存の実行区間より上になります。");
-                }
-            }
-            var entity=SequenceJson.Parse(byId[template].ToJsonString());
-            entity.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(id));
-            if(sameSort.Length==0)
-            {
-                // No sample of this sort: write the profile's literal for it.
-                string literal;
-                Require(SortLiterals.TryGetValue(written(wanted),out literal),"メッセージ種別 "+written(wanted)+" の値をプロファイルから決められません。");
-                Require(entity["Fields"]!=null && entity["Fields"].Properties!=null,"メッセージの見本に種別の欄がありません。");
-                entity["Fields"].Properties["MessageSort"]=SequenceJson.Parse(SequencePayload.Q(literal));
-            }
-            string name=wanted.Text??"";
-            entity.Properties["Name"]=SequenceJson.Parse(SequencePayload.Q(name));
-            if(entity["Fields"]!=null && entity["Fields"].Properties!=null && entity["Fields"]["Name"]!=null)
-                entity["Fields"].Properties["Name"]=SequenceJson.Parse(SequencePayload.Q(name));
-            newEntities.Add(entity);
-            var relationIds=new List<string>();var relationSources=new List<string>();
-            var templateIds=new List<string>();var relationFields=new List<string>();
-            // Endpoints before membership, as the executions needed.
-            var wiring=new List<string[]>{new[]{"SendMessage",send},new[]{"ReceiveMessage",receive},new[]{"___Interaction_Message",root}};
-            // A message inside a frame is owned by the interaction and also pointed at by
-            // the operand it sits in, the way the generator writes it.
-            if(wanted.Parent!=root)wiring.Add(new[]{"OperandTargetMessage",wanted.Parent});
-            // A reply is also tied to the bar it returns from, when the sample reply is and that
-            // bar has no reply yet. Without it the product shrinks the bar on its next layout.
-            // Only the reply that closes its bar is tied to it: the last message on that bar.
-            if(SequenceStructurePreflight.Attribute(wanted)=="reply" && ClosingReply(plan.Expected,send)==id
-                && relations.Any(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ExecutionSpecificationReplyMessage")
-                && !relations.Any(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ExecutionSpecificationReplyMessage" && V(r,"SourceId")==send))
-                wiring.Add(new[]{"ExecutionSpecificationReplyMessage",send});
-            foreach(var pair in wiring)
-            {
-                string relationId=Guid.NewGuid().ToString();
-                if(pair[0]=="OperandTargetMessage")
-                {
-                    Require(types!=null && types.Complete(),"オペランド所属の型情報が解決できていません。");
-                    newRelations.Add(relate(types.OperandMessage,relationId,pair[1],id));
-                    relationIds.Add(relationId);relationSources.Add(pair[1]);
-                    templateIds.Add("");relationFields.Add(types.OperandMessage[2]);
-                    continue;
-                }
-                var origin=find(pair[0],pair[0]=="___Interaction_Message"?root:V(find(pair[0],null,template),"SourceId"),template);
-                var copy=SequenceJson.Parse(origin.ToJsonString());
-                copy.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(relationId));
-                copy.Properties["SourceId"]=SequenceJson.Parse(SequencePayload.Q(pair[1]));
-                copy.Properties["TargetId"]=SequenceJson.Parse(SequencePayload.Q(id));
-                copy.Properties.Remove("SourceIndex");copy.Properties.Remove("TargetIndex");
-                newRelations.Add(copy);
-                relationIds.Add(relationId);relationSources.Add(pair[1]);
-                templateIds.Add(V(origin,"Id"));relationFields.Add("");
-            }
-            string wireShapeId=Guid.NewGuid().ToString();
-            var wireShape=SequenceJson.Parse(templateShapes[0].ToJsonString());
-            wireShape.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(wireShapeId));
-            wireShape.Properties["ModelId"]=SequenceJson.Parse(SequencePayload.Q(id));
-            bool selfCall=wanted.Links["sender"].Single()==wanted.Links["receiver"].Single();
-            double targetY=selfCall?y+24:y,bend=0;
-            if(selfCall)
-            {
-                // The loop goes 80 right of the further of its two bars, as the generator draws it.
-                bend=new[]{send,receive}.Max(b=>Read(shapes4.Single(sh=>V(sh,"ModelId")==b),"X"))+80;
-                if(wireShape["SelfloopBendsX"]!=null)wireShape.Properties["SelfloopBendsX"]=SequenceJson.Parse(Number(bend));
-            }
-            wireShape.Properties["SourceY"]=SequenceJson.Parse(Number(y));
-            wireShape.Properties["TargetY"]=SequenceJson.Parse(Number(targetY));
-            newMessageShapes.Add(wireShape);
-            wires.Add(new SequenceAddedMessage{ModelId=id,Metaclass=V(entity,"MetamodelId"),Name=name,OwnerId=root,
-                ShapeId=wireShapeId,TemplateShapeId=V(templateShapes[0],"Id"),TemplateModelId=template,Y=Number(y),TargetY=Number(targetY),Bend=selfCall?Number(bend):null,
-                RelationIds=relationIds.ToArray(),RelationSources=relationSources.ToArray(),
-                TemplateRelationIds=templateIds.ToArray(),RelationFields=relationFields.ToArray(),
-                SendPort=send,ReceivePort=receive,Sender=wanted.Links["sender"].Single(),Receiver=wanted.Links["receiver"].Single(),Sort=sort});
-        }
-        var lanes=new List<SequenceAddedParticipant>();
-        // A lane put in between others takes the place of the lane now there; that lane and
-        // everything right of it moves one lane spacing over.
-        double laneShiftAt=double.NaN;
-        foreach(string id in gate.AddParticipants)
-        {
-            var owned=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"___Interaction_Lifeline" && V(r,"SourceId")==root).ToArray();
+            var owned=typed("___Interaction_Lifeline").Where(r=>V(r,"SourceId")==root).ToArray();
             Require(owned.Length>0,"既存の参加者の所有関連を取得できません。");
-            var shapes3=editor.Shapes();
-            var laneShapes=owned.Select(r=>V(r,"TargetId"))
-                .Select(target=>shapes3.SingleOrDefault(sh=>V(sh,"ModelId")==target)).Where(sh=>sh!=null).ToArray();
-            Require(laneShapes.Length==owned.Length,"参加者の図形を一意に取得できません。");
-            // Rightmost lane is the template: the new one sits one lane spacing further right.
-            var rightmost=laneShapes.OrderBy(sh=>Read(sh,"X")+Read(sh,"Width")/2).Last();
-            string template=V(rightmost,"ModelId");
+            string template=V(laneTemplate,"ModelId");
             Require(byId.ContainsKey(template) && V(byId[template],"EntityType")=="Lifeline","参加者の見本を取得できません。");
             var ownerLink=find("___Interaction_Lifeline",root,template);
             var entity=SequenceJson.Parse(byId[template].ToJsonString());
@@ -2114,189 +1696,326 @@ public sealed class SequenceStructurePreparation
                 entity["Fields"].Properties["Name"]=SequenceJson.Parse(SequencePayload.Q(name));
             newEntities.Add(entity);
             string relationId=Guid.NewGuid().ToString();
-            var link=SequenceJson.Parse(ownerLink.ToJsonString());
-            link.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(relationId));
-            link.Properties["TargetId"]=SequenceJson.Parse(SequencePayload.Q(id));
-            link.Properties.Remove("SourceIndex");link.Properties.Remove("TargetIndex");
-            newRelations.Add(link);
+            newRelations.Add(copyRelation(ownerLink,relationId,root,id));
             string laneShapeId=Guid.NewGuid().ToString();
-            var laneShape=SequenceJson.Parse(rightmost.ToJsonString());
+            var laneShape=SequenceJson.Parse(laneTemplate.ToJsonString());
             laneShape.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(laneShapeId));
             laneShape.Properties["ModelId"]=SequenceJson.Parse(SequencePayload.Q(id));
-            double x=Read(rightmost,"X")+LaneSpacing;
-            var order=plan.Expected.Elements.Where(e=>e.Kind=="participant").OrderBy(e=>e.Order).Select(e=>e.Id).ToList();
-            var nextExisting=order.Skip(order.IndexOf(id)+1).FirstOrDefault(before.ContainsKey);
-            if(nextExisting!=null)
-            {
-                Require(gate.AddParticipants.Count==1,"途中への参加者の追加は1回に1人までです。");
-                x=Read(laneShapes.Single(sh=>V(sh,"ModelId")==nextExisting),"X");
-                laneShiftAt=x;
-            }
-            laneShape.Properties["X"]=SequenceJson.Parse(Number(x));
+            laneShape.Properties["X"]=SequenceJson.Parse(Number(laneLayout.X[id]));
+            if(laneShape["LaneLength"]!=null)laneShape.Properties["LaneLength"]=SequenceJson.Parse(Number(Read(laneTemplate,"LaneLength")+laneGrowth));
             newLaneShapes.Add(laneShape);
             lanes.Add(new SequenceAddedParticipant{ModelId=id,Metaclass=V(entity,"MetamodelId"),Name=name,OwnerId=root,
-                ShapeId=laneShapeId,TemplateShapeId=V(rightmost,"Id"),RelationId=relationId,
-                TemplateRelationId=V(ownerLink,"Id"),X=Number(x)});
+                ShapeId=laneShapeId,TemplateShapeId=V(laneTemplate,"Id"),RelationId=relationId,
+                TemplateRelationId=V(ownerLink,"Id"),X=Number(laneLayout.X[id])});
         }
-        foreach(var pair in gate.DeleteFragments.Select(f=>new[]{f,"___Interaction_CombinedFragment","CombinedFragment"})
-            .Concat(gate.DeleteOperands.Select(o=>new[]{o,"___CombinedFragment_InteractionOperand","InteractionOperand"})))
-        {
-            Require(byId.ContainsKey(pair[0]) && V(byId[pair[0]],"EntityType")==pair[2],"削除対象が退避データ内の"+pair[2]+"ではありません。");
-            foreach(var relation in relations.Where(r=>V(r,"SourceId")==pair[0] || V(r,"TargetId")==pair[0]))
-                // A frame points at the lanes it spans. Removing the frame drops that
-                // reference and leaves the lane itself untouched.
-                Require(inside(relation,pair[0])
-                    || (V(relation,"TargetId")==pair[0] && V(relation,"MetamodelId")==SequencePayload.Prefix+pair[1])
-                    // Taking a frame away keeps what its operands held; their reference to it goes.
-                    || (gate.UnwrapFragments.Count>0 && V(relation,"SourceId")==pair[0]
-                        && V(relation,"MetamodelId")==SequencePayload.Prefix+"OperandTargetMessage")
-                    || (V(relation,"SourceId")==pair[0]
-                        && V(relation,"MetamodelId")==SequencePayload.Prefix+"CrossingFragmentCoveredLifeline"),
-                    "削除する"+pair[2]+"に未対応の関連が残っています。"+describe(relation,pair[0]));
-            Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==pair[0])==1,"削除する"+pair[2]+"の図形を一意に取得できません。");
-        }
-        foreach(string id in gate.DeleteMessages)
-        {
-            Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="Message","削除対象が退避データ内のメッセージではありません。");
-            // A reply is also tied to the bar it returns from; that goes with the message.
-            var allowed=new[]{"___Interaction_Message","SendMessage","ReceiveMessage","ExecutionSpecificationReplyMessage","DestroyMessage"};
-            foreach(var relation in relations.Where(r=>V(r,"SourceId")==id || V(r,"TargetId")==id))
-                Require(inside(relation,id)
-                    || (V(relation,"TargetId")==id
-                        && allowed.Any(kind=>V(relation,"MetamodelId")==SequencePayload.Prefix+kind)),
-                    "削除するメッセージに未対応の関連が残っています。"+describe(relation,id));
-            Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==id)==1,"削除するメッセージの図形を一意に取得できません。");
-        }
-        foreach(string id in gate.DeleteNotes)
-        {
-            Require(byId.ContainsKey(id),"削除するNoteが退避データにありません。");
-            // Only the interaction's ownership is expected. Anything else is named so the
-            // next run can say what a note is tied to.
-            foreach(var relation in relations.Where(r=>V(r,"SourceId")==id || V(r,"TargetId")==id))
-                Require(inside(relation,id)
-                    || (V(relation,"TargetId")==id && V(relation,"MetamodelId")==SequencePayload.Prefix+"___Interaction_InteractionNote"),
-                    "削除するNoteに未対応の関連が残っています。"+describe(relation,id));
-            Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==id)==1,"削除するNoteの図形を一意に取得できません。");
-        }
-        foreach(string id in gate.DeleteRefs)
-        {
-            Require(byId.ContainsKey(id),"削除するrefが退避データにありません。");
-            // What a ref points at, the lanes it covers and the interaction it refers to,
-            // goes with it. Only the interaction's ownership may point at it.
-            foreach(var relation in relations.Where(r=>V(r,"SourceId")==id || V(r,"TargetId")==id))
-                Require(inside(relation,id) || V(relation,"SourceId")==id
-                    || (V(relation,"TargetId")==id && V(relation,"MetamodelId")==SequencePayload.Prefix+"___Interaction_InteractionUse"),
-                    "削除するrefに未対応の関連が残っています。"+describe(relation,id));
-            Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==id)==1,"削除するrefの図形を一意に取得できません。");
-        }
-        foreach(string id in gate.DeleteParticipants)
-        {
-            Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="Lifeline","削除対象が退避データ内の参加者ではありません。");
-            foreach(var relation in relations.Where(r=>V(r,"SourceId")==id || V(r,"TargetId")==id))
-                Require(inside(relation,id)
-                    || (V(relation,"TargetId")==id && V(relation,"MetamodelId")==SequencePayload.Prefix+"___Interaction_Lifeline"),
-                    "削除する参加者に未対応の関連が残っています。"+describe(relation,id));
-            Require(editor.Shapes().Count(sh=>V(sh,"ModelId")==id)==1,"削除する参加者の図形を一意に取得できません。");
-        }
-        var patch=SequenceJson.Parse(editor.ImportJson());
-        // A rename re-imports the element with the same id and its new text; the product
-        // updates it in place. A branch keeps its text as its guard, a note may keep its
-        // body in a field of its own, and both are rewritten where they are.
-        var renamed=new List<string[]>();
-        foreach(string id in gate.Renames)
-        {
-            Require(byId.ContainsKey(id),"本文を変える要素が退避データにありません。");
-            string text=after[id].Text??"";
-            var entity=SequenceJson.Parse(byId[id].ToJsonString());
-            bool operand=before[id].Kind=="operand";
-            if(!operand)entity.Properties["Name"]=SequenceJson.Parse(SequencePayload.Q(text));
-            var fields=entity["Fields"];
-            if(fields!=null && fields.Properties!=null)
-                foreach(string key in operand?new[]{"Guard"}:new[]{"Name","Body","Text"})
-                    if(fields[key]!=null && fields[key].Raw!=null && fields[key].Raw.StartsWith("\"",StringComparison.Ordinal))
-                        fields.Properties[key]=SequenceJson.Parse(SequencePayload.Q(text));
-            patch["Entities"].Items.Add(entity);
-            renamed.Add(new[]{id,text,before[id].Kind});
-        }
-        patch["Entities"].Items.AddRange(newEntities);
-        patch["Relations"].Items.AddRange(newRelations);
-        patch["Relations"].Items.AddRange(changed);
-        if(newShapes.Count>0)
-        {
-            var bars=patch["Editors"].Items.Single()["ExecutionSpecifications"];
-            Require(bars!=null && bars.Items!=null,"エディタに実行区間の図形配列がありません。");
-            bars.Items.AddRange(newShapes);
-        }
-        if(newMessageShapes.Count>0)
-        {
-            var wireArray=patch["Editors"].Items.Single()["Messages"];
-            Require(wireArray!=null && wireArray.Items!=null,"エディタにメッセージの図形配列がありません。");
-            wireArray.Items.AddRange(newMessageShapes);
-        }
-        // A message that does not go last needs the room below it. Everything already
-        // drawn at or under the point it goes in moves down by one message's spacing, and
-        // a bar or frame open across that point grows instead of moving.
-        var shifted=new List<SequenceShiftedShape>();
-        if(!double.IsNaN(laneShiftAt))
-        {
-            foreach(var shape in editor.Shapes())
+        if(newLaneShapes.Count>0)Collection(view,"Lifelines").Items.AddRange(newLaneShapes);
+
+        // ---- Bars the input adds, and bars a new message needs where the input opens none.
+        var additions=new List<SequenceAddedExecution>();var newBarShapes=new List<SequenceJson>();
+        Action<string,string,double,double,double> addBar=(id,lane,x,top,bottom)=>{
+            var sameLane=typed("OwnedExecutionSpecification").Where(r=>V(r,"SourceId")==lane && byId.ContainsKey(V(r,"TargetId"))).ToArray();
+            var anyBar=typed("OwnedExecutionSpecification").Where(r=>byId.ContainsKey(V(r,"TargetId")) && shapeOf.ContainsKey(V(r,"TargetId"))).ToArray();
+            var ownedLink=sameLane.Length>0?sameLane[0]:anyBar.FirstOrDefault();
+            SequenceJson entity;var relationIds=new List<string>();var relationSources=new List<string>();var templateIds=new List<string>();
+            string templateShape="";SequenceJson shape;
+            if(ownedLink!=null)
             {
-                string model=V(shape,"ModelId");
-                if(!before.ContainsKey(model))continue;
-                var keys=new List<string>();var values=new List<string>();
-                if(shape["X"]!=null)
+                string template=V(ownedLink,"TargetId");
+                entity=SequenceJson.Parse(byId[template].ToJsonString());
+                var ownerLink=find("___Interaction_ExecutionSpecification",root,template);
+                // The lifeline has to be in place first: adding the bar to the interaction makes
+                // the product build its shape, and that lookup needs the owning lifeline.
+                foreach(var pair in new[]{new object[]{ownedLink,lane},new object[]{ownerLink,root}})
                 {
-                    double x=Read(shape,"X");
-                    if(x>=laneShiftAt-1e-9){keys.Add("X");values.Add(Number(x+LaneSpacing));}
-                    else if(shape["Width"]!=null && x+Read(shape,"Width")>laneShiftAt)
-                    {keys.Add("Width");values.Add(Number(Read(shape,"Width")+LaneSpacing));}
+                    string relationId=Guid.NewGuid().ToString();
+                    newRelations.Add(copyRelation((SequenceJson)pair[0],relationId,(string)pair[1],id));
+                    relationIds.Add(relationId);relationSources.Add((string)pair[1]);templateIds.Add(V((SequenceJson)pair[0],"Id"));
                 }
-                if(shape["SelfloopBendsX"]!=null && Read(shape,"SelfloopBendsX")>=laneShiftAt)
-                {keys.Add("SelfloopBendsX");values.Add(Number(Read(shape,"SelfloopBendsX")+LaneSpacing));}
-                if(keys.Count==0)continue;
-                foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
-                    .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items).Where(n=>V(n,"Id")==V(shape,"Id")))
-                    for(int i=0;i<keys.Count;i++)node.Properties[keys[i]]=SequenceJson.Parse(values[i]);
-                shifted.Add(new SequenceShiftedShape{ModelId=model,ShapeId=V(shape,"Id"),Kind=before[model].Kind,Keys=keys.ToArray(),Values=values.ToArray()});
+                templateShape=V(shapeOf[template],"Id");
+                shape=SequenceJson.Parse(shapeOf[template].ToJsonString());
             }
+            else
+            {
+                Require(BaseTypes!=null && BaseTypes.Execution!=null && BaseTypes.LaneExecution!=null && BaseTypes.OwnsExecution!=null,"実行区間の型情報が解決できていません。");
+                entity=SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",id,"EntityType","ExecutionSpecification","MetamodelId",BaseTypes.Execution,"Name","","Fields",PumlBuild.Obj("Name",""))));
+                foreach(var pair in new[]{new object[]{BaseTypes.LaneExecution,lane},new object[]{BaseTypes.OwnsExecution,root}})
+                {
+                    string relationId=Guid.NewGuid().ToString();
+                    newRelations.Add(relate((string[])pair[0],relationId,(string)pair[1],id));
+                    relationIds.Add(relationId);relationSources.Add((string)pair[1]);templateIds.Add("row:"+((string[])pair[0])[2]);
+                }
+                shape=SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("X",0,"Y",0,"Length",0,"Height",0)));
+            }
+            entity.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(id));
+            newEntities.Add(entity);
+            string shapeId=Guid.NewGuid().ToString();
+            shape.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(shapeId));
+            shape.Properties["ModelId"]=SequenceJson.Parse(SequencePayload.Q(id));
+            shape.Properties["X"]=SequenceJson.Parse(Number(x));shape.Properties["Y"]=SequenceJson.Parse(Number(top));
+            shape.Properties["Length"]=SequenceJson.Parse(Number(bottom-top));shape.Properties["Height"]=SequenceJson.Parse(Number(bottom-top));
+            newBarShapes.Add(shape);
+            if(templateShape.Length==0)loose.Add(shapeId);
+            additions.Add(new SequenceAddedExecution{ModelId=id,Metaclass=V(entity,"MetamodelId"),Name=V(entity,"Name")??"",
+                OwnerId=root,ShapeId=shapeId,TemplateShapeId=templateShape,
+                Geometry=PumlBuild.Json(new[]{Number(x),Number(top),Number(bottom-top)}),
+                RelationIds=relationIds.ToArray(),RelationSources=relationSources.ToArray(),TemplateRelationIds=templateIds.ToArray()});
+        };
+        foreach(string id in gate.AddExecutions)
+        {
+            var b=bars[id];addBar(id,Link(after[id],"participant").Single(),b[0],b[1],b[2]);
         }
-        // A new note goes one message step under the message above it, as tall as its text,
-        // and what was below moves down by that height and one message step. A bar open
-        // across the point grows; the lanes follow.
-        var notes=new List<SequenceAddedNote>();
+        // Bars the input does not open are never made up; the preflight stops such a message.
+        var implicitPorts=new Dictionary<string,string>(StringComparer.Ordinal);
+        if(newBarShapes.Count>0)Collection(view,"ExecutionSpecifications").Items.AddRange(newBarShapes);
+
+        // ---- Frames and branches the input adds.
+        var frames=new List<SequenceAddedFragment>();var branches=new List<SequenceAddedOperand>();
+        var newFrameShapes=new List<SequenceJson>();var newOperandShapes=new List<SequenceJson>();
+        if(gate.AddFragments.Count+gate.AddOperands.Count>0 || gate.AddMessages.Any(id=>after[id].Parent!=root))
+            Require(types!=null && types.Complete(),"フラグメントの型情報が解決できていません。");
+        foreach(string id in gate.AddFragments)
+        {
+            var wanted=after[id];string name=wanted.Text??"";string operatorName;
+            Require(wanted.Attributes.TryGetValue("operator",out operatorName),"追加するフラグメントに演算子がありません。");
+            string operatorValue;
+            Require(types.Operators.TryGetValue(operatorName,out operatorValue),"この図のプロファイルに演算子 "+operatorName+" がありません。");
+            newEntities.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",id,"EntityType","CombinedFragment",
+                "MetamodelId",types.Fragment,"Name",name,"Fields",PumlBuild.Obj("Name",name,"Operator",operatorValue)))));
+            var added=new SequenceAddedFragment{ModelId=id,Metaclass=types.Fragment,Name=name,OwnerId=root,Text=operatorName=="group"?name:operatorName};
+            // Ownership first, then the lanes the frame spans, as the generator writes them; a
+            // frame inside a branch is also tied to that branch.
+            var wiring=new List<object[]>{new object[]{types.Owns,root,id}};
+            foreach(string lane in newLanes)wiring.Add(new object[]{types.Crossing,id,lane});
+            if(wanted.Parent!=root)
+            {
+                Require(types.Nested!=null,"入れ子の枠の関連の型情報が解決できていません。");
+                wiring.Add(new object[]{types.Nested,wanted.Parent,id});
+            }
+            foreach(var row in wiring)
+            {
+                string relationId=Guid.NewGuid().ToString();var type=(string[])row[0];
+                newRelations.Add(relate(type,relationId,(string)row[1],(string)row[2]));
+                added.RelationIds=added.RelationIds.Concat(new[]{relationId}).ToArray();
+                added.RelationSources=added.RelationSources.Concat(new[]{(string)row[1]}).ToArray();
+                added.RelationTargets=added.RelationTargets.Concat(new[]{(string)row[2]}).ToArray();
+                added.RelationFields=added.RelationFields.Concat(new[]{type[2]}).ToArray();
+            }
+            var b=box2[id];
+            string shapeId=Guid.NewGuid().ToString();added.ShapeId=shapeId;added.TemplateShapeId="";
+            added.Geometry=PumlBuild.Json(new[]{Number(b[0]),Number(b[1]),Number(b[2]-b[0]),Number(b[3]-b[1])});
+            newFrameShapes.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,
+                "X",Number(b[0]),"Y",Number(b[1]),"Width",Number(b[2]-b[0]),"Height",Number(b[3]-b[1])))));
+            frames.Add(added);
+        }
+        foreach(string id in gate.AddOperands)
+        {
+            var wanted=after[id];string guard=wanted.Text??"";
+            newEntities.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",id,"EntityType","InteractionOperand",
+                "MetamodelId",types.Operand,"Name","","Fields",PumlBuild.Obj("Name","","Guard",guard)))));
+            string relationId=Guid.NewGuid().ToString();
+            newRelations.Add(relate(types.Branches,relationId,wanted.Parent,id));
+            string shapeId=Guid.NewGuid().ToString();
+            string position=Number(rows.Get("OO:"+id).Y-box2[wanted.Parent][1]);
+            // A frame already drawn with absolute positions keeps them absolute.
+            if(before.ContainsKey(wanted.Parent))
+            {
+                var owner=shapeOf[wanted.Parent];
+                var siblings=current.Elements.Where(o=>o.Parent==wanted.Parent && o.Kind=="operand").ToArray();
+                if(siblings.Length>0 && siblings.All(o=>Read(shapeOf[o.Id],"Position")>=Read(owner,"Y")-0.00001 && Read(shapeOf[o.Id],"Position")<=Read(owner,"Y")+Read(owner,"Height")+0.00001))
+                    position=Number(rows.Get("OO:"+id).Y);
+            }
+            newOperandShapes.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,"Position",position))));
+            branches.Add(new SequenceAddedOperand{ModelId=id,Metaclass=types.Operand,Name="",OwnerId=wanted.Parent,
+                ShapeId=shapeId,TemplateShapeId="",Guard=guard,Position=position,
+                RelationIds=new[]{relationId},RelationSources=new[]{wanted.Parent},RelationFields=new[]{types.Branches[2]}});
+        }
+        if(newFrameShapes.Count>0)Collection(view,"Fragments").Items.AddRange(newFrameShapes);
+        if(newOperandShapes.Count>0)Collection(view,"Operands").Items.AddRange(newOperandShapes);
+
+        // ---- Messages the input adds.
+        var wires=new List<SequenceAddedMessage>();var newMessageShapes=new List<SequenceJson>();
+        var notes=new List<SequenceAddedNote>();var newEndShapes=new List<SequenceJson>();
+        var walkNew=SequenceStructurePreflight.Flatten(plan.Expected);
+        Func<SequenceElement,string> written=e=>{string v=SequenceStructurePreflight.Attribute(e);return v=="destroy"?"sync":v;};
+        var messageEntities=current.Elements.Where(e=>e.Kind=="message" && byId.ContainsKey(e.Id) && shapeOf.ContainsKey(e.Id)).ToArray();
+        // A message to or from outside the diagram ends in a free end of its own, 60 left of
+        // the bar at its other end, as the generator draws it.
+        Func<double,double,string> makeEnd=(endX,endAt)=>{
+            string endId=Guid.NewGuid().ToString();
+            var endSample=entities.FirstOrDefault(e=>V(e,"EntityType")=="MessageEnd");
+            SequenceJson endEntity;
+            if(endSample!=null)endEntity=SequenceJson.Parse(endSample.ToJsonString());
+            else
+            {
+                Require(BaseTypes!=null && BaseTypes.MessageEnd!=null && BaseTypes.OwnsMessageEnd!=null,"図外の端の型情報が解決できていません。");
+                endEntity=SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("EntityType","MessageEnd","MetamodelId",BaseTypes.MessageEnd,"Name","","Fields",PumlBuild.Obj("Name",""))));
+            }
+            endEntity.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(endId));
+            newEntities.Add(endEntity);
+            var end=new SequenceAddedNote{Kind="messageEnd",ModelId=endId,Metaclass=V(endEntity,"MetamodelId"),Name=V(endEntity,"Name")??"",OwnerId=root,Text=""};
+            var owns=endSample!=null?relations.FirstOrDefault(r=>V(r,"MetamodelId")==R("___Interaction_MessageEnd") && V(r,"TargetId")==V(endSample,"Id")):null;
+            string ownsId=Guid.NewGuid().ToString();
+            if(owns!=null)newRelations.Add(copyRelation(owns,ownsId,root,endId));
+            else
+            {
+                Require(BaseTypes!=null && BaseTypes.OwnsMessageEnd!=null,"図外の端の所有関連の型情報が解決できていません。");
+                newRelations.Add(relate(BaseTypes.OwnsMessageEnd,ownsId,root,endId));
+            }
+            end.RelationIds=new[]{ownsId};end.RelationSources=new[]{root};end.RelationTargets=new[]{endId};
+            end.RelationFields=new[]{owns!=null?"relation:"+V(owns,"Id"):BaseTypes.OwnsMessageEnd[2]};
+            string endShape=Guid.NewGuid().ToString();end.ShapeId=endShape;
+            end.Geometry=PumlBuild.Json(new[]{Number(endX),Number(endAt),"10","10"});
+            newEndShapes.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",endShape,"ModelId",endId,"X",Number(endX),"Y",Number(endAt),"Width",10,"Height",10))));
+            notes.Add(end);
+            return endId;
+        };
+        foreach(string id in gate.AddMessages)
+        {
+            var wanted=after[id];
+            string sort=SequenceStructurePreflight.Attribute(wanted);
+            var earlier=walkNew.Take(System.Array.IndexOf(walkNew,id)).Where(before.ContainsKey).Select(e=>after[e]).Where(e=>e.Kind=="message" && byId.ContainsKey(e.Id)).ToArray();
+            var pool=earlier.Concat(messageEntities.Where(e=>after.ContainsKey(e.Id)).Select(e=>after[e.Id]).Except(earlier)).ToArray();
+            var sameSort=pool.Where(e=>written(e)==written(wanted)).ToArray();
+            SequenceElement template=sameSort.Length>0?(earlier.Where(e=>written(e)==written(wanted)).LastOrDefault()??sameSort[0]):pool.LastOrDefault();
+            SequenceJson entity;
+            if(template!=null)
+            {
+                entity=SequenceJson.Parse(byId[template.Id].ToJsonString());
+                if(written(template)!=written(wanted))
+                {
+                    string literal;
+                    Require(SortLiterals.TryGetValue(written(wanted),out literal),"メッセージ種別 "+written(wanted)+" の値をプロファイルから決められません。");
+                    Require(entity["Fields"]!=null && entity["Fields"].Properties!=null,"メッセージの見本に種別の欄がありません。");
+                    entity["Fields"].Properties["MessageSort"]=SequenceJson.Parse(SequencePayload.Q(literal));
+                }
+            }
+            else
+            {
+                string literal=null;
+                Require(BaseTypes!=null && BaseTypes.Message!=null && SortLiterals.TryGetValue(written(wanted),out literal),"メッセージの型情報が解決できていません。");
+                entity=SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",id,"EntityType","Message","MetamodelId",BaseTypes.Message,"Name","","Fields",PumlBuild.Obj("Name","","MessageSort",literal))));
+            }
+            entity.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(id));
+            string name=wanted.Text??"";
+            entity.Properties["Name"]=SequenceJson.Parse(SequencePayload.Q(name));
+            if(entity["Fields"]!=null && entity["Fields"].Properties!=null && entity["Fields"]["Name"]!=null)
+                entity["Fields"].Properties["Name"]=SequenceJson.Parse(SequencePayload.Q(name));
+            newEntities.Add(entity);
+            double y=messageY(id),endY=targetY(id);
+            var added=new SequenceAddedMessage{ModelId=id,Metaclass=V(entity,"MetamodelId"),Name=name,OwnerId=root,Y=Number(y),TargetY=Number(endY),
+                Sender=Link(wanted,"sender").FirstOrDefault()??"",Receiver=Link(wanted,"receiver").FirstOrDefault()??"",Sort=sort,TemplateModelId=template==null?"":template.Id};
+            var relationIds=new List<string>();var relationSources=new List<string>();var templateIds=new List<string>();var fields=new List<string>();
+            Action<string,string> ports=(role,port)=>{if(role=="send")added.SendPort=port;else added.ReceivePort=port;};
+            foreach(string role in new[]{"send","receive"})
+            {
+                string kind=role=="send"?"SendMessage":"ReceiveMessage";
+                string port=Link(wanted,role+"Execution").FirstOrDefault();
+                string implicitBar;if(port==null && implicitPorts.TryGetValue(id+"|"+role,out implicitBar))port=implicitBar;
+                string relationId=Guid.NewGuid().ToString();
+                if(port!=null)
+                {
+                    ports(role,port);
+                    var sample=template==null?null:relations.FirstOrDefault(r=>V(r,"MetamodelId")==R(kind) && V(r,"TargetId")==template.Id && !endIds.Contains(V(r,"SourceId")));
+                    sample=sample??typed(kind).FirstOrDefault(r=>!endIds.Contains(V(r,"SourceId")));
+                    if(sample!=null){newRelations.Add(copyRelation(sample,relationId,port,id));templateIds.Add(V(sample,"Id"));fields.Add("");}
+                    else
+                    {
+                        var row=role=="send"?(BaseTypes==null?null:BaseTypes.SendFromBar):(BaseTypes==null?null:BaseTypes.ReceiveFromBar);
+                        Require(row!=null,"メッセージの接続の型情報が解決できていません。");
+                        newRelations.Add(relate(row,relationId,port,id));templateIds.Add("");fields.Add(row[2]);
+                    }
+                    relationIds.Add(relationId);relationSources.Add(port);
+                    continue;
+                }
+                string otherBar=role=="send"?(Link(wanted,"receiveExecution").FirstOrDefault()??(implicitPorts.ContainsKey(id+"|receive")?implicitPorts[id+"|receive"]:null))
+                    :(Link(wanted,"sendExecution").FirstOrDefault()??(implicitPorts.ContainsKey(id+"|send")?implicitPorts[id+"|send"]:null));
+                Require(otherBar!=null && bars.ContainsKey(otherBar),"図外のメッセージの相手側の実行区間がありません。");
+                string endId=makeEnd(bars[otherBar][0]-60,role=="send"?y:endY);ports(role,endId);
+                var endRow=role=="send"?(BaseTypes==null?null:BaseTypes.SendFromEnd):(BaseTypes==null?null:BaseTypes.ReceiveFromEnd);
+                var endLink=relations.FirstOrDefault(r=>V(r,"MetamodelId")==R(kind) && endIds.Contains(V(r,"SourceId")));
+                if(endLink!=null){newRelations.Add(copyRelation(endLink,relationId,endId,id));templateIds.Add(V(endLink,"Id"));fields.Add("");}
+                else
+                {
+                    Require(endRow!=null,"図外の端の接続の型情報が解決できていません。");
+                    newRelations.Add(relate(endRow,relationId,endId,id));templateIds.Add("");fields.Add(endRow[2]);
+                }
+                relationIds.Add(relationId);relationSources.Add(endId);
+            }
+            {
+                string relationId=Guid.NewGuid().ToString();
+                var owner=template!=null?find("___Interaction_Message",root,template.Id):typed("___Interaction_Message").FirstOrDefault();
+                if(owner!=null){newRelations.Add(copyRelation(owner,relationId,root,id));templateIds.Add(V(owner,"Id"));fields.Add("");}
+                else
+                {
+                    Require(BaseTypes!=null && BaseTypes.OwnsMessage!=null,"メッセージの所有関連の型情報が解決できていません。");
+                    newRelations.Add(relate(BaseTypes.OwnsMessage,relationId,root,id));templateIds.Add("");fields.Add(BaseTypes.OwnsMessage[2]);
+                }
+                relationIds.Add(relationId);relationSources.Add(root);
+            }
+            // A message inside a frame is owned by the interaction and also pointed at by the
+            // operand it sits in, the way the generator writes it.
+            if(wanted.Parent!=root)
+            {
+                string relationId=Guid.NewGuid().ToString();
+                newRelations.Add(relate(types.OperandMessage,relationId,wanted.Parent,id));
+                relationIds.Add(relationId);relationSources.Add(wanted.Parent);templateIds.Add("");fields.Add(types.OperandMessage[2]);
+            }
+            added.RelationIds=relationIds.ToArray();added.RelationSources=relationSources.ToArray();
+            added.TemplateRelationIds=templateIds.ToArray();added.RelationFields=fields.ToArray();
+            string wireShapeId=Guid.NewGuid().ToString();
+            SequenceJson wireShape;
+            if(template!=null){wireShape=SequenceJson.Parse(shapeOf[template.Id].ToJsonString());added.TemplateShapeId=V(shapeOf[template.Id],"Id");}
+            else {wireShape=SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("SourceY",0,"TargetY",0,"IsRightAtFrame",false,"SelfloopBendsX",0)));added.TemplateShapeId="";}
+            wireShape.Properties["Id"]=SequenceJson.Parse(SequencePayload.Q(wireShapeId));
+            wireShape.Properties["ModelId"]=SequenceJson.Parse(SequencePayload.Q(id));
+            wireShape.Properties["SourceY"]=SequenceJson.Parse(Number(y));
+            wireShape.Properties["TargetY"]=SequenceJson.Parse(Number(endY));
+            double bend=0;
+            if(selfCall(wanted))
+            {
+                // The loop goes 80 right of the further of its two bars, as the generator draws it.
+                bend=new[]{added.SendPort,added.ReceivePort}.Where(bars.ContainsKey).Select(p=>bars[p][0]).DefaultIfEmpty(center(added.Sender)).Max()+80;
+                added.Bend=Number(bend);
+            }
+            if(wireShape["SelfloopBendsX"]!=null)wireShape.Properties["SelfloopBendsX"]=SequenceJson.Parse(Number(bend));
+            else if(bend!=0)wireShape.Properties["SelfloopBendsX"]=SequenceJson.Parse(Number(bend));
+            if(bend==0 && template!=null && shapeOf[template.Id]["SelfloopBendsX"]!=null && Read(shapeOf[template.Id],"SelfloopBendsX")!=0)added.Bend="0";
+            added.ShapeId=wireShapeId;
+            newMessageShapes.Add(wireShape);
+            wires.Add(added);
+        }
+        if(newMessageShapes.Count>0)Collection(view,"Messages").Items.AddRange(newMessageShapes);
+
+        // ---- Notes and refs the input adds.
+        var newNoteShapes=new List<SequenceJson>();var newRefShapes=new List<SequenceJson>();
         foreach(string id in gate.AddNotes.Concat(gate.AddRefs))
         {
             var wanted=after[id];string text=wanted.Text??"";bool isRef=wanted.Kind=="ref";
             if(isRef)Require(refTypes!=null && refTypes.Owns!=null && refTypes.Crossing!=null,"refの型情報が解決できていません。");
             else Require(noteTypes!=null && noteTypes.Owns!=null && noteTypes.Owns.Length==3,"Noteの型情報が解決できていません。");
-            double top=placedY[id],height=BoxHeight(text);
-            var noteLaneIds=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
-            var noteLanes=editor.Shapes().Where(sh=>noteLaneIds.Contains(V(sh,"ModelId")) && sh["X"]!=null && sh["Width"]!=null).ToArray();
-            Require(noteLanes.Length>0,"参加者の図形がないためNoteの幅を決められません。");
-            // A ref covers the lanes it names; a new note names none and covers them all.
-            var covered=isRef && wanted.Links.ContainsKey("targets")?wanted.Links["targets"]:new string[0];
-            var spanned=covered.Length>0?noteLanes.Where(sh=>covered.Contains(V(sh,"ModelId"))).ToArray():noteLanes;
-            double left=spanned.Min(sh=>Read(sh,"X")+Read(sh,"Width")/2),right=spanned.Max(sh=>Read(sh,"X")+Read(sh,"Width")/2);
-            // The generator's margins: a note 50 out and at least 160 wide, a ref 55 out and 150.
-            double x=isRef?left-55:left-50,width=isRef?Math.Max(150,right-left+110):Math.Max(160,right-left+100);
+            var b=box2[id];
             var fields=new Dictionary<string,object>{{"Name",text}};
             // A rich-text body is shown from the name, as the generator writes it.
             if(!isRef && noteTypes.Field!="Name" && noteTypes.Storage=="String")fields[noteTypes.Field]=text;
             string metaclass=isRef?refTypes.Class:noteTypes.Class;
-            // The patch is already assembled by now, so the new element goes straight into it.
-            patch["Entities"].Items.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",id,"EntityType",isRef?"InteractionUse":"InteractionNote",
+            newEntities.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",id,"EntityType",isRef?"InteractionUse":"InteractionNote",
                 "MetamodelId",metaclass,"Name",text,"Fields",fields))));
             var wiring=new List<object[]>{new object[]{isRef?refTypes.Owns:noteTypes.Owns,root,id}};
-            foreach(string lane in covered)wiring.Add(new object[]{refTypes.Crossing,id,lane});
+            if(isRef)foreach(string lane in Link(wanted,"targets"))wiring.Add(new object[]{refTypes.Crossing,id,lane});
             string reference;
             if(isRef && refTypes.RefersTo!=null && wanted.Attributes.TryGetValue("reference",out reference) && !string.IsNullOrEmpty(reference))
                 wiring.Add(new object[]{refTypes.RefersTo,id,reference});
+            if(isRef && wanted.Parent!=root)
+            {
+                Require(types!=null && types.Nested!=null,"枠の中のrefの関連の型情報が解決できていません。");
+                wiring.Add(new object[]{types.Nested,wanted.Parent,id});
+            }
             var added=new SequenceAddedNote{Kind=wanted.Kind,ModelId=id,Metaclass=metaclass,Name=text,OwnerId=root,Text=text,
-                Geometry=PumlBuild.Json(new[]{Number(x),Number(top),Number(width),Number(height)})};
+                Geometry=PumlBuild.Json(new[]{Number(b[0]),Number(b[1]),Number(b[2]-b[0]),Number(b[3]-b[1])})};
             foreach(var row in wiring)
             {
                 var type=(string[])row[0];string relationId=Guid.NewGuid().ToString();
-                patch["Relations"].Items.Add(relate(type,relationId,(string)row[1],(string)row[2]));
+                newRelations.Add(relate(type,relationId,(string)row[1],(string)row[2]));
                 added.RelationIds=added.RelationIds.Concat(new[]{relationId}).ToArray();
                 added.RelationSources=added.RelationSources.Concat(new[]{(string)row[1]}).ToArray();
                 added.RelationTargets=added.RelationTargets.Concat(new[]{(string)row[2]}).ToArray();
@@ -2304,292 +2023,249 @@ public sealed class SequenceStructurePreparation
             }
             string shapeId=Guid.NewGuid().ToString();added.ShapeId=shapeId;
             var shape=SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,
-                "X",Number(x),"Y",Number(top),"Width",Number(width),"Height",Number(height))));
-            Collection(patch["Editors"].Items.Single(),isRef?"InteractionUses":"Notes").Items.Add(shape);
+                "X",Number(b[0]),"Y",Number(b[1]),"Width",Number(b[2]-b[0]),"Height",Number(b[3]-b[1]))));
             (isRef?newRefShapes:newNoteShapes).Add(shape);
             notes.Add(added);
         }
-        // A destruction deleted takes its own relations with it: its lane, its message, its
-        // ownership. Anything else pointing at it stops the update.
-        foreach(string id in gate.DeleteDestroys)
-        {
-            Require(byId.ContainsKey(id),"削除する破棄が退避データにありません。");
-            foreach(var relation in relations.Where(r=>V(r,"SourceId")==id || V(r,"TargetId")==id))
-                Require(V(relation,"SourceId")==id || V(relation,"MetamodelId")==SequencePayload.Prefix+"___Interaction_Destruction",
-                    "削除する破棄に未対応の関連が残っています。"+V(relation,"MetamodelId"));
-        }
-        // A new destruction goes 25 under the message that destroys the lane, as the generator
-        // places it, and the lane's bars end there.
-        var destroys=new List<SequenceAddedNote>();
+        if(newNoteShapes.Count>0)Collection(view,"Notes").Items.AddRange(newNoteShapes);
+        if(newRefShapes.Count>0)Collection(view,"InteractionUses").Items.AddRange(newRefShapes);
+
+        // ---- Destructions the input adds: 25 under the message that destroys the lane.
+        var newDestroyShapes=new List<SequenceJson>();
+        Func<string,string> killerOf=id=>{
+            int at=System.Array.IndexOf(walkNew,id);
+            for(int i=at-1;i>=0;i--){var e=after[walkNew[i]];if(e.Kind=="message")return Link(e,"receiver").SequenceEqual(Link(after[id],"participant"))?e.Id:null;if(e.Kind!="execution")return null;}
+            return null;
+        };
         foreach(string id in gate.AddDestroys)
         {
             var types2=DestroyTypes;
             Require(types2!=null && types2.Owns!=null && types2.Target!=null,"破棄の型情報が解決できていません。");
             var wanted=after[id];string lane=Link(wanted,"participant").Single();
-            var walk=SequenceStructurePreflight.Flatten(plan.Expected);
-            string killer=walk[System.Array.IndexOf(walk,id)-1];
-            double killerY;
-            if(placedY.ContainsKey(killer))killerY=placedY[killer];
-            else killerY=Read(editor.Shapes().Single(sh=>V(sh,"ModelId")==killer),"TargetY");
-            double y=killerY+25;
-            var laneShape=editor.Shapes().Single(sh=>V(sh,"ModelId")==lane);
-            double x=Read(laneShape,"X")+Read(laneShape,"Width")/2-10;
-            patch["Entities"].Items.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",id,"EntityType","Destruction","MetamodelId",types2.Class,"Name","","Fields",PumlBuild.Obj("Name","")))));
+            double y=rows.Get("D:"+id).Y;double x=center(lane)-10;
+            newEntities.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",id,"EntityType","Destruction","MetamodelId",types2.Class,"Name","","Fields",PumlBuild.Obj("Name","")))));
             var added=new SequenceAddedNote{Kind="destroy",ModelId=id,Metaclass=types2.Class,Name="",OwnerId=root,Text="",
                 Geometry=PumlBuild.Json(new[]{Number(x),Number(y),"20","20"})};
             var wiring=new List<object[]>{new object[]{types2.Owns,root,id},new object[]{types2.Target,id,lane}};
-            if(types2.Message!=null)wiring.Add(new object[]{types2.Message,id,killer});
+            string killer=killerOf(id);
+            if(types2.Message!=null && killer!=null)wiring.Add(new object[]{types2.Message,id,killer});
             foreach(var row in wiring)
             {
                 var type=(string[])row[0];string relationId=Guid.NewGuid().ToString();
-                patch["Relations"].Items.Add(relate(type,relationId,(string)row[1],(string)row[2]));
+                newRelations.Add(relate(type,relationId,(string)row[1],(string)row[2]));
                 added.RelationIds=added.RelationIds.Concat(new[]{relationId}).ToArray();
                 added.RelationSources=added.RelationSources.Concat(new[]{(string)row[1]}).ToArray();
                 added.RelationTargets=added.RelationTargets.Concat(new[]{(string)row[2]}).ToArray();
                 added.RelationFields=added.RelationFields.Concat(new[]{type[2]}).ToArray();
             }
             string shapeId=Guid.NewGuid().ToString();added.ShapeId=shapeId;
-            var shape=SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,"X",Number(x),"Y",Number(y),"Width",20,"Height",20)));
-            Collection(patch["Editors"].Items.Single(),"Destructions").Items.Add(shape);
-            newDestroyShapes.Add(shape);
-            destroys.Add(added);
-            destroyCuts[lane]=y;
+            newDestroyShapes.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,"X",Number(x),"Y",Number(y),"Width",20,"Height",20))));
+            notes.Add(added);
         }
-        // Room under each run: what was drawn below moves down, a bar or frame open across
-        // the point grows, a later branch of a frame that grows moves down in it, and the
-        // lanes follow. A bar a new message uses reaches at least 16 past it.
-        if(runs.Count>0 || destroyCuts.Count>0)
+        if(newDestroyShapes.Count>0)Collection(view,"Destructions").Items.AddRange(newDestroyShapes);
+        // A destruction already drawn points at the message that now destroys its lane.
+        foreach(var d in plan.Expected.Elements.Where(e=>e.Kind=="destroy" && before.ContainsKey(e.Id)))
         {
-            var shapesNow=editor.Shapes();
-            Func<double,double> above=p=>runs.Where(r=>r.At<p).Sum(r=>r.Room);
-            var laneIds=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
-            var skipped=new HashSet<string>(runs.Where(r=>r.Replaced!=null).Select(r=>r.Replaced));
-            // The lanes grow by as much as the lowest thing drawn went down.
-            double oldFloor=0,newFloor=0;
-            Action<double,double> floor=(was,now)=>{oldFloor=Math.Max(oldFloor,was);newFloor=Math.Max(newFloor,now);};
-            foreach(var r in runs)for(int k=0;k<r.Items.Count;k++)
-                newFloor=Math.Max(newFloor,placedY[r.Items[k]]+(after[r.Items[k]].Kind=="message"?16:BoxHeight(after[r.Items[k]].Text)));
-            var runLanes=new List<SequenceJson>();
-            var eventsY=shapesNow.Where(sh=>before.ContainsKey(V(sh,"ModelId")) && !skipped.Contains(V(sh,"ModelId")))
-                .Select(sh=>{string k=before[V(sh,"ModelId")].Kind;return k=="message"?Read(sh,"TargetY"):(k=="note" || k=="ref" || k=="fragment")?Read(sh,"Y"):double.NaN;})
-                .Where(y=>!double.IsNaN(y))
-                // A frame's bottom counts too: a bar closing just below a frame that grows has
-                // to follow it down, or it ends inside the frame.
-                .Concat(shapesNow.Where(sh=>before.ContainsKey(V(sh,"ModelId")) && before[V(sh,"ModelId")].Kind=="fragment")
-                    .Select(sh=>Read(sh,"Y")+Read(sh,"Height")))
-                .ToArray();
-            foreach(var shape in shapesNow)
-            {
-                string model=V(shape,"ModelId");
-                string kind=before.ContainsKey(model)?before[model].Kind:"";
-                if(skipped.Contains(model))continue;
-                var keys=new List<string>();var values=new List<string>();
-                Action<string,double,double> put=(key,was,now)=>{if(Math.Abs(now-was)>1e-9){keys.Add(key);values.Add(Number(now));}};
-                if(kind=="message")
-                {
-                    double moved=above(Read(shape,"TargetY"));
-                    floor(Read(shape,"TargetY"),Read(shape,"TargetY")+moved);
-                    put("SourceY",Read(shape,"SourceY"),Read(shape,"SourceY")+moved);
-                    put("TargetY",Read(shape,"TargetY"),Read(shape,"TargetY")+moved);
-                }
-                else if(kind=="execution")
-                {
-                    double top=Read(shape,"Y"),length=Read(shape,"Length"),bottom=top+length;
-                    double newTop=top+above(top);
-                    // A bar grows with the room made inside it: something already drawn lies
-                    // between the point and its end. A bar a new message uses reaches it below.
-                    Func<RoomRun,bool> holds=r=>eventsY.Any(y=>y>r.At && y<=bottom);
-                    double newBottom=bottom+above(top)+runs.Where(r=>r.At>=top && ((bottom>=r.At+MessageSpacing && holds(r)) || (r.Inserted && r.Ports.Contains(model) && bottom>=r.At))).Sum(r=>r.Room);
-                    foreach(var r in runs.Where(r=>r.Ports.Contains(model)))
-                        foreach(string item in r.Items.Where(x=>after[x].Kind=="message" && Link(after[x],"sendExecution").Concat(Link(after[x],"receiveExecution")).Contains(model)))
-                            newBottom=Math.Max(newBottom,placedY[item]+16+(Link(after[item],"sender").SequenceEqual(Link(after[item],"receiver"))?24:0));
-                    double cut;
-                    string barLane=before[model].Links.ContainsKey("participant")?before[model].Links["participant"].Single():"";
-                    if(destroyCuts.TryGetValue(barLane,out cut) && newBottom>cut && newTop<cut)newBottom=cut;
-                    floor(bottom,newBottom);
-                    put("Y",top,newTop);
-                    // A bar carries its length as both Height and Length; writing one is ignored.
-                    if(Math.Abs((newBottom-newTop)-length)>1e-9){keys.Add("Length");values.Add(Number(newBottom-newTop));keys.Add("Height");values.Add(Number(newBottom-newTop));}
-                }
-                else if(kind=="fragment")
-                {
-                    double top=Read(shape,"Y"),height=Read(shape,"Height");
-                    double grown=height+runs.Where(r=>r.At>=top && r.At<top+height).Sum(r=>r.Room);
-                    floor(top+height,top+above(top)+grown);
-                    put("Y",top,top+above(top));
-                    put("Height",height,grown);
-                }
-                else if(kind=="operand")
-                {
-                    var box=shapesNow.Single(sh=>V(sh,"ModelId")==before[model].Parent);
-                    double top=Read(box,"Y"),height=Read(box,"Height"),offset=Read(shape,"Position");
-                    put("Position",offset,offset+runs.Where(r=>r.At>=top && r.At<top+height && top+offset>r.At).Sum(r=>r.Room));
-                }
-                else if(kind=="note" || kind=="ref")
-                {
-                    double top=Read(shape,"Y"),moved=above(top);
-                    floor(top+Read(shape,"Height"),top+moved+Read(shape,"Height"));
-                    put("Y",top,top+moved);
-                }
-                else if(laneIds.Contains(model) && shape["LaneLength"]!=null){runLanes.Add(shape);continue;}
-                if(keys.Count==0)continue;
-                foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
-                    .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items)
-                    .Where(n=>V(n,"Id")==V(shape,"Id")))
-                    for(int i=0;i<keys.Count;i++)node.Properties[keys[i]]=SequenceJson.Parse(values[i]);
-                shifted.Add(new SequenceShiftedShape{ModelId=model,ShapeId=V(shape,"Id"),Kind=kind,Keys=keys.ToArray(),Values=values.ToArray()});
-            }
-            // With a new frame at the bottom, its own stretch already covers the lanes.
-            double growth=layout.ContainsKey("")?0:Math.Max(0,newFloor-oldFloor);
-            if(growth>0)
-                foreach(var lane in runLanes)
-                {
-                    string length=Number(Read(lane,"LaneLength")+growth);
-                    foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
-                        .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items).Where(n=>V(n,"Id")==V(lane,"Id")))
-                        node.Properties["LaneLength"]=SequenceJson.Parse(length);
-                    shifted.Add(new SequenceShiftedShape{ModelId=V(lane,"ModelId"),ShapeId=V(lane,"Id"),Kind="participant",Keys=new[]{"LaneLength"},Values=new[]{length}});
-                }
+            var link=relations.Where(r=>V(r,"MetamodelId")==R("DestroyMessage") && V(r,"SourceId")==d.Id).ToArray();
+            string killer=killerOf(d.Id);
+            if(link.Length==1 && killer!=null && V(link[0],"TargetId")!=killer)resend(link[0],null,killer);
         }
-        // Wrapping makes room at the top of the run and below it. Every position moves by
-        // the same rule, so a bar's two ends are mapped separately and its length follows.
-        if(gate.ReorderMessages.Count>0)Reorder(current,plan,editor,patch,shifted);
-        // A frame that got a new branch grows to hold it.
-        foreach(var pair in layout.Where(p=>before.ContainsKey(p.Key) && before[p.Key].Kind=="fragment" && p.Value.ContainsKey("Height")))
+
+        // ---- Existing messages whose ends, sort or container change.
+        foreach(string id in gate.ReconnectMessages.Concat(gate.ResendMessages).Distinct())
         {
-            var box=editor.Shapes().Single(sh=>V(sh,"ModelId")==pair.Key);
-            string height=Number(pair.Value["Height"]);
-            foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
-                .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items).Where(n=>V(n,"Id")==V(box,"Id")))
-                node.Properties["Height"]=SequenceJson.Parse(height);
-            shifted.Add(new SequenceShiftedShape{ModelId=pair.Key,ShapeId=V(box,"Id"),Kind="fragment",Keys=new[]{"Height"},Values=new[]{height}});
-        }
-        // A bar already drawn that a message in the new branch leaves from or lands on
-        // reaches down to that message, the way the generator extends an open bar.
-        if(gate.AddOperands.Any(id=>before.ContainsKey(after[id].Parent)))
-            foreach(var bar in current.Elements.Where(e=>e.Kind=="execution"))
+            Require(byId.ContainsKey(id) && V(byId[id],"EntityType")=="Message","変更対象のメッセージが退避データにありません。");
+            foreach(string role in new[]{"send","receive"})
             {
-                var ys=gate.AddMessages.Where(id=>layout.ContainsKey(id)
-                    && (Link(after[id],"sendExecution").Contains(bar.Id) || Link(after[id],"receiveExecution").Contains(bar.Id)))
-                    .Select(id=>layout[id]["Y"]).DefaultIfEmpty(double.MinValue).ToArray();
-                var shape=editor.Shapes().Single(sh=>V(sh,"ModelId")==bar.Id);
-                double top=Read(shape,"Y"),length=Read(shape,"Length"),needed=ys.Max()+16-top;
-                // A bar that reached the frame's old bottom closed outside the frame; it keeps
-                // doing so, going down as far as the frame grew rather than stopping inside it.
-                foreach(var pair in layout.Where(p=>before.ContainsKey(p.Key) && before[p.Key].Kind=="fragment" && p.Value.ContainsKey("Height")))
+                if(!(role=="send"?gate.ResendMessages:gate.ReconnectMessages).Contains(id))continue;
+                string kind=role=="send"?"SendMessage":"ReceiveMessage";
+                var link=relations.Where(r=>V(r,"MetamodelId")==R(kind) && V(r,"TargetId")==id).ToArray();
+                Require(link.Length==1,(role=="send"?"送信":"受信")+"接続が一意ではありません。");
+                string was=V(link[0],"SourceId");
+                // The export has to agree with the diagram that was read, or it is stale.
+                Require(endIds.Contains(was)?Link(before[id],role+"Execution").Length==0:Link(before[id],role+"Execution").SequenceEqual(new[]{was}),
+                    "退避データの"+(role=="send"?"送信":"受信")+"接続が読み取った図と一致しません。");
+                string port=Link(after[id],role+"Execution").FirstOrDefault();
+                string made;
+                if(port==null && implicitPorts.TryGetValue(id+"|"+role,out made))port=made;
+                if(port==null)
                 {
-                    var box=editor.Shapes().Single(sh=>V(sh,"ModelId")==pair.Key);
-                    double oldBottom=Read(box,"Y")+Read(box,"Height"),newBottom=Read(box,"Y")+pair.Value["Height"];
-                    if(top<oldBottom && top+length>=oldBottom-1)needed=Math.Max(needed,length+newBottom-oldBottom);
+                    // The message now goes to or comes from outside the diagram: a free end of its own.
+                    if(endIds.Contains(was))continue;
+                    string otherBar=Link(after[id],role=="send"?"receiveExecution":"sendExecution").FirstOrDefault();
+                    Require(otherBar!=null && bars.ContainsKey(otherBar),"図外のメッセージの相手側の実行区間がありません。");
+                    port=makeEnd(bars[otherBar][0]-60,role=="send"?messageY(id):targetY(id));
                 }
-                if(needed<=length)continue;
-                string grown=Number(needed);
-                foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
-                    .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items).Where(n=>V(n,"Id")==V(shape,"Id")))
-                {node.Properties["Length"]=SequenceJson.Parse(grown);node.Properties["Height"]=SequenceJson.Parse(grown);}
-                shifted.Add(new SequenceShiftedShape{ModelId=bar.Id,ShapeId=V(shape,"Id"),Kind="execution",Keys=new[]{"Length","Height"},Values=new[]{grown,grown}});
-            }
-        if(gate.UnwrapFragments.Count>0)wrapMap=UnwrapLayout(gate,current,editor,out wrapGrowth);
-        else if(gate.TrimOperands.Count==1 && gate.AddNotes.Count+gate.AddRefs.Count+gate.AddMessages.Count+gate.AddFragments.Count
-            +gate.AddOperands.Count+gate.AddExecutions.Count+gate.AddParticipants.Count+gate.MoveMessages.Count==0)
-            wrapMap=BranchCut(gate,current,editor,out wrapGrowth);
-        // A note or ref taken out on its own closes the room it took, as a frame does. With
-        // anything added or moved in the same update the positions are laid out from what
-        // is there now, so the space is left as it is.
-        else if(gate.DeleteNotes.Count+gate.DeleteRefs.Count>0 && gate.AddNotes.Count+gate.AddRefs.Count+gate.AddMessages.Count
-            +gate.AddFragments.Count+gate.AddExecutions.Count+gate.AddParticipants.Count+gate.MoveMessages.Count==0)
-            wrapMap=AnnotationGaps(gate,editor,out wrapGrowth);
-        if(wrapMap!=null)
-        {
-            var laneIds=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
-            var leavingShapes=new HashSet<string>(gate.DeleteFragments.Concat(gate.DeleteOperands).Concat(gate.DeleteNotes).Concat(gate.DeleteRefs)
-                .Concat(gate.DeleteMessages).Concat(gate.DeleteExecutions));
-            foreach(var shape in editor.Shapes())
-            {
-                string model=V(shape,"ModelId");
-                string kind=before.ContainsKey(model)?before[model].Kind:"";
-                var keys=new List<string>();var values=new List<string>();
-                Action<string,double,double> put=(key,was,now)=>{if(Math.Abs(now-was)>1e-9){keys.Add(key);values.Add(Number(now));}};
-                if(kind=="message")
-                {
-                    put("SourceY",Read(shape,"SourceY"),wrapMap(Read(shape,"SourceY")));
-                    put("TargetY",Read(shape,"TargetY"),wrapMap(Read(shape,"TargetY")));
-                }
-                else if(kind=="execution")
-                {
-                    // A bar the input closes inside the new frame has to end inside it too,
-                    // even when it used to reach further down than the run's last message.
-                    string frameId=gate.WrapFragments.Count>0?gate.WrapFragments[0]:null;
-                    bool closesInside=frameId!=null && after.ContainsKey(model) && (after[model].Links.ContainsKey("endContainer")?after[model].Links["endContainer"]:new string[0])
-                        .Any(id=>after.ContainsKey(id) && after[id].Kind=="operand" && after[id].Parent==frameId);
-                    double top=Read(shape,"Y"),length=Read(shape,"Length"),moved=wrapMap(top);
-                    double grown=(closesInside?Math.Min(wrapInside(top+length),layout[frameId]["Y"]+layout[frameId]["Height"]-8):wrapMap(top+length))-moved;
-                    put("Y",top,moved);
-                    // A bar carries its length as both Height and Length; writing one is ignored.
-                    if(Math.Abs(grown-length)>1e-9){keys.Add("Length");values.Add(Number(grown));keys.Add("Height");values.Add(Number(grown));}
-                }
-                // The frame being taken away and its operands go; nothing to move.
-                else if(leavingShapes.Contains(model))continue;
-                else if(kind=="note" || kind=="ref")put("Y",Read(shape,"Y"),wrapMap(Read(shape,"Y")));
-                else if(kind=="fragment")
-                {
-                    double top=Read(shape,"Y"),height=Read(shape,"Height"),moved=wrapMap(top);
-                    put("Y",top,moved);put("Height",height,wrapMap(top+height)-moved);
-                }
-                else if(laneIds.Contains(model) && shape["LaneLength"]!=null)
-                    put("LaneLength",Read(shape,"LaneLength"),Read(shape,"LaneLength")+wrapGrowth);
-                // The diagram's own frame, operands (offsets from their frame) and lanes
-                // without a timeline stay. Anything else has to sit above the run.
-                else if(kind=="" || kind=="operand" || kind=="interaction" || laneIds.Contains(model))continue;
-                else Require(shape["Y"]==null || Math.Abs(wrapMap(Read(shape,"Y"))-Read(shape,"Y"))<1e-9,
-                    "囲む範囲より下にある"+kind+"の位置を決められません。");
-                if(keys.Count==0)continue;
-                foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
-                    .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items)
-                    .Where(n=>V(n,"Id")==V(shape,"Id")))
-                    for(int i=0;i<keys.Count;i++)node.Properties[keys[i]]=SequenceJson.Parse(values[i]);
-                shifted.Add(new SequenceShiftedShape{ModelId=model,ShapeId=V(shape,"Id"),Kind=kind,Keys=keys.ToArray(),Values=values.ToArray()});
+                // A free end the message no longer uses goes with it.
+                if(endIds.Contains(was) && !removedEnds.Contains(was)){removedEnds.Add(was);leaving.Add(was);}
+                if(was!=port)resend(link[0],port,null);
             }
         }
-        var stretched=new List<SequenceStretchedLifeline>();
-        if(layout.ContainsKey("") && layout[""]["Growth"]>0)
+        var sortChanged=new List<string[]>();
+        foreach(string id in gate.SortChanges)
         {
-            double growth=layout[""]["Growth"];
-            var timelines=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
-            foreach(var shape in editor.Shapes().Where(sh=>timelines.Contains(V(sh,"ModelId"))))
+            string literal;string sort=SequenceStructurePreflight.Attribute(after[id]);
+            Require(SortLiterals.TryGetValue(sort,out literal),"メッセージ種別 "+sort+" の値をプロファイルから決められません。");
+            var entity=SequenceJson.Parse(byId[id].ToJsonString());
+            Require(entity["Fields"]!=null && entity["Fields"].Properties!=null,"メッセージに種別の欄がありません。");
+            entity["Fields"].Properties["MessageSort"]=SequenceJson.Parse(SequencePayload.Q(literal));
+            newEntities.Add(entity);sortChanged.Add(new[]{id,sort});
+        }
+        var moved=new List<SequenceMovedMessage>();
+        // What points at an element from the branch it sits in: re-pointed when it moves between
+        // branches, added when it moves into one, taken off when it leaves for the top level.
+        Action<string,string,string[]> rehome=(id,relationName,row)=>{
+            string was=before[id].Parent,now=after[id].Parent;
+            var link=relations.Where(r=>V(r,"MetamodelId")==R(relationName) && V(r,"TargetId")==id).ToArray();
+            bool fromBranch=was!=root && before.ContainsKey(was) && before[was].Kind=="operand";
+            bool toBranch=now!=root && after.ContainsKey(now) && after[now].Kind=="operand";
+            if(fromBranch && link.Length==1)
             {
-                Require(shape["LaneLength"]!=null,"参加者の図形にタイムラインの長さがありません。");
-                string length=Number(Read(shape,"LaneLength")+growth);
-                foreach(var node in patch["Editors"].Items.Single()["Lifelines"].Items.Where(n=>V(n,"Id")==V(shape,"Id")))
-                    node.Properties["LaneLength"]=SequenceJson.Parse(length);
-                stretched.Add(new SequenceStretchedLifeline{ModelId=V(shape,"ModelId"),ShapeId=V(shape,"Id"),Length=length});
+                if(toBranch){if(V(link[0],"SourceId")!=now)resend(link[0],now,null);}
+                // A branch that is deleted takes the relation with it; only one that stays is untied.
+                else if(!leaving.Contains(was))unrelate.Add(V(link[0],"Id"));
+            }
+            else if(toBranch && link.Length==0)
+            {
+                Require(row!=null,"所属の関連の型情報が解決できていません: "+relationName);
+                string relationId=Guid.NewGuid().ToString();
+                newRelations.Add(relate(row,relationId,now,id));
+                moved.Add(new SequenceMovedMessage{ModelId=id,OperandId=now,RelationId=relationId,Field=row[2]});
+            }
+        };
+        foreach(string id in gate.MoveMessages)rehome(id,"OperandTargetMessage",types==null?null:types.OperandMessage);
+        foreach(string id in gate.NestChanges.Where(id=>after[id].Kind=="fragment" || after[id].Kind=="ref"))
+            rehome(id,"NestedInteractionFragment",types==null?null:types.Nested);
+        foreach(string id in gate.NestChanges.Where(id=>after[id].Kind=="execution"))
+        {
+            var link=relations.Where(r=>V(r,"MetamodelId")==R("OwnedExecutionSpecification") && V(r,"TargetId")==id).ToArray();
+            Require(link.Length==1,"実行区間の参加者の関連が一意ではありません。");
+            resend(link[0],Link(after[id],"participant").Single(),null);
+        }
+        foreach(string id in gate.RefTargetChanges)
+        {
+            var was=Link(before[id],"targets");var now=Link(after[id],"targets");
+            foreach(var link in relations.Where(r=>V(r,"MetamodelId")==R("CrossingFragmentCoveredLifeline") && V(r,"SourceId")==id && !now.Contains(V(r,"TargetId"))))
+                unrelate.Add(V(link,"Id"));
+            foreach(string lane in now.Where(l=>!was.Contains(l)))
+            {
+                Require(refTypes!=null && refTypes.Crossing!=null,"refの型情報が解決できていません。");
+                string relationId=Guid.NewGuid().ToString();
+                newRelations.Add(relate(refTypes.Crossing,relationId,id,lane));
+                notes.Add(new SequenceAddedNote{Kind="link",ModelId=id,RelationIds=new[]{relationId},RelationSources=new[]{id},RelationTargets=new[]{lane},RelationFields=new[]{refTypes.Crossing[2]}});
+            }
+            string reference;
+            if(after[id].Attributes.TryGetValue("reference",out reference) && !string.IsNullOrEmpty(reference) && refTypes!=null && refTypes.RefersTo!=null)
+            {
+                var link=relations.Where(r=>V(r,"MetamodelId")==refTypes.RefersTo[0] && V(r,"SourceId")==id).ToArray();
+                if(link.Length==1){if(V(link[0],"TargetId")!=reference)resend(link[0],null,reference);}
+                else if(link.Length==0)
+                {
+                    string relationId=Guid.NewGuid().ToString();
+                    newRelations.Add(relate(refTypes.RefersTo,relationId,id,reference));
+                    notes.Add(new SequenceAddedNote{Kind="link",ModelId=id,RelationIds=new[]{relationId},RelationSources=new[]{id},RelationTargets=new[]{reference},RelationFields=new[]{refTypes.RefersTo[2]}});
+                }
             }
         }
-        foreach(var pair in new[]{new object[]{"Fragments",newFrameShapes},new object[]{"Operands",newOperandShapes}})
+        var shapeTexts=new List<string[]>();
+        foreach(string id in gate.OperatorChanges)
         {
-            var frameShapeList=(List<SequenceJson>)pair[1];
-            if(frameShapeList.Count==0)continue;
-            Collection(patch["Editors"].Items.Single(),(string)pair[0]).Items.AddRange(frameShapeList);
+            string operatorName=after[id].Attributes["operator"];string operatorValue=null;
+            Require(types!=null && types.Operators.TryGetValue(operatorName,out operatorValue),"この図のプロファイルに演算子 "+operatorName+" がありません。");
+            var entity=SequenceJson.Parse(byId[id].ToJsonString());
+            Require(entity["Fields"]!=null && entity["Fields"].Properties!=null,"枠に演算子の欄がありません。");
+            entity["Fields"].Properties["Operator"]=SequenceJson.Parse(SequencePayload.Q(operatorValue));
+            newEntities.Add(entity);
+            if(operatorName!="group")shapeTexts.Add(new[]{V(shapeOf[id],"Id"),operatorName});
         }
-        if(newLaneShapes.Count>0)
+        // A rename re-imports the element with the same id and its new text; the product
+        // updates it in place.
+        var renamed=new List<string[]>();
+        foreach(string id in gate.Renames)
         {
-            var laneArray=patch["Editors"].Items.Single()["Lifelines"];
-            Require(laneArray!=null && laneArray.Items!=null,"エディタに参加者の図形配列がありません。");
-            laneArray.Items.AddRange(newLaneShapes);
+            Require(byId.ContainsKey(id),"本文を変える要素が退避データにありません。");
+            string text=after[id].Text??"";
+            var entity=newEntities.FirstOrDefault(e=>V(e,"Id")==id);
+            if(entity==null){entity=SequenceJson.Parse(byId[id].ToJsonString());newEntities.Add(entity);}
+            bool operand=before[id].Kind=="operand";
+            if(!operand)entity.Properties["Name"]=SequenceJson.Parse(SequencePayload.Q(text));
+            var fields=entity["Fields"];
+            if(fields!=null && fields.Properties!=null)
+                foreach(string key in operand?new[]{"Guard"}:new[]{"Name","Body","Text"})
+                    if(fields[key]!=null && fields[key].Raw!=null && fields[key].Raw.StartsWith("\"",StringComparison.Ordinal))
+                        fields.Properties[key]=SequenceJson.Parse(SequencePayload.Q(text));
+            renamed.Add(new[]{id,text,before[id].Kind});
         }
+
+        // ---- A bar is tied to the reply that closes it. Only bars this update touches are
+        // checked, so a diagram drawn by hand keeps its own ties everywhere else.
+        var replyLinks=typed("ExecutionSpecificationReplyMessage");
+        if(replyLinks.Length>0 || (BaseTypes!=null && BaseTypes.Reply!=null))
+        {
+            var touchedMessages=new HashSet<string>(gate.AddMessages.Concat(gate.DeleteMessages).Concat(gate.ReconnectMessages).Concat(gate.ResendMessages)
+                .Concat(gate.SortChanges).Concat(gate.MoveMessages).Concat(gate.ReorderMessages));
+            var touched=new HashSet<string>(gate.AddExecutions.Concat(implicitPorts.Values));
+            foreach(var m in current.Elements.Where(e=>e.Kind=="message" && touchedMessages.Contains(e.Id)))
+                foreach(string role in new[]{"sendExecution","receiveExecution"})foreach(string b in Link(m,role))touched.Add(b);
+            foreach(var m in plan.Expected.Elements.Where(e=>e.Kind=="message" && touchedMessages.Contains(e.Id)))
+                foreach(string role in new[]{"sendExecution","receiveExecution"})foreach(string b in Link(m,role))touched.Add(b);
+            foreach(string b in touched.Where(id=>after.ContainsKey(id) || implicitPorts.Values.Contains(id)))
+            {
+                string closing=after.ContainsKey(b)?ClosingReply(plan.Expected,b):null;
+                foreach(var link in replyLinks.Where(r=>V(r,"SourceId")==b))
+                    if(V(link,"TargetId")!=closing && !leaving.Contains(V(link,"TargetId")))unrelate.Add(V(link,"Id"));
+                if(closing!=null && !replyLinks.Any(r=>V(r,"SourceId")==b && V(r,"TargetId")==closing))
+                {
+                    string relationId=Guid.NewGuid().ToString();
+                    if(replyLinks.Length>0)
+                    {
+                        newRelations.Add(copyRelation(replyLinks[0],relationId,b,closing));
+                        notes.Add(new SequenceAddedNote{Kind="link",ModelId=closing,RelationIds=new[]{relationId},RelationSources=new[]{b},RelationTargets=new[]{closing},RelationFields=new[]{"relation:"+V(replyLinks[0],"Id")}});
+                    }
+                    else
+                    {
+                        newRelations.Add(relate(BaseTypes.Reply,relationId,b,closing));
+                        notes.Add(new SequenceAddedNote{Kind="link",ModelId=closing,RelationIds=new[]{relationId},RelationSources=new[]{b},RelationTargets=new[]{closing},RelationFields=new[]{BaseTypes.Reply[2]}});
+                    }
+                }
+            }
+        }
+
+        if(newEndShapes.Count>0)Collection(view,"MessageEnds").Items.AddRange(newEndShapes);
+        patch["Entities"].Items.AddRange(newEntities);
+        patch["Relations"].Items.AddRange(newRelations);
+        patch["Relations"].Items.AddRange(changed);
+        // After the deletions the editor is imported again without their shapes, and without
+        // connectors drawn to them, such as a note's anchor.
+        var afterDelete=SequenceJson.Parse(patch.ToJsonString());
+        afterDelete.Properties["Entities"]=SequenceJson.Parse("[]");afterDelete.Properties["Relations"]=SequenceJson.Parse("[]");
+        {
+            var cleaned=afterDelete["Editors"].Items.Single();
+            var goneShapes=new HashSet<string>(editor.Shapes().Where(sh=>leaving.Contains(V(sh,"ModelId"))).Select(sh=>V(sh,"Id")));
+            Func<SequenceJson,bool> dangling=node=>node.Properties!=null
+                && node.Properties.Any(p=>p.Key!="Id" && p.Value!=null && p.Value.Raw!=null && p.Value.Raw.StartsWith("\"",StringComparison.Ordinal)
+                    && goneShapes.Contains(p.Value.StringValue()));
+            foreach(var property in cleaned.Properties)
+            {
+                var array=property.Value;
+                if(array==null || array.Items==null)continue;
+                for(int i=array.Items.Count-1;i>=0;i--)
+                    if(leaving.Contains(V(array.Items[i],"ModelId")) || dangling(array.Items[i]))array.Items.RemoveAt(i);
+            }
+        }
+        string inserted=gate.AddMessages.FirstOrDefault(id=>walkNew.Skip(System.Array.IndexOf(walkNew,id)+1).Any(before.ContainsKey))??"";
         return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),ReconnectCount=changed.Count,
-            EditorAfterDeleteJson=Deleted(editor,newShapes,newLaneShapes,newMessageShapes,
-                newFrameShapes,newOperandShapes,newNoteShapes,newRefShapes,newDestroyShapes,stretched,shifted,gate.DeleteExecutions,
-                gate.DeleteParticipants.Concat(gate.DeleteMessages)
-                    .Concat(gate.DeleteFragments).Concat(gate.DeleteOperands).Concat(gate.DeleteNotes).Concat(gate.DeleteRefs).Concat(gate.DeleteDestroys).ToList()),
+            EditorAfterDeleteJson=afterDelete.ToJsonString(),
             DeleteIds=gate.DeleteExecutions.ToArray(),
             AddedExecutions=additions.ToArray(),AddedParticipants=lanes.ToArray(),AddedMessages=wires.ToArray(),
             AddedFragments=frames.ToArray(),AddedOperands=branches.ToArray(),
-            StretchedLifelines=stretched.ToArray(),CreatedCollections=Created.ToArray(),
-            ShiftedShapes=shifted.ToArray(),InsertedMessageId=insertedId,MovedMessages=movedMessages.ToArray(),AddedNotes=notes.Concat(destroys).ToArray(),Renamed=renamed.ToArray(),
+            StretchedLifelines=new SequenceStretchedLifeline[0],CreatedCollections=Created.ToArray(),
+            ShiftedShapes=shifted.ToArray(),InsertedMessageId=inserted,MovedMessages=moved.ToArray(),AddedNotes=notes.ToArray(),Renamed=renamed.ToArray(),
             DeleteParticipantIds=gate.DeleteParticipants.ToArray(),DeleteMessageIds=gate.DeleteMessages.ToArray(),
-            DeleteFrameIds=gate.DeleteFragments.Concat(gate.DeleteOperands).ToArray(),DeleteNoteIds=gate.DeleteNotes.ToArray(),DeleteRefIds=gate.DeleteRefs.ToArray(),DeleteDestroyIds=gate.DeleteDestroys.ToArray(),
-            ReceiveRelationIds=relations.Where(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ReceiveMessage").Select(r=>V(r,"Id")).ToArray()};
+            DeleteFrameIds=gate.DeleteFragments.Concat(gate.DeleteOperands).ToArray(),DeleteNoteIds=gate.DeleteNotes.ToArray(),DeleteRefIds=gate.DeleteRefs.ToArray(),
+            DeleteDestroyIds=gate.DeleteDestroys.ToArray(),DeleteEndIds=removedEnds.ToArray(),UnrelateIds=unrelate.Distinct().ToArray(),
+            SortChanged=sortChanged.ToArray(),ShapeTexts=shapeTexts.ToArray(),LooseShapeIds=loose.ToArray(),
+            ReceiveRelationIds=typed("ReceiveMessage").Select(r=>V(r,"Id")).ToArray(),SendRelationIds=typed("SendMessage").Select(r=>V(r,"Id")).ToArray()};
     }
     // A diagram that has never held a frame has no Fragments collection at all, so the
     // first one has to create it rather than append to something that is not there.
@@ -2617,276 +2293,6 @@ public sealed class SequenceStructurePreparation
             throw new InvalidOperationException("S220: 図形の"+key+"が数値ではありません。");
         return value;
     }
-    // The generator places a bar at the lane centre and steps 8px right per nesting
-    // level. Reuse that rule so an added bar lands where a generated one would.
-    // A frame decides the position of everything inside it, so the whole block is laid
-    // out in one pass: a bar's top is the first message it touches, and that message sits
-    // where the frame puts it. Resolving those one at a time would be circular. The steps
-    // are the ones the generator uses when it builds a diagram from scratch.
-    internal static Dictionary<string,Dictionary<string,double>> FrameLayout(SequenceStructurePreflight gate,
-        SyncPlan plan,SequenceEditorDocument editor,SequenceJson frameTemplate,SequenceDocument current)
-    {
-        var layout=new Dictionary<string,Dictionary<string,double>>(StringComparer.Ordinal);
-        if(gate.AddFragments.Count==0)return layout;
-        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
-        double floor=0;
-        foreach(var shape in editor.Shapes())
-        {
-            foreach(string key in new[]{"TargetY","SourceY"})
-                if(shape[key]!=null)floor=Math.Max(floor,Read(shape,key));
-            if(shape["Y"]==null)continue;
-            double bottom=Read(shape,"Y");
-            foreach(string key in new[]{"Length","Height"})
-                if(shape[key]!=null)bottom=Math.Max(bottom,Read(shape,"Y")+Read(shape,key));
-            floor=Math.Max(floor,bottom);
-        }
-        double x,width;
-        if(frameTemplate!=null) {x=Read(frameTemplate,"X");width=Read(frameTemplate,"Width");}
-        else
-        {
-            // No frame to measure: span every lane, the way a frame covers them all.
-            var lanes=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
-            var laneShapes=editor.Shapes().Where(sh=>lanes.Contains(SequenceEditorDocument.Value(sh,"ModelId"))
-                && sh["X"]!=null && sh["Width"]!=null).ToArray();
-            if(laneShapes.Length==0)throw new InvalidOperationException("S220: 参加者の図形がないため枠の幅を決められません。");
-            double left=laneShapes.Min(sh=>Read(sh,"X")),right=laneShapes.Max(sh=>Read(sh,"X")+Read(sh,"Width"));
-            x=left-16;width=right-left+32;
-        }
-        double at=floor+MessageSpacing;
-        var order=SequenceStructurePreflight.Flatten(plan.Expected);
-        foreach(string frameId in order.Where(gate.AddFragments.Contains))
-        {
-            double top=at,y=at;bool first=true;
-            foreach(string operandId in order.Where(id=>after.ContainsKey(id) && after[id].Kind=="operand" && after[id].Parent==frameId))
-            {
-                y+=first?30:12;first=false;
-                var guard=after[operandId].Text??"";
-                var slot=new Dictionary<string,double>();slot["Position"]=y-top;layout[operandId]=slot;
-                y+=40+18*(guard.Replace("\r\n","\n").Split('\n').Length-1);
-                foreach(string messageId in order.Where(id=>after.ContainsKey(id) && after[id].Kind=="message" && after[id].Parent==operandId))
-                {
-                    var row=new Dictionary<string,double>();row["Y"]=y;layout[messageId]=row;
-                    y+=MessageSpacing;
-                }
-                y+=8;
-            }
-            var frame=new Dictionary<string,double>();
-            frame["X"]=x;frame["Y"]=top;frame["Width"]=width;frame["Height"]=Math.Max(40,y-top);
-            layout[frameId]=frame;
-            at=y+16;
-        }
-        // How much taller the diagram got. The lifelines have to follow, or their timeline
-        // stops above the frame. The empty key cannot collide with an element id.
-        var span=new Dictionary<string,double>();span["Growth"]=Math.Max(0,at-floor);
-        layout[""]=span;
-        // Bars inside the block span the messages they touch.
-        foreach(string barId in gate.AddExecutions)
-        {
-            var bar=after[barId];
-            if(bar.Parent==null || !layout.ContainsKey(bar.Parent))continue;
-            double top=double.MaxValue,bottom=double.MinValue;
-            foreach(var message in plan.Expected.Elements.Where(e=>e.Kind=="message"))
-                foreach(string role in new[]{"sendExecution","receiveExecution"})
-                {
-                    string[] ids;
-                    if(!message.Links.TryGetValue(role,out ids) || !ids.Contains(barId) || !layout.ContainsKey(message.Id))continue;
-                    top=Math.Min(top,layout[message.Id]["Y"]);bottom=Math.Max(bottom,layout[message.Id]["Y"]);
-                }
-            if(top==double.MaxValue)continue;
-            var slot=new Dictionary<string,double>();
-            slot["Y"]=top;slot["Length"]=Math.Max(PumlBuild.MinimumBar,bottom+16-top);slot["Height"]=slot["Length"];
-            layout[barId]=slot;
-        }
-        return layout;
-    }
-    // A frame drawn around a run of messages already there. The run moves down to make
-    // room for the frame's heading and each operand's guard, using the generator's steps:
-    // the first guard 30 below the frame's top and its message 40 below that, a new
-    // operand 8 + 12 under the last message's slot, the frame closing 8 under it.
-    // Everything below moves down by what the run grew plus the frame's bottom margin.
-    // A position above the run stays, so a bar opened before it keeps its top.
-    internal static Dictionary<string,Dictionary<string,double>> WrapLayout(SequenceStructurePreflight gate,
-        SyncPlan plan,SequenceEditorDocument editor,SequenceJson frameTemplate,SequenceDocument current,
-        out Func<double,double> map,out Func<double,double> inside,out double growth)
-    {
-        var layout=new Dictionary<string,Dictionary<string,double>>(StringComparer.Ordinal);
-        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
-        string frameId=gate.WrapFragments.Single();
-        var shapes=editor.Shapes();
-        var ys=gate.MoveMessages.Select(id=>{
-            var found=shapes.Where(sh=>SequenceEditorDocument.Value(sh,"ModelId")==id).ToArray();
-            if(found.Length!=1)throw new InvalidOperationException("S220: 囲むメッセージの図形を一意に取得できません。");
-            return Read(found[0],"TargetY");
-        }).ToArray();
-        for(int i=1;i<ys.Length;i++)
-            if(ys[i]<=ys[i-1])throw new InvalidOperationException("S220: 囲むメッセージの縦位置が順序どおりではありません。");
-        Func<string,int> lines=guard=>(guard??"").Replace("\r\n","\n").Split('\n').Length;
-        double top=ys[0]-10;
-        var offsets=new double[ys.Length];var placed=new double[ys.Length];
-        for(int i=0;i<ys.Length;i++)
-        {
-            string operand=after[gate.MoveMessages[i]].Parent;
-            bool opens=i==0 || operand!=after[gate.MoveMessages[i-1]].Parent;
-            if(opens)
-            {
-                // The guard sits where the operand begins; the message goes under it.
-                double guardAt=i==0?top+30:placed[i-1]+MessageSpacing+8+12;
-                var slot=new Dictionary<string,double>();slot["Position"]=guardAt-top;layout[operand]=slot;
-                placed[i]=guardAt+40+18*(lines(after[operand].Text)-1);
-            }
-            else placed[i]=ys[i]+offsets[i-1];
-            offsets[i]=placed[i]-ys[i];
-        }
-        double bottom=placed[ys.Length-1]+MessageSpacing+8;
-        double x,width;FrameSpan(editor,frameTemplate,current,out x,out width);
-        var frame=new Dictionary<string,double>();
-        frame["X"]=x;frame["Y"]=top;frame["Width"]=width;frame["Height"]=bottom-top;
-        layout[frameId]=frame;
-        // Below the run, a message that sat one step under its last one lands 30 under
-        // the frame, the gap the generator leaves after a frame.
-        double below=offsets[ys.Length-1]+38,split=ys[ys.Length-1]+MessageSpacing/2;
-        growth=below;
-        // Inside the run a position moves with the message just above it. A bar that
-        // closes inside the frame uses that for its bottom too, wherever it ended before.
-        inside=p=>{
-            int at=0;while(at+1<ys.Length && ys[at+1]<=p)at++;
-            return p+offsets[at];
-        };
-        var within=inside;
-        map=p=>p<ys[0]-5?p:p>split?p+below:within(p);
-        return layout;
-    }
-    // Taking a frame away closes the room it took, the reverse of wrapping: the first
-    // message it held goes one step under the message before the frame, messages keep
-    // their spacing within an operand and close up to one step across an operand's start,
-    // and everything under the frame follows one step under the last of them.
-    internal static Func<double,double> UnwrapLayout(SequenceStructurePreflight gate,SequenceDocument current,
-        SequenceEditorDocument editor,out double growth)
-    {
-        string frameId=gate.UnwrapFragments.Single();
-        var shapes=editor.Shapes();
-        Func<string,SequenceJson> shapeOf=id=>{
-            var found=shapes.Where(sh=>SequenceEditorDocument.Value(sh,"ModelId")==id).ToArray();
-            if(found.Length!=1)throw new InvalidOperationException("S220: 外す枠まわりの図形を一意に取得できません。");
-            return found[0];
-        };
-        var frame=shapeOf(frameId);
-        double top=Read(frame,"Y"),bottom=top+Read(frame,"Height");
-        var before=current.Elements.ToDictionary(e=>e.Id);
-        var walk=SequenceStructurePreflight.Flatten(current);
-        var inside=walk.Where(id=>before[id].Kind=="message" && before[before[id].Parent].Parent==frameId).ToArray();
-        if(inside.Length==0)throw new InvalidOperationException("S220: 外す枠の中にメッセージがありません。");
-        var ys=inside.Select(id=>Read(shapeOf(id),"TargetY")).ToArray();
-        var above=walk.Take(System.Array.IndexOf(walk,frameId)).Where(id=>before[id].Kind=="message").ToArray();
-        double first=above.Length>0?Read(shapeOf(above[above.Length-1]),"TargetY")+MessageSpacing:top+10;
-        var placed=new double[ys.Length];
-        for(int i=0;i<ys.Length;i++)
-        {
-            bool opens=i==0 || before[inside[i]].Parent!=before[inside[i-1]].Parent;
-            placed[i]=i==0?first:opens?placed[i-1]+MessageSpacing:placed[i-1]+(ys[i]-ys[i-1]);
-        }
-        // Below the frame, the first thing went where the frame's margin ended; it now goes
-        // one step under the last message that was inside.
-        var below=walk.Where(id=>shapes.Any(sh=>SequenceEditorDocument.Value(sh,"ModelId")==id))
-            .Select(id=>shapeOf(id)).Select(sh=>sh["TargetY"]!=null?Read(sh,"TargetY"):sh["Y"]!=null?Read(sh,"Y"):double.NaN)
-            .Where(y=>!double.IsNaN(y) && y>bottom).ToArray();
-        double shift=below.Length>0?placed[ys.Length-1]+MessageSpacing-below.Min():placed[ys.Length-1]-ys[ys.Length-1];
-        growth=shift;
-        var offsets=placed.Select((p,i)=>p-ys[i]).ToArray();
-        return p=>{
-            if(p<top)return p;
-            if(p>bottom)return p+shift;
-            int at=0;while(at+1<ys.Length && ys[at+1]<=p)at++;
-            return p+offsets[at];
-        };
-    }
-    // Each removed note or ref gives back the distance from its top to the first thing
-    // under it, so that thing lands where the box began, one step under the message above.
-    // Measured rather than assumed, so boxes laid out with an older gap close up too.
-    internal static Func<double,double> AnnotationGaps(SequenceStructurePreflight gate,SequenceEditorDocument editor,out double growth)
-    {
-        var shapes=editor.Shapes();
-        var removed=new HashSet<string>(gate.DeleteNotes.Concat(gate.DeleteRefs).Concat(gate.DeleteMessages).Concat(gate.DeleteExecutions));
-        Func<SequenceJson,double> at=sh=>sh["TargetY"]!=null?Read(sh,"TargetY"):sh["Y"]!=null?Read(sh,"Y"):double.NaN;
-        var gaps=new List<double[]>();
-        foreach(string id in gate.DeleteNotes.Concat(gate.DeleteRefs))
-        {
-            var box=shapes.Single(sh=>SequenceEditorDocument.Value(sh,"ModelId")==id);
-            double top=Read(box,"Y"),bottom=top+Read(box,"Height");
-            // Bars and lanes do not mark a row; everything else below the box does.
-            var below=shapes.Where(sh=>!removed.Contains(SequenceEditorDocument.Value(sh,"ModelId")) && sh["Length"]==null && sh["LaneLength"]==null)
-                .Select(at).Where(y=>!double.IsNaN(y) && y>=bottom).ToArray();
-            if(below.Length>0)gaps.Add(new[]{top,below.Min()});
-        }
-        growth=-gaps.Sum(g=>g[1]-g[0]);
-        return p=>{
-            double moved=p;
-            foreach(var g in gaps)
-            {
-                if(p>=g[1])moved-=g[1]-g[0];
-                else if(p>g[0])moved-=p-g[0];
-            }
-            return moved;
-        };
-    }
-    // Messages trading places take each other's rows: the n-th top-level message in the
-    // new order goes to the row the n-th one used to have. A bar moves with its messages,
-    // keeping how far above the first and below the last of them it reached.
-    static void Reorder(SequenceDocument current,SyncPlan plan,SequenceEditorDocument editor,SequenceJson patch,List<SequenceShiftedShape> shifted)
-    {
-        var before=current.Elements.ToDictionary(e=>e.Id);
-        var shapes=editor.Shapes();
-        Func<string,SequenceJson> shapeOf=id=>{
-            var found=shapes.Where(sh=>V(sh,"ModelId")==id).ToArray();
-            Require(found.Length==1,"入れ替えるメッセージ・実行区間の図形を一意に取得できません。");
-            return found[0];
-        };
-        var oldAll=SequenceStructurePreflight.Flatten(current).Where(id=>before[id].Kind=="message").ToArray();
-        var newAll=SequenceStructurePreflight.Flatten(plan.Expected).Where(id=>before.ContainsKey(id) && before[id].Kind=="message").ToArray();
-        Require(oldAll.OrderBy(x=>x).SequenceEqual(newAll.OrderBy(x=>x)),"入れ替え前後でメッセージの集合が違います。");
-        var oldY=oldAll.ToDictionary(id=>id,id=>Read(shapeOf(id),"SourceY"));
-        var newY=new Dictionary<string,double>();
-        // Rows are traded only among the messages of one container.
-        foreach(var group in oldAll.GroupBy(id=>before[id].Parent))
-        {
-            var oldOrder=group.ToArray();
-            var newOrder=newAll.Where(id=>before[id].Parent==group.Key).ToArray();
-            for(int i=1;i<oldOrder.Length;i++)Require(oldY[oldOrder[i]]>oldY[oldOrder[i-1]],"メッセージの縦位置が順序どおりではありません。");
-            for(int i=0;i<newOrder.Length;i++)newY[newOrder[i]]=oldY[oldOrder[i]];
-        }
-        var oldOrderAll=oldAll;
-        Action<SequenceJson,string,List<string>,List<string>> write=(shape,model,keys,values)=>{
-            if(keys.Count==0)return;
-            foreach(var node in patch["Editors"].Items.SelectMany(view=>view.Properties.Values)
-                .Where(array=>array!=null && array.Items!=null).SelectMany(array=>array.Items)
-                .Where(n=>V(n,"Id")==V(shape,"Id")))
-                for(int i=0;i<keys.Count;i++)node.Properties[keys[i]]=SequenceJson.Parse(values[i]);
-            shifted.Add(new SequenceShiftedShape{ModelId=model,ShapeId=V(shape,"Id"),Kind=before[model].Kind,Keys=keys.ToArray(),Values=values.ToArray()});
-        };
-        foreach(string id in oldOrderAll)
-        {
-            double delta=newY[id]-oldY[id];
-            if(Math.Abs(delta)<1e-9)continue;
-            var shape=shapeOf(id);
-            write(shape,id,new List<string>{"SourceY","TargetY"},
-                new List<string>{Number(Read(shape,"SourceY")+delta),Number(Read(shape,"TargetY")+delta)});
-        }
-        foreach(var bar in current.Elements.Where(e=>e.Kind=="execution"))
-        {
-            var mine=plan.Expected.Elements.Where(e=>e.Kind=="message" && oldY.ContainsKey(e.Id)
-                && (Link(e,"sendExecution").Contains(bar.Id) || Link(e,"receiveExecution").Contains(bar.Id))).Select(e=>e.Id).ToArray();
-            if(mine.Length==0)continue;
-            var shape=shapeOf(bar.Id);
-            double top=Read(shape,"Y"),bottom=top+Read(shape,"Length");
-            double newTop=mine.Min(m=>newY[m])+(top-mine.Min(m=>oldY[m]));
-            double newBottom=mine.Max(m=>newY[m])+(bottom-mine.Max(m=>oldY[m]));
-            var keys=new List<string>();var values=new List<string>();
-            if(Math.Abs(newTop-top)>1e-9){keys.Add("Y");values.Add(Number(newTop));}
-            if(Math.Abs((newBottom-newTop)-(bottom-top))>1e-9)
-            {keys.Add("Length");values.Add(Number(newBottom-newTop));keys.Add("Height");values.Add(Number(newBottom-newTop));}
-            write(shape,bar.Id,keys,values);
-        }
-    }
     static string[] Link(SequenceElement e,string role)
     { string[] ids;return e.Links.TryGetValue(role,out ids)?ids:new string[0]; }
     // The reply that closes a bar: the last message on it, in drawing order, when that is a
@@ -2897,177 +2303,13 @@ public sealed class SequenceStructurePreparation
             .LastOrDefault(e=>e.Kind=="message" && (Link(e,"sendExecution").Contains(bar) || Link(e,"receiveExecution").Contains(bar)));
         return last!=null && SequenceStructurePreflight.Attribute(last)=="reply" && Link(last,"sendExecution").Contains(bar)?last.Id:null;
     }
-    // A new branch on a frame already drawn: the guard 12 under the frame's old bottom,
-    // its messages under it with the generator's steps, the frame closing 8 under the last.
-    // Bars in the branch span the messages they touch, as in a new frame.
-    internal static Dictionary<string,Dictionary<string,double>> BranchLayout(SequenceStructurePreflight gate,
-        SyncPlan plan,SequenceEditorDocument editor,SequenceDocument current)
-    {
-        var layout=new Dictionary<string,Dictionary<string,double>>(StringComparer.Ordinal);
-        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
-        var before=current.Elements.ToDictionary(e=>e.Id);
-        var order=SequenceStructurePreflight.Flatten(plan.Expected);
-        double growth=0;
-        foreach(string operandId in gate.AddOperands.Where(id=>before.ContainsKey(after[id].Parent)))
-        {
-            string frameId=after[operandId].Parent;
-            var box=editor.Shapes().Single(sh=>SequenceEditorDocument.Value(sh,"ModelId")==frameId);
-            double top=Read(box,"Y"),height=Read(box,"Height"),y=top+height+12;
-            var slot=new Dictionary<string,double>();slot["Position"]=y-top;layout[operandId]=slot;
-            y+=40+18*((after[operandId].Text??"").Replace("\r\n","\n").Split('\n').Length-1);
-            foreach(string messageId in order.Where(id=>after[id].Kind=="message" && after[id].Parent==operandId))
-            {var row=new Dictionary<string,double>();row["Y"]=y;layout[messageId]=row;y+=MessageSpacing;}
-            y+=8;
-            var frame=new Dictionary<string,double>();frame["Height"]=y-top;layout[frameId]=frame;
-            growth+=y-top-height;
-        }
-        var span=new Dictionary<string,double>();span["Growth"]=growth;layout[""]=span;
-        foreach(string barId in gate.AddExecutions)
-        {
-            var bar=after[barId];
-            if(bar.Parent==null || !layout.ContainsKey(bar.Parent))continue;
-            var ys=plan.Expected.Elements.Where(e=>e.Kind=="message" && layout.ContainsKey(e.Id)
-                && (Link(e,"sendExecution").Contains(barId) || Link(e,"receiveExecution").Contains(barId))).Select(e=>layout[e.Id]["Y"]).ToArray();
-            if(ys.Length==0)continue;
-            var slot=new Dictionary<string,double>();
-            slot["Y"]=ys.Min();slot["Length"]=Math.Max(PumlBuild.MinimumBar,ys.Max()+16-ys.Min());slot["Height"]=slot["Length"];
-            layout[barId]=slot;
-        }
-        return layout;
-    }
-    // Taking a frame's last branch away closes the frame up to where that branch began, 12
-    // above its guard, and moves everything under the frame up by the same.
-    internal static Func<double,double> BranchCut(SequenceStructurePreflight gate,SequenceDocument current,
-        SequenceEditorDocument editor,out double growth)
-    {
-        string operandId=gate.TrimOperands.Single();
-        string frameId=current.Elements.Single(e=>e.Id==operandId).Parent;
-        var shapes=editor.Shapes();
-        var box=shapes.Single(sh=>SequenceEditorDocument.Value(sh,"ModelId")==frameId);
-        var branch=shapes.Single(sh=>SequenceEditorDocument.Value(sh,"ModelId")==operandId);
-        double top=Read(box,"Y"),bottom=top+Read(box,"Height"),cut=top+Read(branch,"Position")-12;
-        double removed=bottom-cut;
-        growth=-removed;
-        return p=>p<=cut?p:p<=bottom?cut:p-removed;
-    }
-    // Where a frame over every lane goes across: the rectangle of an existing frame when
-    // there is one, measured on the product, or the lanes' outer edges with a 16px margin.
-    static void FrameSpan(SequenceEditorDocument editor,SequenceJson frameTemplate,SequenceDocument current,out double x,out double width)
-    {
-        if(frameTemplate!=null) {x=Read(frameTemplate,"X");width=Read(frameTemplate,"Width");return;}
-        var lanes=new HashSet<string>(current.Elements.Where(e=>e.Kind=="participant").Select(e=>e.Id));
-        var laneShapes=editor.Shapes().Where(sh=>lanes.Contains(SequenceEditorDocument.Value(sh,"ModelId"))
-            && sh["X"]!=null && sh["Width"]!=null).ToArray();
-        if(laneShapes.Length==0)throw new InvalidOperationException("S220: 参加者の図形がないため枠の幅を決められません。");
-        double left=laneShapes.Min(sh=>Read(sh,"X")),right=laneShapes.Max(sh=>Read(sh,"X")+Read(sh,"Width"));
-        x=left-16;width=right-left+32;
-    }
     // How tall the generator makes a note or ref for its text.
     internal static double BoxHeight(string text)
     { return Math.Max(48,16+20*(text??"").Replace("\r\n","\n").Split('\n').Length); }
-    static int Depth(SequenceElement wanted,Dictionary<string,SequenceElement> after)
-    {
-        int depth=0;
-        for(var at=wanted;;depth++)
-        {
-            var outer=at.Links.ContainsKey("outer")?at.Links["outer"]:new string[0];
-            if(outer.Length==0)return depth;
-            if(depth>32 || !after.ContainsKey(outer[0]))throw new InvalidOperationException("S220: 入れ子の階層を解決できません。");
-            at=after[outer[0]];
-        }
-    }
-    static Dictionary<string,double> Geometry(SequenceElement wanted,Dictionary<string,SequenceElement> after,
-        SequenceEditorDocument editor,SequenceJson lane,SequenceJson templateShape)
-    {
-        int depth=0;
-        for(var at=wanted;;depth++)
-        {
-            var outer=at.Links.ContainsKey("outer")?at.Links["outer"]:new string[0];
-            if(outer.Length==0)break;
-            if(depth>32 || !after.ContainsKey(outer[0]))throw new InvalidOperationException("S220: 入れ子の階層を解決できません。");
-            at=after[outer[0]];
-        }
-        var shapes=editor.Shapes();
-        Func<string,SequenceJson> shapeOf=id=>{
-            var found=shapes.Where(sh=>SequenceEditorDocument.Value(sh,"ModelId")==id).ToArray();
-            return found.Length==1?found[0]:null;
-        };
-        var receivers=after.Values.Where(e=>e.Kind=="message" && e.Links.ContainsKey("receiveExecution")
-            && e.Links["receiveExecution"].Contains(wanted.Id)).ToArray();
-        if(receivers.Length==0)throw new InvalidOperationException("S220: 追加する実行区間の開始位置を決められません。");
-        double top=double.MaxValue;
-        foreach(var message in receivers)
-        {
-            var shape=shapeOf(message.Id);
-            if(shape==null)throw new InvalidOperationException("S220: 受信メッセージの図形を取得できません。");
-            top=Math.Min(top,Read(shape,"TargetY"));
-        }
-        double bottom=top+Read(templateShape,"Length");
-        var following=wanted.Links.ContainsKey("endBefore")?wanted.Links["endBefore"]:new string[0];
-        if(following.Length==1)
-        {
-            var shape=shapeOf(following[0]);
-            if(shape!=null && shape["SourceY"]!=null)bottom=Read(shape,"SourceY")-16;
-        }
-        else if(wanted.Links.ContainsKey("outer") && wanted.Links["outer"].Length==1)
-        {
-            var shape=shapeOf(wanted.Links["outer"][0]);
-            if(shape!=null)bottom=Read(shape,"Y")+Read(shape,"Length");
-        }
-        double length=Math.Max(PumlBuild.MinimumBar,bottom-top);
-        var result=new Dictionary<string,double>();
-        result["X"]=Read(lane,"X")+Read(lane,"Width")/2+8*depth;
-        result["Y"]=top;result["Length"]=length;result["Height"]=length;
-        return result;
-    }
     internal const double LaneSpacing=240;
     // The profile's literal for each message sort, set by the runtime before preparing.
     public static readonly Dictionary<string,string> SortLiterals=new Dictionary<string,string>(StringComparer.Ordinal);
     internal const double MessageSpacing=PumlBuild.MessagePitch;
-    static string Deleted(SequenceEditorDocument editor,List<SequenceJson> addedShapes,List<SequenceJson> addedLanes,
-        List<SequenceJson> addedWires,List<SequenceJson> addedFrames,List<SequenceJson> addedBranches,List<SequenceJson> addedNotes,List<SequenceJson> addedRefs,List<SequenceJson> addedDestroys,
-        List<SequenceStretchedLifeline> stretched,List<SequenceShiftedShape> shifted,
-        List<string> removed,List<string> removedLanes)
-    {
-        var json=SequenceJson.Parse(editor.ImportJson());
-        var view=json["Editors"].Items.Single();
-        var gone=new HashSet<string>(removed.Concat(removedLanes));
-        // A connector drawn to a removed shape, such as a note's anchor, has no model of its
-        // own; it goes when either end does.
-        var goneShapes=new HashSet<string>(editor.Shapes().Where(sh=>gone.Contains(SequenceEditorDocument.Value(sh,"ModelId")))
-            .Select(sh=>SequenceEditorDocument.Value(sh,"Id")));
-        Func<SequenceJson,bool> dangling=node=>node.Properties!=null
-            && node.Properties.Any(p=>p.Key!="Id" && p.Value!=null && p.Value.Raw!=null && p.Value.Raw.StartsWith("\"",StringComparison.Ordinal)
-                && goneShapes.Contains(p.Value.StringValue()));
-        foreach(var property in view.Properties)
-        {
-            var array=property.Value;
-            if(array==null || array.Items==null)continue;
-            for(int i=array.Items.Count-1;i>=0;i--)
-                if(gone.Contains(SequenceEditorDocument.Value(array.Items[i],"ModelId")) || dangling(array.Items[i]))array.Items.RemoveAt(i);
-        }
-        Action<string,List<SequenceJson>> append=(collection,shapes)=>{
-            if(shapes.Count==0)return;
-            Collection(view,collection).Items.AddRange(shapes.Select(sh=>SequenceJson.Parse(sh.ToJsonString())));
-        };
-        append("ExecutionSpecifications",addedShapes);append("Lifelines",addedLanes);append("Messages",addedWires);
-        append("Fragments",addedFrames);append("Operands",addedBranches);append("Notes",addedNotes);append("InteractionUses",addedRefs);append("Destructions",addedDestroys);
-        // This editor is rebuilt from the original export, so the stretched timelines have
-        // to be written here as well or the delete stage puts the old lengths back.
-        if(stretched.Count>0)
-        {
-            var lanes=Collection(view,"Lifelines");
-            foreach(var lane in stretched)
-                foreach(var node in lanes.Items.Where(n=>SequenceEditorDocument.Value(n,"Id")==lane.ShapeId))
-                    node.Properties["LaneLength"]=SequenceJson.Parse(lane.Length);
-        }
-        foreach(var move in shifted)
-            foreach(var node in view.Properties.Values.Where(array=>array!=null && array.Items!=null)
-                .SelectMany(array=>array.Items).Where(n=>SequenceEditorDocument.Value(n,"Id")==move.ShapeId))
-                for(int i=0;i<move.Keys.Length;i++)
-                    node.Properties[move.Keys[i]]=SequenceJson.Parse(move.Values[i]);
-        return json.ToJsonString();
-    }
     static bool Mentions(SequenceJson node,HashSet<string> ids)
     {
         if(node.Properties!=null)return node.Properties.Any(p=>p.Key=="ModelId" && ids.Contains(p.Value.StringValue()) || Mentions(p.Value,ids));
@@ -3277,6 +2519,49 @@ public sealed class SequenceTrialState
     { return double.Parse(value,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture); }
     static string Coordinate(double value)
     { return value.ToString("R",System.Globalization.CultureInfo.InvariantCulture); }
+    // Takes the read-back values for shapes the product sizes itself, keeping the check that
+    // they exist and belong to the model they were made for.
+    public void Loosen(IEnumerable<string> shapeIds,SequenceTrialState actual)
+    {
+        foreach(string id in shapeIds)
+        {
+            string value;
+            if(Shapes.ContainsKey(id) && actual.Shapes.TryGetValue(id,out value))Shapes[id]=value;
+        }
+    }
+    static string Index(int value) { return value.ToString(System.Globalization.CultureInfo.InvariantCulture); }
+    static int Index(string value) { return int.Parse(value,System.Globalization.CultureInfo.InvariantCulture); }
+    // A relation's field signature as recorded for the package: given directly, "row:" plus the
+    // signature, or "relation:" plus the id of a relation already there whose field it shares.
+    string FieldOf(string spec)
+    {
+        if(string.IsNullOrEmpty(spec))return "";
+        if(spec.StartsWith("row:",StringComparison.Ordinal))return spec.Substring(4);
+        if(spec.StartsWith("relation:",StringComparison.Ordinal))return Field(spec.Substring(9));
+        return spec;
+    }
+    // A new relation goes last in its source's field collection, and last in the target's.
+    void Append(string id,string source,string target,string field,bool reverse)
+    {
+        if(field.Length==0)throw new InvalidOperationException("S230: 追加する関連の種別情報が不足しています。");
+        int index=Relations.Count(pair=>pair.Value[0]==source && Field(pair.Key)==field);
+        int back=reverse?Relations.Count(pair=>pair.Value[1]==target && Field(pair.Key)==field):0;
+        Relations[id]=new[]{source,target,Index(index),Index(back)};
+        RelationFields[id]=field;
+    }
+    // Measured on the product: removing a relation closes the gap it leaves in the source's
+    // collection for that field. Relations in other fields keep their index.
+    void Remove(string id)
+    {
+        string source=Relations[id][0],field=Field(id);
+        int gap=Index(Relations[id][2]);
+        Relations.Remove(id);RelationFields.Remove(id);
+        foreach(string peer in Relations.Where(p=>p.Value[0]==source && Field(p.Key)==field).Select(p=>p.Key).ToArray())
+        {
+            int index=Index(Relations[peer][2]);
+            if(index>gap)Relations[peer][2]=Index(index-1);
+        }
+    }
     public SequenceTrialState Expected(SequenceStructurePreparation prepared,SyncPlan plan,bool delete)
     {
         var result=new SequenceTrialState{Models=new Dictionary<string,string>(Models),Shapes=new Dictionary<string,string>(Shapes),ShapeModels=new Dictionary<string,string>(ShapeModels),
@@ -3289,33 +2574,40 @@ public sealed class SequenceTrialState
             {
                 // A relation built rather than copied carries its own field signature.
                 string field=i<wire.RelationFields.Length && wire.RelationFields[i].Length>0
-                    ?wire.RelationFields[i]:result.Field(wire.TemplateRelationIds[i]);
-                string origin=wire.RelationSources[i];
+                    ?result.FieldOf(wire.RelationFields[i]):result.FieldOf(wire.TemplateRelationIds[i].StartsWith("row:",StringComparison.Ordinal)?wire.TemplateRelationIds[i]:"relation:"+wire.TemplateRelationIds[i]);
                 if(field.Length==0)throw new InvalidOperationException("S230: 追加するメッセージの関連の種別情報が不足しています。");
+                string origin=wire.RelationSources[i];
                 int index=result.Relations.Count(pair=>pair.Value[0]==origin && result.Field(pair.Key)==field);
-                result.Relations[wire.RelationIds[i]]=new[]{origin,wire.ModelId,
-                    index.ToString(System.Globalization.CultureInfo.InvariantCulture),"0"};
+                result.Relations[wire.RelationIds[i]]=new[]{origin,wire.ModelId,Index(index),"0"};
                 result.RelationFields[wire.RelationIds[i]]=field;
             }
+            string[] rows;
             string sample;
-            if(!result.Shapes.TryGetValue(wire.TemplateShapeId,out sample))throw new InvalidOperationException("S230: メッセージの見本図形がありません。");
-            var measured=SequenceJson.Parse(sample);
-            // A message signature ends with text, both ends and the selfloop offset.
-            if(measured==null || measured.Items==null || measured.Items.Count<4)
-                throw new InvalidOperationException("S230: メッセージの図形の項目数が想定と違います。");
-            var rows=measured.Items.Select(item=>item.StringValue()).ToArray();
+            if(!string.IsNullOrEmpty(wire.TemplateShapeId))
+            {
+                if(!result.Shapes.TryGetValue(wire.TemplateShapeId,out sample))throw new InvalidOperationException("S230: メッセージの見本図形がありません。");
+                var measured=SequenceJson.Parse(sample);
+                // A message signature ends with text, both ends and the selfloop offset.
+                if(measured==null || measured.Items==null || measured.Items.Count<4)
+                    throw new InvalidOperationException("S230: メッセージの図形の項目数が想定と違います。");
+                rows=measured.Items.Select(item=>item.StringValue()).ToArray();
+            }
+            else rows=new[]{"","","","0"};
             rows[rows.Length-4]=wire.Name;rows[rows.Length-3]=wire.Y;rows[rows.Length-2]=wire.TargetY??wire.Y;
             if(wire.Bend!=null)rows[rows.Length-1]=wire.Bend;
             result.Shapes[wire.ShapeId]=PumlBuild.Json(rows);
             result.ShapeModels[wire.ShapeId]=wire.ModelId;
-            string[] pattern;
-            if(!result.Ports.TryGetValue(wire.TemplateModelId,out pattern))throw new InvalidOperationException("S230: メッセージの見本の送受信がありません。");
-            result.Ports[wire.ModelId]=new[]{wire.SendPort,wire.ReceivePort,wire.Sender,wire.Receiver,string.IsNullOrEmpty(wire.Sort)?pattern[4]:wire.Sort};
+            string kind=wire.Sort;
+            if(string.IsNullOrEmpty(kind))
+            {
+                string[] pattern;
+                if(!result.Ports.TryGetValue(wire.TemplateModelId??"",out pattern))throw new InvalidOperationException("S230: メッセージの見本の送受信がありません。");
+                kind=pattern[4];
+            }
+            result.Ports[wire.ModelId]=new[]{wire.SendPort,wire.ReceivePort,wire.Sender??"",wire.Receiver??"",kind};
         }
-        // Room made for an inserted message: a shape below it moved down, a bar open
-        // across it grew, and a lane's timeline followed. The signatures the SDK reads
-        // back put those numbers in fixed places, so the moved values go back in the
-        // same places rather than being recomputed.
+        // Shapes already drawn that move or grow. The signatures the SDK reads back put those
+        // numbers in fixed places, so the moved values go back in the same places.
         foreach(var move in prepared.ShiftedShapes)
         {
             string measured;
@@ -3347,7 +2639,6 @@ public sealed class SequenceTrialState
             }
             result.Shapes[move.ShapeId]=PumlBuild.Json(rows.ToArray())+tail;
         }
-        // Only the timeline length changes on a stretched lane; the rectangle stays.
         foreach(var lane in prepared.StretchedLifelines)
         {
             string measured;
@@ -3363,40 +2654,21 @@ public sealed class SequenceTrialState
         {
             result.Models[frame.ModelId]=PumlBuild.Json(new[]{frame.Metaclass,frame.Name,frame.OwnerId,"False"});
             for(int i=0;i<frame.RelationIds.Length;i++)
-            {
-                string field=frame.RelationFields[i];
-                if(field.Length==0)throw new InvalidOperationException("S230: 追加するフラグメントの関連の種別情報が不足しています。");
-                // A frame is the first addition whose relations point at something that was
-                // already there, so the far end has a collection of its own to append to.
-                int index=result.Relations.Count(pair=>pair.Value[0]==frame.RelationSources[i] && result.Field(pair.Key)==field);
-                int reverse=result.Relations.Count(pair=>pair.Value[1]==frame.RelationTargets[i] && result.Field(pair.Key)==field);
-                result.Relations[frame.RelationIds[i]]=new[]{frame.RelationSources[i],frame.RelationTargets[i],
-                    index.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    reverse.ToString(System.Globalization.CultureInfo.InvariantCulture)};
-                result.RelationFields[frame.RelationIds[i]]=field;
-            }
+                result.Append(frame.RelationIds[i],frame.RelationSources[i],frame.RelationTargets[i],result.FieldOf(frame.RelationFields[i]),true);
             var box=SequenceJson.Parse(frame.Geometry);
             if(box==null || box.Items==null || box.Items.Count!=4)
                 throw new InvalidOperationException("S230: フラグメントの図形の項目数が想定と違います。");
             result.Shapes[frame.ShapeId]=frame.Geometry+frame.Text;
             result.ShapeModels[frame.ShapeId]=frame.ModelId;
-            foreach(var branch in prepared.AddedOperands.Where(o=>o.OwnerId==frame.ModelId))
-            {
-                result.Models[branch.ModelId]=PumlBuild.Json(new[]{branch.Metaclass,branch.Name,branch.OwnerId,"False"});
-                string field=branch.RelationFields[0];
-                if(field.Length==0)throw new InvalidOperationException("S230: 追加するオペランドの関連の種別情報が不足しています。");
-                int index=result.Relations.Count(pair=>pair.Value[0]==branch.OwnerId && result.Field(pair.Key)==field);
-                int reverse=result.Relations.Count(pair=>pair.Value[1]==branch.ModelId && result.Field(pair.Key)==field);
-                result.Relations[branch.RelationIds[0]]=new[]{branch.OwnerId,branch.ModelId,
-                    index.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    reverse.ToString(System.Globalization.CultureInfo.InvariantCulture)};
-                result.RelationFields[branch.RelationIds[0]]=field;
-                // An operand has no rectangle of its own: the product reads back an empty
-                // geometry and keeps only the guard and the offset from the frame's top.
-                result.Shapes[branch.ShapeId]=PumlBuild.Json(new string[0])
-                    +PumlBuild.Json(new[]{branch.Guard,branch.Position});
-                result.ShapeModels[branch.ShapeId]=branch.ModelId;
-            }
+        }
+        foreach(var branch in prepared.AddedOperands)
+        {
+            result.Models[branch.ModelId]=PumlBuild.Json(new[]{branch.Metaclass,branch.Name,branch.OwnerId,"False"});
+            result.Append(branch.RelationIds[0],branch.OwnerId,branch.ModelId,result.FieldOf(branch.RelationFields[0]),true);
+            // An operand has no rectangle of its own: the product reads back an empty
+            // geometry and keeps only the guard and the offset from the frame's top.
+            result.Shapes[branch.ShapeId]=PumlBuild.Json(new string[0])+PumlBuild.Json(new[]{branch.Guard,branch.Position});
+            result.ShapeModels[branch.ShapeId]=branch.ModelId;
         }
         // Renamed elements: the model's name, and the text the shape reads back.
         foreach(var row in prepared.Renamed)
@@ -3432,56 +2704,41 @@ public sealed class SequenceTrialState
                 }
             }
         }
-        // A branch added to a frame that was already there.
-        foreach(var branch in prepared.AddedOperands.Where(o=>!prepared.AddedFragments.Any(f=>f.ModelId==o.OwnerId)))
+        foreach(var row in prepared.ShapeTexts)
         {
-            result.Models[branch.ModelId]=PumlBuild.Json(new[]{branch.Metaclass,branch.Name,branch.OwnerId,"False"});
-            string field=branch.RelationFields[0];
-            int index=result.Relations.Count(pair=>pair.Value[0]==branch.OwnerId && result.Field(pair.Key)==field);
-            int reverse=result.Relations.Count(pair=>pair.Value[1]==branch.ModelId && result.Field(pair.Key)==field);
-            result.Relations[branch.RelationIds[0]]=new[]{branch.OwnerId,branch.ModelId,
-                index.ToString(System.Globalization.CultureInfo.InvariantCulture),reverse.ToString(System.Globalization.CultureInfo.InvariantCulture)};
-            result.RelationFields[branch.RelationIds[0]]=field;
-            result.Shapes[branch.ShapeId]=PumlBuild.Json(new string[0])+PumlBuild.Json(new[]{branch.Guard,branch.Position});
-            result.ShapeModels[branch.ShapeId]=branch.ModelId;
+            string measured;
+            if(!result.Shapes.TryGetValue(row[0],out measured))throw new InvalidOperationException("S230: 文字を変える図形がありません。");
+            int close=measured.IndexOf(']');
+            result.Shapes[row[0]]=measured.Substring(0,close+1)+row[1];
         }
         foreach(var note in prepared.AddedNotes)
         {
-            result.Models[note.ModelId]=PumlBuild.Json(new[]{note.Metaclass,note.Name,note.OwnerId,"False"});
+            // A link only adds relations between elements that are already there.
+            if(note.Kind!="link")result.Models[note.ModelId]=PumlBuild.Json(new[]{note.Metaclass,note.Name,note.OwnerId,"False"});
             for(int i=0;i<note.RelationIds.Length;i++)
-            {
-                // A ref's lanes already hold other references, so both ends are counted.
-                string source=note.RelationSources[i],target=note.RelationTargets[i],field=note.RelationFields[i];
-                int index=result.Relations.Count(pair=>pair.Value[0]==source && result.Field(pair.Key)==field);
-                int reverse=result.Relations.Count(pair=>pair.Value[1]==target && result.Field(pair.Key)==field);
-                result.Relations[note.RelationIds[i]]=new[]{source,target,
-                    index.ToString(System.Globalization.CultureInfo.InvariantCulture),reverse.ToString(System.Globalization.CultureInfo.InvariantCulture)};
-                result.RelationFields[note.RelationIds[i]]=field;
-            }
+                result.Append(note.RelationIds[i],note.RelationSources[i],note.RelationTargets[i],result.FieldOf(note.RelationFields[i]),true);
+            if(note.Kind=="link")continue;
             // A note or ref reads back as its rectangle followed by its text.
             result.Shapes[note.ShapeId]=note.Geometry+note.Text;
             result.ShapeModels[note.ShapeId]=note.ModelId;
         }
-        // A wrapped message gains only the operand's reference, appended in run order.
-        foreach(var move in prepared.MovedMessages)
-        {
-            int index=result.Relations.Count(pair=>pair.Value[0]==move.OperandId && result.Field(pair.Key)==move.Field);
-            int reverse=result.Relations.Count(pair=>pair.Value[1]==move.ModelId && result.Field(pair.Key)==move.Field);
-            result.Relations[move.RelationId]=new[]{move.OperandId,move.ModelId,
-                index.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                reverse.ToString(System.Globalization.CultureInfo.InvariantCulture)};
-            result.RelationFields[move.RelationId]=move.Field;
-        }
+        // A message moved into a branch gains only the branch's reference, appended in order.
+        foreach(var move in prepared.MovedMessages)result.Append(move.RelationId,move.OperandId,move.ModelId,result.FieldOf(move.Field),true);
         foreach(var lane in prepared.AddedParticipants)
         {
             result.Models[lane.ModelId]=PumlBuild.Json(new[]{lane.Metaclass,lane.Name,lane.OwnerId,"False"});
-            string field=result.Field(lane.TemplateRelationId);
+            string field=lane.TemplateRelationId.StartsWith("row:",StringComparison.Ordinal)?lane.TemplateRelationId.Substring(4):result.Field(lane.TemplateRelationId);
             if(field.Length==0)throw new InvalidOperationException("S230: 追加する参加者の関連の種別情報が不足しています。");
             int index=result.Relations.Count(pair=>pair.Value[0]==lane.OwnerId && result.Field(pair.Key)==field);
-            result.Relations[lane.RelationId]=new[]{lane.OwnerId,lane.ModelId,
-                index.ToString(System.Globalization.CultureInfo.InvariantCulture),"0"};
+            result.Relations[lane.RelationId]=new[]{lane.OwnerId,lane.ModelId,Index(index),"0"};
             result.RelationFields[lane.RelationId]=field;
             string sample;
+            if(string.IsNullOrEmpty(lane.TemplateShapeId))
+            {
+                // The product decides the box; LooseShapeIds takes what it reads back.
+                result.Shapes[lane.ShapeId]=PumlBuild.Json(new[]{lane.X,"","",""});result.ShapeModels[lane.ShapeId]=lane.ModelId;
+                continue;
+            }
             if(!result.Shapes.TryGetValue(lane.TemplateShapeId,out sample))throw new InvalidOperationException("S230: 参加者の見本図形がありません。");
             int close=sample.LastIndexOf(']');
             SequenceJson measured=close<0?null:SequenceJson.Parse(sample.Substring(0,close+1));
@@ -3497,74 +2754,290 @@ public sealed class SequenceTrialState
             result.Models[add.ModelId]=PumlBuild.Json(new[]{add.Metaclass,add.Name,add.OwnerId,"False"});
             for(int i=0;i<add.RelationIds.Length;i++)
             {
-                string field=result.Field(add.TemplateRelationIds[i]),origin=add.RelationSources[i];
+                string template=add.TemplateRelationIds[i];
+                string field=template.StartsWith("row:",StringComparison.Ordinal)?template.Substring(4):result.Field(template),origin=add.RelationSources[i];
                 if(field.Length==0)throw new InvalidOperationException("S230: 追加する関連の種別情報が不足しています。");
                 int index=result.Relations.Count(pair=>pair.Value[0]==origin && result.Field(pair.Key)==field);
-                result.Relations[add.RelationIds[i]]=new[]{origin,add.ModelId,
-                    index.ToString(System.Globalization.CultureInfo.InvariantCulture),"0"};
+                result.Relations[add.RelationIds[i]]=new[]{origin,add.ModelId,Index(index),"0"};
                 result.RelationFields[add.RelationIds[i]]=field;
             }
-            string sample;
-            if(!result.Shapes.TryGetValue(add.TemplateShapeId,out sample))throw new InvalidOperationException("S230: 実行区間の見本図形がありません。");
-            var measured=SequenceJson.Parse(sample);var wanted=SequenceJson.Parse(add.Geometry);
-            if(measured.Items==null || measured.Items.Count!=5 || wanted.Items==null || wanted.Items.Count!=3)
-                throw new InvalidOperationException("S230: 実行区間の図形の項目数が想定と違います。");
-            // Width is not serialized for a bar, so take the one the product already uses.
+            var wanted=SequenceJson.Parse(add.Geometry);
+            string width="16";
+            if(!string.IsNullOrEmpty(add.TemplateShapeId))
+            {
+                string sample;
+                if(!result.Shapes.TryGetValue(add.TemplateShapeId,out sample))throw new InvalidOperationException("S230: 実行区間の見本図形がありません。");
+                var measured=SequenceJson.Parse(sample);
+                if(measured.Items==null || measured.Items.Count!=5)throw new InvalidOperationException("S230: 実行区間の図形の項目数が想定と違います。");
+                // Width is not serialized for a bar, so take the one the product already uses.
+                width=measured.Items[2].StringValue();
+            }
+            if(wanted.Items==null || wanted.Items.Count!=3)throw new InvalidOperationException("S230: 実行区間の図形の項目数が想定と違います。");
             result.Shapes[add.ShapeId]=PumlBuild.Json(new[]{wanted.Items[0].StringValue(),wanted.Items[1].StringValue(),
-                measured.Items[2].StringValue(),wanted.Items[2].StringValue(),wanted.Items[2].StringValue()});
+                width,wanted.Items[2].StringValue(),wanted.Items[2].StringValue()});
             result.ShapeModels[add.ShapeId]=add.ModelId;
         }
+        // Relations already there that change an end: they leave one collection and join another.
         var patch=SequenceJson.Parse(prepared.ReconnectJson);
+        var built=new HashSet<string>(prepared.AddedExecutions.SelectMany(a=>a.RelationIds).Concat(prepared.AddedParticipants.Select(a=>a.RelationId))
+            .Concat(prepared.AddedMessages.SelectMany(a=>a.RelationIds)).Concat(prepared.AddedFragments.SelectMany(a=>a.RelationIds))
+            .Concat(prepared.AddedOperands.SelectMany(a=>a.RelationIds)).Concat(prepared.MovedMessages.Select(a=>a.RelationId))
+            .Concat(prepared.AddedNotes.SelectMany(a=>a.RelationIds)));
         foreach(var r in patch["Relations"].Items)
         {
             string id=r["Id"].StringValue(),source=r["SourceId"].StringValue(),target=r["TargetId"].StringValue();
-            if(prepared.AddedExecutions.Any(a=>a.RelationIds.Contains(id))
-                || prepared.AddedParticipants.Any(a=>a.RelationId==id)
-                || prepared.AddedMessages.Any(a=>a.RelationIds.Contains(id))
-                || prepared.AddedFragments.Any(a=>a.RelationIds.Contains(id))
-                || prepared.AddedOperands.Any(a=>a.RelationIds.Contains(id))
-                || prepared.MovedMessages.Any(a=>a.RelationId==id)
-                || prepared.AddedNotes.Any(a=>a.RelationIds.Contains(id)))continue;
-            if(!result.Relations.ContainsKey(id) || result.Relations[id][1]!=target || !result.Ports.ContainsKey(target))throw new InvalidOperationException("S230: 変更前の受信関連が一致しません。");
-            // SourceIndex belongs to the source endpoint collection, not to the relationship identity.
-            // Omitted indices append on import. An explicit index inserts at that position.
-            var previous=result.Relations[id];
-            if(!prepared.ReceiveRelationIds.Contains(id))throw new InvalidOperationException("S230: 受信関連の種別情報が不足しています。");
-            var oldPeers=prepared.ReceiveRelationIds.Where(k=>result.Relations.ContainsKey(k) && k!=id && result.Relations[k][0]==previous[0]).ToArray();
-            int oldIndex=int.Parse(previous[2],System.Globalization.CultureInfo.InvariantCulture);
-            foreach(string peer in oldPeers)
-            {int index=int.Parse(result.Relations[peer][2],System.Globalization.CultureInfo.InvariantCulture);if(index>oldIndex)result.Relations[peer][2]=(index-1).ToString(System.Globalization.CultureInfo.InvariantCulture);}
-            var newPeers=prepared.ReceiveRelationIds.Where(k=>result.Relations.ContainsKey(k) && k!=id && result.Relations[k][0]==source).ToArray();
-            int insertion=r["SourceIndex"]==null?newPeers.Length:int.Parse(r["SourceIndex"].Raw,System.Globalization.CultureInfo.InvariantCulture);
-            if(insertion<0 || insertion>newPeers.Length)throw new InvalidOperationException("S230: 受信関連の挿入順序が範囲外です。");
-            foreach(string peer in newPeers)
-            {int index=int.Parse(result.Relations[peer][2],System.Globalization.CultureInfo.InvariantCulture);if(index>=insertion)result.Relations[peer][2]=(index+1).ToString(System.Globalization.CultureInfo.InvariantCulture);}
-            result.Relations[id]=new[]{source,target,insertion.ToString(System.Globalization.CultureInfo.InvariantCulture),previous[3]};
-            result.Ports[target][1]=source;
-            result.Ports[target][3]=plan.Expected.Elements.Single(e=>e.Id==target).Links["receiver"].Single();
+            if(built.Contains(id))continue;
+            if(!result.Relations.ContainsKey(id))throw new InvalidOperationException("S230: 変更する関連が図にありません。");
+            var previous=result.Relations[id];string field=result.Field(id);
+            bool receive=prepared.ReceiveRelationIds.Contains(id),send=prepared.SendRelationIds.Contains(id);
+            if((receive || send) && !result.Ports.ContainsKey(target))throw new InvalidOperationException("S230: 変更前の送受信関連が一致しません。");
+            // Peers share the source and the field, relations this package adds included. Only
+            // when no field is known are the receive or send relations taken as one collection.
+            Func<string,string[]> peers=origin=>result.Relations.Where(p=>p.Key!=id && p.Value[0]==origin
+                && (field.Length>0?result.Field(p.Key)==field:receive?prepared.ReceiveRelationIds.Contains(p.Key):send && prepared.SendRelationIds.Contains(p.Key))).Select(p=>p.Key).ToArray();
+            string sourceIndex=previous[2];
+            if(previous[0]!=source)
+            {
+                int oldIndex=Index(previous[2]);
+                foreach(string peer in peers(previous[0])){int index=Index(result.Relations[peer][2]);if(index>oldIndex)result.Relations[peer][2]=Index(index-1);}
+                var newPeers=peers(source);
+                int insertion=r["SourceIndex"]==null?newPeers.Length:Index(r["SourceIndex"].Raw);
+                if(insertion<0 || insertion>newPeers.Length)throw new InvalidOperationException("S230: 受信関連の挿入順序が範囲外です。");
+                foreach(string peer in newPeers){int index=Index(result.Relations[peer][2]);if(index>=insertion)result.Relations[peer][2]=Index(index+1);}
+                sourceIndex=Index(insertion);
+            }
+            string targetIndex=previous[3];
+            if(previous[1]!=target)targetIndex=Index(result.Relations.Count(p=>p.Key!=id && p.Value[1]==target && result.Field(p.Key)==field));
+            result.Relations[id]=new[]{source,target,sourceIndex,targetIndex};
+            var wanted=plan.Expected.Elements.FirstOrDefault(e=>e.Id==target);
+            if(receive){result.Ports[target][1]=source;result.Ports[target][3]=wanted==null || !wanted.Links.ContainsKey("receiver")?"":wanted.Links["receiver"].FirstOrDefault()??"";}
+            if(send){result.Ports[target][0]=source;result.Ports[target][2]=wanted==null || !wanted.Links.ContainsKey("sender")?"":wanted.Links["sender"].FirstOrDefault()??"";}
         }
+        foreach(string id in prepared.UnrelateIds)
+        {
+            if(!result.Relations.ContainsKey(id))throw new InvalidOperationException("S230: 外す関連が図にありません。");
+            result.Remove(id);
+        }
+        foreach(var row in prepared.SortChanged)
+            if(result.Ports.ContainsKey(row[0]))result.Ports[row[0]][4]=row[1];
         if(delete)
         {
             var removed=new HashSet<string>(prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
-                .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).Concat(prepared.DeleteNoteIds).Concat(prepared.DeleteRefIds).Concat(prepared.DeleteDestroyIds));
+                .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).Concat(prepared.DeleteNoteIds).Concat(prepared.DeleteRefIds)
+                .Concat(prepared.DeleteDestroyIds).Concat(prepared.DeleteEndIds));
             foreach(string id in removed)result.Models.Remove(id);
             foreach(string id in prepared.DeleteMessageIds)result.Ports.Remove(id);
-            // Measured on the product: deleting a model closes the gap it leaves in the
-            // source/field collection that held it. Relations in other fields keep their index.
             foreach(string id in result.Relations.Where(p=>removed.Contains(p.Value[0]) || removed.Contains(p.Value[1])).Select(p=>p.Key).ToArray())
-            {
-                string source=result.Relations[id][0],field=result.Field(id);
-                int gap=int.Parse(result.Relations[id][2],System.Globalization.CultureInfo.InvariantCulture);
-                result.Relations.Remove(id);result.RelationFields.Remove(id);
-                foreach(string peer in result.Relations.Where(p=>p.Value[0]==source && result.Field(p.Key)==field).Select(p=>p.Key).ToArray())
-                {
-                    int index=int.Parse(result.Relations[peer][2],System.Globalization.CultureInfo.InvariantCulture);
-                    if(index>gap)result.Relations[peer][2]=(index-1).ToString(System.Globalization.CultureInfo.InvariantCulture);
-                }
-            }
+                if(result.Relations.ContainsKey(id))result.Remove(id);
             foreach(string id in result.ShapeModels.Where(p=>removed.Contains(p.Value)).Select(p=>p.Key).ToArray()){result.Shapes.Remove(id);result.ShapeModels.Remove(id);}
             if(result.Ports.Values.Any(p=>removed.Contains(p[0]) || removed.Contains(p[1])))throw new InvalidOperationException("S230: 削除区間への接続が残っています。");
         }
         return result;
     }
+}
+
+
+// Where everything goes after an update, worked out in one pass down the diagram and one
+// across it. What is drawn keeps its place as long as the elements around it stay in the same
+// order; a new element takes the generator's step below the one before it and pushes what
+// follows down only as far as it has to; where something was removed, what follows closes up
+// to the generator's step. Bars are fitted afterwards between the neighbours the input names.
+public sealed class SequenceRelayout
+{
+    public sealed class Token
+    {
+        public string Key, Id, Kind, Container;
+        public bool First;
+        public int Lines=1;
+        public double Old=double.NaN, Drop, Height, Y, After;
+        public bool Stable;
+    }
+    public const double Pitch=PumlBuild.MessagePitch;
+    public List<Token> Tokens=new List<Token>();
+    public Dictionary<string,Token> ByKey=new Dictionary<string,Token>(StringComparer.Ordinal);
+    public double Start;
+    // Old anchor and new anchor of every token that kept its place in the order.
+    public List<double[]> Pairs=new List<double[]>();
+    public static int Lines(string text) { return (text??"").Replace("\r\n","\n").Split('\n').Length; }
+    static string[] Link(SequenceElement e,string role)
+    { string[] ids;return e.Links.TryGetValue(role,out ids)?ids:new string[0]; }
+    // The drawing order of a document as tokens: a frame opens, each branch opens, and the
+    // frame closes, around what they hold.
+    public static List<Token> Walk(SequenceDocument doc)
+    {
+        var list=new List<Token>();
+        var children=doc.Elements.Where(n=>n.Kind!="participant" && n.Kind!="execution" && n.Parent!=null)
+            .GroupBy(n=>n.Parent).ToDictionary(g=>g.Key,g=>g.OrderBy(n=>n.Order).ToArray());
+        Action<string> walk=null;
+        walk=parent=>{
+            SequenceElement[] items;if(!children.TryGetValue(parent,out items))return;
+            foreach(var e in items)
+            {
+                if(e.Kind=="message")list.Add(new Token{Key="M:"+e.Id,Id=e.Id,Kind="M",Container=parent,Lines=Lines(e.Text)});
+                else if(e.Kind=="note" || e.Kind=="ref")list.Add(new Token{Key="N:"+e.Id,Id=e.Id,Kind="N",Container=parent});
+                else if(e.Kind=="destroy")list.Add(new Token{Key="D:"+e.Id,Id=e.Id,Kind="D",Container=parent});
+                else if(e.Kind=="fragment")
+                {
+                    list.Add(new Token{Key="FO:"+e.Id,Id=e.Id,Kind="FO",Container=parent});
+                    SequenceElement[] branches;
+                    bool first=true;
+                    if(children.TryGetValue(e.Id,out branches))
+                        foreach(var o in branches.Where(o=>o.Kind=="operand"))
+                        {
+                            list.Add(new Token{Key="OO:"+o.Id,Id=o.Id,Kind="OO",Container=o.Id,First=first,Lines=Lines(o.Text)});first=false;
+                            walk(o.Id);
+                        }
+                    list.Add(new Token{Key="FC:"+e.Id,Id=e.Id,Kind="FC",Container=parent});
+                }
+            }
+        };
+        walk(doc.Elements.Single(e=>e.Kind=="interaction").Id);
+        return list;
+    }
+    // Where the generator puts a token with the row cursor at a given place, and where it
+    // leaves the cursor after it.
+    public static double Anchor(Token t,double cursor)
+    {
+        switch(t.Kind)
+        {
+            case "M":return cursor+18*(t.Lines-1);
+            case "D":return cursor-15;
+            case "OO":return cursor+(t.First?30:20);
+            case "FC":return cursor+8;
+            default:return cursor;
+        }
+    }
+    public static double Next(Token t,double y)
+    {
+        switch(t.Kind)
+        {
+            case "M":return y+t.Drop+Pitch;
+            case "N":return y+t.Height+Pitch;
+            case "D":return y+35;
+            case "OO":return y+40+18*(t.Lines-1);
+            case "FC":return y+16;
+            default:return y;
+        }
+    }
+    // The row cursor a token was placed from: its anchor less the generator's step to it.
+    static double Cursor(Token t)
+    {
+        switch(t.Kind)
+        {
+            case "M":return t.Old-18*(t.Lines-1);
+            case "D":return t.Old+15;
+            case "OO":return t.Old-(t.First?30:20);
+            case "FC":return t.Old-8;
+            default:return t.Old;
+        }
+    }
+    // oldTokens carry their old anchors; newTokens carry the drop and height they will have.
+    public static SequenceRelayout Place(List<Token> oldTokens,List<Token> newTokens)
+    {
+        var result=new SequenceRelayout{Tokens=newTokens};
+        var a=oldTokens.Select(t=>t.Key).ToArray();var b=newTokens.Select(t=>t.Key).ToArray();
+        var length=new int[a.Length+1,b.Length+1];
+        for(int i=a.Length-1;i>=0;i--)for(int j=b.Length-1;j>=0;j--)
+            length[i,j]=a[i]==b[j]?1+length[i+1,j+1]:Math.Max(length[i+1,j],length[i,j+1]);
+        var match=new int[b.Length];for(int j=0;j<b.Length;j++)match[j]=-1;
+        {
+            int x=0,y=0;
+            while(x<a.Length && y<b.Length)
+            {
+                if(a[x]==b[y]){match[y]=x;x++;y++;}
+                else if(length[x+1,y]>=length[x,y+1])x++;else y++;
+            }
+        }
+        double cursor=oldTokens.Count>0?Cursor(oldTokens[0]):40;
+        result.Start=cursor;
+        // An element that keeps its place in the order keeps its distance from the one that
+        // kept its place before it, and goes down by what was put in between. Where something
+        // between them went away, it takes the place of the first thing that went, but never
+        // further down than the generator's step.
+        // Distances are measured between row cursors, so a guard or a frame's bottom that takes
+        // another kind of element's place keeps the generator's step to its own row.
+        int previous=-1;double previousCursor=0,since=cursor,lastY=double.MinValue;
+        for(int j=0;j<newTokens.Count;j++)
+        {
+            var t=newTokens[j];
+            double gen=Anchor(t,cursor),at;
+            if(match[j]>=0)
+            {
+                var old=oldTokens[match[j]];
+                double first=Cursor(oldTokens[previous+1]);
+                double place=previous<0?first:previousCursor+(first-Cursor(oldTokens[previous]));
+                double inserted=cursor-since;
+                double from=match[j]==previous+1?place+inserted:Math.Min(place+inserted,cursor);
+                at=Anchor(t,from);
+                if(at<lastY){at=Math.Max(gen,lastY);from=cursor;}
+                previous=match[j];previousCursor=from;t.Old=old.Old;t.Stable=true;
+                result.Pairs.Add(new[]{old.Old,at});
+            }
+            else at=gen;
+            t.Y=at;cursor=Next(t,at);t.After=cursor;lastY=at;
+            if(t.Stable)since=cursor;
+            result.ByKey[t.Key]=t;
+        }
+        return result;
+    }
+    // Where an old position goes: with the last token at or above it that kept its place.
+    public double Map(double p)
+    {
+        double[] last=null;
+        foreach(var pair in Pairs){if(pair[0]<=p+1e-9)last=pair;else break;}
+        if(last==null)return Pairs.Count>0?p+(Pairs[0][1]-Pairs[0][0]):p;
+        return p+(last[1]-last[0]);
+    }
+    public Token Get(string key) { Token t;return ByKey.TryGetValue(key,out t)?t:null; }
+    public int IndexOf(string key) { var t=Get(key);return t==null?-1:Tokens.IndexOf(t); }
+}
+
+// Where each lane goes across, by the same rule as the rows: lanes keep their place while
+// their order holds, a new lane takes one lane spacing past the one before it, and lanes
+// close up where one was removed.
+public sealed class SequenceLaneLayout
+{
+    public Dictionary<string,double> X=new Dictionary<string,double>(StringComparer.Ordinal);
+    public List<double[]> Pairs=new List<double[]>();
+    public static SequenceLaneLayout Place(string[] oldOrder,Dictionary<string,double> oldX,string[] newOrder,double spacing,double start)
+    {
+        var result=new SequenceLaneLayout();
+        var stable=SequenceStructurePreflight.Stable(oldOrder,newOrder);
+        var oldIndex=oldOrder.Select((id,i)=>new{id,i}).ToDictionary(p=>p.id,p=>p.i);
+        int previous=-1;double previousX=0;double? last=null;double inserted=0;
+        foreach(string id in newOrder)
+        {
+            double gen=last.HasValue?last.Value+spacing:(oldOrder.Length>0?oldX[oldOrder[0]]:start);
+            double at;
+            if(stable.Contains(id))
+            {
+                int k=oldIndex[id];
+                double first=oldX[oldOrder[previous+1]];
+                double place=previous<0?first:previousX+(first-oldX[oldOrder[previous]]);
+                at=k==previous+1?place+inserted:Math.Min(place+inserted,gen);
+                if(last.HasValue && at<last.Value)at=Math.Max(gen,last.Value);
+                previous=k;previousX=at;inserted=0;result.Pairs.Add(new[]{oldX[id],at});
+            }
+            else {at=gen;inserted+=spacing;}
+            result.X[id]=at;last=at;
+        }
+        return result;
+    }
+    public double Map(double p)
+    {
+        double[] last=null;
+        foreach(var pair in Pairs){if(pair[0]<=p+1e-9)last=pair;else break;}
+        if(last==null)return Pairs.Count>0?p+(Pairs[0][1]-Pairs[0][0]):p;
+        return p+(last[1]-last[0]);
+    }
+}
+
+// Metaclasses and relation rows for building elements when the diagram holds nothing of the
+// kind to copy. Each row is {relation metaclass, "Embed" or "Ref", field signature}. Resolved
+// by the runtime (PumlRuntime.SyncBaseTypes); any of them may be missing.
+public sealed class SequenceBaseTypes
+{
+    public string Message, Execution, Lifeline, MessageEnd;
+    public string[] OwnsMessage, OwnsExecution, OwnsLifeline, OwnsMessageEnd, LaneExecution,
+        SendFromBar, ReceiveFromBar, SendFromEnd, ReceiveFromEnd, Reply, Nested;
 }

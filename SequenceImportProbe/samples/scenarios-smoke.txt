@@ -2,3 +2,9 @@
 メッセージの追加（末尾） | structure-message-after.puml | structure-batch-after.puml
 メッセージの挿入（途中） | structure-insert-before.puml | structure-insert-after.puml
 Note の追加 | structure-wrap-before.puml | structure-note-after.puml
+# 0.10.0 の新しい書き込み経路を1件ずつ: 関連の解除・図外の端・入れ子の関連・送信元の付け替え・途中の分岐
+枠の外へのメッセージの移動 | gap-cross-in-after.puml | structure-fragment-before.puml
+図外への送信の追加 | structure-wrap-before.puml | gap-gate-after.puml
+入れ子の枠の追加 | structure-fragment-before.puml | gap-nested-add-after.puml
+送信元の変更 | gap-sender-before.puml | gap-sender-after.puml
+途中への分岐の追加 | structure-else-before.puml | gap-branch-mid-after.puml

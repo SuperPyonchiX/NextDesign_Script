@@ -1,0 +1,21 @@
+@startuml
+participant A
+participant B
+activate A
+A -> B : zero()
+activate B
+B --> A : zeroDone()
+deactivate B
+A -> B : first()
+activate B
+B --> A : firstDone()
+deactivate B
+alt wrapped
+A -> B : second()
+activate B
+B --> A : secondDone()
+deactivate B
+end
+note over A,B : after
+deactivate A
+@enduml
