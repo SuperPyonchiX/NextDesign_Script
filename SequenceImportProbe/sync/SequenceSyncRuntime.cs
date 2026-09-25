@@ -903,7 +903,7 @@ public static class SequenceBatch
                 rows.Add("（取込 "+roots.Count+"/"+scenarios.Count+"件 "+(imported/1000)+"秒 / 保存 "+(saved/1000)+"秒 / 書き出し "+(exportClock.ElapsedMilliseconds/1000)+"秒）");
             }
             else roots=previous;
-            int failedInRow=0;
+            int failedInRow=0;bool anyPassed=false;
             foreach(var s in scenarios)
             {
                 var watch=System.Diagnostics.Stopwatch.StartNew();
@@ -919,7 +919,8 @@ public static class SequenceBatch
                         string reasons=SequenceSyncRuntime.LastReasons,summary=SequenceExperiment.Summary;
                         timing=" / 反映 "+(watch.ElapsedMilliseconds/1000)+"秒";
                         detail.AppendLine("■ "+s[0]+"\n"+summary+"\n");
-                        if(!committed)throw new InvalidOperationException("反映: "+(reasons.Length>0?reasons:Line(summary,200)));
+                        // The whole summary goes on: the row picks the mismatch out of it.
+                        if(!committed)throw new InvalidOperationException("反映: "+(reasons.Length>0?reasons:summary));
                     }
                     int changes=Compare(app,apply?DiagramOf(project,root):Loaded(app,project,root,detail),s[2]);
                     // What the comparison found goes to the details, so a difference can be read.
@@ -958,7 +959,10 @@ public static class SequenceBatch
                 // Two failures in a row almost always share a cause in the batch itself;
                 // running the rest would only repeat it.
                 failedInRow=failed?failedInRow+1:0;
-                if(apply && failedInRow>=2 && scenarios.IndexOf(s)<scenarios.Count-1)
+                // Only a batch that has not got one scenario through is broken as a whole; after
+                // that, a failure is that scenario's own and the rest still run.
+                if(!failed)anyPassed=true;
+                if(apply && !anyPassed && failedInRow>=2 && scenarios.IndexOf(s)<scenarios.Count-1)
                 {rows.Add("2件続けて失敗したため、残り "+(scenarios.Count-1-scenarios.IndexOf(s))+"件を実行せずに中断しました。");break;}
             }
         }

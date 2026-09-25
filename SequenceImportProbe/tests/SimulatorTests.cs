@@ -315,6 +315,14 @@ public static class SequenceSimulator
         foreach(var peer in list.Where(r=>r!=gone && V(r,"SourceId")==V(gone,"SourceId") && V(r,"MetamodelId")==V(gone,"MetamodelId") && I(r,"SourceIndex")>I(gone,"SourceIndex")))
             SetIndex(peer,"SourceIndex",I(peer,"SourceIndex")-1);
     }
+    // A removed relation also closes up the target side, where that side keeps an order.
+    static void CloseBoth(List<SequenceJson> list,SequenceJson gone)
+    {
+        Close(list,gone);
+        if(I(gone,"TargetIndex")<0)return;
+        foreach(var peer in list.Where(r=>r!=gone && V(r,"TargetId")==V(gone,"TargetId") && V(r,"MetamodelId")==V(gone,"MetamodelId") && I(r,"TargetIndex")>I(gone,"TargetIndex")))
+            SetIndex(peer,"TargetIndex",I(peer,"TargetIndex")-1);
+    }
     public static string[] Apply(string json,SequenceStructurePreparation prepared)
     {
         var data=SequenceJson.Parse(json);
@@ -366,7 +374,7 @@ public static class SequenceSimulator
         {
             var gone=data["Relations"].Items.FirstOrDefault(r=>V(r,"Id")==unrelate);
             Require(gone!=null,"外す関連がありません: "+unrelate);
-            Close(data["Relations"].Items,gone);data["Relations"].Items.Remove(gone);
+            CloseBoth(data["Relations"].Items,gone);data["Relations"].Items.Remove(gone);
         }
         string connected=data.ToJsonString();
         var removed=new HashSet<string>(prepared.DeleteIds.Concat(prepared.DeleteParticipantIds).Concat(prepared.DeleteMessageIds)
@@ -381,7 +389,7 @@ public static class SequenceSimulator
         }
         data["Entities"].Items.RemoveAll(e=>removed.Contains(V(e,"Id")));
         foreach(var gone in data["Relations"].Items.Where(r=>removed.Contains(V(r,"SourceId")) || removed.Contains(V(r,"TargetId"))).ToArray())
-        {Close(data["Relations"].Items,gone);data["Relations"].Items.Remove(gone);}
+        {CloseBoth(data["Relations"].Items,gone);data["Relations"].Items.Remove(gone);}
         if(removed.Count>0)import(prepared.EditorAfterDeleteJson);
         foreach(var view in data["Editors"].Items)
             foreach(var property in view.Properties.Values.Where(p=>p!=null && p.Items!=null))

@@ -2655,16 +2655,25 @@ public sealed class SequenceTrialState
     }
     // Measured on the product: removing a relation closes the gap it leaves in the source's
     // collection for that field. Relations in other fields keep their index.
+    // The target side closes up the same way, where it keeps an order at all: a reply tied
+    // to a new bar before the old bar goes moves up when the old tie goes with it.
     void Remove(string id)
     {
-        string source=Relations[id][0],field=Field(id);
-        int gap=Index(Relations[id][2]);
+        string source=Relations[id][0],target=Relations[id][1],field=Field(id);
+        int gap=Index(Relations[id][2]);int back;
+        bool ordered=int.TryParse(Relations[id][3],out back) && back>=0;
         Relations.Remove(id);RelationFields.Remove(id);
         foreach(string peer in Relations.Where(p=>p.Value[0]==source && Field(p.Key)==field).Select(p=>p.Key).ToArray())
         {
             int index=Index(Relations[peer][2]);
             if(index>gap)Relations[peer][2]=Index(index-1);
         }
+        if(ordered)
+            foreach(string peer in Relations.Where(p=>p.Value[1]==target && Field(p.Key)==field).Select(p=>p.Key).ToArray())
+            {
+                int index;
+                if(int.TryParse(Relations[peer][3],out index) && index>back)Relations[peer][3]=Index(index-1);
+            }
     }
     public SequenceTrialState Expected(SequenceStructurePreparation prepared,SyncPlan plan,bool delete)
     {

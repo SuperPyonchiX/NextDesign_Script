@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.5";
+    public const string Title = "シーケンス生成実験 / 0.10.6";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1944,7 +1944,7 @@ public static class SequenceBatch
                 rows.Add("（取込 "+roots.Count+"/"+scenarios.Count+"件 "+(imported/1000)+"秒 / 保存 "+(saved/1000)+"秒 / 書き出し "+(exportClock.ElapsedMilliseconds/1000)+"秒）");
             }
             else roots=previous;
-            int failedInRow=0;
+            int failedInRow=0;bool anyPassed=false;
             foreach(var s in scenarios)
             {
                 var watch=System.Diagnostics.Stopwatch.StartNew();
@@ -1960,7 +1960,8 @@ public static class SequenceBatch
                         string reasons=SequenceSyncRuntime.LastReasons,summary=SequenceExperiment.Summary;
                         timing=" / 反映 "+(watch.ElapsedMilliseconds/1000)+"秒";
                         detail.AppendLine("■ "+s[0]+"\n"+summary+"\n");
-                        if(!committed)throw new InvalidOperationException("反映: "+(reasons.Length>0?reasons:Line(summary,200)));
+                        // The whole summary goes on: the row picks the mismatch out of it.
+                        if(!committed)throw new InvalidOperationException("反映: "+(reasons.Length>0?reasons:summary));
                     }
                     int changes=Compare(app,apply?DiagramOf(project,root):Loaded(app,project,root,detail),s[2]);
                     // What the comparison found goes to the details, so a difference can be read.
@@ -1999,7 +2000,10 @@ public static class SequenceBatch
                 // Two failures in a row almost always share a cause in the batch itself;
                 // running the rest would only repeat it.
                 failedInRow=failed?failedInRow+1:0;
-                if(apply && failedInRow>=2 && scenarios.IndexOf(s)<scenarios.Count-1)
+                // Only a batch that has not got one scenario through is broken as a whole; after
+                // that, a failure is that scenario's own and the rest still run.
+                if(!failed)anyPassed=true;
+                if(apply && !anyPassed && failedInRow>=2 && scenarios.IndexOf(s)<scenarios.Count-1)
                 {rows.Add("2件続けて失敗したため、残り "+(scenarios.Count-1-scenarios.IndexOf(s))+"件を実行せずに中断しました。");break;}
             }
         }
@@ -6119,16 +6123,25 @@ public sealed class SequenceTrialState
     }
     // Measured on the product: removing a relation closes the gap it leaves in the source's
     // collection for that field. Relations in other fields keep their index.
+    // The target side closes up the same way, where it keeps an order at all: a reply tied
+    // to a new bar before the old bar goes moves up when the old tie goes with it.
     void Remove(string id)
     {
-        string source=Relations[id][0],field=Field(id);
-        int gap=Index(Relations[id][2]);
+        string source=Relations[id][0],target=Relations[id][1],field=Field(id);
+        int gap=Index(Relations[id][2]);int back;
+        bool ordered=int.TryParse(Relations[id][3],out back) && back>=0;
         Relations.Remove(id);RelationFields.Remove(id);
         foreach(string peer in Relations.Where(p=>p.Value[0]==source && Field(p.Key)==field).Select(p=>p.Key).ToArray())
         {
             int index=Index(Relations[peer][2]);
             if(index>gap)Relations[peer][2]=Index(index-1);
         }
+        if(ordered)
+            foreach(string peer in Relations.Where(p=>p.Value[1]==target && Field(p.Key)==field).Select(p=>p.Key).ToArray())
+            {
+                int index;
+                if(int.TryParse(Relations[peer][3],out index) && index>back)Relations[peer][3]=Index(index-1);
+            }
     }
     public SequenceTrialState Expected(SequenceStructurePreparation prepared,SyncPlan plan,bool delete)
     {
