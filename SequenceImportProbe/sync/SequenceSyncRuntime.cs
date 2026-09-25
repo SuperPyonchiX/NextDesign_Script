@@ -152,7 +152,7 @@ public sealed class DiagramSnapshot
         {
             memberships.Add(new SequenceMembership{Child=message.ModelId,Parent=operand.ModelId,Evidence="SDK operand.Messages"});
         }
-        memberships.AddRange(SequenceRegion.Nesting(operandRegions,fragmentRegions.Concat(annotationRegions)));
+        memberships.AddRange(SequenceRegion.Nesting(operandRegions,fragmentRegions,annotationRegions));
         SequenceMembership.Resolve(doc,memberships,line=>log.AppendLine(line));
 
         Func<double,double,string> containerAt=(x,y)=>{

@@ -29,7 +29,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.11.3";
+    public const string Title = "シーケンス生成実験 / 0.11.4";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1211,7 +1211,7 @@ public sealed class DiagramSnapshot
         {
             memberships.Add(new SequenceMembership{Child=message.ModelId,Parent=operand.ModelId,Evidence="SDK operand.Messages"});
         }
-        memberships.AddRange(SequenceRegion.Nesting(operandRegions,fragmentRegions.Concat(annotationRegions)));
+        memberships.AddRange(SequenceRegion.Nesting(operandRegions,fragmentRegions,annotationRegions));
         SequenceMembership.Resolve(doc,memberships,line=>log.AppendLine(line));
 
         Func<double,double,string> containerAt=(x,y)=>{
@@ -5827,7 +5827,7 @@ public sealed class SequenceRegion
             && outer.X+outer.Width>=inner.X+inner.Width-eps && outer.Y+outer.Height>=inner.Y+inner.Height-eps
             && (outer.Width>inner.Width+eps || outer.Height>inner.Height+eps);
     }
-    public static IEnumerable<SequenceMembership> Nesting(IEnumerable<SequenceRegion> operands,IEnumerable<SequenceRegion> fragments)
+    public static IEnumerable<SequenceMembership> Nesting(IEnumerable<SequenceRegion> operands,IEnumerable<SequenceRegion> fragments,IEnumerable<SequenceRegion> annotations=null)
     {
         // As the PlantUML export places them: by where the top edge falls, whatever the box
         // reaches past below, since the export enters a branch by Y. Across, it must sit inside
@@ -5836,6 +5836,31 @@ public sealed class SequenceRegion
             if(operand.Fragment!=fragment.Id && fragment.Y>=operand.Y-0.5 && fragment.Y<operand.Y+operand.Height-0.5
                 && fragment.X>=operand.X-0.5 && fragment.X+fragment.Width<=operand.X+operand.Width+0.5)
                 yield return new SequenceMembership{Child=fragment.Id,Parent=operand.Id,Evidence="diagram top edge within branch"};
+        if(annotations==null)yield break;
+        // A note or ref goes into the branch its top edge falls in, however far it sticks out
+        // sideways: the export enters branches by Y alone, and a note is often drawn beside
+        // the frame. Only when branches of frames side by side both take that Y does the one
+        // it overlaps, or else the nearest, win.
+        foreach(var box in annotations)
+        {
+            var byY=operands.Where(o=>box.Y>=o.Y-0.5 && box.Y<o.Y+o.Height-0.5).ToList();
+            var across=byY.Where(o=>box.X<o.X+o.Width && box.X+box.Width>o.X).ToList();
+            IEnumerable<SequenceRegion> chosen=byY;
+            var frames=byY.Select(o=>o.Fragment).Distinct().ToList();
+            bool sideBySide=byY.Any(a=>byY.Any(b=>a.Fragment!=b.Fragment && !(a.X<=b.X+0.5 && a.X+a.Width>=b.X+b.Width-0.5) && !(b.X<=a.X+0.5 && b.X+b.Width>=a.X+a.Width-0.5)));
+            if(sideBySide)
+            {
+                if(across.Count>0)chosen=across;
+                else
+                {
+                    Func<SequenceRegion,double> gap=o=>box.X+box.Width<o.X?o.X-(box.X+box.Width):box.X-(o.X+o.Width);
+                    var nearest=byY.OrderBy(gap).First();
+                    chosen=byY.Where(o=>o==nearest || (o.X<=nearest.X+0.5 && o.X+o.Width>=nearest.X+nearest.Width-0.5));
+                }
+            }
+            foreach(var operand in chosen)
+                yield return new SequenceMembership{Child=box.Id,Parent=operand.Id,Evidence="diagram top edge within branch"};
+        }
     }
 }
 

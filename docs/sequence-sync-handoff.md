@@ -1,4 +1,4 @@
-# SequenceImportProbe 引き継ぎ（2026-09-25 / 0.11.3）
+# SequenceImportProbe 引き継ぎ（2026-09-25 / 0.11.4）
 
 PlantUML を正本に Next Design の既存シーケンス図を差分更新する C# スクリプト拡張。この文書は作業を別セッションへ引き継ぐためのもの。**まず `.local/nd-knowledge/index.md` を読むこと。** K001〜K160 に実機で確かめた事実が入っている。推測で候補を潰す前に、そこと製品ログを見る。
 
@@ -23,6 +23,12 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 | Note・ref の削除で隙間を詰める | 済（0.9.19） |
 | Note と ref の差し替え | 済（0.9.14） |
 | 途中へのメッセージ挿入 | 済（0.9.1）。**Undo は製品が停止する（A15）** |
+
+## 2-000000000000000000000000000000. 0.11.4: 枠からはみ出した Note・ref の所属
+
+- 0.11.2 全図チェックの種類別集計（684枚、差分あり239）: 多い順に execution update 158枚、message update 133、message move 125、sendExecution: execution→execution 124、note move 112、note 所属: interaction→operand 90、endBefore: message→message 79、outer: execution→なし 69、fragment move 45 ほか
+- Note・ref: 出力は上端の Y だけで分岐に入れる。0.10.25 で枠のために戻した横方向の包含条件が Note・ref にも効き、枠の横にはみ出して描いた Note を分岐の外と読んでいた。Note・ref は上端の Y で分岐を決め、横に並んだ枠の分岐が両方候補のときだけ、重なる方（なければ近い方）を選ぶ（単体テスト追加）
+- 未解明: sendExecution のずれ（124枚）。例の図の出力と図を見て判断する
 
 ## 2-00000000000000000000000000000. 0.11.3: 保存なし反映の調査（2段目）
 

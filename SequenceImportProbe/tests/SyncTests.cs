@@ -180,6 +180,14 @@
         var inner=new SequenceRegion{Id="inner-frame",X=20,Y=150,Width=200,Height=300};
         var found=SequenceRegion.Nesting(new[]{left,right},new[]{inner}).ToArray();
         Require(found.Length==1 && found[0].Parent=="left-branch","side-by-side branches both claimed a frame: "+string.Join(",",found.Select(m=>m.Parent)));
+        // A note drawn beside a frame, sticking out of it, is in the branch by its top edge.
+        var beside=new SequenceRegion{Id="note",X=250,Y=120,Width=120,Height=40};
+        var alone=new SequenceRegion{Id="only-branch",Fragment="only-frame",X=0,Y=100,Width=300,Height=200};
+        var noted=SequenceRegion.Nesting(new[]{alone},new SequenceRegion[0],new[]{beside}).ToArray();
+        Require(noted.Length==1 && noted[0].Parent=="only-branch","a note sticking out of its branch was left outside");
+        // Beside two frames side by side, the one it overlaps takes it.
+        var both=SequenceRegion.Nesting(new[]{left,right},new SequenceRegion[0],new[]{beside}).ToArray();
+        Require(both.Length==1 && both[0].Parent=="left-branch","a note between frames side by side: "+string.Join(",",both.Select(m=>m.Parent)));
     }
     public static void Run()
     {
