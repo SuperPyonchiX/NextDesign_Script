@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.44";
+    public const string Title = "シーケンス生成実験 / 0.9.45";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1811,7 +1811,7 @@ public static class SequenceBatch
         if(project==null || !(app.Workspace.CurrentEditor is ISequenceDiagram))
         {app.Window.UI.ShowInformationDialog("シーケンス図を開いてから実行してください。新しい図はその図と同じ親に作ります。",title);return;}
         string list=app.Window.UI.ShowOpenFileDialog("シナリオ一覧、または出力済み PlantUML のどれか1つ",
-            "シナリオ一覧 (*.txt)|*.txt|出力済み PlantUML のフォルダ (*.puml)|*.puml");
+            "シナリオ一覧・出力済み PlantUML (*.txt;*.puml)|*.txt;*.puml");
         if(string.IsNullOrEmpty(list))return;
         if(string.Equals(Path.GetExtension(list),".puml",StringComparison.OrdinalIgnoreCase)){RoundTrip(app,project,Path.GetDirectoryName(list));return;}
         string folder=Path.GetDirectoryName(list),resultPath=Path.ChangeExtension(list,".result.tsv");
