@@ -27,7 +27,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.25";
+    public const string Title = "シーケンス生成実験 / 0.11.0";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
