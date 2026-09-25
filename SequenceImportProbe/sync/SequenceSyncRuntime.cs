@@ -873,6 +873,13 @@ public static class SequenceStructureTrial
             {
                 var cause=completion.ApplyError??completion.CommitError;
                 if(cause!=null)cycle+="\n原因: "+cause.GetType().Name+": "+cause.Message+(cause.InnerException!=null?" / "+cause.InnerException.Message:"");
+                // Where it was thrown: the frames name the method, ours or the product's, that met the value.
+                if(cause!=null)
+                {
+                    var deepest=cause;while(deepest.InnerException!=null)deepest=deepest.InnerException;
+                    var frames=(deepest.StackTrace??"").Split('\n').Select(l=>l.Trim()).Where(l=>l.Length>0).Take(8).ToArray();
+                    if(frames.Length>0)cycle+="\n発生箇所:\n"+string.Join("\n",frames);
+                }
                 if(LastMismatch.Length>0)cycle+="\n照合の内訳:\n"+(LastMismatch.Length>3000?LastMismatch.Substring(0,3000)+"…":LastMismatch);
             }
             summary="ケース: "+caseId+" / "+(completion.Committed?"構造更新・SDK照合・変更確定: 成功":"停止段階: "+stage)
