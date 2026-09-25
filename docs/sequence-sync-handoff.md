@@ -1,4 +1,4 @@
-# SequenceImportProbe 引き継ぎ（2026-09-25 / 0.11.2）
+# SequenceImportProbe 引き継ぎ（2026-09-25 / 0.11.3）
 
 PlantUML を正本に Next Design の既存シーケンス図を差分更新する C# スクリプト拡張。この文書は作業を別セッションへ引き継ぐためのもの。**まず `.local/nd-knowledge/index.md` を読むこと。** K001〜K160 に実機で確かめた事実が入っている。推測で候補を潰す前に、そこと製品ログを見る。
 
@@ -23,6 +23,13 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 | Note・ref の削除で隙間を詰める | 済（0.9.19） |
 | Note と ref の差し替え | 済（0.9.14） |
 | 途中へのメッセージ挿入 | 済（0.9.1）。**Undo は製品が停止する（A15）** |
+
+## 2-00000000000000000000000000000. 0.11.3: 保存なし反映の調査（2段目）
+
+- 0.11.2 実機の比較（図形166・モデル169・関連603）: 作れそうなもの＝E EntityType / Metamodel、R Metamodel / RelationType / IsDerivation（型情報から導出見込み）。要確認＝E Name・Fields.Name（5件）・Fields.Body（1件）の不一致、R TargetIndex の不一致 328/346。SDK から読めない＝S IsRightAtFrame（62）、LeftPadding（42）、Style の EndPointFigure / StartPointFigure / Figure / UseTheme / ViewElementType（BackColor は IShapeStyle で読めるはずが取得時に NullReference）
+- 読めない項目がある以上、保存なし反映が成り立つかは「書き戻しでその項目を省いても製品が値を保つか」で決まる
+- 「保存なし反映の調査」: 不一致の例を画面に出す（数値はそのまま、文字列は長さ・改行・空白の形だけ）。Style は項目ごとに読む
+- 「書き戻し調査（コピーで）」: 写しから Style・LeftPadding・IsRightAtFrame を消して書き戻し、保存して再度写しを取り、項目ごとに 元のまま / 変わった / 消えた を数える。プロジェクトを変更・保存するのでコピーで行う
 
 ## 2-0000000000000000000000000000. 0.11.2: 全図チェックにずれの種類別集計
 

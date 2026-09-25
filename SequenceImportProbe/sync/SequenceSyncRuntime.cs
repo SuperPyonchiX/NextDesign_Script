@@ -1257,6 +1257,16 @@ public static class SequenceSnapshotProbe
         var model=v as IModel;if(model!=null)return SequenceJson.Parse(SequencePayload.Q(model.Id));
         return SequenceJson.Parse(SequencePayload.Q(v.ToString()));
     }
+    // A value as it can be shown on screen: numbers and literals as they are, text only by its
+    // form, so no names or bodies appear.
+    static string Shape(SequenceJson v)
+    {
+        if(v==null)return "なし";
+        if(v.Raw==null)return v.Items!=null?"配列"+v.Items.Count:"オブジェクト";
+        if(!v.Raw.StartsWith("\""))return v.Raw;
+        string s=v.StringValue();
+        return "文字"+s.Length+(s.Contains("\r\n")?"・CRLF":s.Contains("\n")?"・LF":"")+(s!=s.Trim()?"・前後空白":"")+(s.Contains("  ")?"・連続空白":"");
+    }
     static SequenceJson Obj(){return new SequenceJson{Properties=new Dictionary<string,SequenceJson>(StringComparer.Ordinal)};}
     static void Put(SequenceJson o,string key,object v){var j=Value(v);if(j!=null)o.Properties[key]=j;}
     // What the SDK gives of each model, relation and shape.
@@ -1292,17 +1302,20 @@ public static class SequenceSnapshotProbe
             var wire=sh as IMessageShape;if(wire!=null){Put(o,"SourceY",wire.SourceY);Put(o,"TargetY",wire.TargetY);Put(o,"SelfloopBendsX",wire.SelfloopBendsX);}
             var branch=sh as IOperandShape;if(branch!=null)Put(o,"Position",branch.Position);
             var lane=sh as ILifelineShape;if(lane!=null)Put(o,"LaneLength",lane.TimelineLength);
-            try
+            IShapeStyle style=null;
+            try {style=sh.Style;} catch(Exception ex){log.AppendLine("style: "+ex.GetType().Name);}
+            if(style!=null)
             {
-                var style=sh.Style;
-                if(style!=null)
+                var st=Obj();
+                foreach(var read in new KeyValuePair<string,Func<object>>[]{
+                    new KeyValuePair<string,Func<object>>("BackColor",()=>style.BackColor),new KeyValuePair<string,Func<object>>("BorderColor",()=>style.BorderColor),
+                    new KeyValuePair<string,Func<object>>("BorderStyle",()=>style.BorderStyle),new KeyValuePair<string,Func<object>>("BorderThickness",()=>style.BorderThickness),
+                    new KeyValuePair<string,Func<object>>("ForeColor",()=>style.ForeColor),new KeyValuePair<string,Func<object>>("QuickStyle",()=>style.QuickStyle)})
                 {
-                    var st=Obj();Put(st,"BackColor",style.BackColor);Put(st,"BorderColor",style.BorderColor);Put(st,"BorderStyle",style.BorderStyle);
-                    Put(st,"BorderThickness",style.BorderThickness);Put(st,"ForeColor",style.ForeColor);Put(st,"QuickStyle",style.QuickStyle);
-                    o.Properties["(SDK Style)"]=st;
+                    try {Put(st,read.Key,read.Value());} catch(Exception){}
                 }
+                o.Properties["Style"]=st;
             }
-            catch(Exception ex){log.AppendLine("style: "+ex.GetType().Name);}
             all["S:"+sh.Id]=o;
         }
         return all;
@@ -1354,7 +1367,7 @@ public static class SequenceSnapshotProbe
             // Per kind and key: how often it is missing from what the SDK gives, and how often it differs.
             var missing=new Dictionary<string,int>();var differs=new Dictionary<string,int>();var total=new Dictionary<string,int>();
             Action<Dictionary<string,int>,string> add=(d,k)=>{int n;d.TryGetValue(k,out n);d[k]=n+1;};
-            var samples=new StringBuilder();
+            var samples=new StringBuilder();var shown=new Dictionary<string,List<string>>(StringComparer.Ordinal);
             foreach(var pair in real)
             {
                 string kind=pair.Key.Substring(0,1);
@@ -1368,7 +1381,12 @@ public static class SequenceSnapshotProbe
                         var other=b==null?null:b[p.Key];
                         if(p.Value!=null && p.Value.Properties!=null){walk(p.Value,other!=null && other.Properties!=null?other:null,key+".");continue;}
                         if(other==null){add(missing,kind+" "+key);continue;}
-                        if(!Same(p.Value,other)){add(differs,kind+" "+key);if(samples.Length<20000)samples.AppendLine(kind+" "+key+" export="+p.Value.ToJsonString()+" sdk="+other.ToJsonString());}
+                        if(!Same(p.Value,other))
+                        {
+                            add(differs,kind+" "+key);if(samples.Length<20000)samples.AppendLine(kind+" "+key+" export="+p.Value.ToJsonString()+" sdk="+other.ToJsonString());
+                            List<string> seen;if(!shown.TryGetValue(kind+" "+key,out seen))shown[kind+" "+key]=seen=new List<string>();
+                            if(seen.Count<3)seen.Add(Shape(p.Value)+" / "+Shape(other));
+                        }
                     }
                 };
                 walk(pair.Value,mine,"");
@@ -1383,6 +1401,7 @@ public static class SequenceSnapshotProbe
             {
                 int t,m,d;total.TryGetValue(k,out t);missing.TryGetValue(k,out m);differs.TryGetValue(k,out d);
                 if(m>0 || d>0 || k.StartsWith("V "))report.AppendLine(k+": 全"+t+" 欠け"+m+" 不一致"+d);
+                List<string> seen;if(shown.TryGetValue(k,out seen))report.AppendLine("  例（写し / SDK）: "+string.Join(" ; ",seen));
             }
             report.AppendLine("（全件一致のキーは省略）");
             string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.SequenceSync","snapshot-probe");
@@ -1395,5 +1414,86 @@ public static class SequenceSnapshotProbe
         catch(Exception ex){report.AppendLine("調査を完了できません: "+ex.Message);log.AppendLine(ex.ToString());}
         SequenceExperiment.Summary=report.ToString();SequenceExperiment.Details=report+"\f"+log;
         app.Window.UI.ShowInformationDialog(report.Length>3000?report.ToString().Substring(0,3000):report.ToString(),title);
+    }
+}
+
+// Research, second part: does an editor import keep what it is not given? Takes the diagram's
+// exported snapshot, removes from every shape the values the SDK cannot read, imports that
+// editor back, saves, exports again and counts, per key, what stayed, changed or went. It
+// writes to and saves the project, so it asks for a copy of the project first.
+public static class SequenceOmissionProbe
+{
+    static readonly string[] Unreadable={"Style","LeftPadding","IsRightAtFrame"};
+    public static void Run(IApplication app)
+    {
+        string title=SequenceExperiment.Title;var log=new StringBuilder();var report=new StringBuilder();
+        try
+        {
+            var project=app.Workspace.CurrentProject;
+            var diagram=app.Workspace.CurrentEditor as ISequenceDiagram;
+            if(project==null || diagram==null){app.Window.UI.ShowInformationDialog("調べるシーケンス図を開いてください。",title);return;}
+            if(!app.Window.UI.ShowConfirmDialog("【コピーのプロジェクトで実行してください】\n開いている図の写しから、SDK で読めない項目（Style・LeftPadding・IsRightAtFrame）を消して図に書き戻し、保存してから、項目が残ったかを調べます。\n図の見た目（色・形）が変わる可能性があります。\n\nOK: 実行 / キャンセル: 中止",title))return;
+            var root=diagram.Model as IInteraction;
+            string before=null;
+            SequenceEditorCapture.Read(project,root,diagram,log,delegate(string v){before=v;});
+            var data=SequenceJson.Parse(before);
+            var editor=data["Editors"].Items.First(v=>v["Id"]!=null && v["Id"].StringValue()==diagram.Id);
+            var original=new Dictionary<string,Dictionary<string,string>>(StringComparer.Ordinal);
+            int removed=0;
+            Action<SequenceJson> strip=null;
+            strip=node=>{
+                if(node==null)return;
+                if(node.Items!=null){foreach(var i in node.Items)strip(i);return;}
+                if(node.Properties==null)return;
+                if(node["Id"]!=null && node["ModelId"]!=null && node["Id"].Raw.StartsWith("\""))
+                {
+                    var kept=new Dictionary<string,string>(StringComparer.Ordinal);
+                    foreach(string key in Unreadable)if(node[key]!=null){kept[key]=node[key].ToJsonString();node.Properties.Remove(key);removed++;}
+                    original[node["Id"].StringValue()]=kept;
+                }
+                foreach(var p in node.Properties.Values.ToList())strip(p);
+            };
+            foreach(var p in editor.Properties.Values.ToList())strip(p);
+            var unit=SequenceJson.Parse(before);
+            unit.Properties["Entities"]=SequenceJson.Parse("[]");unit.Properties["Relations"]=SequenceJson.Parse("[]");
+            unit.Properties["Editors"]=new SequenceJson{Items=new List<SequenceJson>{editor}};
+            var result=project.ImportUnitFromJson(unit.ToJsonString(),null,null);
+            log.AppendLine("import: "+(result==null?"null":result.State));
+            if(result!=null)foreach(var e in result.Errors)log.AppendLine(e.Kind+": "+e.Message);
+            if(result==null || result.State!="success")throw new InvalidOperationException("書き戻しが失敗しました: "+(result==null?"結果なし":result.State));
+            if(!app.Workspace.SaveProject(project,false))throw new InvalidOperationException("保存できませんでした。");
+            var reread=app.Workspace.CurrentEditor as ISequenceDiagram ?? diagram;
+            string after=null;
+            SequenceEditorCapture.Read(project,root,reread,log,delegate(string v){after=v;});
+            var afterEditor=SequenceJson.Parse(after)["Editors"].Items.First(v=>v["Id"]!=null && v["Id"].StringValue()==diagram.Id);
+            var now=new Dictionary<string,SequenceJson>(StringComparer.Ordinal);
+            Action<SequenceJson> collect=null;
+            collect=node=>{
+                if(node==null)return;
+                if(node.Items!=null){foreach(var i in node.Items)collect(i);return;}
+                if(node.Properties==null)return;
+                if(node["Id"]!=null && node["ModelId"]!=null && node["Id"].Raw.StartsWith("\""))now[node["Id"].StringValue()]=node;
+                foreach(var p in node.Properties.Values)collect(p);
+            };
+            foreach(var p in afterEditor.Properties.Values)collect(p);
+            var tally=new SortedDictionary<string,int>(StringComparer.Ordinal);
+            Action<string> add=k=>{int n;tally.TryGetValue(k,out n);tally[k]=n+1;};
+            foreach(var pair in original)
+                foreach(var kv in pair.Value)
+                {
+                    SequenceJson shape;now.TryGetValue(pair.Key,out shape);
+                    var value=shape==null?null:shape[kv.Key];
+                    add(kv.Key+(shape==null?": 図形なし":value==null?": 消えた":value.ToJsonString()==kv.Value?": 元のまま":": 変わった"));
+                    if(value!=null && value.ToJsonString()!=kv.Value && kv.Key=="Style")
+                        foreach(var sub in SequenceJson.Parse(kv.Value).Properties??new Dictionary<string,SequenceJson>())
+                        {var got=value[sub.Key];add("  Style."+sub.Key+(got==null?": 消えた":got.ToJsonString()==sub.Value.ToJsonString()?": 元のまま":": 変わった"));}
+                }
+            report.AppendLine("書き戻しの調査: 消して書き戻した値 "+removed+"件（図形 "+original.Count+"）");
+            foreach(var pair in tally)report.AppendLine(pair.Key+" "+pair.Value);
+            report.AppendLine("「元のまま」なら、その項目は書き戻しで省いても製品が保つ。");
+        }
+        catch(Exception ex){report.AppendLine("調査を完了できません: "+ex.Message);log.AppendLine(ex.ToString());}
+        SequenceExperiment.Summary=report.ToString();SequenceExperiment.Details=report+"\f"+log;
+        app.Window.UI.ShowInformationDialog(report.ToString(),title);
     }
 }
