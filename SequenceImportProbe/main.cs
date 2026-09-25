@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.16";
+    public const string Title = "シーケンス生成実験 / 0.10.17";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -142,7 +142,7 @@ public static class SequenceExperiment
             {
                 stage = "PlantUML生成データの構築";
                 var profile = PumlRuntime.Profile(diagram, sources, plan, project);
-                if(profile.Relations.ContainsKey("RefersTo"))SequenceSyncRuntime.ResolveReferences(project,plan.All().Where(n=>n.Kind=="ref"),profile.References,detail);
+                if(profile.Relations.ContainsKey("RefersTo"))SequenceSyncRuntime.ResolveReferences(app,project,owner,plan.All().Where(n=>n.Kind=="ref"),profile.References,detail,!BatchMode);
                 // Metaclass ids are fixed per profile, so one run is enough to pin them.
                 detail.AppendLine("Resolved types (label / id / full name):");
                 foreach (string row in profile.Resolved) detail.AppendLine("  " + row);
@@ -1268,17 +1268,54 @@ public static class SequenceSyncRuntime
     }
     // What each ref of a new diagram refers to, the way the update resolves it: an interaction
     // of the project named by the ref's text, when exactly one is. Keyed by the input line.
-    public static void ResolveReferences(IProject project,IEnumerable<PumlNode> refs,Dictionary<int,string> into,StringBuilder log)
+    public static void ResolveReferences(IApplication app,IProject project,IModel near,IEnumerable<PumlNode> refs,Dictionary<int,string> into,StringBuilder log,bool ask)
     {
         var wanted=refs.ToArray();
         if(wanted.Length==0)return;
-        var interactions=SequenceMappedUpdate.Tree(project.DesignModel).OfType<IInteraction>()
-            .Select(m=>new SequenceReferenceCandidate{Id=m.Id,Name=m.Name,Path=QualifiedName(m)}).ToArray();
+        var interactions=Interactions(project);
         foreach(var n in wanted)
         {
-            var matches=SequenceReferenceResolver.Find(n.Text,interactions);
-            if(matches.Length==1)into[n.Line]=matches[0].Id;
-            log.AppendLine("ref参照先 "+n.Line+"行: "+(matches.Length==1?"解決":matches.Length+"候補（参照先なしで作成）"));
+            string chosen=PickReference(app,project,near,n.Text,n.Line,SequenceReferenceResolver.Find(n.Text,interactions),log,ask);
+            if(chosen!=null)into[n.Line]=chosen;
+        }
+    }
+    internal static SequenceReferenceCandidate[] Interactions(IProject project)
+    {
+        return SequenceMappedUpdate.Tree(project.DesignModel).OfType<IInteraction>()
+            .Select(m=>new SequenceReferenceCandidate{Id=m.Id,Name=m.Name,Path=QualifiedName(m)}).ToArray();
+    }
+    // One interaction for a ref. Several of the same name are for the designer to tell apart:
+    // they are offered one by one, the one nearest the diagram in the model tree first, and
+    // declining them all leaves the ref without a target. The batch never asks.
+    internal static string PickReference(IApplication app,IProject project,IModel near,string text,int line,SequenceReferenceCandidate[] matches,StringBuilder log,bool ask)
+    {
+        if(matches.Length==1){log.AppendLine("ref参照先 "+line+"行: 解決");return matches[0].Id;}
+        if(matches.Length==0){log.AppendLine("ref参照先 "+line+"行: 0候補（参照先なしで作成）");return null;}
+        if(!ask || app==null){log.AppendLine("ref参照先 "+line+"行: "+matches.Length+"候補（一括のため参照先なしで作成）");return null;}
+        Func<IModel,List<string>> chain=m=>{var ids=new List<string>();for(var at=m;at!=null && ids.Count<256;at=at.Owner)ids.Insert(0,at.Id);return ids;};
+        var mine=near==null?new List<string>():chain(near);
+        Func<SequenceReferenceCandidate,int> shared=c=>{var model=project.GetModelById(c.Id);if(model==null)return 0;var theirs=chain(model);int k=0;while(k<mine.Count && k<theirs.Count && mine[k]==theirs[k])k++;return k;};
+        var ordered=matches.OrderByDescending(shared).ThenBy(c=>c.Path,StringComparer.Ordinal).ToArray();
+        for(int i=0;i<ordered.Length;i++)
+            if(app.Window.UI.ShowConfirmDialog("ref「"+text+"」（入力 "+line+"行目）の参照先の候補が "+ordered.Length+"件あります。\n\n候補 "+(i+1)+"/"+ordered.Length+":\n"+ordered[i].Path
+                +"\n\nこの相互作用を参照先にしますか？\n（「いいえ」で次の候補。すべて「いいえ」なら参照先なしで作成します）",SequenceExperiment.Title))
+            {log.AppendLine("ref参照先 "+line+"行: "+ordered.Length+"候補から選択 "+(i+1)+"番目");return ordered[i].Id;}
+        log.AppendLine("ref参照先 "+line+"行: "+ordered.Length+"候補（選択なし・参照先なしで作成）");
+        return null;
+    }
+    // A ref linked to an interaction may show that interaction's name instead of its own text.
+    // When the input's ref resolves to the same interaction, those texts are the same ref.
+    internal static void AlignLinkedRefs(IProject project,SequenceDocument current,SequenceDocument desired)
+    {
+        foreach(var e in current.Elements.Where(e=>e.Kind=="ref"))
+        {
+            string reference;
+            if(!e.Attributes.TryGetValue("reference",out reference) || string.IsNullOrEmpty(reference))continue;
+            var target=project.GetModelById(reference);if(target==null)continue;
+            var shown=new[]{target.Name,QualifiedName(target)}.Select(SequenceLabels.Fold).ToArray();
+            if(!shown.Contains(SequenceLabels.Fold(e.Text)))continue;
+            var texts=desired.Elements.Where(d=>d.Kind=="ref" && d.Attributes.ContainsKey("reference") && d.Attributes["reference"]==reference).Select(d=>d.Text).Distinct().ToArray();
+            if(texts.Length==1)e.Text=texts[0];
         }
     }
     const string UnsavedAdvice="S220: 退避データを取得できません。プロジェクトを保存してから実行してください。"
@@ -1376,17 +1413,21 @@ public static class SequenceSyncRuntime
             // Resolve only unambiguous references for this non-mutating audit command. That
             // walks the whole design model, so only an input with a ref pays for it.
             var project=app.Workspace.CurrentProject;
-            var interactions=desired.Elements.Any(e=>e.Kind=="ref")
-                ?SequenceMappedUpdate.Tree(project.DesignModel).OfType<IInteraction>()
-                    .Select(m=>new SequenceReferenceCandidate{Id=m.Id,Name=m.Name,Path=QualifiedName(m)}).ToArray()
-                :new SequenceReferenceCandidate[0];
+            var interactions=desired.Elements.Any(e=>e.Kind=="ref")?Interactions(project):new SequenceReferenceCandidate[0];
             if(interactions.Length>0)Lap("ref参照先の探索");
+            var drawn=current.Document.Elements.FirstOrDefault(e=>e.Kind=="interaction");
+            var near=drawn==null?null:project.GetModelById(drawn.Id);
+            // Candidates the diagram already refers to need no question: that is the one it means.
+            var linked=new HashSet<string>(current.Document.Elements.Where(e=>e.Kind=="ref" && e.Attributes.ContainsKey("reference")).Select(e=>e.Attributes["reference"]));
             foreach(var e in desired.Elements.Where(e=>e.Kind=="ref"))
             {
                 var matches=SequenceReferenceResolver.Find(e.Text,interactions);
-                e.Attributes["reference"]=matches.Length==1?matches[0].Id:"";
-                if(matches.Length!=1)current.Limitations.Add("ref参照先 "+e.Line+"行: "+matches.Length+"候補");
+                if(matches.Length>1 && matches.Count(m=>linked.Contains(m.Id))==1)matches=matches.Where(m=>linked.Contains(m.Id)).ToArray();
+                string chosen=PickReference(app,project,near,e.Text,e.Line,matches,log,!Batch);
+                e.Attributes["reference"]=chosen??"";
+                if(chosen==null)current.Limitations.Add("ref参照先 "+e.Line+"行: "+matches.Length+"候補");
             }
+            AlignLinkedRefs(project,current.Document,desired);
             var plan=SequenceNotePolicy.Build(current.Document,desired,()=>Guid.NewGuid().ToString());
             LastChanges=plan.Changes.Count;
             var preflight=SequenceStructurePreflight.Check(current.Document,plan);
@@ -5903,6 +5944,8 @@ public sealed class SequenceStructurePreparation
                 added.RelationFields=added.RelationFields.Concat(new[]{type[2]}).ToArray();
             }
             string shapeId=Guid.NewGuid().ToString();added.ShapeId=shapeId;
+            // A ref linked to an interaction may show that interaction's name; take what it reads back.
+            if(isRef && wanted.Attributes.TryGetValue("reference",out reference) && !string.IsNullOrEmpty(reference) && refTypes.RefersTo!=null)loose.Add(shapeId);
             var shape=SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,
                 "X",Number(b[0]),"Y",Number(b[1]),"Width",Number(b[2]-b[0]),"Height",Number(b[3]-b[1]))));
             (isRef?newRefShapes:newNoteShapes).Add(shape);

@@ -2288,6 +2288,8 @@ public sealed class SequenceStructurePreparation
                 added.RelationFields=added.RelationFields.Concat(new[]{type[2]}).ToArray();
             }
             string shapeId=Guid.NewGuid().ToString();added.ShapeId=shapeId;
+            // A ref linked to an interaction may show that interaction's name; take what it reads back.
+            if(isRef && wanted.Attributes.TryGetValue("reference",out reference) && !string.IsNullOrEmpty(reference) && refTypes.RefersTo!=null)loose.Add(shapeId);
             var shape=SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,
                 "X",Number(b[0]),"Y",Number(b[1]),"Width",Number(b[2]-b[0]),"Height",Number(b[3]-b[1]))));
             (isRef?newRefShapes:newNoteShapes).Add(shape);
