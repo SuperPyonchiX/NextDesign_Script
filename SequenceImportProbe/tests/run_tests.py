@@ -224,8 +224,8 @@ public static class PayloadTest {
    var emptyGate=new SequenceStructurePreflight();
    if(emptyGate.CanCommit())throw new Exception("empty commit accepted");
 
-   var batchBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-batch-before.puml")));
-   var batchAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-batch-after.puml")));
+   var batchBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-selfbar-before.puml")));
+   var batchAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-selfbar-after.puml")));
    var batchPlan=SyncPlan.Build(batchBefore,batchAfter,()=>Guid.NewGuid().ToString());
    var batchGate=SequenceStructurePreflight.Check(batchBefore,batchPlan);
    if(!batchGate.CanCommit())
@@ -235,7 +235,7 @@ public static class PayloadTest {
 
    // Same before diagram as the batch sample; only the first inner bar goes away,
    // so the deleted execution is not last in its owner collections.
-   var nontailAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-nontail-after.puml")));
+   var nontailAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-selfbar-nontail.puml")));
    var nontailPlan=SyncPlan.Build(batchBefore,nontailAfter,()=>Guid.NewGuid().ToString());
    var nontailGate=SequenceStructurePreflight.Check(batchBefore,nontailPlan);
    if(!nontailGate.CanCommit())
@@ -246,6 +246,7 @@ public static class PayloadTest {
    // first() already receives on B's outer bar, so second() moves onto a collection
    // that is not empty. The target of the move is the same as in the batch sample.
    var occupiedBefore=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-occupied-before.puml")));
+   batchAfter=SequenceDocument.Parse(File.ReadAllText(Path.Combine(args[1],"structure-batch-after.puml")));
    var occupiedPlan=SyncPlan.Build(occupiedBefore,batchAfter,()=>Guid.NewGuid().ToString());
    var occupiedGate=SequenceStructurePreflight.Check(occupiedBefore,occupiedPlan);
    if(occupiedPlan.Changes.Count>0 && !occupiedGate.CanCommit())
@@ -520,7 +521,8 @@ public static class PayloadTest {
                 label = entities[msg['ModelId']]['Name']
                 for kind,coordinate in [('SendMessage','SourceY'),('ReceiveMessage','TargetY')]:
                     bar=execution[ports(label,kind)]
-                    assert bar['Y'] <= msg[coordinate] < bar['Y']+bar['Length']
+                    # The reply that closes a bar sits on its bottom edge, as Next Design lays it out.
+                    assert bar['Y'] <= msg[coordinate] <= bar['Y']+bar['Length']
         if path.name == '05-all.json':
             by_type = lambda t: [e for e in entities.values() if e['EntityType'] == t]
             assert [m['Fields']['MessageSort'] for m in by_type('Message')] == ['Sync','Async','Async']

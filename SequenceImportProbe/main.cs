@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.11";
+    public const string Title = "シーケンス生成実験 / 0.10.12";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1238,6 +1238,7 @@ public sealed class DiagramSnapshot
             snapshot.Limitations.Add("共通構造に未収録のモデル: "+m.Id+" / "+m.Metaclass.Id);
         // A read-only report deliberately exposes inference gaps before enabling writes.
         if(diagram.ExecutionSpecifications.Any())snapshot.Limitations.Add("実行区間の境界・分岐跨ぎはSDK読取りとPlantUMLの比較を実機照合してください。");
+        doc.SettleExecutions(n=>snapshot.Y[n.Id]);
         doc.Validate();return snapshot;
     }
 }
@@ -3026,6 +3027,49 @@ public class PumlBuild
         }
         foreach(var group in b.relations.Cast<Dictionary<string,object>>().GroupBy(r=>(string)r["MetamodelId"]+"|"+(string)r["SourceId"]))
         {int order=0;foreach(var r in group)r["SourceIndex"]=order++;}
+        // Draw each bar the way Next Design lays it out once the diagram is edited (K194), so the
+        // first touch does not reshape it: from its first message to the reply that closes it,
+        // or 20 under the later of its last message and the bars its calls opened. A bar the
+        // destruction of its lane ends keeps that end.
+        {
+            var wire=b.shapes.ContainsKey("Messages")?b.shapes["Messages"].Cast<Dictionary<string,object>>().ToDictionary(m=>(string)m["ModelId"]):new Dictionary<string,Dictionary<string,object>>();
+            // Where each lane is destroyed, by the lane's x.
+            var ends=b.shapes.ContainsKey("Destructions")?b.shapes["Destructions"].Cast<Dictionary<string,object>>().Select(d=>new{X=(int)d["X"],Y=(int)d["Y"]}).ToList():new[]{new{X=0,Y=0}}.Take(0).ToList();
+            // Each end a bar takes, a message to itself counting twice.
+            var uses=b.executions.Keys.ToDictionary(k=>k,k=>b.sent.Where(m=>m[1]==k).Select(m=>new{Id=m[0],Send=true,Kind=m[3],At=(int)wire[m[0]]["SourceY"],Callee=m[2]})
+                .Concat(b.sent.Where(m=>m[2]==k).Select(m=>new{Id=m[0],Send=false,Kind=m[3],At=(int)wire[m[0]]["TargetY"],Callee=(string)null})).OrderBy(u=>u.At).ToList());
+            // A bar's end, and whether a destruction made it (such an end does not carry up to the
+            // bar that called it; how the product treats that is not measured).
+            var bottoms=new Dictionary<string,Tuple<int,bool>>();
+            Func<string,int,Tuple<int,bool>> bottom=null;
+            bottom=(bar,depth)=>{
+                Tuple<int,bool> known;if(bottoms.TryGetValue(bar,out known))return known;
+                var list=uses[bar];var last=list.Last();Tuple<int,bool> end;
+                if(last.Send && last.Kind=="reply")end=Tuple.Create(last.At,false);
+                else
+                {
+                    int point=last.At,reach=last.At;
+                    foreach(var u in list.Where(u=>u.Send && u.Kind!="reply" && u.Callee!=null && u.Callee!=bar && uses.ContainsKey(u.Callee) && uses[u.Callee].Count>0 && uses[u.Callee][0].Id==u.Id))
+                    {
+                        if(depth>=64)continue;
+                        var theirs=bottom(u.Callee,depth+1);
+                        if(!theirs.Item2)reach=Math.Max(reach,theirs.Item1);
+                    }
+                    end=Tuple.Create(reach>point?reach+20:point+20,false);
+                    int laneX=b.x[b.executionAliases[bar]];
+                    var destroy=ends.Where(d=>d.X==laneX && d.Y>point).OrderBy(d=>d.Y).FirstOrDefault();
+                    if(destroy!=null && !uses.Any(o=>o.Key!=bar && b.executionAliases[o.Key]==b.executionAliases[bar] && o.Value.Count>0 && o.Value[0].At>point && o.Value[0].At<destroy.Y))
+                        end=Tuple.Create(destroy.Y,true);
+                }
+                bottoms[bar]=end;return end;
+            };
+            foreach(var pair in b.executions)
+            {
+                if(uses[pair.Key].Count==0)continue;
+                int top=uses[pair.Key][0].At,end=bottom(pair.Key,0).Item1;
+                pair.Value["Y"]=top;pair.Value["Length"]=end-top;pair.Value["Height"]=end-top;
+            }
+        }
         var opened=b.executions.Keys.ToList();
         foreach(var pair in b.executions)
         {
@@ -3557,6 +3601,82 @@ public sealed class SequenceDocument
         }
     }
     public SequenceDocument Copy() { return new SequenceDocument{HasTitle=HasTitle,Elements=Elements.Select(e=>e.Copy()).ToList()}; }
+    // Next Design keeps no extent of its own for a bar: once the diagram is edited it lays each
+    // bar out from its messages (measured, K194). A bar starts at its first message; a bar a
+    // reply leaving it ends at that reply; a bar on a lane destroyed after its last message ends
+    // at the destruction; any other bar ends just under the later of its last message and the
+    // ends of the bars its calls opened. Where the bar starts and ends, what holds it, and the
+    // bar around it all follow from that, for the input and for the diagram alike. `at` places
+    // each element that is not a bar or participant on one vertical scale.
+    public void SettleExecutions(Func<SequenceElement,double> at)
+    {
+        Func<SequenceElement,string,string[]> link=(e,key)=>{string[] v;return e.Links.TryGetValue(key,out v)?v:new string[0];};
+        Func<SequenceElement,string> sort=e=>{string v;return e.Attributes.TryGetValue("sort",out v)?v:"";};
+        var events=Elements.Where(n=>n.Kind!="participant" && n.Kind!="interaction" && n.Kind!="execution")
+            .Select((n,i)=>new{n,i}).OrderBy(x=>at(x.n)).ThenBy(x=>x.i).Select(x=>x.n).ToList();
+        var rank=events.Select((n,i)=>new{n,i}).ToDictionary(x=>x.n.Id,x=>(double)x.i);
+        var bars=Elements.Where(e=>e.Kind=="execution").ToList();
+        var uses=bars.ToDictionary(b=>b.Id,b=>events.Where(n=>n.Kind=="message"
+            && (link(n,"sendExecution").Contains(b.Id) || link(n,"receiveExecution").Contains(b.Id))).ToList());
+        var ends=new Dictionary<string,Tuple<SequenceElement,int>>();
+        Func<SequenceElement,int,Tuple<SequenceElement,int>> end=null;
+        end=(bar,depth)=>{
+            Tuple<SequenceElement,int> known;if(ends.TryGetValue(bar.Id,out known))return known;
+            var list=uses[bar.Id];var last=list.Last();
+            Tuple<SequenceElement,int> result;
+            if(link(last,"sendExecution").Contains(bar.Id) && sort(last)=="reply")result=Tuple.Create(last,0);
+            else
+            {
+                var point=last;int extra=1;
+                foreach(var u in list.Where(u=>link(u,"sendExecution").Contains(bar.Id) && sort(u)!="reply"))
+                    foreach(var callee in bars.Where(c=>c.Id!=bar.Id && link(u,"receiveExecution").Contains(c.Id) && uses[c.Id].Count>0 && uses[c.Id][0]==u))
+                    {
+                        if(depth>64)continue;
+                        var theirs=end(callee,depth+1);
+                        // How far a destruction under the called bar reaches back up is not measured.
+                        if(theirs.Item1.Kind!="message")continue;
+                        if(rank[theirs.Item1.Id]>rank[point.Id] || (theirs.Item1==point && theirs.Item2+1>extra)){point=theirs.Item1;extra=theirs.Item2+1;}
+                    }
+                result=Tuple.Create(point,extra);
+                string[] lane=link(bar,"participant");
+                var destroy=events.FirstOrDefault(n=>n.Kind=="destroy" && lane.Length==1 && link(n,"participant").Contains(lane[0]) && rank[n.Id]>rank[point.Id]);
+                if(destroy!=null && !bars.Any(o=>o.Id!=bar.Id && link(o,"participant").SequenceEqual(lane) && uses[o.Id].Count>0
+                        && rank[uses[o.Id][0].Id]>rank[point.Id] && rank[uses[o.Id][0].Id]<rank[destroy.Id]))
+                    result=Tuple.Create(destroy,0);
+            }
+            ends[bar.Id]=result;return result;
+        };
+        var span=new Dictionary<string,double[]>();
+        foreach(var bar in bars.Where(b=>uses[b.Id].Count>0))
+        {
+            var first=uses[bar.Id][0];var close=end(bar,0);
+            bool receives=link(first,"receiveExecution").Contains(bar.Id);
+            int before=(int)rank[first.Id]-1;
+            bar.Parent=first.Parent;
+            bar.Links["startAfter"]=receives?new[]{first.Id}:before>=0?new[]{events[before].Id}:new string[0];
+            int after=(int)rank[close.Item1.Id]+1;
+            bar.Links["endBefore"]=after<events.Count?new[]{events[after].Id}:new string[0];
+            bar.Links["endContainer"]=new[]{close.Item1.Parent};
+            // A receive-first bar starts just under its message; ends reached through calls sit
+            // a step lower per call, as the product adds its margin at each.
+            span[bar.Id]=new[]{rank[first.Id]+(receives?0.001:0),rank[close.Item1.Id]+0.01*close.Item2};
+        }
+        foreach(var bar in bars.Where(b=>span.ContainsKey(b.Id)))
+        {
+            var mine=span[bar.Id];string[] lane=link(bar,"participant");
+            var around=bars.Where(o=>o.Id!=bar.Id && span.ContainsKey(o.Id) && link(o,"participant").SequenceEqual(lane)
+                    && span[o.Id][0]<=mine[0] && span[o.Id][1]>=mine[1] && (span[o.Id][0]<mine[0] || span[o.Id][1]>mine[1]))
+                .OrderBy(o=>span[o.Id][1]-span[o.Id][0]).FirstOrDefault();
+            if(around!=null)bar.Links["outer"]=new[]{around.Id};else bar.Links.Remove("outer");
+        }
+        // Order within each owner follows the same scale, a bar just ahead of its first message.
+        Func<SequenceElement,double> place=e=>e.Kind=="execution"?(span.ContainsKey(e.Id)?span[e.Id][0]-0.5:double.MaxValue):rank.ContainsKey(e.Id)?rank[e.Id]:double.MaxValue;
+        foreach(var group in Elements.Where(e=>e.Parent!=null && e.Kind!="participant").GroupBy(e=>e.Parent))
+        {
+            var members=group.ToList();int order=members.Min(e=>e.Order);
+            foreach(var e in members.OrderBy(place).ThenBy(e=>e.Order).ToList())e.Order=order++;
+        }
+    }
     public string ToJson()
     {
         return PumlBuild.Json(PumlBuild.Obj("HasTitle",HasTitle,"Elements",Elements.Select(e=>PumlBuild.Obj(
@@ -3747,6 +3867,7 @@ public sealed class SequenceDocument
         }
         foreach(var e in result.Elements.Where(e=>e.Kind=="execution"))
         {
+            // Placeholders; SettleExecutions below decides every bar's extent from its messages.
             int start=int.Parse(e.Attributes["start"],System.Globalization.CultureInfo.InvariantCulture);
             int end=e.Attributes.ContainsKey("end")?int.Parse(e.Attributes["end"],System.Globalization.CultureInfo.InvariantCulture):int.MaxValue;
             var events=result.Elements.Where(n=>n.Kind!="participant" && n.Kind!="interaction" && n.Kind!="execution").OrderBy(n=>n.Line).ToArray();
@@ -3757,6 +3878,7 @@ public sealed class SequenceDocument
             string endParent=e.Attributes["endParent"];e.Links["endContainer"]=new[]{endParent};
             e.Attributes.Clear();
         }
+        result.SettleExecutions(e=>e.Line);
         result.Validate();return result;
     }
 }
@@ -3984,6 +4106,28 @@ public sealed class SyncPlan
             var candidates=current.Elements.Where(b=>b.Kind=="execution" && !used.Contains(b.Id) && Comparable(a,b,map) && restricted(b)==key).ToArray();
             int inputs=desired.Elements.Count(b=>b.Kind=="execution" && !map.ContainsKey(b.Id) && incident(desired,b,true)==key);
             if(candidates.Length==1 && inputs==1)bind(a,candidates[0]);
+        }
+        // A bar whose messages are split or joined keeps its id when it shares the most messages
+        // with one bar of the diagram, and that bar shares the most with it: the product lays a
+        // bar out from its messages, so the bar is what those messages hang on.
+        {
+            Func<string,HashSet<string>> tokens=key=>key==null?new HashSet<string>():new HashSet<string>(key.Split('|'));
+            // The message a bar starts with, as a diagram message id: sharing it decides a tie.
+            Func<SequenceDocument,SequenceElement,bool,string> head=(doc,bar,input)=>{
+                var m=doc.Elements.FirstOrDefault(e=>e.Kind=="message" && new[]{"sendExecution","receiveExecution"}.Any(r=>e.Links.ContainsKey(r) && e.Links[r].Contains(bar.Id)));
+                return m==null?null:input?(map.ContainsKey(m.Id)?map[m.Id]:null):m.Id;
+            };
+            var open=desired.Elements.Where(e=>e.Kind=="execution" && !map.ContainsKey(e.Id)).Select(e=>new{e,t=tokens(incident(desired,e,true)),h=head(desired,e,true)}).Where(x=>x.t.Count>0).ToList();
+            var free=current.Elements.Where(b=>b.Kind=="execution" && !used.Contains(b.Id)).Select(b=>new{b,t=tokens(restricted(b)),h=head(current,b,false)}).Where(x=>x.t.Count>0).ToList();
+            Func<HashSet<string>,string,HashSet<string>,string,int> score=(a,ah,b,bh)=>{int n=a.Count(b.Contains);return n==0?0:2*n+(ah!=null && ah==bh?1:0);};
+            foreach(var a in open)
+            {
+                var best=free.Where(x=>!used.Contains(x.b.Id) && Comparable(a.e,x.b,map)).Select(x=>new{x.b,n=score(a.t,a.h,x.t,x.h)}).Where(x=>x.n>0).OrderByDescending(x=>x.n).ToList();
+                if(best.Count==0 || (best.Count>1 && best[1].n==best[0].n))continue;
+                var theirs=free.First(x=>x.b==best[0].b);
+                if(open.Any(o=>o!=a && !map.ContainsKey(o.e.Id) && Comparable(o.e,theirs.b,map) && score(o.t,o.h,theirs.t,theirs.h)>=best[0].n))continue;
+                bind(a.e,best[0].b);
+            }
         }
         // Unconnected bars still need a no-op identity: require all boundary references to resolve.
         progress=true;

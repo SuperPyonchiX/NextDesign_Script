@@ -1,0 +1,18 @@
+@startuml
+participant A
+participant B
+activate A
+A -> B : first()
+activate B
+B -> B : firstStep()
+B -> B : firstMore()
+B --> A : firstDone()
+deactivate B
+A -> B : second()
+activate B
+B -> B : secondStep()
+B -> B : secondMore()
+B --> A : secondDone()
+deactivate B
+deactivate A
+@enduml

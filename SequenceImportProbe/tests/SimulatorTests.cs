@@ -225,6 +225,7 @@ public static class SequenceSimulator
             int order=0;
             foreach(var e in group.OrderBy(e=>e.Kind=="participant"?0:1).ThenBy(e=>y[e.Id]).ThenBy(e=>e.Id,StringComparer.Ordinal))e.Order=order++;
         }
+        doc.SettleExecutions(n=>y[n.Id]);
         doc.Validate();return doc;
     }
 
@@ -431,9 +432,10 @@ public static class SequenceSimulator
         }
         return null;
     }
-    // What Next Design makes of a diagram once anything on it is moved (seen on the device):
-    // a bar a reply ends stops at that reply. (Where a bar that starts with a send moves its
-    // top to is not measured yet.) The reading must not depend on the generator's margins.
+    // What Next Design makes of a diagram once anything on it is moved (measured on the device,
+    // 0.10.11): a bar starts at its first message; a bar a reply ends stops at that reply; any
+    // other bar stops 20 under the lower of its last message and the bars its calls opened (a
+    // bar with one receive is 20 long). The reading must not depend on the generator's margins.
     public static string Settle(string json)
     {
         var data=SequenceJson.Parse(json);
@@ -442,20 +444,49 @@ public static class SequenceSimulator
         if(view["ExecutionSpecifications"]==null || view["Messages"]==null)return json;
         var wires=view["Messages"].Items.ToDictionary(w=>V(w,"ModelId"));
         var entities=data["Entities"].Items.ToDictionary(e=>V(e,"Id"));
+        var shapes=view["ExecutionSpecifications"].Items.ToDictionary(b=>V(b,"ModelId"));
         Func<string,bool> isReply=id=>entities[id]["Fields"]!=null && (V(entities[id]["Fields"],"MessageSort")??"").ToLowerInvariant()=="reply";
-        foreach(var bar in view["ExecutionSpecifications"].Items)
+        Func<string,string,string> port=(kind,message)=>relations.Where(r=>V(r,"MetamodelId")==P+kind && V(r,"TargetId")==message).Select(r=>V(r,"SourceId")).FirstOrDefault();
+        var uses=shapes.Keys.ToDictionary(id=>id,id=>relations.Where(r=>(V(r,"MetamodelId")==P+"SendMessage" || V(r,"MetamodelId")==P+"ReceiveMessage") && V(r,"SourceId")==id && wires.ContainsKey(V(r,"TargetId")))
+            .Select(r=>new{Send=V(r,"MetamodelId")==P+"SendMessage",Id=V(r,"TargetId"),At=V(r,"MetamodelId")==P+"SendMessage"?D(wires[V(r,"TargetId")],"SourceY"):D(wires[V(r,"TargetId")],"TargetY")})
+            .OrderBy(u=>u.At).ToArray());
+        // A lane's destruction ends its bars still open there (assumed as the generator and the
+        // reading do; not measured), and such an end does not carry up to the calling bar.
+        Func<string,string> laneOf=bar=>relations.Where(r=>V(r,"MetamodelId")==P+"OwnedExecutionSpecification" && V(r,"TargetId")==bar).Select(r=>V(r,"SourceId")).FirstOrDefault();
+        var destroyed=(view["Destructions"]==null?new SequenceJson[0]:view["Destructions"].Items.ToArray())
+            .Select(d=>new{Lane=relations.Where(r=>V(r,"MetamodelId")==P+"DestructionTargetLifeline" && V(r,"SourceId")==V(d,"ModelId")).Select(r=>V(r,"TargetId")).FirstOrDefault(),Y=D(d,"Y")}).ToList();
+        var bottoms=new Dictionary<string,Tuple<double,bool>>();
+        Func<string,int,Tuple<double,bool>> bottom=null;
+        bottom=(id,depth)=>{
+            Tuple<double,bool> known;if(bottoms.TryGetValue(id,out known))return known;
+            var list=uses[id];var last=list.Last();
+            Tuple<double,bool> end;
+            if(last.Send && isReply(last.Id))end=Tuple.Create(last.At,false);
+            else
+            {
+                double point=last.At,reach=last.At;
+                foreach(var u in list.Where(u=>u.Send && !isReply(u.Id)))
+                {
+                    string opened=port("ReceiveMessage",u.Id);
+                    if(opened==null || opened==id || !uses.ContainsKey(opened) || uses[opened].Length==0 || uses[opened][0].Id!=u.Id || depth>=64)continue;
+                    var theirs=bottom(opened,depth+1);
+                    if(!theirs.Item2)reach=Math.Max(reach,theirs.Item1);
+                }
+                end=Tuple.Create(Math.Max(point,reach)+20,false);
+                string lane=laneOf(id);
+                var destroy=destroyed.Where(d=>d.Lane==lane && d.Y>point).OrderBy(d=>d.Y).FirstOrDefault();
+                if(destroy!=null && !uses.Any(o=>o.Key!=id && laneOf(o.Key)==lane && o.Value.Length>0 && o.Value[0].At>point && o.Value[0].At<destroy.Y))
+                    end=Tuple.Create(destroy.Y,true);
+            }
+            bottoms[id]=end;return end;
+        };
+        foreach(var pair in shapes)
         {
-            string id=V(bar,"ModelId");
-            var uses=relations.Where(r=>(V(r,"MetamodelId")==P+"SendMessage" || V(r,"MetamodelId")==P+"ReceiveMessage") && V(r,"SourceId")==id && wires.ContainsKey(V(r,"TargetId")))
-                .Select(r=>new{Send=V(r,"MetamodelId")==P+"SendMessage",Id=V(r,"TargetId"),At=V(r,"MetamodelId")==P+"SendMessage"?D(wires[V(r,"TargetId")],"SourceY"):D(wires[V(r,"TargetId")],"TargetY")})
-                .OrderBy(u=>u.At).ToArray();
-            if(uses.Length==0)continue;
-            double top=D(bar,"Y"),bottom=top+D(bar,"Length");
-            var last=uses.Last();
-            if(last.Send && isReply(last.Id))bottom=last.At;
-            string length=(bottom-top).ToString("R",System.Globalization.CultureInfo.InvariantCulture);
-            bar.Properties["Y"]=SequenceJson.Parse(top.ToString("R",System.Globalization.CultureInfo.InvariantCulture));
-            bar.Properties["Length"]=SequenceJson.Parse(length);bar.Properties["Height"]=SequenceJson.Parse(length);
+            if(uses[pair.Key].Length==0)continue;
+            double top=uses[pair.Key][0].At,end=bottom(pair.Key,0).Item1;
+            string length=(end-top).ToString("R",System.Globalization.CultureInfo.InvariantCulture);
+            pair.Value.Properties["Y"]=SequenceJson.Parse(top.ToString("R",System.Globalization.CultureInfo.InvariantCulture));
+            pair.Value.Properties["Length"]=SequenceJson.Parse(length);pair.Value.Properties["Height"]=SequenceJson.Parse(length);
         }
         return data.ToJsonString();
     }
@@ -469,7 +500,12 @@ public static class SequenceSimulator
             string before=Export(beforePuml);
             if(settled && beforePuml.Contains("participant "))
             {
+                // The generator already draws bars the way the product tidies them.
+                Func<string,string> barsOf=json=>{var v=SequenceJson.Parse(json)["Editors"].Items.Single()["ExecutionSpecifications"];
+                    return v==null?"":string.Join(";",v.Items.Select(x=>V(x,"ModelId")+":"+D(x,"Y")+"+"+D(x,"Length")).OrderBy(t=>t,StringComparer.Ordinal));};
+                string drawnBars=barsOf(before);
                 before=Settle(before);
+                if(barsOf(before)!=drawnBars)return "生成したバーが製品の整え方と違う: "+drawnBars+" / "+barsOf(before);
                 stage="整えた図の読取り";
                 var drawn=SequenceDocument.Parse(beforePuml);
                 foreach(var e in drawn.Elements.Where(e=>e.Kind=="ref"))e.Attributes["reference"]="";

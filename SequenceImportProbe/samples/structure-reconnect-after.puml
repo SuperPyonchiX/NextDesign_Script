@@ -1,10 +1,12 @@
 @startuml
 participant A
 participant B
-activate B
 activate A
 A -> B : work()
-B --> A : done()
+activate B
+B -> B : workStep()
+B -> B : workMore()
+B --> A : workDone()
 deactivate B
 deactivate A
 @enduml

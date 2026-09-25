@@ -197,6 +197,7 @@ public sealed class DiagramSnapshot
             snapshot.Limitations.Add("共通構造に未収録のモデル: "+m.Id+" / "+m.Metaclass.Id);
         // A read-only report deliberately exposes inference gaps before enabling writes.
         if(diagram.ExecutionSpecifications.Any())snapshot.Limitations.Add("実行区間の境界・分岐跨ぎはSDK読取りとPlantUMLの比較を実機照合してください。");
+        doc.SettleExecutions(n=>snapshot.Y[n.Id]);
         doc.Validate();return snapshot;
     }
 }

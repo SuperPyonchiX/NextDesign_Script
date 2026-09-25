@@ -95,7 +95,7 @@
         var after=Doc("activate B\nA -> B : first\nA -> B : second\nactivate B\ndeactivate B\ndeactivate B");
         var plan=Plan(before,after);
         var added=plan.Expected.Elements.Where(e=>e.Kind=="execution" && !before.Elements.Any(o=>o.Id==e.Id)).ToArray();
-        Require(added.Length==1,"sample does not add exactly one execution");
+        Require(added.Length==1,"sample does not add exactly one execution: "+plan.ToJson());
         string unchanged=before.ToJson()+plan.Expected.ToJson()+plan.ToJson();
         var gate=SequenceStructurePreflight.Check(before,plan);
         Require(gate.AddExecutions.SequenceEqual(new[]{added[0].Id}),"added receive bar was not accepted: "+plan.ToJson()+gate.ToJson());

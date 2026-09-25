@@ -2,7 +2,7 @@
   "name": "SequenceImportProbe",
   "displayName": "シーケンス生成実験",
   "description": "PlantUMLから新しいシーケンス図を生成する実験用拡張。",
-  "version": "0.10.11",
+  "version": "0.10.12",
   "publisher": "ksk01",
   "main": "main.cs",
   "lifecycle": "project",
