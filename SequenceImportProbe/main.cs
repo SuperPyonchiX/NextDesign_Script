@@ -30,7 +30,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.11.9";
+    public const string Title = "シーケンス生成実験 / 0.11.10";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1648,7 +1648,9 @@ public static class SequenceSyncRuntime
                         +"\n保存先: "+directory+"\n準備ファイルの手動インポートはしないでください。保存ファイルから適用する機能はありません。";
                     if(trial)
                     {
-                        SequenceExperiment.Summary=SequenceStructureTrial.Run(app,project,diagram,preparation,plan,exported,directory,log,retain,reconnectCommit);
+                        SequenceStructureTrial.RoundAllShapes=fromSdk;
+                        try {SequenceExperiment.Summary=SequenceStructureTrial.Run(app,project,diagram,preparation,plan,exported,directory,log,retain,reconnectCommit);}
+                        finally {SequenceStructureTrial.RoundAllShapes=false;}
                         screenshot=SequenceExperiment.Summary+"\f試行診断\n"+log.ToString();
                     }
                 }
@@ -1672,6 +1674,8 @@ public static class SequenceSyncRuntime
 
 public static class SequenceStructureTrial
 {
+    // Set while an update runs on a snapshot built from the SDK.
+    internal static bool RoundAllShapes;
     static string Port(IMessagePort value) {var m=value as IModel;return m==null?"":m.Id;}
     static string FieldId(IField value) {return value==null?"":value.Id;}
     static string Number(double value){return value.ToString("R",System.Globalization.CultureInfo.InvariantCulture);}
@@ -1785,6 +1789,9 @@ public static class SequenceStructureTrial
             // Written this run too, so the same rounding applies to them.
             .Concat(prepared.StretchedLifelines.Select(a=>a.ShapeId))
             .Concat(prepared.ShiftedShapes.Select(a=>a.ShapeId)).ToArray();
+        // A snapshot built from the SDK writes back what the SDK read, which the product stores
+        // and reads again a few millionths off; every shape is then compared as new ones are.
+        if(RoundAllShapes)newShapes=newShapes.Concat(diagram.Shapes.Select(sh=>sh.Id)).Distinct().ToArray();
         var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
             .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).Concat(prepared.DeleteNoteIds).Concat(prepared.DeleteRefIds).Concat(prepared.DeleteDestroyIds)
             .Concat(prepared.DeleteEndIds).ToArray();
@@ -2654,9 +2661,10 @@ public static class SequenceSnapshotBuilder
     }
     static SequenceJson O(){return new SequenceJson{Properties=new Dictionary<string,SequenceJson>(StringComparer.Ordinal)};}
     static void P(SequenceJson o,string k,object v){var j=J(v);if(j!=null)o.Properties[k]=j;}
-    // The SDK reads every stored coordinate 1e-6 over its stored value (0 as 1E-06, 42 as
-    // 42.000001). The snapshot holds stored values, so the offset comes off again.
-    static void G(SequenceJson o,string k,double v){P(o,k,Math.Round(v-0.000001,6));}
+    // The SDK reads some stored coordinates 1e-6 over their value and some not, and taking the
+    // offset off made them drift the other way (0.11.9), so the values go back as the SDK reads
+    // them and the trial compares every shape rounded (SequenceStructureTrial.RoundAllShapes).
+    static void G(SequenceJson o,string k,double v){P(o,k,v);}
     // The collection a shape is kept in, as the generator writes it.
     public static string Collection(ISequenceShape shape)
     {
