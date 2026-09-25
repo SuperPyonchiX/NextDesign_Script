@@ -177,7 +177,7 @@ public sealed class SequenceDocument
                     active[n.Left].Push(e);
                     if(previousEvent!=null && previousEvent.Kind=="message" && previousEvent.Links["receiver"].SequenceEqual(new[]{aliases[n.Left]}) && !previousEvent.Attributes.ContainsKey("received"))
                     {
-                        previousEvent.Links["receiveExecution"]=new[]{e.Id};awaitAnswer(previousEvent);previousEvent.Attributes["received"]="1";
+                        {string[] was;if(previousEvent.Links.TryGetValue("receiveExecution",out was))foreach(var w in result.Elements.Where(x=>was.Contains(x.Id) && x.Attributes.ContainsKey("callerFrom") && x.Attributes["callerFrom"]==previousEvent.Id)){w.Attributes.Remove("caller");w.Attributes.Remove("callerFrom");}}previousEvent.Links["receiveExecution"]=new[]{e.Id};awaitAnswer(previousEvent);previousEvent.Attributes["received"]="1";
                         if(previousEvent.Links["sender"].Length==1)e.Attributes["caller"]=previousEvent.Links["sender"][0];
                     }
                     // A message sent from a lane with no bar open, then an activate of that lane:
@@ -213,8 +213,11 @@ public sealed class SequenceDocument
                     // A receive the next line activates on gets that new bar instead; nothing reopens for it.
                     bool activates=nodeIndex+1<orderedNodes.Length && orderedNodes[nodeIndex+1].Kind=="activate" && orderedNodes[nodeIndex+1].Left==n.Right;
                     SequenceElement answered;
+                    // Not when a bar the receiver called is still open on this lane: the reply leaves
+                    // that one (a bar that opened and closed on the way is not what it answers).
+                    Func<bool> openCallee=()=>active.ContainsKey(n.Left) && active[n.Left].Any(b=>!closed(b) && b.Attributes.ContainsKey("caller") && b.Attributes["caller"]==aliases[n.Right]);
                     if(n.Kind=="reply" && n.Left!="[" && n.Right!="]" && justEnded.TryGetValue(n.Left,out answered)
-                        && answered.Attributes.ContainsKey("caller") && answered.Attributes["caller"]==aliases[n.Right])
+                        && answered.Attributes.ContainsKey("caller") && answered.Attributes["caller"]==aliases[n.Right] && !openCallee())
                     {
                         // The reply answers the call that bar received: it leaves from it and ends it.
                         item.Links["sendExecution"]=new[]{answered.Id};
@@ -257,7 +260,7 @@ public sealed class SequenceDocument
                             if(endpoint[0]=="receiveExecution")top.Attributes["opener"]=item.Id;
                         }
                         item.Links[endpoint[0]]=new[]{top.Id};
-                        if(endpoint[0]=="receiveExecution" && !top.Attributes.ContainsKey("caller") && item.Links["sender"].Length==1)top.Attributes["caller"]=item.Links["sender"][0];
+                        if(endpoint[0]=="receiveExecution" && !top.Attributes.ContainsKey("caller") && item.Links["sender"].Length==1){top.Attributes["caller"]=item.Links["sender"][0];top.Attributes["callerFrom"]=item.Id;}
                     }
                     Tuple<SequenceElement,string> blocked;string[] sending;
                     if(item.Links.TryGetValue("sendExecution",out sending) && waiting.TryGetValue(sending[0],out blocked))
@@ -320,6 +323,14 @@ public sealed class SequenceDocument
                         ending.Attributes["end"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     }
                 result.Elements.Add(item);visit(n.Children,item.Id);previousEvent=item;
+                // A lane that sends or receives inside a frame has moved on from a bar it ended
+                // before the frame, as the generator has it.
+                if(n.Kind=="fragment")
+                {
+                    Action<IEnumerable<PumlNode>> forget=null;
+                    forget=nodes2=>{foreach(var c in nodes2){if(c.Left!=null)justEnded.Remove(c.Left);if(c.Right!=null)justEnded.Remove(c.Right);forget(c.Children);}};
+                    forget(n.Children);
+                }
             }
         };
         visit(parsed.Nodes,"root");

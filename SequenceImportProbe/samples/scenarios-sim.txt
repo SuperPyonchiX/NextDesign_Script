@@ -18,3 +18,7 @@ else の中で外側のバーを閉じる図の名前変更 | gap-close-in-else.
 枠の先頭の破棄の図の名前変更 | gap-destroy-head.puml | gap-destroy-head-renamed.puml
 空の図へ・呼んだバーへ戻る返り | gap-empty.puml | gap-reply-to-caller.puml
 呼んだバーへ戻る返りの名前変更 | gap-reply-to-caller.puml | gap-reply-to-caller-renamed.puml
+空の図へ・開いている呼ばれたバーからの返り | gap-empty.puml | gap-reply-open-callee.puml
+開いている呼ばれたバーからの返りの名前変更 | gap-reply-open-callee.puml | gap-reply-open-callee-renamed.puml
+空の図へ・枠の後の返り | gap-empty.puml | gap-reply-after-frame.puml
+枠の後の返りの名前変更 | gap-reply-after-frame.puml | gap-reply-after-frame-renamed.puml

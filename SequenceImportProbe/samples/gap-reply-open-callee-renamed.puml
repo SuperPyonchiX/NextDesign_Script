@@ -1,0 +1,17 @@
+@startuml
+participant A
+participant E
+activate A
+A -> E : lock()
+activate E
+E -> E : getPriority()
+activate E
+E -> E : lookup()
+activate E
+deactivate E
+E --> E : prio
+deactivate E
+E --> A : done
+deactivate E
+deactivate A
+@enduml
