@@ -30,7 +30,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.11.13";
+    public const string Title = "シーケンス生成実験 / 0.11.14";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -2358,6 +2358,7 @@ public static class SequenceSnapshotProbe
         string s=v.StringValue();
         return "文字"+s.Length+(s.Contains("\r\n")?"・CRLF":s.Contains("\n")?"・LF":"")+(s!=s.Trim()?"・前後空白":"")+(s.Contains("  ")?"・連続空白":"");
     }
+    static readonly SortedDictionary<string,int> FieldTypes=new SortedDictionary<string,int>(StringComparer.Ordinal);
     static SequenceJson Obj(){return new SequenceJson{Properties=new Dictionary<string,SequenceJson>(StringComparer.Ordinal)};}
     static void Put(SequenceJson o,string key,object v){var j=Value(v);if(j!=null)o.Properties[key]=j;}
     // What the SDK gives of each model, relation and shape.
@@ -2376,7 +2377,12 @@ public static class SequenceSnapshotProbe
             if(m.Metaclass!=null)
                 foreach(var f in m.Metaclass.GetFields().Cast<IField>().Where(f=>f.RelationshipClass==null))
                 {
-                    try {Put(fields,f.Name,m.GetField(f.Name));}
+                    try
+                    {
+                        var got=m.GetField(f.Name);Put(fields,f.Name,got);
+                        string key="型 "+(m.Metaclass==null?"":m.Metaclass.Name)+"."+f.Name+" 宣言="+f.Type+" 値="+(got==null?"null":got.GetType().Name);
+                        int n;FieldTypes.TryGetValue(key,out n);FieldTypes[key]=n+1;
+                    }
                     catch(Exception ex){log.AppendLine("field "+f.Name+": "+ex.GetType().Name);}
                 }
             e.Properties["Fields"]=fields;
@@ -2552,6 +2558,11 @@ public static class SequenceSnapshotProbe
                 }
                 report.AppendLine("EntityType（図形の種類から導出）: 一致 "+typeSame+" 不一致 "+typeDiff+(typeExamples.Count>0?" 例 "+string.Join(" ; ",typeExamples):""));
             }
+            // What GetField hands back for each field that is not text: a number field read as text
+            // or as another object is what the import refuses.
+            report.AppendLine("項目の値の型（文字列以外、または宣言が文字列以外のもの）:");
+            foreach(var pair in FieldTypes.Where(p=>!p.Key.EndsWith(" 宣言=String 値=String",StringComparison.Ordinal)))report.AppendLine("  "+pair.Key+": "+pair.Value);
+            FieldTypes.Clear();
             report.AppendLine("導出の候補と写しの一致数:");
             foreach(var pair in matches.OrderBy(p=>p.Key,StringComparer.Ordinal))report.AppendLine("  "+pair.Key+": "+pair.Value);
             string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.SequenceSync","snapshot-probe");
@@ -2672,7 +2683,10 @@ public static class SequenceSnapshotBuilder
     // InvalidCastException String to Double). A value that does not read as its type is left out.
     static void Field(SequenceJson o,IField f,object v)
     {
-        string type=(f.Type??"").ToLowerInvariant();var text=v as string;
+        string type=(f.Type??"").ToLowerInvariant();
+        // Anything other than a plain value (a wrapper the SDK hands back) is read as its text.
+        var text=v as string;
+        if(text==null && v!=null && !(v is bool) && !(v is int) && !(v is long) && !(v is short) && !(v is double) && !(v is float) && !(v is decimal) && !(v is IModel))text=v.ToString();
         bool numeric=type.Contains("double") || type.Contains("float") || type.Contains("decimal") || type.Contains("int") || type.Contains("long") || type=="number";
         if(text!=null && numeric)
         {
