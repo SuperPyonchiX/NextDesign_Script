@@ -175,9 +175,9 @@ public sealed class SequenceDocument
                     // A bar a reply has ended holds nothing more, so nothing nests in it.
                     if(active[n.Left].Count>0 && !closed(active[n.Left].Peek()))e.Links["outer"]=new[]{active[n.Left].Peek().Id};
                     active[n.Left].Push(e);
-                    if(previousEvent!=null && previousEvent.Kind=="message" && previousEvent.Links["receiver"].SequenceEqual(new[]{aliases[n.Left]}))
+                    if(previousEvent!=null && previousEvent.Kind=="message" && previousEvent.Links["receiver"].SequenceEqual(new[]{aliases[n.Left]}) && !previousEvent.Attributes.ContainsKey("received"))
                     {
-                        previousEvent.Links["receiveExecution"]=new[]{e.Id};awaitAnswer(previousEvent);
+                        previousEvent.Links["receiveExecution"]=new[]{e.Id};awaitAnswer(previousEvent);previousEvent.Attributes["received"]="1";
                         if(previousEvent.Links["sender"].Length==1)e.Attributes["caller"]=previousEvent.Links["sender"][0];
                     }
                     // A message sent from a lane with no bar open, then an activate of that lane:
@@ -195,7 +195,7 @@ public sealed class SequenceDocument
                 {
                     if(!active.ContainsKey(n.Left) || active[n.Left].Count==0)
                         throw new InvalidOperationException("S202: "+n.Line+"行目のdeactivateに対応する開始がありません。");
-                    var e=active[n.Left].Pop();previousEvent=null;
+                    var e=active[n.Left].Pop();if(previousEvent!=null && previousEvent.Kind=="message" && (previousEvent.Links["receiver"].Contains(aliases[n.Left]) || previousEvent.Attributes["sort"]=="reply"))previousEvent=null;
                     // A bar a reply has already ended keeps that end.
                     if(closed(e))continue;
                     justEnded[n.Left]=e;
@@ -270,6 +270,17 @@ public sealed class SequenceDocument
                     string[] opening;
                     if(item.Links.TryGetValue("receiveExecution",out opening) && result.Elements.Any(x=>x.Id==opening[0] && x.Attributes.ContainsKey("opener") && x.Attributes["opener"]==item.Id))
                         awaitAnswer(item);
+                    // A reply goes back to the bar that made the call it answers, even when the
+                    // export ended that bar right after the call (it ends a bar where its shape
+                    // ends, and a hand-drawn bar can be shorter than what it receives).
+                    string[] replyFrom;
+                    if(n.Kind=="reply" && n.Right!="]" && item.Links.TryGetValue("sendExecution",out replyFrom) && replyFrom.Length==1)
+                    {
+                        string callerLane=aliases[n.Right];
+                        var call=result.Elements.LastOrDefault(m=>m.Kind=="message" && m.Links.ContainsKey("receiveExecution") && m.Links["receiveExecution"].Contains(replyFrom[0])
+                            && m.Links["sender"].SequenceEqual(new[]{callerLane}) && m.Attributes.ContainsKey("sort") && m.Attributes["sort"]=="sync" && m.Links.ContainsKey("sendExecution"));
+                        if(call!=null)item.Links["receiveExecution"]=call.Links["sendExecution"].ToArray();
+                    }
                     if(n.Left!="[")justEnded.Remove(n.Left);
                     if(n.Right!="]")justEnded.Remove(n.Right);
                 }
@@ -377,6 +388,7 @@ public sealed class SequenceDocument
             string endParent=e.Attributes["endParent"];e.Links["endContainer"]=new[]{endParent};
             e.Attributes.Clear();
         }
+        foreach(var e in result.Elements.Where(e=>e.Kind=="message"))e.Attributes.Remove("received");
         result.SettleExecutions(e=>e.Line);
         result.Validate();return result;
     }

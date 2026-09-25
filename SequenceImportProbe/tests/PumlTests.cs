@@ -56,7 +56,7 @@
             // The import reads it the way the sync does too, so a caller that sends while it waits stops there.
             SequenceDocument.Parse(File.ReadAllText(file));
             if(Path.GetFileName(file).StartsWith("06-") && (plan.StyleDirectives!=3 || !plan.Summary().Contains("既定表示")))throw new Exception("Style compatibility warning missing");
-            var payload=PumlBuild.Build(plan,profile,"fake-view","13.0");
+            SequencePayload payload;try{payload=PumlBuild.Build(plan,profile,"fake-view","13.0");}catch(Exception ex){throw new Exception(Path.GetFileName(file)+": "+ex.Message,ex);}
             if(Path.GetFileName(file).StartsWith("05-"))
             {
                 var identity=new SequenceIdentity{Root="existing-root",Frame="existing-frame",FrameRelation="existing-frame-relation",Editor="existing-editor",FrameShape="existing-frame-shape"};

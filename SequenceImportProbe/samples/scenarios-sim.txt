@@ -16,3 +16,5 @@ else の中で外側のバーを閉じる図の名前変更 | gap-close-in-else.
 送信の後に送信側を activate する出力の名前変更 | gap-send-then-activate.puml | gap-send-then-activate-renamed.puml
 空の図へ・枠の先頭の破棄 | gap-empty.puml | gap-destroy-head.puml
 枠の先頭の破棄の図の名前変更 | gap-destroy-head.puml | gap-destroy-head-renamed.puml
+空の図へ・呼んだバーへ戻る返り | gap-empty.puml | gap-reply-to-caller.puml
+呼んだバーへ戻る返りの名前変更 | gap-reply-to-caller.puml | gap-reply-to-caller-renamed.puml

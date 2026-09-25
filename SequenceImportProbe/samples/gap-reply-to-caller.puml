@@ -1,0 +1,16 @@
+@startuml
+participant A
+participant B
+[->> A : trigger()
+activate A
+activate A
+A -> B : send()
+deactivate A
+activate B
+B -> B : work()
+activate B
+deactivate B
+B --> A : done()
+deactivate B
+deactivate A
+@enduml
