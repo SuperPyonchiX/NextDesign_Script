@@ -400,13 +400,18 @@ public static class SequenceSyncRuntime
             log.AppendLine("Scope: "+project.Id+" / "+diagram.ModelId+" / "+diagram.Id);
             LastReasons=string.Join(" / ",preflight.Reasons.Distinct());
             // Checked after the comparison is logged, so the reasons reach the diagnostics.
-            if(retain && !preflight.CanCommit())
+            // Nothing differs: the diagram already is the input, which is not a failure.
+            bool same=plan.Changes.Count==0;
+            if(retain && same)SequenceExperiment.Summary="図は入力と一致しています。反映する差分はありません。\n"+SequenceAudit.Summary(plan,current.Limitations.Count);
+            if(retain && !same && !preflight.CanCommit())
                 throw new InvalidOperationException("S231: 反映できない差分が含まれています。"
                     +(preflight.Reasons.Count>0?"\n"+string.Join("\n",preflight.Reasons.Distinct()):"\n構造更新の対象がありません。"));
             if(prepare)
             {
                 if(!preflight.Candidate)
-                    SequenceExperiment.Summary="構造更新データ: 未作成 / 図への反映なし\n"+preflight.Summary();
+                {
+                    if(!same)SequenceExperiment.Summary="構造更新データ: 未作成 / 図への反映なし\n"+preflight.Summary();
+                }
                 else
                 {
                     var root=diagram.Model as IInteraction;
