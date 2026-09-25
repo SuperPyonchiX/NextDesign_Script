@@ -472,6 +472,9 @@ public sealed class SyncPlan
             SequenceElement bar;
             if(!old.TryGetValue(source[0],out bar) || bar.Kind!="execution")continue;
             if(!link(bar,"participant").SequenceEqual(link(before,"participant")))continue;
+            // An outer bar no message uses only nests what the input now draws on its own; keeping
+            // it would wrap the input's bars in one it never asked for.
+            if(!current.Elements.Any(m=>m.Kind=="message" && (link(m,"sendExecution").Contains(bar.Id) || link(m,"receiveExecution").Contains(bar.Id))))continue;
             inherit.Add(new string[]{map[a.Id],"outer",source[0]});
         }
         Func<string,bool> stays=id=>map.ContainsValue(id) || carry.Contains(id);

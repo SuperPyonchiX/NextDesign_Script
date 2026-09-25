@@ -36,8 +36,8 @@
         var nested=Doc("activate A\nactivate B\nA -> B : call\nactivate B\ndeactivate B\nB --> A : done\ndeactivate B\ndeactivate A");Ids(nested);
         var dropped=Plan(nested,Doc("activate A\nactivate B\nA -> B : call\nB --> A : done\ndeactivate B\ndeactivate A"));
         // done() answers the call the inner bar received, so that bar holds both messages and
-        // is the one the input's bar matches; the outer bar holds nothing and is carried.
-        Require(dropped.Changes.Count(c=>c.Kind=="execution" && c.Action=="delete")==0 && dropped.CarriedExecutions.Count==1,"inner bar deletion lost: "+dropped.ToJson());
+        // is the one the input's bar matches; the outer bar holds nothing and goes.
+        Require(dropped.Changes.Count(c=>c.Kind=="execution" && c.Action=="delete")==1 && dropped.CarriedExecutions.Count==0,"inner bar deletion lost: "+dropped.ToJson());
         Require(!dropped.Changes.Any(c=>c.Kind=="execution" && c.Action=="add"),"inner bar deletion recreated bars");
         var idle=Doc("activate A\nA -> B : call\nactivate B\ndeactivate B\nactivate B\ndeactivate B\ndeactivate A");Ids(idle);
         Require(Plan(idle,Doc("activate A\nA -> B : call\nactivate B\ndeactivate B\ndeactivate A"))
