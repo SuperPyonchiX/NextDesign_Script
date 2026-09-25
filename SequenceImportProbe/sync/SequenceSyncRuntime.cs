@@ -242,8 +242,7 @@ public static class SequenceSyncRuntime
         var ordered=matches.OrderByDescending(shared).ThenBy(c=>c.Path,StringComparer.Ordinal).ToArray();
         for(int i=0;i<ordered.Length;i++)
             if(app.Window.UI.ShowConfirmDialog("ref「"+text+"」（入力 "+line+"行目）の参照先の候補が "+ordered.Length+"件あります。\n\n候補 "+(i+1)+"/"+ordered.Length+":\n"+ordered[i].Path
-                +"\n\nこの相互作用を参照先にしますか？\nOK: この相互作用を参照先にします。
-キャンセル: 次の候補を表示します（最後の候補でキャンセルすると参照先なしで作成します）。",SequenceExperiment.Title))
+                +"\n\nこの相互作用を参照先にしますか？\nOK: この相互作用を参照先にします。\nキャンセル: 次の候補を表示します（最後の候補でキャンセルすると参照先なしで作成します）。",SequenceExperiment.Title))
             {log.AppendLine("ref参照先 "+line+"行: "+ordered.Length+"候補から選択 "+(i+1)+"番目");return ordered[i].Id;}
         log.AppendLine("ref参照先 "+line+"行: "+ordered.Length+"候補（選択なし・参照先なしで作成）");
         return null;

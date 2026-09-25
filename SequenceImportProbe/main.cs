@@ -1298,8 +1298,7 @@ public static class SequenceSyncRuntime
         var ordered=matches.OrderByDescending(shared).ThenBy(c=>c.Path,StringComparer.Ordinal).ToArray();
         for(int i=0;i<ordered.Length;i++)
             if(app.Window.UI.ShowConfirmDialog("ref「"+text+"」（入力 "+line+"行目）の参照先の候補が "+ordered.Length+"件あります。\n\n候補 "+(i+1)+"/"+ordered.Length+":\n"+ordered[i].Path
-                +"\n\nこの相互作用を参照先にしますか？\nOK: この相互作用を参照先にします。
-キャンセル: 次の候補を表示します（最後の候補でキャンセルすると参照先なしで作成します）。",SequenceExperiment.Title))
+                +"\n\nこの相互作用を参照先にしますか？\nOK: この相互作用を参照先にします。\nキャンセル: 次の候補を表示します（最後の候補でキャンセルすると参照先なしで作成します）。",SequenceExperiment.Title))
             {log.AppendLine("ref参照先 "+line+"行: "+ordered.Length+"候補から選択 "+(i+1)+"番目");return ordered[i].Id;}
         log.AppendLine("ref参照先 "+line+"行: "+ordered.Length+"候補（選択なし・参照先なしで作成）");
         return null;
@@ -2228,9 +2227,7 @@ public static class SequenceMappedUpdate
                         return message!=null && ((message.Sender!=null && message.Sender.Id==candidate.Model.Id) || (message.Receiver!=null && message.Receiver.Id==candidate.Model.Id));
                     }).OrderBy(m=>m.SourceY).Take(4).Select(m=>m.Model.Name));
                     detail.AppendLine("Participant candidate id="+candidate.Model.Id+", name="+PumlBuild.Json(candidate.Model.Name)+", text="+PumlBuild.Json(candidate.Text));
-                    if(app.Window.UI.ShowConfirmDialog("参加者の対応先を選んでください。\nPlantUML: "+plan.Names[i]+"\n別名: "+plan.Aliases[i]+"\n図の表示: "+candidate.Text+"\nモデル名: "+candidate.Model.Name+"\n図内X位置: "+Number(candidate.LocationX)+"\n接続メッセージ例:\n"+context+"\nこの参加者に対応付けますか？
-OK: 対応付けます。
-キャンセル: 次の候補を表示します（全候補をキャンセルすると処理を中止します）。",SequenceExperiment.Title))
+                    if(app.Window.UI.ShowConfirmDialog("参加者の対応先を選んでください。\nPlantUML: "+plan.Names[i]+"\n別名: "+plan.Aliases[i]+"\n図の表示: "+candidate.Text+"\nモデル名: "+candidate.Model.Name+"\n図内X位置: "+Number(candidate.LocationX)+"\n接続メッセージ例:\n"+context+"\nこの参加者に対応付けますか？\nOK: 対応付けます。\nキャンセル: 次の候補を表示します（全候補をキャンセルすると処理を中止します）。",SequenceExperiment.Title))
                     { chosen=candidate.Model.Id;break; }
                 }
                 if(chosen==null)throw new OperationCanceledException();
