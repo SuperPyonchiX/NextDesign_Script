@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.21";
+    public const string Title = "シーケンス生成実験 / 0.10.22";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -3148,6 +3148,25 @@ public class PumlBuild
         // A bar no message uses has nothing to show, and Next Design fails laying one out
         // (FrameLayout.PlaceInducedExecutionSpecifications takes the first message of each bar).
         // Such bars go; the bars they held are drawn at their own depth again.
+        // An empty bar right after a lane's call to itself, with nothing else on that lane in
+        // between, is the bar that call arrived on (the PlantUML export writes it late; see
+        // SequenceDocument.Parse).
+        {
+            var wires=b.shapes.ContainsKey("Messages")?b.shapes["Messages"].Cast<Dictionary<string,object>>().ToDictionary(m=>(string)m["ModelId"]):new Dictionary<string,Dictionary<string,object>>();
+            Func<string,string> laneOf=bar=>bar!=null && b.executionAliases.ContainsKey(bar)?b.executionAliases[bar]:null;
+            foreach(var pair in b.executions.OrderBy(v=>(int)v.Value["Y"]).ToList())
+            {
+                string bar=pair.Key,lane=laneOf(bar);
+                if(b.sent.Any(m=>m[1]==bar || m[2]==bar))continue;
+                int barTop=(int)pair.Value["Y"];
+                var last=b.sent.LastOrDefault(m=>wires.ContainsKey(m[0]) && (int)wires[m[0]]["SourceY"]<barTop && (laneOf(m[1])==lane || laneOf(m[2])==lane));
+                if(last==null || last[3]=="reply" || laneOf(last[1])!=lane || laneOf(last[2])!=lane || last[1]!=last[2])continue;
+                foreach(var r in b.relations.Cast<Dictionary<string,object>>().Where(r=>(string)r["MetamodelId"]==profile.Relations["ReceiveMessage"] && (string)r["SourceId"]==last[2] && (string)r["TargetId"]==last[0]))
+                    r["SourceId"]=bar;
+                foreach(var expected in b.payload.Expected.Where(e=>e.Id==last[0]))expected.ReceivePort=bar;
+                last[2]=bar;
+            }
+        }
         var used=new HashSet<string>(b.sent.SelectMany(m=>new[]{m[1],m[2]}).Where(x=>x!=null));
         foreach(string bar in b.executions.Keys.Where(k=>!used.Contains(k)).ToList())
         {
@@ -3980,6 +3999,30 @@ public sealed class SequenceDocument
         visit(parsed.Nodes,"root");
         // A bar no message uses has nothing to show in Next Design, which fails laying one out;
         // the generator leaves it out, and so does the reading. What it held nests one level up.
+        // The PlantUML export orders a bar by its top edge. The bar a call to itself opens starts
+        // where that call arrives, a little under where it leaves, so another lane's message in
+        // between pushes its activate/deactivate after that message, with nothing inside. Such an
+        // empty bar is the one that call arrived on: the lane's last message before it is that
+        // call to itself, and the lane has done nothing since.
+        {
+            Func<SequenceElement,string,string[]> links=(e,key)=>{string[] v;return e.Links.TryGetValue(key,out v)?v:new string[0];};
+            var messages=result.Elements.Where(e=>e.Kind=="message").OrderBy(e=>e.Line).ToList();
+            foreach(var bar in result.Elements.Where(e=>e.Kind=="execution").OrderBy(e=>int.Parse(e.Attributes["start"],System.Globalization.CultureInfo.InvariantCulture)).ToList())
+            {
+                string lane=links(bar,"participant").FirstOrDefault();
+                if(lane==null || messages.Any(m=>links(m,"sendExecution").Contains(bar.Id) || links(m,"receiveExecution").Contains(bar.Id)))continue;
+                int start=int.Parse(bar.Attributes["start"],System.Globalization.CultureInfo.InvariantCulture);
+                var last=messages.LastOrDefault(m=>m.Line<start && (links(m,"sender").Contains(lane) || links(m,"receiver").Contains(lane)));
+                if(last==null || !links(last,"sender").Contains(lane) || !links(last,"receiver").Contains(lane))continue;
+                string sort;last.Attributes.TryGetValue("sort",out sort);
+                if(sort=="reply")continue;
+                var arrived=links(last,"receiveExecution");
+                // It arrived on a bar the lane already had, not one it opened.
+                if(arrived.Length!=1 || arrived[0]==bar.Id || !links(last,"sendExecution").Contains(arrived[0]))continue;
+                last.Links["receiveExecution"]=new[]{bar.Id};
+                bar.Attributes["opener"]=last.Id;
+            }
+        }
         {
             var used=new HashSet<string>(result.Elements.Where(e=>e.Kind=="message")
                 .SelectMany(e=>new[]{"sendExecution","receiveExecution"}.Where(e.Links.ContainsKey).SelectMany(r=>e.Links[r])));

@@ -284,6 +284,30 @@ public sealed class SequenceDocument
         visit(parsed.Nodes,"root");
         // A bar no message uses has nothing to show in Next Design, which fails laying one out;
         // the generator leaves it out, and so does the reading. What it held nests one level up.
+        // The PlantUML export orders a bar by its top edge. The bar a call to itself opens starts
+        // where that call arrives, a little under where it leaves, so another lane's message in
+        // between pushes its activate/deactivate after that message, with nothing inside. Such an
+        // empty bar is the one that call arrived on: the lane's last message before it is that
+        // call to itself, and the lane has done nothing since.
+        {
+            Func<SequenceElement,string,string[]> links=(e,key)=>{string[] v;return e.Links.TryGetValue(key,out v)?v:new string[0];};
+            var messages=result.Elements.Where(e=>e.Kind=="message").OrderBy(e=>e.Line).ToList();
+            foreach(var bar in result.Elements.Where(e=>e.Kind=="execution").OrderBy(e=>int.Parse(e.Attributes["start"],System.Globalization.CultureInfo.InvariantCulture)).ToList())
+            {
+                string lane=links(bar,"participant").FirstOrDefault();
+                if(lane==null || messages.Any(m=>links(m,"sendExecution").Contains(bar.Id) || links(m,"receiveExecution").Contains(bar.Id)))continue;
+                int start=int.Parse(bar.Attributes["start"],System.Globalization.CultureInfo.InvariantCulture);
+                var last=messages.LastOrDefault(m=>m.Line<start && (links(m,"sender").Contains(lane) || links(m,"receiver").Contains(lane)));
+                if(last==null || !links(last,"sender").Contains(lane) || !links(last,"receiver").Contains(lane))continue;
+                string sort;last.Attributes.TryGetValue("sort",out sort);
+                if(sort=="reply")continue;
+                var arrived=links(last,"receiveExecution");
+                // It arrived on a bar the lane already had, not one it opened.
+                if(arrived.Length!=1 || arrived[0]==bar.Id || !links(last,"sendExecution").Contains(arrived[0]))continue;
+                last.Links["receiveExecution"]=new[]{bar.Id};
+                bar.Attributes["opener"]=last.Id;
+            }
+        }
         {
             var used=new HashSet<string>(result.Elements.Where(e=>e.Kind=="message")
                 .SelectMany(e=>new[]{"sendExecution","receiveExecution"}.Where(e.Links.ContainsKey).SelectMany(r=>e.Links[r])));

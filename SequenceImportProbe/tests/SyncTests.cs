@@ -160,9 +160,21 @@
         var gate=SequenceStructurePreflight.Check(model,plan);
         Require(gate.Renames.Count==1 && model.Elements.First(e=>e.Id==gate.Renames[0]).Kind=="message","a folded lane name was taken as a rename: "+gate.ToJson());
     }
+    // The export can write the bar a call to itself opens after another lane's message, empty.
+    // It is read as the bar that call arrived on, the same as the order the diagram draws.
+    static void LateSelfBar()
+    {
+        var late=SequenceDocument.Parse(LateText);var normal=SequenceDocument.Parse(LateText.Replace("B -> B : detect()\nA --> C : done()\ndeactivate A\nactivate B\ndeactivate B\n","B -> B : detect()\nactivate B\ndeactivate B\nA --> C : done()\ndeactivate A\n"));
+        Require(late.Elements.Count(e=>e.Kind=="execution")==normal.Elements.Count(e=>e.Kind=="execution"),"the late bar was dropped");
+        Ids(normal);
+        var plan=Plan(normal,late);
+        Require(plan.IsEmpty,"the late bar reads differently: "+plan.ToJson());
+    }
+    const string LateText="@startuml\nparticipant C\nparticipant A\nparticipant B\nactivate C\nC -> A : start()\nactivate A\nA ->> B : spawn()\nactivate B\nA -> A : notify()\nactivate A\ndeactivate A\nB -> B : detect()\nA --> C : done()\ndeactivate A\nactivate B\ndeactivate B\nref over B : Handle\ndeactivate B\ndeactivate C\n@enduml";
     public static void Run()
     {
         FoldedNames();
+        LateSelfBar();
         StructurePreflight();
         AddedExecutionPreflight();
         OmittedActivations();

@@ -5,3 +5,6 @@
 空の図へ・else の中で外側のバーを閉じる | gap-empty.puml | gap-close-in-else.puml
 枠の中で外側のバーを閉じる図の名前変更 | gap-close-in-branch.puml | gap-close-in-branch-renamed.puml
 else の中で外側のバーを閉じる図の名前変更 | gap-close-in-else.puml | gap-close-in-else-renamed.puml
+空の図へ・自己呼び出しのバーが後ろに出た出力 | gap-empty.puml | gap-late-self-bar.puml
+自己呼び出しのバーが後ろに出た出力で名前変更 | gap-late-self-bar-normal.puml | gap-late-self-bar-renamed.puml
+自己呼び出しのバーが後ろに出た出力の名前変更 | gap-late-self-bar.puml | gap-late-self-bar-renamed.puml
