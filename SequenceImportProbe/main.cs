@@ -30,7 +30,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.11.16";
+    public const string Title = "シーケンス生成実験 / 0.11.17";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -6355,12 +6355,15 @@ public static class SequenceLabels
 // PlantUML note placement does not instruct creation/deletion of Next Design anchors.
 public static class SequenceNotePolicy
 {
+    static string TrimLines(string text){return string.Join("\n",(text??"").Replace("\r\n","\n").Replace('\r','\n').Split('\n').Select(l=>l.TrimEnd()));}
     public static SyncPlan Build(SequenceDocument current,SequenceDocument desired,Func<string> newId)
     {
         var before=current.Copy();var input=desired.Copy();
         foreach(var e in before.Elements.Concat(input.Elements).Where(e=>e.Kind=="note"))
         {
             e.Links["targets"]=new string[0];e.Links.Remove("anchors");e.Attributes["position"]="free";
+            // The export drops what trails each line, which PlantUML cannot hold anyway.
+            e.Text=TrimLines(e.Text);
         }
         var plan=SyncPlan.Build(before,input,newId);
         var originals=current.Elements.Where(e=>e.Kind=="note").ToDictionary(e=>e.Id);
@@ -6370,6 +6373,8 @@ public static class SequenceNotePolicy
             foreach(var role in new[]{"targets","anchors"})
             {string[] values;if(original.Links.TryGetValue(role,out values))e.Links[role]=values.ToArray();else e.Links.Remove(role);}
             string position;if(original.Attributes.TryGetValue("position",out position))e.Attributes["position"]=position;else e.Attributes.Remove("position");
+            // The same text but for what trails its lines keeps the diagram's own.
+            if(TrimLines(original.Text)==e.Text)e.Text=original.Text;
         }
         plan.Expected.Validate();return plan;
     }
