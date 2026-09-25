@@ -129,11 +129,32 @@
         // An activation that holds no message is still one the generator draws; it is laid out between its neighbours.
         Require(SequenceStructurePreflight.Check(before,unusedPlan).Candidate,"an empty activation was refused");
     }
+    // A bar that made a synchronous call waits until the bar the call opened ends; Next Design
+    // refuses every edit to a diagram where it sends anything meanwhile.
+    static void BlockedCaller()
+    {
+        foreach(string body in new[]{
+            "activate A\nA -> B : first()\nactivate B\nA -> B : mid()\nB --> A : firstDone()\ndeactivate B\ndeactivate A",
+            "activate A\nA -> B : first()\nactivate B\nA ->> B : notify()\nB --> A : firstDone()\ndeactivate B\ndeactivate A",
+            "activate A\nA -> B : guarded()\nactivate B\nA -> B : also()\ndeactivate B\ndeactivate A"})
+        {
+            bool refused=false;
+            try{Doc(body);}catch(InvalidOperationException e){refused=e.Message.StartsWith("S204:");}
+            Require(refused,"a blocked caller was not refused: "+body);
+        }
+        // Once the answer arrives, or the called bar ends, the caller goes on; the called bar may
+        // call back, and a lane with no bar blocks nothing.
+        Doc("activate A\nA -> B : first()\nactivate B\nB --> A : firstDone()\ndeactivate B\nA -> B : next()\nactivate B\ndeactivate B\ndeactivate A");
+        Doc("activate A\nA -> B : guarded()\nactivate B\ndeactivate B\nA -> B : also()\nactivate B\ndeactivate B\ndeactivate A");
+        Doc("activate A\nA -> B : call()\nactivate B\nB -> A : callback()\nactivate A\nA -> B : inner()\nactivate B\ndeactivate B\ndeactivate A\ndeactivate B\ndeactivate A");
+        Doc("activate A\nA -> B : plain()\nA -> B : again()\ndeactivate A");
+    }
     public static void Run()
     {
         StructurePreflight();
         AddedExecutionPreflight();
         OmittedActivations();
+        BlockedCaller();
         string body="activate A\nA -> B : first\nalt ready\nA -> B : work\nnote over B\nline one\nline two\nend note\nelse wait\nB --> A : wait\nref over A,B : Service\nend\ndeactivate A";
         var old=Doc(body);Ids(old);
         Require(Plan(old,Doc(body)).IsEmpty,"all-kind no-op changed semantics");

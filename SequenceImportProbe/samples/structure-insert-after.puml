@@ -4,8 +4,14 @@ participant B
 activate A
 A -> B : first()
 activate B
-A -> B : mid()
 B --> A : firstDone()
+deactivate B
+A -> B : mid()
+activate B
+deactivate B
+A -> B : second()
+activate B
+B --> A : secondDone()
 deactivate B
 deactivate A
 @enduml

@@ -24,6 +24,8 @@
         foreach(var file in Directory.GetFiles(samples,"*.puml").Where(f=>!Path.GetFileName(f).StartsWith("gap-empty")))
         {
             var plan=PumlPlan.Parse(File.ReadAllText(file));
+            // The import reads it the way the sync does too, so a caller that sends while it waits stops there.
+            SequenceDocument.Parse(File.ReadAllText(file));
             if(Path.GetFileName(file).StartsWith("06-") && (plan.StyleDirectives!=3 || !plan.Summary().Contains("既定表示")))throw new Exception("Style compatibility warning missing");
             var payload=PumlBuild.Build(plan,profile,"fake-view","13.0");
             if(Path.GetFileName(file).StartsWith("05-"))

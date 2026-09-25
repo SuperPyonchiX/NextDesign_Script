@@ -56,6 +56,16 @@ public sealed class SequenceDocument
             result.Elements.Add(new SequenceElement{Id=id,Kind="participant",Parent="root",Order=i-1000,Text=parsed.Names[i]});
         }
         var active=new Dictionary<string,Stack<SequenceElement>>();int next=0;
+        // A synchronous call blocks the bar that sent it until the bar it opened ends: Next Design
+        // refuses every edit to a diagram where that bar sends again meanwhile. Keyed by the
+        // sending bar: the bar the call opened and its lane.
+        var waiting=new Dictionary<string,Tuple<SequenceElement,string>>();
+        Action<SequenceElement> awaitAnswer=message=>{
+            string[] from,to;
+            if(message.Attributes["sort"]!="sync" || !message.Links.TryGetValue("sendExecution",out from) || !message.Links.TryGetValue("receiveExecution",out to))return;
+            var opened=result.Elements.First(x=>x.Id==to[0]);
+            waiting[from[0]]=Tuple.Create(opened,result.Elements.First(x=>x.Id==message.Links["receiver"][0]).Id);
+        };
         Action<IEnumerable<PumlNode>,string> visit=null;
         visit=(nodes,parent)=>{
             int order=0;SequenceElement previousEvent=null;
@@ -91,7 +101,7 @@ public sealed class SequenceDocument
                     active[n.Left].Push(e);
                     if(previousEvent!=null && previousEvent.Kind=="message" && previousEvent.Links["receiver"].SequenceEqual(new[]{aliases[n.Left]}))
                     {
-                        previousEvent.Links["receiveExecution"]=new[]{e.Id};
+                        previousEvent.Links["receiveExecution"]=new[]{e.Id};awaitAnswer(previousEvent);
                         if(previousEvent.Links["sender"].Length==1)e.Attributes["caller"]=previousEvent.Links["sender"][0];
                     }
                     continue;
@@ -143,6 +153,17 @@ public sealed class SequenceDocument
                         item.Links[endpoint[0]]=new[]{top.Id};
                         if(endpoint[0]=="receiveExecution" && !top.Attributes.ContainsKey("caller") && item.Links["sender"].Length==1)top.Attributes["caller"]=item.Links["sender"][0];
                     }
+                    Tuple<SequenceElement,string> blocked;string[] sending;
+                    if(item.Links.TryGetValue("sendExecution",out sending) && waiting.TryGetValue(sending[0],out blocked))
+                    {
+                        string lane=aliases.First(a=>a.Value==blocked.Item2).Key;
+                        if(active.ContainsKey(lane) && active[lane].Contains(blocked.Item1) && !closed(blocked.Item1))
+                            throw new InvalidOperationException("S204: "+n.Line+"行目: 同期呼び出しの応答を待っている実行区間からは送れません（呼び出し先の実行区間が終わってから送ってください）。");
+                        waiting.Remove(sending[0]);
+                    }
+                    string[] opening;
+                    if(item.Links.TryGetValue("receiveExecution",out opening) && result.Elements.Any(x=>x.Id==opening[0] && x.Attributes.ContainsKey("opener") && x.Attributes["opener"]==item.Id))
+                        awaitAnswer(item);
                     if(n.Left!="[")justEnded.Remove(n.Left);
                     if(n.Right!="]")justEnded.Remove(n.Right);
                 }

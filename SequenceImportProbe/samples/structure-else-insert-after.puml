@@ -9,7 +9,9 @@ deactivate B
 alt ready
 A -> B : guarded()
 activate B
+deactivate B
 A -> B : also()
+activate B
 deactivate B
 else
 A -> B : fallback()

@@ -10,7 +10,9 @@ alt ready
 activate A
 A -> B : guarded()
 activate B
+deactivate B
 A -> B : also()
+activate B
 deactivate B
 deactivate A
 end
