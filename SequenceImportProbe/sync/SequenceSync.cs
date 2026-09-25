@@ -519,8 +519,10 @@ public sealed class SyncPlan
                 foreach(string kind in ua.Select(e=>e.Kind).Distinct().ToArray())
                 {
                     var xa=ua.Where(e=>e.Kind==kind && !map.ContainsKey(e.Id)).ToArray();var xb=ub.Where(e=>e.Kind==kind && !used.Contains(e.Id)).ToArray();
-                    // Two or more changed rows side by side are not guessed at; they are recreated.
-                    if(xa.Length!=1 || xb.Length!=1 || !sameShape(xa[0],xb[0]))continue;
+                    // Changed messages side by side pair up in order when there are as many on each side
+                    // and each pair runs between the same lanes the same way. Otherwise they are
+                    // recreated: a new id, and whatever referred to the old one does not follow.
+                    if(xa.Length==0 || xa.Length!=xb.Length || (xa.Length>1 && kind!="message") || xa.Where((x,k)=>!sameShape(x,xb[k])).Any())continue;
                     for(int k=0;k<xa.Length;k++)bind(xa[k],xb[k]);
                 }
                 i=ni+1;j=nj+1;

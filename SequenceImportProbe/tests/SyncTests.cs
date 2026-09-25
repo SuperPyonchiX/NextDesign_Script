@@ -233,8 +233,14 @@
         Require(!noteMove.Changes.Any(c=>c.Action=="update"),"same-label note targets confused");
         var ambiguous=Doc("A -> B : old1\nA -> B : old2");Ids(ambiguous);
         var replacement=Plan(ambiguous,Doc("A -> B : new1\nA -> B : new2"));
-        Require(replacement.Recreated==2,"ambiguous rows silently paired");
-        Require(replacement.Changes.Count(c=>c.Action=="delete")==2 && replacement.Changes.Count(c=>c.Action=="add")==2,"ambiguous range not recreated");
+        // Renamed side by side between the same lanes: they pair up in order and keep their ids,
+        // so what refers to them (the operation a hand-drawn message calls, a trace link) stays.
+        Require(replacement.Recreated==0 && replacement.Changes.Count(c=>c.Action=="update")==2,"rows renamed together were recreated: "+replacement.ToJson());
+        // A run that does not pair up (a different count, or other lanes) is still recreated.
+        var uneven=Plan(ambiguous,Doc("A -> B : new1\nA -> B : new2\nA -> B : new3"));
+        Require(uneven.Changes.Count(c=>c.Action=="delete")==2 && uneven.Changes.Count(c=>c.Action=="add")==3,"an uneven run was paired");
+        var turned=Plan(ambiguous,Doc("A -> B : new1\nB -> A : new2"));
+        Require(turned.Changes.Count(c=>c.Action=="delete")==2,"a run with other lanes was paired");
         var invalid=Doc("");invalid.Elements.Last().Parent=invalid.Elements.Last().Id;
         bool failed=false;try {invalid.Validate();}catch(InvalidOperationException){failed=true;}Require(failed,"cycle accepted");
         var positions=SequenceLocalLayout.Arrange(new[]{
