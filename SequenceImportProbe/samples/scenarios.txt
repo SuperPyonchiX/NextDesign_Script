@@ -96,3 +96,5 @@ Note ごと枠で囲む | gap-unwrap-note-after.puml | gap-unwrap-note-before.pu
 分岐を別の枠へ移す | gap-branch-move-before.puml | gap-branch-move-after.puml
 分岐を元の枠へ戻す | gap-branch-move-after.puml | gap-branch-move-before.puml
 破棄する参加者の変更 | gap-destroy-lane-before.puml | gap-destroy-lane-after.puml
+閉じる応答の後への呼出しの追加 | gap-reply-extend-before.puml | gap-reply-extend-after.puml
+閉じる応答の後の呼出しの削除 | gap-reply-extend-after.puml | gap-reply-extend-before.puml

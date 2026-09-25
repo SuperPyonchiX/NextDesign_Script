@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.1";
+    public const string Title = "シーケンス生成実験 / 0.10.2";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -719,12 +719,14 @@ public static class PumlRuntime
     // ids are read off the metamodel, since the readback compares that pair.
     static string[] Wiring(IClass from,IClass to,string field,string relation,bool embed)
     {
-        var f=from.GetFields().Cast<IField>().FirstOrDefault(v=>v.RelationshipClass!=null
-                && v.RelationshipClass.Id==SequencePayload.Prefix+relation)
-            ?? Field(from,field);
+        // A class can hold two ends of one relation: an operand has its own Fragments and, as a
+        // fragment itself, the InteractionOperand that encloses it. The named field wins.
+        var candidates=from.GetFields().Cast<IField>().Where(v=>v.RelationshipClass!=null
+            && v.RelationshipClass.Id==SequencePayload.Prefix+relation).ToArray();
+        var f=candidates.FirstOrDefault(v=>v.Name==field) ?? candidates.FirstOrDefault() ?? Field(from,field);
         if(f==null || f.RelationshipClass==null)throw new InvalidOperationException("E121: 関連フィールドを取得できません: "+field);
         var back=to==null?null:to.GetFields().Cast<IField>().FirstOrDefault(v=>v.RelationshipClass!=null
-            && v.RelationshipClass.Id==f.RelationshipClass.Id);
+            && v.RelationshipClass.Id==f.RelationshipClass.Id && v.Id!=f.Id);
         return new[]{f.RelationshipClass.Id,embed?"Embed":"Ref",
             PumlBuild.Json(new[]{f.Id,back==null?"":back.Id})};
     }
@@ -3897,7 +3899,13 @@ public sealed class SyncPlan
             SequenceElement was;
             if(!old.TryGetValue(e.Id,out was))continue;
             string[] a,b;
-            bool moved=(e.Kind=="operand" && was.Parent!=e.Parent)
+            // A branch that something leaves for the top level is made again too: the product will
+            // not untie a branch from a message or frame (the relation is system-defined), but it
+            // drops those ties when the branch is deleted.
+            string rootId=plan.Expected.Elements.Single(x=>x.Kind=="interaction").Id;
+            bool left=e.Kind=="operand" && current.Elements.Any(x=>x.Parent==e.Id && (x.Kind=="message" || x.Kind=="fragment" || x.Kind=="ref")
+                && plan.Expected.Elements.Any(y=>y.Id==x.Id && y.Parent==rootId));
+            bool moved=(e.Kind=="operand" && was.Parent!=e.Parent) || left
                 || (e.Kind=="destroy" && (!e.Links.TryGetValue("participant",out a) | !was.Links.TryGetValue("participant",out b) || !a.SequenceEqual(b)));
             if(!moved)continue;
             string fresh=newId(),stale=e.Id;
@@ -5617,6 +5625,28 @@ public sealed class SequenceStructurePreparation
             renamed.Add(new[]{id,text,before[id].Kind});
         }
 
+        // A bar made again under a new id, where it was: every message end on it moves to the new
+        // one, and the old one is deleted with whatever it was tied to.
+        var remade=new List<string>();
+        Func<string,string> remakeBar=old=>{
+            string fresh=Guid.NewGuid().ToString();
+            var g=bars[old];int count=newBarShapes.Count;
+            addBar(fresh,Link(after[old],"participant").Single(),g[0],g[1],g[2]);
+            Collection(view,"ExecutionSpecifications").Items.AddRange(newBarShapes.Skip(count));
+            bars[fresh]=g;
+            foreach(var r in relations.Where(r=>(V(r,"MetamodelId")==R("SendMessage") || V(r,"MetamodelId")==R("ReceiveMessage")) && V(r,"SourceId")==old && !leaving.Contains(V(r,"TargetId"))))
+                if(!changedIds.Contains(V(r,"Id")))resend(r,fresh,null);
+            foreach(var r in changed.Concat(newRelations).Where(r=>(V(r,"MetamodelId")==R("SendMessage") || V(r,"MetamodelId")==R("ReceiveMessage")) && V(r,"SourceId")==old))
+                r.Properties["SourceId"]=SequenceJson.Parse(SequencePayload.Q(fresh));
+            foreach(var w in wires)
+            {
+                if(w.SendPort==old)w.SendPort=fresh;
+                if(w.ReceivePort==old)w.ReceivePort=fresh;
+                w.RelationSources=w.RelationSources.Select(x=>x==old?fresh:x).ToArray();
+            }
+            leaving.Add(old);remade.Add(old);
+            return fresh;
+        };
         // ---- A bar is tied to the reply that closes it. Only bars this update touches are
         // checked, so a diagram drawn by hand keeps its own ties everywhere else.
         var replyLinks=typed("ExecutionSpecificationReplyMessage");
@@ -5629,12 +5659,20 @@ public sealed class SequenceStructurePreparation
                 foreach(string role in new[]{"sendExecution","receiveExecution"})foreach(string b in Link(m,role))touched.Add(b);
             foreach(var m in plan.Expected.Elements.Where(e=>e.Kind=="message" && touchedMessages.Contains(e.Id)))
                 foreach(string role in new[]{"sendExecution","receiveExecution"})foreach(string b in Link(m,role))touched.Add(b);
-            foreach(string b in touched.Where(id=>after.ContainsKey(id) || implicitPorts.Values.Contains(id)))
+            foreach(string b0 in touched.Where(id=>after.ContainsKey(id) || implicitPorts.Values.Contains(id)).ToArray())
             {
+                string b=b0;
                 string closing=after.ContainsKey(b)?ClosingReply(plan.Expected,b):null;
-                foreach(var link in replyLinks.Where(r=>V(r,"SourceId")==b))
-                    if(V(link,"TargetId")!=closing && !leaving.Contains(V(link,"TargetId")))unrelate.Add(V(link,"Id"));
-                if(closing!=null && !replyLinks.Any(r=>V(r,"SourceId")==b && V(r,"TargetId")==closing))
+                bool linked=replyLinks.Any(r=>V(r,"SourceId")==b && V(r,"TargetId")==closing);
+                foreach(var link in replyLinks.Where(r=>V(r,"SourceId")==b).ToArray())
+                {
+                    if(V(link,"TargetId")==closing || leaving.Contains(V(link,"TargetId")))continue;
+                    // The product will not untie it. It is pointed at the reply that now closes the
+                    // bar; with none, the bar is made again and the old one goes, tie and all.
+                    if(closing!=null && !linked){resend(link,null,closing);linked=true;continue;}
+                    b=remakeBar(b);linked=false;break;
+                }
+                if(closing!=null && !linked)
                 {
                     string relationId=Guid.NewGuid().ToString();
                     if(replyLinks.Length>0)
@@ -5651,6 +5689,9 @@ public sealed class SequenceStructurePreparation
             }
         }
 
+        // The product refuses to untie system-defined relations, which every sequence relation is.
+        Require(unrelate.Count==0,"関連の解除が必要な変更です。製品がシーケンス図の関連の解除を受け付けません: "
+            +string.Join(",",unrelate.Select(id=>V(relations.First(r=>V(r,"Id")==id),"MetamodelId").Replace(SequencePayload.Prefix,""))));
         if(newEndShapes.Count>0)Collection(view,"MessageEnds").Items.AddRange(newEndShapes);
         patch["Entities"].Items.AddRange(newEntities);
         patch["Relations"].Items.AddRange(newRelations);
@@ -5676,7 +5717,7 @@ public sealed class SequenceStructurePreparation
         string inserted=gate.AddMessages.FirstOrDefault(id=>walkNew.Skip(System.Array.IndexOf(walkNew,id)+1).Any(before.ContainsKey))??"";
         return new SequenceStructurePreparation{ReconnectJson=patch.ToJsonString(),ReconnectCount=changed.Count,
             EditorAfterDeleteJson=afterDelete.ToJsonString(),
-            DeleteIds=gate.DeleteExecutions.ToArray(),
+            DeleteIds=gate.DeleteExecutions.Concat(remade).ToArray(),
             AddedExecutions=additions.ToArray(),AddedParticipants=lanes.ToArray(),AddedMessages=wires.ToArray(),
             AddedFragments=frames.ToArray(),AddedOperands=branches.ToArray(),
             StretchedLifelines=new SequenceStretchedLifeline[0],CreatedCollections=Created.ToArray(),
