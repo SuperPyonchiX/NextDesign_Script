@@ -29,7 +29,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.11.4";
+    public const string Title = "シーケンス生成実験 / 0.11.5";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -4282,7 +4282,9 @@ public class PumlBuild
                 // A receive followed by activate opens that receive execution, not a second bar.
                 if(id==previous)previous=activities[n.Left].Count>0?activities[n.Left].Peek():null;
                 activities[n.Left].Push(previous); active[n.Left]=id;
-                pendingAlias=null; continue;
+                // Another lane's activate in between does not take the receive from this one, as the
+                // reading has it; only this lane's activate or a deactivate does.
+                if(pendingAlias==n.Left)pendingAlias=null; continue;
             }
             if(n.Kind=="deactivate")
             {
@@ -4428,7 +4430,17 @@ public class PumlBuild
                 if(b.sent.Any(m=>m[1]==bar || m[2]==bar))continue;
                 int barTop=(int)pair.Value["Y"];
                 var last=b.sent.LastOrDefault(m=>wires.ContainsKey(m[0]) && (int)wires[m[0]]["SourceY"]<barTop && (laneOf(m[1])==lane || laneOf(m[2])==lane));
-                if(last==null || last[3]=="reply" || laneOf(last[1])!=lane || laneOf(last[2])!=lane || last[1]!=last[2])continue;
+                if(last==null || last[3]=="reply" || laneOf(last[1])!=lane)continue;
+                if(laneOf(last[2])!=lane)
+                {
+                    // A bar the export writes after the send it opens with (see SequenceDocument.Parse).
+                    foreach(var r in b.relations.Cast<Dictionary<string,object>>().Where(r=>(string)r["MetamodelId"]==profile.Relations["SendMessage"] && (string)r["SourceId"]==last[1] && (string)r["TargetId"]==last[0]))
+                        r["SourceId"]=bar;
+                    foreach(var expected in b.payload.Expected.Where(e=>e.Id==last[0]))expected.SendPort=bar;
+                    last[1]=bar;
+                    continue;
+                }
+                if(last[1]!=last[2])continue;
                 foreach(var r in b.relations.Cast<Dictionary<string,object>>().Where(r=>(string)r["MetamodelId"]==profile.Relations["ReceiveMessage"] && (string)r["SourceId"]==last[2] && (string)r["TargetId"]==last[0]))
                     r["SourceId"]=bar;
                 foreach(var expected in b.payload.Expected.Where(e=>e.Id==last[0]))expected.ReceivePort=bar;
@@ -5281,9 +5293,19 @@ public sealed class SequenceDocument
                 if(lane==null || messages.Any(m=>links(m,"sendExecution").Contains(bar.Id) || links(m,"receiveExecution").Contains(bar.Id)))continue;
                 int start=int.Parse(bar.Attributes["start"],System.Globalization.CultureInfo.InvariantCulture);
                 var last=messages.LastOrDefault(m=>m.Line<start && (links(m,"sender").Contains(lane) || links(m,"receiver").Contains(lane)));
-                if(last==null || !links(last,"sender").Contains(lane) || !links(last,"receiver").Contains(lane))continue;
+                if(last==null || !links(last,"sender").Contains(lane))continue;
                 string sort;last.Attributes.TryGetValue("sort",out sort);
                 if(sort=="reply")continue;
+                if(!links(last,"receiver").Contains(lane))
+                {
+                    // The export also holds back the activate of a bar that opens with a send,
+                    // when the lane has just deactivated another: it comes after that send. The
+                    // empty bar is the one the send left from.
+                    var left=links(last,"sendExecution");
+                    if(left.Length==1 && left[0]==bar.Id)continue;
+                    last.Links["sendExecution"]=new[]{bar.Id};
+                    continue;
+                }
                 var arrived=links(last,"receiveExecution");
                 // It arrived on a bar the lane already had, not one it opened.
                 if(arrived.Length!=1 || arrived[0]==bar.Id || !links(last,"sendExecution").Contains(arrived[0]))continue;

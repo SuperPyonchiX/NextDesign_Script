@@ -298,9 +298,19 @@ public sealed class SequenceDocument
                 if(lane==null || messages.Any(m=>links(m,"sendExecution").Contains(bar.Id) || links(m,"receiveExecution").Contains(bar.Id)))continue;
                 int start=int.Parse(bar.Attributes["start"],System.Globalization.CultureInfo.InvariantCulture);
                 var last=messages.LastOrDefault(m=>m.Line<start && (links(m,"sender").Contains(lane) || links(m,"receiver").Contains(lane)));
-                if(last==null || !links(last,"sender").Contains(lane) || !links(last,"receiver").Contains(lane))continue;
+                if(last==null || !links(last,"sender").Contains(lane))continue;
                 string sort;last.Attributes.TryGetValue("sort",out sort);
                 if(sort=="reply")continue;
+                if(!links(last,"receiver").Contains(lane))
+                {
+                    // The export also holds back the activate of a bar that opens with a send,
+                    // when the lane has just deactivated another: it comes after that send. The
+                    // empty bar is the one the send left from.
+                    var left=links(last,"sendExecution");
+                    if(left.Length==1 && left[0]==bar.Id)continue;
+                    last.Links["sendExecution"]=new[]{bar.Id};
+                    continue;
+                }
                 var arrived=links(last,"receiveExecution");
                 // It arrived on a bar the lane already had, not one it opened.
                 if(arrived.Length!=1 || arrived[0]==bar.Id || !links(last,"sendExecution").Contains(arrived[0]))continue;

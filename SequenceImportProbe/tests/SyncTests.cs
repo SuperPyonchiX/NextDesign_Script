@@ -189,8 +189,19 @@
         var both=SequenceRegion.Nesting(new[]{left,right},new SequenceRegion[0],new[]{beside}).ToArray();
         Require(both.Length==1 && both[0].Parent=="left-branch","a note between frames side by side: "+string.Join(",",both.Select(m=>m.Parent)));
     }
+    // The export writes the activate of a bar that opens with a send after that send, when the
+    // lane has just deactivated another bar. That empty bar is the one the send left from.
+    static void LateSendBar()
+    {
+        var doc=SequenceDocument.Parse("@startuml\nparticipant A\nparticipant B\nactivate A\nA -> B : prepare()\nactivate B\nB --> A : ready()\ndeactivate B\nactivate A\ndeactivate A\nloop forever\nA -> B : report()\nactivate A\nactivate B\nB -> B : count()\nactivate B\ndeactivate B\ndeactivate B\nend\ndeactivate A\ndeactivate A\n@enduml");
+        var report=doc.Elements.Single(e=>e.Kind=="message" && e.Text=="report()");
+        var bar=doc.Elements.Single(e=>e.Id==report.Links["sendExecution"][0]);
+        Require(doc.Elements.Count(e=>e.Kind=="execution" && e.Links["participant"].SequenceEqual(bar.Links["participant"]))==2,"the bar written after its send was dropped");
+        Require(!doc.Elements.Any(e=>e.Kind=="message" && e.Text=="prepare()" && e.Links["sendExecution"].SequenceEqual(report.Links["sendExecution"])),"report() still leaves from the outer bar");
+    }
     public static void Run()
     {
+        LateSendBar();
         FrameNesting();
         FoldedNames();
         LateSelfBar();

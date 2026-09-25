@@ -1,0 +1,22 @@
+@startuml
+participant A
+participant B
+activate A
+A -> B : prepare()
+activate B
+B --> A : ready()
+deactivate B
+activate A
+deactivate A
+loop forever
+A -> B : reported()
+activate A
+activate B
+B -> B : count()
+activate B
+deactivate B
+deactivate B
+end
+deactivate A
+deactivate A
+@enduml

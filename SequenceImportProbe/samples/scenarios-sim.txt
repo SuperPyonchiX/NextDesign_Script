@@ -8,3 +8,5 @@ else の中で外側のバーを閉じる図の名前変更 | gap-close-in-else.
 空の図へ・自己呼び出しのバーが後ろに出た出力 | gap-empty.puml | gap-late-self-bar.puml
 自己呼び出しのバーが後ろに出た出力で名前変更 | gap-late-self-bar-normal.puml | gap-late-self-bar-renamed.puml
 自己呼び出しのバーが後ろに出た出力の名前変更 | gap-late-self-bar.puml | gap-late-self-bar-renamed.puml
+空の図へ・送信で始まるバーが後ろに出た出力 | gap-empty.puml | gap-late-send-bar.puml
+送信で始まるバーが後ろに出た出力の名前変更 | gap-late-send-bar.puml | gap-late-send-bar-renamed.puml
