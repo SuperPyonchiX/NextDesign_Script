@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.9.46";
+    public const string Title = "シーケンス生成実験 / 0.9.47";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -2664,7 +2664,8 @@ public class PumlBuild
     // reader takes the next message for its end. 16 short of a row, as a closing bar ends.
     public const int MinimumBar=MessagePitch-16;
     private PumlProfile profile; private SequencePayload payload;
-    private HashSet<string> replied=new HashSet<string>();
+    // Every message in drawing order: {id, send port, receive port, kind}.
+    private List<string[]> sent=new List<string[]>();
     // The last message each lane received, so a destroy right after it can point back.
     private Dictionary<string,string> lastReceived=new Dictionary<string,string>();
     // A message whose receiver is destroyed right after it, perhaps with an activate between.
@@ -2798,9 +2799,9 @@ public class PumlBuild
                     :profile.Destroy!=null && DestroysNext(items,index)?profile.Destroy
                     :n.Kind=="sync"?profile.Sync:profile.Async)); Owned("Messages",id);
                 Link("SendMessage",send,id,false,0); Link("ReceiveMessage",receive,id,false,0);
-                // One reply per bar: the one that closes it. A second reply from the same bar
-                // stays a plain message rather than taking the first one's place.
-                if(n.Kind=="reply" && send!=null && executions.ContainsKey(send) && replied.Add(send))Link("ReplyMessage",send,id,false,0);
+                // Which reply closes its bar is only known once the bar has no later message;
+                // the links are written after every item is placed.
+                sent.Add(new[]{id,send,receive,n.Kind});
                 Shape("Messages",id,"SourceY",y,"TargetY",targetY,"IsRightAtFrame",false,"SelfloopBendsX",self?Math.Max((int)executions[send]["X"],(int)executions[receive]["X"])+80:0);
                 if(operand!=null)Link("OperandTargetMessage",operand,id,false,0);
                 if(!outgoing)lastReceived[n.Right]=id;
@@ -2863,6 +2864,15 @@ public class PumlBuild
             p.Expected.Add(new PumlExpected{Id=id,Kind="lifeline",Text=plan.Names[index]});
         }
         b.Items(plan.Nodes);
+        // A bar is tied to the reply that closes it: the last message on that bar, when it is a
+        // reply leaving it. Tied to a reply with more messages on the bar after it, the product
+        // ends the bar there when it next lays the diagram out, and refuses every edit.
+        if(profile.Relations.ContainsKey("ReplyMessage"))
+            foreach(string bar in b.executions.Keys)
+            {
+                var last=b.sent.LastOrDefault(m=>m[1]==bar || m[2]==bar);
+                if(last!=null && last[3]=="reply" && last[1]==bar)b.Link("ReplyMessage",bar,last[0],false,0);
+            }
         foreach(var pair in b.executions)p.Expected.Add(new PumlExpected{Id=pair.Key,Kind="execution",Y=(int)pair.Value["Y"],EndY=(int)pair.Value["Y"]+(int)pair.Value["Length"]});
         foreach(var s in b.shapes["Lifelines"].Cast<Dictionary<string,object>>())s["LaneLength"]=b.y+40;
         var editor=Obj("Id",identity==null?Guid.NewGuid().ToString():identity.Editor,"ViewType","SequenceDiagram","MetamodelId","DensoCreate.Indio.IMF.Extensions.Sequence.ViewInstance.SequenceDiagramViewInstance","DefinitionId",definition,"ModelId",root,"Frame",Obj("Id",identity==null?Guid.NewGuid().ToString():identity.FrameShape,"ModelId",frame));
@@ -5385,7 +5395,9 @@ public sealed class SequenceStructurePreparation
             if(wanted.Parent!=root)wiring.Add(new[]{"OperandTargetMessage",wanted.Parent});
             // A reply is also tied to the bar it returns from, when the sample reply is and that
             // bar has no reply yet. Without it the product shrinks the bar on its next layout.
-            if(relations.Any(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ExecutionSpecificationReplyMessage" && V(r,"TargetId")==template)
+            // Only the reply that closes its bar is tied to it: the last message on that bar.
+            if(SequenceStructurePreflight.Attribute(wanted)=="reply" && ClosingReply(plan.Expected,send)==id
+                && relations.Any(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ExecutionSpecificationReplyMessage")
                 && !relations.Any(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ExecutionSpecificationReplyMessage" && V(r,"SourceId")==send))
                 wiring.Add(new[]{"ExecutionSpecificationReplyMessage",send});
             foreach(var pair in wiring)
@@ -6230,6 +6242,14 @@ public sealed class SequenceStructurePreparation
     }
     static string[] Link(SequenceElement e,string role)
     { string[] ids;return e.Links.TryGetValue(role,out ids)?ids:new string[0]; }
+    // The reply that closes a bar: the last message on it, in drawing order, when that is a
+    // reply leaving the bar. Null when the bar ends on anything else.
+    internal static string ClosingReply(SequenceDocument doc,string bar)
+    {
+        var last=SequenceStructurePreflight.Flatten(doc).Select(id=>doc.Elements.First(e=>e.Id==id))
+            .LastOrDefault(e=>e.Kind=="message" && (Link(e,"sendExecution").Contains(bar) || Link(e,"receiveExecution").Contains(bar)));
+        return last!=null && SequenceStructurePreflight.Attribute(last)=="reply" && Link(last,"sendExecution").Contains(bar)?last.Id:null;
+    }
     // A new branch on a frame already drawn: the guard 12 under the frame's old bottom,
     // its messages under it with the generator's steps, the frame closing 8 under the last.
     // Bars in the branch span the messages they touch, as in a new frame.

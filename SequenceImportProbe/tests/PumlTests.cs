@@ -53,6 +53,16 @@ public static class PumlTests
                         && x["SourceId"].StringValue()==r["SourceId"].StringValue() && x["TargetId"].StringValue()==r["TargetId"].StringValue())))
                     throw new Exception("replies are not tied to the bars they leave");
             }
+            // B keeps one bar across both calls: firstDone() leaves it midway and must not be
+            // tied to it, or the product cuts the bar there and refuses every edit.
+            if(Path.GetFileName(file)=="structure-batch-after.puml")
+            {
+                var built=SequenceJson.Parse(payload.Json);
+                var replies=built["Relations"].Items.Where(r=>r["MetamodelId"].StringValue()=="ReplyMessage").ToArray();
+                var names=replies.Select(r=>built["Entities"].Items.Single(e=>e["Id"].StringValue()==r["TargetId"].StringValue())["Name"].StringValue()).ToArray();
+                if(!names.SequenceEqual(new[]{"secondDone()"}))
+                    throw new Exception("only the reply that closes a bar may be tied to it: "+string.Join(",",names));
+            }
         }
         var cases=new[]{
             "activate A", "deactivate A", "destroy B\nA -> B : reuse", "destroy B\ndestroy B", "skinparam unknownOption value", "!include remote.puml",

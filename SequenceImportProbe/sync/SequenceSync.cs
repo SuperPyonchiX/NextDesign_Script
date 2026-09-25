@@ -2042,7 +2042,9 @@ public sealed class SequenceStructurePreparation
             if(wanted.Parent!=root)wiring.Add(new[]{"OperandTargetMessage",wanted.Parent});
             // A reply is also tied to the bar it returns from, when the sample reply is and that
             // bar has no reply yet. Without it the product shrinks the bar on its next layout.
-            if(relations.Any(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ExecutionSpecificationReplyMessage" && V(r,"TargetId")==template)
+            // Only the reply that closes its bar is tied to it: the last message on that bar.
+            if(SequenceStructurePreflight.Attribute(wanted)=="reply" && ClosingReply(plan.Expected,send)==id
+                && relations.Any(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ExecutionSpecificationReplyMessage")
                 && !relations.Any(r=>V(r,"MetamodelId")==SequencePayload.Prefix+"ExecutionSpecificationReplyMessage" && V(r,"SourceId")==send))
                 wiring.Add(new[]{"ExecutionSpecificationReplyMessage",send});
             foreach(var pair in wiring)
@@ -2887,6 +2889,14 @@ public sealed class SequenceStructurePreparation
     }
     static string[] Link(SequenceElement e,string role)
     { string[] ids;return e.Links.TryGetValue(role,out ids)?ids:new string[0]; }
+    // The reply that closes a bar: the last message on it, in drawing order, when that is a
+    // reply leaving the bar. Null when the bar ends on anything else.
+    internal static string ClosingReply(SequenceDocument doc,string bar)
+    {
+        var last=SequenceStructurePreflight.Flatten(doc).Select(id=>doc.Elements.First(e=>e.Id==id))
+            .LastOrDefault(e=>e.Kind=="message" && (Link(e,"sendExecution").Contains(bar) || Link(e,"receiveExecution").Contains(bar)));
+        return last!=null && SequenceStructurePreflight.Attribute(last)=="reply" && Link(last,"sendExecution").Contains(bar)?last.Id:null;
+    }
     // A new branch on a frame already drawn: the guard 12 under the frame's old bottom,
     // its messages under it with the generator's steps, the frame closing 8 under the last.
     // Bars in the branch span the messages they touch, as in a new frame.
