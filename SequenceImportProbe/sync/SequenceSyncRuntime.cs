@@ -1423,6 +1423,8 @@ public static class SequenceSnapshotProbe
                         var other=b==null?null:b[p.Key];
                         if(p.Value!=null && p.Value.Properties!=null){walk(p.Value,other!=null && other.Properties!=null?other:null,key+".");continue;}
                         if(other==null){add(missing,kind+" "+key);continue;}
+                        if(p.Value.Raw!=null && other.Raw!=null && p.Value.Raw.StartsWith("\"")!=other.Raw.StartsWith("\""))
+                            add(differs,kind+" "+key+"（JSONの型: 写し="+(p.Value.Raw.StartsWith("\"")?"文字":"数値等")+" / SDK="+(other.Raw.StartsWith("\"")?"文字":"数値等")+"）");
                         if(!Same(p.Value,other))
                         {
                             add(differs,kind+" "+key);if(samples.Length<20000)samples.AppendLine(kind+" "+key+" export="+p.Value.ToJsonString()+" sdk="+other.ToJsonString());
@@ -1605,6 +1607,26 @@ public static class SequenceSnapshotBuilder
     }
     static SequenceJson O(){return new SequenceJson{Properties=new Dictionary<string,SequenceJson>(StringComparer.Ordinal)};}
     static void P(SequenceJson o,string k,object v){var j=J(v);if(j!=null)o.Properties[k]=j;}
+    // A field's value in the JSON type its field declares: the SDK can hand a number or a flag
+    // back as text, and the import refuses a text where it expects a number (0.11.10 batch:
+    // InvalidCastException String to Double). A value that does not read as its type is left out.
+    static void Field(SequenceJson o,IField f,object v)
+    {
+        string type=(f.Type??"").ToLowerInvariant();var text=v as string;
+        bool numeric=type.Contains("double") || type.Contains("float") || type.Contains("decimal") || type.Contains("int") || type.Contains("long") || type=="number";
+        if(text!=null && numeric)
+        {
+            double number;
+            if(double.TryParse(text,System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out number))P(o,f.Name,number);
+            return;
+        }
+        if(text!=null && type.Contains("bool"))
+        {
+            bool flag;if(bool.TryParse(text,out flag))P(o,f.Name,flag);
+            return;
+        }
+        P(o,f.Name,v);
+    }
     // The SDK reads some stored coordinates 1e-6 over their value and some not, and taking the
     // offset off made them drift the other way (0.11.9), so the values go back as the SDK reads
     // them and the trial compares every shape rounded (SequenceStructureTrial.RoundAllShapes).
@@ -1657,7 +1679,7 @@ public static class SequenceSnapshotBuilder
             if(m.Metaclass!=null)
                 foreach(var f in m.Metaclass.GetFields().Cast<IField>().Where(f=>f.RelationshipClass==null))
                 {
-                    try {P(fields,f.Name,m.GetField(f.Name));}
+                    try {Field(fields,f,m.GetField(f.Name));}
                     catch(Exception ex){log.AppendLine("snapshot field "+f.Name+": "+ex.GetType().Name);}
                 }
             string name=m.Name;
