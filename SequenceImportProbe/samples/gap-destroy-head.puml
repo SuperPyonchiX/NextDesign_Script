@@ -1,0 +1,18 @@
+@startuml
+participant A
+participant B
+participant C
+activate A
+A -> B : start()
+activate B
+B --> A : started()
+deactivate B
+opt cleanup
+destroy C
+A -> B : stop()
+activate B
+B --> A : stopped()
+deactivate B
+end
+deactivate A
+@enduml

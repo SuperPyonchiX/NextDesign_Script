@@ -193,6 +193,7 @@ public static class SequenceSimulator
             if(nearest.Length>1)return root;
             return nearest.Length==1?nearest[0].Id:root;
         };
+        foreach(var d in shapes("Destructions"))byId[V(d,"ModelId")].Parent=containerAt(D(d,"X")+D(d,"Width")/2,D(d,"Y"));
         foreach(var shape in bars.Values)
         {
             string barId=V(shape,"ModelId");var item=byId[barId];

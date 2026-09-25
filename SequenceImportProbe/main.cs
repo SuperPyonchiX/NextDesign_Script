@@ -30,7 +30,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.11.15";
+    public const string Title = "シーケンス生成実験 / 0.11.16";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1224,6 +1224,9 @@ public sealed class DiagramSnapshot
             if(nearest.Length>1) {snapshot.Limitations.Add("実行区間境界の所属候補が複数");return root.Id;}
             return nearest.Length==1?nearest[0].Id:root.Id;
         };
+        // A destruction has no relation to the branch it is drawn in; the export puts it there by
+        // where it is, so the reading does too.
+        foreach(var d in diagram.Destructions)byId[d.ModelId].Parent=containerAt(d.LocationX+d.Width/2,d.LocationY);
         foreach(var e in diagram.ExecutionSpecifications)
         {
             var item=byId[e.ModelId];
