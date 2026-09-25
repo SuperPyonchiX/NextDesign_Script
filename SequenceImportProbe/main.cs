@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.2";
+    public const string Title = "シーケンス生成実験 / 0.10.3";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -2780,13 +2780,16 @@ public class PumlBuild
         if(!shapes.ContainsKey(list))shapes[list]=new List<object>(); shapes[list].Add(d); return d;
     }
     private void Owned(string kind,string id) { Link(kind,payload.Ids[0],id,true); }
+    // Bars a reply has ended. Next Design refuses every edit to a diagram whose bar goes on
+    // after a reply, so the lane goes on in a new bar from its next message.
+    private HashSet<string> closed=new HashSet<string>();
     private string Execution(string alias,int start)
     {
         string id=Entity("ExecutionSpecification",""); Owned("ExecutionSpecifications",id); Link("OwnedExecutionSpecification",lifelines[alias],id);
         executions[id]=Shape("ExecutionSpecifications",id,"X",x[alias]+8*(activities.ContainsKey(alias)?activities[alias].Count:0),"Y",start,"Length",40,"Height",40); executionAliases[id]=alias; return id;
     }
     private void Extend(string id,int at)
-    { var s=executions[id]; int size=Math.Max((int)s["Length"],at-(int)s["Y"]+35); s["Length"]=size; s["Height"]=size; }
+    { if(closed.Contains(id))return; var s=executions[id]; int size=Math.Max((int)s["Length"],at-(int)s["Y"]+35); s["Length"]=size; s["Height"]=size; }
     private void Items(IEnumerable<PumlNode> nodes,string operand=null,int depth=0)
     {
         var items=nodes.ToList();
@@ -2799,7 +2802,8 @@ public class PumlBuild
                 var live=new HashSet<string>();
                 if(active.ContainsKey(n.Left))live.Add(active[n.Left]);
                 if(activities.ContainsKey(n.Left))foreach(var parent in activities[n.Left])if(parent!=null)live.Add(parent);
-                foreach(var execution in executions.Where(v=>executionAliases[v.Key]==n.Left))
+                live.ExceptWith(closed);
+                foreach(var execution in executions.Where(v=>executionAliases[v.Key]==n.Left && !closed.Contains(v.Key)))
                 { var bar=execution.Value; int length=live.Contains(execution.Key)?at-(int)bar["Y"]:Math.Min((int)bar["Length"],at-(int)bar["Y"]); bar["Length"]=length; bar["Height"]=length; }
                 active.Remove(n.Left); activities.Remove(n.Left); pendingAlias=null;
                 string id=Entity("Destruction",""); Owned("Destructions",id); Link("DestructionTargetLifeline",id,lifelines[n.Left],false,0);
@@ -2827,7 +2831,7 @@ public class PumlBuild
             if(n.Kind=="deactivate")
             {
                 string id=active[n.Left]; var bar=executions[id];
-                int length=Math.Max(MinimumBar,y-16-(int)bar["Y"]); bar["Length"]=length;bar["Height"]=length;
+                if(!closed.Contains(id)){int length=Math.Max(MinimumBar,y-16-(int)bar["Y"]); bar["Length"]=length;bar["Height"]=length;}
                 string previous=activities[n.Left].Pop();
                 if(previous==null)active.Remove(n.Left);else active[n.Left]=previous;
                 pendingAlias=null; continue;
@@ -2837,7 +2841,7 @@ public class PumlBuild
             {
                 y+=18*(n.Text.Split('\n').Length-1);
                 bool incoming=n.Left=="[";
-                string send; if(incoming)send=null; else if(!active.TryGetValue(n.Left,out send))active[n.Left]=send=Execution(n.Left,y-20);
+                string send; if(incoming)send=null; else if(!active.TryGetValue(n.Left,out send) || closed.Contains(send))active[n.Left]=send=Execution(n.Left,y-20);
                 bool outgoing=n.Right=="]"; bool self=n.Left==n.Right; int targetY=y+(self?24:0);
                 string receive;
                 bool beginsActivation=index+1<items.Count && items[index+1].Kind=="activate" && items[index+1].Left==n.Right;
@@ -2848,8 +2852,14 @@ public class PumlBuild
                     Shape("MessageEnds",receive,"X",endX,"Y",targetY,"Width",10,"Height",10);
                     payload.Expected.Add(new PumlExpected{Id=receive,Kind="messageEnd",Y=targetY,X=endX});
                 }
-                else if((n.Kind=="reply" || (!beginsActivation && activities.ContainsKey(n.Right) && activities[n.Right].Count>0)) && active.TryGetValue(n.Right,out receive)) { }
-                else receive=Execution(n.Right,targetY);
+                else if((n.Kind=="reply" || (!beginsActivation && activities.ContainsKey(n.Right) && activities[n.Right].Count>0)) && active.TryGetValue(n.Right,out receive) && !closed.Contains(receive)) { }
+                else
+                {
+                    // An activation a reply has ended goes on in a new bar from here.
+                    bool reopened=!beginsActivation && active.ContainsKey(n.Right) && closed.Contains(active[n.Right]);
+                    receive=Execution(n.Right,targetY);
+                    if(reopened)active[n.Right]=receive;
+                }
                 if(incoming)
                 {
                     send=Entity("MessageEnd",""); Owned("MessageEnds",send);
@@ -2870,6 +2880,12 @@ public class PumlBuild
                 // Which reply closes its bar is only known once the bar has no later message;
                 // the links are written after every item is placed.
                 sent.Add(new[]{id,send,receive,n.Kind});
+                // A reply ends the bar it leaves, a step under it, as a deactivate would.
+                if(n.Kind=="reply" && send!=null && executions.ContainsKey(send) && active.ContainsKey(n.Left) && active[n.Left]==send)
+                {
+                    var ended=executions[send];int length=Math.Max(MinimumBar,targetY+MessagePitch-16-(int)ended["Y"]);
+                    ended["Length"]=length;ended["Height"]=length;closed.Add(send);
+                }
                 Shape("Messages",id,"SourceY",y,"TargetY",targetY,"IsRightAtFrame",false,"SelfloopBendsX",self?Math.Max((int)executions[send]["X"],(int)executions[receive]["X"])+80:0);
                 if(operand!=null)Link("OperandTargetMessage",operand,id,false,0);
                 if(!outgoing)lastReceived[n.Right]=id;
@@ -3482,6 +3498,19 @@ public sealed class SequenceDocument
         visit=(nodes,parent)=>{
             int order=0;SequenceElement previousEvent=null;
             var orderedNodes=nodes.ToArray();
+            // A reply ends the bar it leaves: Next Design refuses every edit to a diagram whose bar
+            // goes on after a reply. An activation the input keeps open past a reply goes on in a
+            // bar of its own from the next message on that lane, under the same outer bar.
+            Func<SequenceElement,bool> closed=e=>e.Attributes.ContainsKey("closed");
+            Func<string,int,SequenceElement> reopen=(alias,line)=>{
+                var was=active[alias].Pop();
+                var e=new SequenceElement{Id="e"+(next++),Kind="execution",Parent=parent,Order=order++,Line=line};
+                e.Links["participant"]=new[]{aliases[alias]};e.Attributes["endParent"]=parent;
+                e.Attributes["start"]=line.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if(was.Links.ContainsKey("outer"))e.Links["outer"]=was.Links["outer"].ToArray();
+                result.Elements.Add(e);active[alias].Push(e);
+                return e;
+            };
             for(int nodeIndex=0;nodeIndex<orderedNodes.Length;nodeIndex++)
             {
                 var n=orderedNodes[nodeIndex];
@@ -3492,7 +3521,8 @@ public sealed class SequenceDocument
                     e.Attributes["start"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     result.Elements.Add(e);
                     if(!active.ContainsKey(n.Left))active[n.Left]=new Stack<SequenceElement>();
-                    if(active[n.Left].Count>0)e.Links["outer"]=new[]{active[n.Left].Peek().Id};
+                    // A bar a reply has ended holds nothing more, so nothing nests in it.
+                    if(active[n.Left].Count>0 && !closed(active[n.Left].Peek()))e.Links["outer"]=new[]{active[n.Left].Peek().Id};
                     active[n.Left].Push(e);
                     if(previousEvent!=null && previousEvent.Kind=="message" && previousEvent.Links["receiver"].SequenceEqual(new[]{aliases[n.Left]}))
                         previousEvent.Links["receiveExecution"]=new[]{e.Id};
@@ -3502,7 +3532,10 @@ public sealed class SequenceDocument
                 {
                     if(!active.ContainsKey(n.Left) || active[n.Left].Count==0)
                         throw new InvalidOperationException("S202: "+n.Line+"行目のdeactivateに対応する開始がありません。");
-                    var e=active[n.Left].Pop();e.Attributes["endParent"]=parent;previousEvent=null;
+                    var e=active[n.Left].Pop();previousEvent=null;
+                    // A bar a reply has already ended keeps that end.
+                    if(closed(e))continue;
+                    e.Attributes["endParent"]=parent;
                     // Boundaries use neighbouring semantic elements below, not physical source lines.
                     e.Attributes["end"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);continue;
                 }
@@ -3513,14 +3546,36 @@ public sealed class SequenceDocument
                     item.Attributes["sort"]=n.Kind;
                     item.Links["sender"]=n.Left=="["?new string[0]:new[]{aliases[n.Left]};
                     item.Links["receiver"]=n.Right=="]"?new string[0]:new[]{aliases[n.Right]};
+                    // A receive the next line activates on gets that new bar instead; nothing reopens for it.
+                    bool activates=nodeIndex+1<orderedNodes.Length && orderedNodes[nodeIndex+1].Kind=="activate" && orderedNodes[nodeIndex+1].Left==n.Right;
                     foreach(var endpoint in new[]{new[]{"sendExecution",n.Left},new[]{"receiveExecution",n.Right}})
-                        if(active.ContainsKey(endpoint[1]) && active[endpoint[1]].Count>0)item.Links[endpoint[0]]=new[]{active[endpoint[1]].Peek().Id};
+                    {
+                        if(!active.ContainsKey(endpoint[1]) || active[endpoint[1]].Count==0)continue;
+                        var top=active[endpoint[1]].Peek();
+                        if(closed(top))
+                        {
+                            if(endpoint[0]=="receiveExecution" && activates)continue;
+                            top=reopen(endpoint[1],n.Line);
+                            // A bar opened by the message it receives starts after that message, as
+                            // the reader takes the message it receives at its top.
+                            if(endpoint[0]=="receiveExecution")top.Attributes["opener"]=item.Id;
+                        }
+                        item.Links[endpoint[0]]=new[]{top.Id};
+                    }
                 }
                 // A self reply closing the innermost activation returns to its
                 // caller. Keep the sender on the inner bar; do not pop until deactivate.
                 if(n.Kind=="reply" && n.Left==n.Right && active.ContainsKey(n.Left) && active[n.Left].Count>1
                     && nodeIndex+1<orderedNodes.Length && orderedNodes[nodeIndex+1].Kind=="deactivate" && orderedNodes[nodeIndex+1].Left==n.Left)
                     item.Links["receiveExecution"]=new[]{active[n.Left].Skip(1).First().Id};
+                // The reply ends the bar it leaves.
+                if(n.Kind=="reply" && item.Links.ContainsKey("sendExecution") && active.ContainsKey(n.Left) && active[n.Left].Count>0
+                    && active[n.Left].Peek().Id==item.Links["sendExecution"][0])
+                {
+                    var ended=active[n.Left].Peek();
+                    ended.Attributes["closed"]="1";ended.Attributes["endParent"]=parent;
+                    ended.Attributes["end"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                }
                 // The exporter writes a destruction message as -> followed by
                 // destroy of that receiver. Recover its kind, retaining the destroy event.
                 // An activate of the receiver may come between: the bar it opens is the one
@@ -3537,8 +3592,10 @@ public sealed class SequenceDocument
                 if(n.Kind=="destroy" && active.ContainsKey(n.Left))
                     while(active[n.Left].Count>0)
                     {
-                        var closed=active[n.Left].Pop();closed.Attributes["endParent"]=parent;
-                        closed.Attributes["end"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        var ending=active[n.Left].Pop();
+                        if(closed(ending))continue;
+                        ending.Attributes["endParent"]=parent;
+                        ending.Attributes["end"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     }
                 result.Elements.Add(item);visit(n.Children,item.Id);previousEvent=item;
             }
@@ -3550,6 +3607,7 @@ public sealed class SequenceDocument
             int end=e.Attributes.ContainsKey("end")?int.Parse(e.Attributes["end"],System.Globalization.CultureInfo.InvariantCulture):int.MaxValue;
             var events=result.Elements.Where(n=>n.Kind!="participant" && n.Kind!="interaction" && n.Kind!="execution").OrderBy(n=>n.Line).ToArray();
             var preceding=events.LastOrDefault(n=>n.Line<start);var following=events.FirstOrDefault(n=>n.Line>end);
+            if(e.Attributes.ContainsKey("opener"))preceding=events.First(n=>n.Id==e.Attributes["opener"]);
             e.Links["startAfter"]=preceding==null?new string[0]:new[]{preceding.Id};
             e.Links["endBefore"]=following==null?new string[0]:new[]{following.Id};
             string endParent=e.Attributes["endParent"];e.Links["endContainer"]=new[]{endParent};

@@ -81,8 +81,9 @@
     // that the diagram does not have. Acceptance is settled here; writing is not.
     static void AddedExecutionPreflight()
     {
-        var before=Doc("activate B\nA -> B : first\nB --> A : firstDone\nA -> B : second\ndeactivate B");
-        var after=Doc("activate B\nA -> B : first\nB --> A : firstDone\nA -> B : second\nactivate B\ndeactivate B\ndeactivate B");
+        // No reply in between: a reply ends the bar it leaves, which would split B's bar here.
+        var before=Doc("activate B\nA -> B : first\nA -> B : second\ndeactivate B");
+        var after=Doc("activate B\nA -> B : first\nA -> B : second\nactivate B\ndeactivate B\ndeactivate B");
         var plan=Plan(before,after);
         var added=plan.Expected.Elements.Where(e=>e.Kind=="execution" && !before.Elements.Any(o=>o.Id==e.Id)).ToArray();
         Require(added.Length==1,"sample does not add exactly one execution");

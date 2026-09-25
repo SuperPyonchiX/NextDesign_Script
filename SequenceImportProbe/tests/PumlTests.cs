@@ -1,4 +1,4 @@
-public static class PumlTests
+﻿public static class PumlTests
 {
     public static void Run(string directory,string samples)
     {
@@ -35,6 +35,13 @@ public static class PumlTests
                 if(replacement.Ids.Intersect(again.Ids).Count()!=2)throw new Exception("Replacement reused child IDs");
             }
             File.WriteAllText(Path.Combine(directory,Path.GetFileNameWithoutExtension(file)+".json"),payload.Json);
+            // Next Design refuses every edit to a diagram whose bar goes on after a reply leaves it.
+            foreach(var reply in payload.Expected.Where(e=>e.Kind=="reply" && e.SendPort!=null))
+            {
+                var later=payload.Expected.Where(e=>(e.Kind=="sync" || e.Kind=="async" || e.Kind=="reply") && e.Y>reply.Y
+                    && (e.SendPort==reply.SendPort || e.ReceivePort==reply.SendPort)).Select(e=>e.Text).ToArray();
+                if(later.Length>0)throw new Exception(Path.GetFileName(file)+": a bar goes on after the reply "+reply.Text+": "+string.Join(",",later));
+            }
             // Each call answered from its own bar: the reply is tied back to the bar it leaves,
             // as a hand-drawn reply is, and no bar is tied to two replies.
             // A destruction points at the message that destroys its lane, as one drawn by hand does:
@@ -61,8 +68,9 @@ public static class PumlTests
                 var built=SequenceJson.Parse(payload.Json);
                 var replies=built["Relations"].Items.Where(r=>r["MetamodelId"].StringValue()=="ReplyMessage").ToArray();
                 var names=replies.Select(r=>built["Entities"].Items.Single(e=>e["Id"].StringValue()==r["TargetId"].StringValue())["Name"].StringValue()).ToArray();
-                if(!names.SequenceEqual(new[]{"secondDone()"}))
-                    throw new Exception("only the reply that closes a bar may be tied to it: "+string.Join(",",names));
+                // Each reply ends its own bar now, so each is tied to a bar of its own.
+                if(!names.SequenceEqual(new[]{"firstDone()","secondDone()"}) || replies.Select(r=>r["SourceId"].StringValue()).Distinct().Count()!=2)
+                    throw new Exception("each reply should close and be tied to a bar of its own: "+string.Join(",",names));
             }
         }
         var cases=new[]{

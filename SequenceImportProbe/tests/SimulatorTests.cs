@@ -400,6 +400,25 @@ public static class SequenceSimulator
             expected.ShapeDifferences(actual),"送受信: "+string.Join(" ",ports),"モデル: "+string.Join(" ",models)});
     }
 
+    // Next Design refuses every edit to a diagram whose bar goes on after a reply leaves it.
+    public static string Editable(string json)
+    {
+        var data=SequenceJson.Parse(json);
+        var relations=data["Relations"].Items.ToArray();
+        var wires=data["Editors"].Items.Single()["Messages"];
+        if(wires==null || wires.Items==null)return null;
+        var y=wires.Items.ToDictionary(w=>V(w,"ModelId"),w=>D(w,"SourceY"));
+        Func<string,string,string> port=(kind,message)=>relations.Where(r=>V(r,"MetamodelId")==P+kind && V(r,"TargetId")==message).Select(r=>V(r,"SourceId")).FirstOrDefault();
+        var entities=data["Entities"].Items.ToDictionary(e=>V(e,"Id"));
+        foreach(var reply in y.Keys.Where(id=>entities.ContainsKey(id) && entities[id]["Fields"]!=null && (V(entities[id]["Fields"],"MessageSort")??"").ToLowerInvariant()=="reply"))
+        {
+            string bar=port("SendMessage",reply);
+            if(bar==null)continue;
+            var later=y.Keys.Where(m=>y[m]>y[reply] && (port("SendMessage",m)==bar || port("ReceiveMessage",m)==bar)).ToArray();
+            if(later.Length>0)return "応答 "+V(entities[reply],"Name")+" の後にも同じバーを使うメッセージがあります: "+string.Join(",",later.Select(m=>V(entities[m],"Name")));
+        }
+        return null;
+    }
     // One scenario end to end. Returns null when the diagram reads back as the input and a
     // second pass finds nothing to do; otherwise what went wrong.
     public static string Run(string beforePuml,string afterPuml)
@@ -435,6 +454,8 @@ public static class SequenceSimulator
             string mismatch=Compare(expectConnected,connectedState,"接続変更後")??Compare(expectFinal,finalState,"削除後");
             if(mismatch!=null)return mismatch;
             stage="読み直し";
+            string invalid=Editable(after);
+            if(invalid!=null)return "製品が編集を拒否する形: "+invalid;
             var read=Read(after);
             var again=SequenceNotePolicy.Build(read,desired,newId);
             if(again.Changes.Count>0)

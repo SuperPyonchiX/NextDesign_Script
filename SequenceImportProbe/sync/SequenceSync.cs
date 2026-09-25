@@ -60,6 +60,19 @@ public sealed class SequenceDocument
         visit=(nodes,parent)=>{
             int order=0;SequenceElement previousEvent=null;
             var orderedNodes=nodes.ToArray();
+            // A reply ends the bar it leaves: Next Design refuses every edit to a diagram whose bar
+            // goes on after a reply. An activation the input keeps open past a reply goes on in a
+            // bar of its own from the next message on that lane, under the same outer bar.
+            Func<SequenceElement,bool> closed=e=>e.Attributes.ContainsKey("closed");
+            Func<string,int,SequenceElement> reopen=(alias,line)=>{
+                var was=active[alias].Pop();
+                var e=new SequenceElement{Id="e"+(next++),Kind="execution",Parent=parent,Order=order++,Line=line};
+                e.Links["participant"]=new[]{aliases[alias]};e.Attributes["endParent"]=parent;
+                e.Attributes["start"]=line.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if(was.Links.ContainsKey("outer"))e.Links["outer"]=was.Links["outer"].ToArray();
+                result.Elements.Add(e);active[alias].Push(e);
+                return e;
+            };
             for(int nodeIndex=0;nodeIndex<orderedNodes.Length;nodeIndex++)
             {
                 var n=orderedNodes[nodeIndex];
@@ -70,7 +83,8 @@ public sealed class SequenceDocument
                     e.Attributes["start"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     result.Elements.Add(e);
                     if(!active.ContainsKey(n.Left))active[n.Left]=new Stack<SequenceElement>();
-                    if(active[n.Left].Count>0)e.Links["outer"]=new[]{active[n.Left].Peek().Id};
+                    // A bar a reply has ended holds nothing more, so nothing nests in it.
+                    if(active[n.Left].Count>0 && !closed(active[n.Left].Peek()))e.Links["outer"]=new[]{active[n.Left].Peek().Id};
                     active[n.Left].Push(e);
                     if(previousEvent!=null && previousEvent.Kind=="message" && previousEvent.Links["receiver"].SequenceEqual(new[]{aliases[n.Left]}))
                         previousEvent.Links["receiveExecution"]=new[]{e.Id};
@@ -80,7 +94,10 @@ public sealed class SequenceDocument
                 {
                     if(!active.ContainsKey(n.Left) || active[n.Left].Count==0)
                         throw new InvalidOperationException("S202: "+n.Line+"行目のdeactivateに対応する開始がありません。");
-                    var e=active[n.Left].Pop();e.Attributes["endParent"]=parent;previousEvent=null;
+                    var e=active[n.Left].Pop();previousEvent=null;
+                    // A bar a reply has already ended keeps that end.
+                    if(closed(e))continue;
+                    e.Attributes["endParent"]=parent;
                     // Boundaries use neighbouring semantic elements below, not physical source lines.
                     e.Attributes["end"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);continue;
                 }
@@ -91,14 +108,36 @@ public sealed class SequenceDocument
                     item.Attributes["sort"]=n.Kind;
                     item.Links["sender"]=n.Left=="["?new string[0]:new[]{aliases[n.Left]};
                     item.Links["receiver"]=n.Right=="]"?new string[0]:new[]{aliases[n.Right]};
+                    // A receive the next line activates on gets that new bar instead; nothing reopens for it.
+                    bool activates=nodeIndex+1<orderedNodes.Length && orderedNodes[nodeIndex+1].Kind=="activate" && orderedNodes[nodeIndex+1].Left==n.Right;
                     foreach(var endpoint in new[]{new[]{"sendExecution",n.Left},new[]{"receiveExecution",n.Right}})
-                        if(active.ContainsKey(endpoint[1]) && active[endpoint[1]].Count>0)item.Links[endpoint[0]]=new[]{active[endpoint[1]].Peek().Id};
+                    {
+                        if(!active.ContainsKey(endpoint[1]) || active[endpoint[1]].Count==0)continue;
+                        var top=active[endpoint[1]].Peek();
+                        if(closed(top))
+                        {
+                            if(endpoint[0]=="receiveExecution" && activates)continue;
+                            top=reopen(endpoint[1],n.Line);
+                            // A bar opened by the message it receives starts after that message, as
+                            // the reader takes the message it receives at its top.
+                            if(endpoint[0]=="receiveExecution")top.Attributes["opener"]=item.Id;
+                        }
+                        item.Links[endpoint[0]]=new[]{top.Id};
+                    }
                 }
                 // A self reply closing the innermost activation returns to its
                 // caller. Keep the sender on the inner bar; do not pop until deactivate.
                 if(n.Kind=="reply" && n.Left==n.Right && active.ContainsKey(n.Left) && active[n.Left].Count>1
                     && nodeIndex+1<orderedNodes.Length && orderedNodes[nodeIndex+1].Kind=="deactivate" && orderedNodes[nodeIndex+1].Left==n.Left)
                     item.Links["receiveExecution"]=new[]{active[n.Left].Skip(1).First().Id};
+                // The reply ends the bar it leaves.
+                if(n.Kind=="reply" && item.Links.ContainsKey("sendExecution") && active.ContainsKey(n.Left) && active[n.Left].Count>0
+                    && active[n.Left].Peek().Id==item.Links["sendExecution"][0])
+                {
+                    var ended=active[n.Left].Peek();
+                    ended.Attributes["closed"]="1";ended.Attributes["endParent"]=parent;
+                    ended.Attributes["end"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                }
                 // The exporter writes a destruction message as -> followed by
                 // destroy of that receiver. Recover its kind, retaining the destroy event.
                 // An activate of the receiver may come between: the bar it opens is the one
@@ -115,8 +154,10 @@ public sealed class SequenceDocument
                 if(n.Kind=="destroy" && active.ContainsKey(n.Left))
                     while(active[n.Left].Count>0)
                     {
-                        var closed=active[n.Left].Pop();closed.Attributes["endParent"]=parent;
-                        closed.Attributes["end"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        var ending=active[n.Left].Pop();
+                        if(closed(ending))continue;
+                        ending.Attributes["endParent"]=parent;
+                        ending.Attributes["end"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     }
                 result.Elements.Add(item);visit(n.Children,item.Id);previousEvent=item;
             }
@@ -128,6 +169,7 @@ public sealed class SequenceDocument
             int end=e.Attributes.ContainsKey("end")?int.Parse(e.Attributes["end"],System.Globalization.CultureInfo.InvariantCulture):int.MaxValue;
             var events=result.Elements.Where(n=>n.Kind!="participant" && n.Kind!="interaction" && n.Kind!="execution").OrderBy(n=>n.Line).ToArray();
             var preceding=events.LastOrDefault(n=>n.Line<start);var following=events.FirstOrDefault(n=>n.Line>end);
+            if(e.Attributes.ContainsKey("opener"))preceding=events.First(n=>n.Id==e.Attributes["opener"]);
             e.Links["startAfter"]=preceding==null?new string[0]:new[]{preceding.Id};
             e.Links["endBefore"]=following==null?new string[0]:new[]{following.Id};
             string endParent=e.Attributes["endParent"];e.Links["endContainer"]=new[]{endParent};
