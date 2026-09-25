@@ -1,4 +1,4 @@
-
+﻿
 public static class MappingTests
 {
     static void Require(bool ok,string text) { if(!ok)throw new Exception(text); }
@@ -76,7 +76,11 @@ public static class MappingTests
         Require(SequenceExportMatch.Unmapped(new[]{"a","b","extra","extra"},new[]{"a","b"}).SequenceEqual(new[]{"extra"}),"diagram-only model/shape counted twice or ignored");
         Require(SequenceExportMatch.Unmapped(new[]{"b","a"},new[]{"a","b"}).Length==0,"equal coverage reports extras");
         string crossBranch="@startuml\nparticipant A\nparticipant B\nactivate A\nalt done\nA -> B : finish\ndeactivate A\nelse wait\nA -> B : wait\nend\n@enduml";
-        Reject(()=>PumlPlan.Parse(crossBranch),"generation lifecycle restriction lost");
+        // The exporter closes a bar opened before a frame after its last message, which can be in
+        // a branch; PlantUML reads activations in written order, so this is accepted.
+        PumlPlan.Parse(crossBranch);
+        // A branch that leaves open a bar it opened is still refused.
+        Reject(()=>PumlPlan.Parse("@startuml\nparticipant A\nparticipant B\nalt done\nactivate A\nA -> B : finish\nelse wait\nA -> B : wait\nend\n@enduml"),"generation lifecycle restriction lost");
         var mapped=PumlPlan.ParseForMapping(crossBranch);
         Require(mapped.All().Count(n=>n.Kind=="activate" || n.Kind=="deactivate")==2,"mapping discarded cross-branch activities");
         Require(SequenceNameDiff.Targets(crossBranch,crossBranch).Count==2,"cross-branch no-op comparison rejected");

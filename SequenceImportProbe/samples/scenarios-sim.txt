@@ -1,3 +1,7 @@
 # シミュレーターだけで回す一覧。空の図は一括検証の取込で作れないため、実機では手で作った空の図で確かめる
 空の図への反映 | gap-empty.puml | structure-wrap-before.puml
 枠と Note を含む図の空の図への反映 | gap-empty.puml | gap-frame-note-after.puml
+空の図へ・枠の中で外側のバーを閉じる | gap-empty.puml | gap-close-in-branch.puml
+空の図へ・else の中で外側のバーを閉じる | gap-empty.puml | gap-close-in-else.puml
+枠の中で外側のバーを閉じる図の名前変更 | gap-close-in-branch.puml | gap-close-in-branch-renamed.puml
+else の中で外側のバーを閉じる図の名前変更 | gap-close-in-else.puml | gap-close-in-else-renamed.puml

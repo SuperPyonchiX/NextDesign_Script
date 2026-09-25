@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.13";
+    public const string Title = "シーケンス生成実験 / 0.10.14";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -2732,8 +2732,18 @@ public class PumlPlan
         var initial=balanced?new Dictionary<string,int>(counts):new Dictionary<string,int>();
         foreach(var n in nodes)
         {
-            if(n.Kind=="fragment")foreach(var branch in n.Children)
-            { if(n.Operator=="loop")ValidateActivities(branch.Children,counts,false); else ValidateActivities(branch.Children,new Dictionary<string,int>(counts)); }
+            if(n.Kind=="fragment")
+            {
+                // A bar a branch closes is closed after the frame too, as the reading takes it.
+                var after=new Dictionary<string,int>(counts);
+                foreach(var branch in n.Children)
+                {
+                    if(n.Operator=="loop"){ValidateActivities(branch.Children,counts,false);continue;}
+                    var mine=new Dictionary<string,int>(counts);ValidateActivities(branch.Children,mine);
+                    foreach(var pair in mine)if(!after.ContainsKey(pair.Key) || pair.Value<after[pair.Key])after[pair.Key]=pair.Value;
+                }
+                if(n.Operator!="loop")foreach(var pair in after)counts[pair.Key]=pair.Value;
+            }
             if(n.Kind=="destroy")
             {
                 int inherited; initial.TryGetValue(n.Left,out inherited);
@@ -2743,14 +2753,18 @@ public class PumlPlan
             if(n.Kind!="activate" && n.Kind!="deactivate")continue;
             int value; counts.TryGetValue(n.Left,out value);
             int baseline; initial.TryGetValue(n.Left,out baseline);
-            if(n.Kind=="deactivate" && value<=baseline)throw Error(n.Line,"対応するactivateが同じ図または分岐内にありません。");
+            // The exporter writes the deactivate of a bar opened before a frame after that bar's last
+            // message, which can be inside a branch. Closing a bar opened outside the branch is
+            // fine; closing one that is not open at all is not.
+            if(n.Kind=="deactivate" && value<=0)throw Error(n.Line,"対応するactivateが同じ図または分岐内にありません。");
             counts[n.Left]=value+(n.Kind=="activate"?1:-1);
         }
         if(!balanced)return;
         foreach(var pair in counts)
         {
             int value; initial.TryGetValue(pair.Key,out value);
-            if(value!=pair.Value)throw Error(1,"activate/deactivateは図または各分岐内で対応させてください。");
+            // A branch may close bars opened before it, but must not leave its own open.
+            if(pair.Value>value)throw Error(1,"activate/deactivateは図または各分岐内で対応させてください。");
         }
     }
 }

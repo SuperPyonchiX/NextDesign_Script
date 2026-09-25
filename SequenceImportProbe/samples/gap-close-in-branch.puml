@@ -1,0 +1,15 @@
+@startuml
+participant A
+participant B
+participant C
+activate A
+A -> B : start()
+activate B
+alt ready
+B -> C : work()
+activate C
+deactivate C
+deactivate B
+end
+deactivate A
+@enduml
