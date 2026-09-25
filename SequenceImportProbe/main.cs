@@ -30,7 +30,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.11.19";
+    public const string Title = "シーケンス生成実験 / 0.11.20";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1950,7 +1950,7 @@ public static class SequenceStructureTrial
                 if(cause!=null)
                 {
                     var deepest=cause;while(deepest.InnerException!=null)deepest=deepest.InnerException;
-                    var frames=(deepest.StackTrace??"").Split('\n').Select(l=>l.Trim()).Where(l=>l.Length>0).Take(8).ToArray();
+                    var frames=(deepest.StackTrace??"").Split('\n').Select(l=>l.Trim()).Where(l=>l.Length>0).Take(20).ToArray();
                     if(frames.Length>0)cycle+="\n発生箇所:\n"+string.Join("\n",frames);
                 }
                 if(LastMismatch.Length>0)cycle+="\n照合の内訳:\n"+(LastMismatch.Length>3000?LastMismatch.Substring(0,3000)+"…":LastMismatch);
@@ -2347,6 +2347,10 @@ public static class SequenceBatch
         SequenceExperiment.Summary=(apply?"シナリオ一括検証（反映）":"シナリオ一括検証（再検証）")+": "+passed+"/"+scenarios.Count+"件成功 / "+(clock.ElapsedMilliseconds/1000)+"秒\n"
             +string.Join("\n",rows)+(apply?"\n\nプロジェクトを閉じて開き直し、もう一度このボタンで「キャンセル」（再検証）を選んでください。":"");
         SequenceExperiment.Details=SequenceExperiment.Summary+"\f"+detail;
+        // The details are too long for the dialog: the whole text goes next to the scenario list.
+        string detailPath=Path.ChangeExtension(list,".detail.txt");
+        try{File.WriteAllText(detailPath,SequenceExperiment.Summary+"\n\n"+detail,new UTF8Encoding(false));SequenceExperiment.Summary+="\n\n診断の全文: "+detailPath;}
+        catch(Exception ex){SequenceExperiment.Summary+="\n\n診断の書き出しに失敗: "+ex.Message;}
         app.Window.UI.ShowInformationDialog(SequenceExperiment.Summary,title);
     }
 }
