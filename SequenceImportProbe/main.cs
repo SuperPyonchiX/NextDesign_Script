@@ -29,7 +29,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.11.5";
+    public const string Title = "シーケンス生成実験 / 0.11.6";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -2335,6 +2335,11 @@ public static class SequenceSnapshotProbe
         foreach(var m in SequenceMappedUpdate.Tree(root))
         {
             var e=Obj();Put(e,"Id",m.Id);Put(e,"MetamodelId",m.Metaclass==null?null:m.Metaclass.Id);Put(e,"Name",m.Name);
+            if(m.Metaclass!=null)
+            {
+                var c=Obj();Put(c,"Id",m.Metaclass.Id);Put(c,"FullName",m.Metaclass.FullName);Put(c,"Name",m.Metaclass.Name);Put(c,"ClassName",m.ClassName);
+                e.Properties["(候補)"]=c;
+            }
             var fields=Obj();
             if(m.Metaclass!=null)
                 foreach(var f in m.Metaclass.GetFields().Cast<IField>().Where(f=>f.RelationshipClass==null))
@@ -2349,6 +2354,12 @@ public static class SequenceSnapshotProbe
                 if(all.ContainsKey("R:"+r.Id))continue;
                 var o=Obj();Put(o,"Id",r.Id);Put(o,"MetamodelId",r.Metaclass==null?null:r.Metaclass.Id);
                 Put(o,"SourceId",r.Source.Id);Put(o,"TargetId",r.Target.Id);Put(o,"SourceIndex",r.SourceIndex);Put(o,"TargetIndex",r.TargetIndex);
+                var c=Obj();
+                if(r.Metaclass!=null){Put(c,"Id",r.Metaclass.Id);Put(c,"FullName",r.Metaclass.FullName);Put(c,"Name",r.Metaclass.Name);}
+                Put(c,"Embed",r.IsEmbedded?"Embed":"Ref");Put(c,"IsDerivation",r.IsDerivation);
+                Put(c,"TargetIndexIfField",r.TargetField==null?-1:r.TargetIndex);Put(c,"TargetIndexIfUpper",r.TargetField==null || r.TargetField.UpperBound==1?-1:r.TargetIndex);
+                Put(c,"TargetField",r.TargetField==null?"none":"field");
+                o.Properties["(候補)"]=c;
                 all["R:"+r.Id]=o;
             }
         }
@@ -2385,7 +2396,7 @@ public static class SequenceSnapshotProbe
         if(a.Raw!=null && b.Raw!=null)
         {
             double x,y;var f=System.Globalization.NumberStyles.Float;var c=System.Globalization.CultureInfo.InvariantCulture;
-            string ra=a.Raw.Trim('"'),rb=b.Raw.Trim('"');
+            string ra=a.Raw.StartsWith("\"")?a.StringValue():a.Raw,rb=b.Raw.StartsWith("\"")?b.StringValue():b.Raw;
             if(double.TryParse(ra,f,c,out x) && double.TryParse(rb,f,c,out y))return Math.Abs(x-y)<=0.0000011;
             return a.Raw==b.Raw || string.Equals(ra,rb,StringComparison.OrdinalIgnoreCase);
         }
@@ -2451,6 +2462,20 @@ public static class SequenceSnapshotProbe
                 walk(pair.Value,mine,"");
             }
             foreach(var pair in made.Where(p=>!real.ContainsKey(p.Key)))add(missing,pair.Key.Substring(0,1)+" (SDKだけにある対象)");
+            // For each key the SDK does not give as such, which derived candidate equals the export.
+            var matches=new Dictionary<string,int>();
+            foreach(var pair in real)
+            {
+                SequenceJson mine;if(!made.TryGetValue(pair.Key,out mine) || mine["(候補)"]==null)continue;
+                string kind=pair.Key.Substring(0,1);
+                foreach(string key in new[]{"Metamodel","EntityType","RelationType","IsDerivation","TargetIndex"})
+                {
+                    var value=pair.Value[key];if(value==null)continue;
+                    foreach(var cand in mine["(候補)"].Properties)
+                        if(Same(value,cand.Value))add(matches,kind+" "+key+" = "+cand.Key);
+                    if(key=="TargetIndex")add(matches,kind+" TargetIndex 相手フィールド="+mine["(候補)"]["TargetField"].StringValue()+" 写し="+value.Raw);
+                }
+            }
             // Editor-level values other than shapes.
             foreach(var p in editor.Properties.Where(p=>p.Value!=null && p.Value.Items==null && p.Value.Properties==null))add(total,"V "+p.Key);
             var keys=total.Keys.Union(missing.Keys).Union(differs.Keys).OrderBy(k=>k,StringComparer.Ordinal);
@@ -2463,6 +2488,8 @@ public static class SequenceSnapshotProbe
                 List<string> seen;if(shown.TryGetValue(k,out seen))report.AppendLine("  例（写し / SDK）: "+string.Join(" ; ",seen));
             }
             report.AppendLine("（全件一致のキーは省略）");
+            report.AppendLine("導出の候補と写しの一致数:");
+            foreach(var pair in matches.OrderBy(p=>p.Key,StringComparer.Ordinal))report.AppendLine("  "+pair.Key+": "+pair.Value);
             string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.SequenceSync","snapshot-probe");
             Directory.CreateDirectory(directory);
             string stem=Path.Combine(directory,DateTime.Now.ToString("yyyyMMdd_HHmmss"));
