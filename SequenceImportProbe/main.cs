@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.3";
+    public const string Title = "シーケンス生成実験 / 0.10.4";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1985,7 +1985,15 @@ public static class SequenceBatch
                         else result+="（2回目: 変化なし）";
                     }
                 }
-                catch(Exception ex){failed=true;result="停止: "+Line(ex.Message,200);detail.AppendLine("■ "+s[0]+"\n"+ex+"\n");}
+                catch(Exception ex)
+                {
+                    failed=true;
+                    // A mismatch says where in its breakdown; that part is what the row has room for.
+                    int at=ex.Message.IndexOf("relation=",StringComparison.Ordinal);
+                    if(at<0)at=ex.Message.IndexOf("shape=",StringComparison.Ordinal);
+                    result="停止: "+(at>=0?Line(ex.Message.Substring(0,Math.Min(80,ex.Message.Length)),80)+" … "+Line(ex.Message.Substring(at),420):Line(ex.Message,200));
+                    detail.AppendLine("■ "+s[0]+"\n"+ex+"\n");
+                }
                 rows.Add(s[0]+" | "+result+" | "+(watch.ElapsedMilliseconds/1000)+"秒"+timing);
                 string kept;roots.TryGetValue(s[0],out kept);created.Add(s[0]+"\t"+(kept??""));
                 // Two failures in a row almost always share a cause in the batch itself;
