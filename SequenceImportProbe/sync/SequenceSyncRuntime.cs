@@ -347,6 +347,17 @@ public static class SequenceSyncRuntime
     // Set by a caller that may save the project before an update without asking, such as an
     // MCP tool acting for the user. Otherwise the user is asked each time.
     public static bool SaveBeforeUpdate;
+    // Set by a caller that updates without saving and without asking, such as an MCP tool: the
+    // snapshot is built from the SDK instead of the export (see SequenceSnapshotBuilder).
+    public static bool UpdateWithoutSaving;
+    // Every update takes the snapshot from the SDK, saved or not: to test that path in the batch.
+    internal static bool ForceSdkSnapshot;
+    static bool UseSdkSnapshot(IApplication app)
+    {
+        if(UpdateWithoutSaving)return true;
+        if(SaveBeforeUpdate || Batch)return false;
+        return app.Window.UI.ShowConfirmDialog("プロジェクトに未保存の変更があります。\n保存せずに反映しますか？（試験中）\n図の写しを SDK から組み立てて反映します。図形の色・形・参加者の余白などの見た目の細部が既定に戻ることがあります。反映後の照合で食い違えば元に戻して止まります。\n\nOK: 保存せずに反映する\nキャンセル: 保存して反映するかを次に確認する",SequenceExperiment.Title);
+    }
     static bool SaveFirst(IApplication app,IProject project,StringBuilder log)
     {
         if(!SaveBeforeUpdate)
@@ -428,12 +439,13 @@ public static class SequenceSyncRuntime
             // project has unsaved changes. The project is saved only when the caller allows
             // it (SaveBeforeUpdate, for a caller such as an MCP tool) or the user agrees here;
             // otherwise the run stops before any work.
-            bool mayRetry=false;
-            if(prepare && SequenceEditorCapture.BatchSource==null && Unsaved(project))
+            bool mayRetry=false,fromSdk=prepare && ForceSdkSnapshot;
+            if(prepare && !fromSdk && SequenceEditorCapture.BatchSource==null && Unsaved(project))
             {
-                if(!SaveFirst(app,project,log))throw new InvalidOperationException(UnsavedAdvice);
+                if(UseSdkSnapshot(app))fromSdk=true;
+                else if(!SaveFirst(app,project,log))throw new InvalidOperationException(UnsavedAdvice);
             }
-            else mayRetry=prepare && SequenceEditorCapture.BatchSource==null;
+            else mayRetry=prepare && !fromSdk && SequenceEditorCapture.BatchSource==null;
 
             report="{\"version\":1,\"project\":"+SequencePayload.Q(project.Id)+",\"diagram\":"+SequencePayload.Q(diagram.Id)
                 +",\"current\":"+current.Document.ToJson()+",\"desired\":"+desired.ToJson()+",\"plan\":"+plan.ToJson()
@@ -472,7 +484,12 @@ public static class SequenceSyncRuntime
                     if(root==null || !root.IsEditable || root.IsProxy || root.IsDeleted || string.IsNullOrEmpty(project.Path))
                         throw new InvalidOperationException("S220: 保存済みで編集可能な図を開いてください。");
                     string exported=null;
-                    try {SequenceEditorCapture.Read(project,root,diagram,log,delegate(string value){exported=value;});}
+                    if(fromSdk)
+                    {
+                        exported=SequenceSnapshotBuilder.Build(project,root,diagram,SequenceSnapshotBuilder.Schema(project),log);
+                        log.AppendLine("写し: SDK から組み立て（保存なし）");
+                    }
+                    else try {SequenceEditorCapture.Read(project,root,diagram,log,delegate(string value){exported=value;});}
                     catch(Exception ex)
                     {
                         // The export refuses on a dirty project even when nothing is savable,
@@ -1139,8 +1156,11 @@ public static class SequenceBatch
                 string file=Path.Combine(Path.GetTempPath(),"SequenceBatch-"+Guid.NewGuid().ToString("N")+".nmdl");
                 try
                 {
-                    project.UnitManager.ExportModelUnit(host.ModelUnit,file);
-                    SequenceEditorCapture.BatchSource=SequenceJson.Parse(File.ReadAllText(file,new UTF8Encoding(false,true)));
+                    if(!SequenceSyncRuntime.ForceSdkSnapshot)
+                    {
+                        project.UnitManager.ExportModelUnit(host.ModelUnit,file);
+                        SequenceEditorCapture.BatchSource=SequenceJson.Parse(File.ReadAllText(file,new UTF8Encoding(false,true)));
+                    }
                 }
                 finally{try{File.Delete(file);}catch(Exception){}}
                 foreach(var pair in roots)
@@ -1216,7 +1236,7 @@ public static class SequenceBatch
             }
         }
         catch(Exception ex){rows.Add("中断: "+Line(ex.Message,200));detail.AppendLine(ex.ToString());}
-        finally {SequenceEditorCapture.BatchSource=null;SequenceExperiment.BatchMode=false;SequenceExperiment.BatchInput=null;SequenceSyncRuntime.Batch=false;SequenceSyncRuntime.BatchDiagram=null;SequenceSyncRuntime.BatchInput=null;}
+        finally {SequenceEditorCapture.BatchSource=null;SequenceSyncRuntime.ForceSdkSnapshot=false;SequenceExperiment.BatchMode=false;SequenceExperiment.BatchInput=null;SequenceSyncRuntime.Batch=false;SequenceSyncRuntime.BatchDiagram=null;SequenceSyncRuntime.BatchInput=null;}
         if(apply)
         {
             try{File.WriteAllLines(resultPath,created,new UTF8Encoding(false));}
@@ -1604,7 +1624,8 @@ public static class SequenceSnapshotBuilder
                 case "InteractionUses":return "InteractionUse";case "Notes":return "InteractionNote";case "MessageEnds":return "MessageEnd";case "Destructions":return "Destruction";
             }
         }
-        return m.Metaclass==null?"":m.Metaclass.Name;
+        // A model with no shape of its own (a guard's value, for instance) is exported as a plain entity.
+        return "Entity";
     }
     public static string Build(IProject project,IInteraction root,ISequenceDiagram diagram,string schema,StringBuilder log)
     {
@@ -1653,6 +1674,7 @@ public static class SequenceSnapshotBuilder
             var wire=s as IMessageShape;if(wire!=null){P(o,"SourceY",wire.SourceY);P(o,"TargetY",wire.TargetY);P(o,"SelfloopBendsX",wire.SelfloopBendsX);}
             var branch=s as IOperandShape;if(branch!=null)P(o,"Position",branch.Position);
             var lane=s as ILifelineShape;if(lane!=null)P(o,"LaneLength",lane.TimelineLength);
+            var anchor=s as INoteAnchorShape;if(anchor!=null){P(o,"TargetX",anchor.TargetX);P(o,"TargetY",anchor.TargetY);}
             if(c=="Frame"){editor.Properties["Frame"]=o;continue;}
             List<SequenceJson> list;if(!lists.TryGetValue(c,out list))lists[c]=list=new List<SequenceJson>();
             list.Add(o);
