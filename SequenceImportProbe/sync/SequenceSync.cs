@@ -894,6 +894,15 @@ public sealed class SequenceStructurePreflight
         +OperatorChanges.Count+RefTargetChanges.Count+Relayouts.Count; } }
     public bool Candidate { get { return Reasons.Count==0 && Targets>0; } }
     public bool CanCommit() { return Candidate; }
+    // Whether any message this update writes goes to or comes from outside the diagram: new
+    // ones, and ones already drawn whose sending or receiving end changes. Their free ends
+    // need the MessageEnd type when the diagram has none to copy.
+    public bool NeedsFreeEnds(SyncPlan plan)
+    {
+        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        return AddMessages.Concat(ReconnectMessages).Concat(ResendMessages).Where(after.ContainsKey)
+            .Any(id=>Link(after[id],"sender").Length==0 || Link(after[id],"receiver").Length==0);
+    }
     // Document order across owners. Bars are stored, not sequenced.
     internal static string[] Flatten(SequenceDocument doc)
     {

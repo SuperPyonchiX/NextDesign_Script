@@ -448,7 +448,10 @@ public static class SequenceSimulator
             if(!gate.CanCommit())return "対象外: "+string.Join(" / ",gate.Reasons.Distinct());
             stage="準備";
             SequenceStructurePreparation.DestroyTypes=DestroyTypes();
-            SequenceStructurePreparation.BaseTypes=BaseTypes();
+            // As the runtime resolves them: the MessageEnd type only when the update needs free ends.
+            var baseTypes=BaseTypes();
+            if(!gate.NeedsFreeEnds(plan)){baseTypes.MessageEnd=null;baseTypes.OwnsMessageEnd=null;baseTypes.SendFromEnd=null;baseTypes.ReceiveFromEnd=null;}
+            SequenceStructurePreparation.BaseTypes=baseTypes;
             SequenceStructurePreparation.SortLiterals.Clear();
             SequenceStructurePreparation.SortLiterals["sync"]="Sync";SequenceStructurePreparation.SortLiterals["async"]="Async";SequenceStructurePreparation.SortLiterals["reply"]="Reply";
             var prepared=SequenceStructurePreparation.Build(before,EditorId(before),current,plan,FrameTypes(),NoteTypes(),RefTypes());

@@ -26,7 +26,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.10.6";
+    public const string Title = "シーケンス生成実験 / 0.10.7";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1404,8 +1404,7 @@ public static class SequenceSyncRuntime
                     // Metaclasses and relation rows for building what the diagram holds nothing of to
                     // copy, and for free ends of messages to or from outside the diagram.
                     SequenceStructurePreparation.BaseTypes=null;
-                    bool needsEnds=preflight.AddMessages.Any(id=>!byExpected[id].Links.ContainsKey("sender") || byExpected[id].Links["sender"].Length==0
-                        || !byExpected[id].Links.ContainsKey("receiver") || byExpected[id].Links["receiver"].Length==0);
+                    bool needsEnds=preflight.NeedsFreeEnds(plan);
                     try {SequenceStructurePreparation.BaseTypes=PumlRuntime.SyncBaseTypes(diagram,project,needsEnds);}
                     catch(Exception ex) {log.AppendLine("base types: "+ex.Message);if(needsEnds)throw new InvalidOperationException("S220: 図外の端の型を解決できません: "+ex.Message,ex);}
                     SequenceStructurePreparation.DestroyTypes=null;
@@ -4362,6 +4361,15 @@ public sealed class SequenceStructurePreflight
         +OperatorChanges.Count+RefTargetChanges.Count+Relayouts.Count; } }
     public bool Candidate { get { return Reasons.Count==0 && Targets>0; } }
     public bool CanCommit() { return Candidate; }
+    // Whether any message this update writes goes to or comes from outside the diagram: new
+    // ones, and ones already drawn whose sending or receiving end changes. Their free ends
+    // need the MessageEnd type when the diagram has none to copy.
+    public bool NeedsFreeEnds(SyncPlan plan)
+    {
+        var after=plan.Expected.Elements.ToDictionary(e=>e.Id);
+        return AddMessages.Concat(ReconnectMessages).Concat(ResendMessages).Where(after.ContainsKey)
+            .Any(id=>Link(after[id],"sender").Length==0 || Link(after[id],"receiver").Length==0);
+    }
     // Document order across owners. Bars are stored, not sequenced.
     internal static string[] Flatten(SequenceDocument doc)
     {

@@ -363,8 +363,7 @@ public static class SequenceSyncRuntime
                     // Metaclasses and relation rows for building what the diagram holds nothing of to
                     // copy, and for free ends of messages to or from outside the diagram.
                     SequenceStructurePreparation.BaseTypes=null;
-                    bool needsEnds=preflight.AddMessages.Any(id=>!byExpected[id].Links.ContainsKey("sender") || byExpected[id].Links["sender"].Length==0
-                        || !byExpected[id].Links.ContainsKey("receiver") || byExpected[id].Links["receiver"].Length==0);
+                    bool needsEnds=preflight.NeedsFreeEnds(plan);
                     try {SequenceStructurePreparation.BaseTypes=PumlRuntime.SyncBaseTypes(diagram,project,needsEnds);}
                     catch(Exception ex) {log.AppendLine("base types: "+ex.Message);if(needsEnds)throw new InvalidOperationException("S220: 図外の端の型を解決できません: "+ex.Message,ex);}
                     SequenceStructurePreparation.DestroyTypes=null;
