@@ -1594,6 +1594,9 @@ public static class SequenceSnapshotBuilder
     }
     static SequenceJson O(){return new SequenceJson{Properties=new Dictionary<string,SequenceJson>(StringComparer.Ordinal)};}
     static void P(SequenceJson o,string k,object v){var j=J(v);if(j!=null)o.Properties[k]=j;}
+    // The SDK reads every stored coordinate 1e-6 over its stored value (0 as 1E-06, 42 as
+    // 42.000001). The snapshot holds stored values, so the offset comes off again.
+    static void G(SequenceJson o,string k,double v){P(o,k,Math.Round(v-0.000001,6));}
     // The collection a shape is kept in, as the generator writes it.
     public static string Collection(ISequenceShape shape)
     {
@@ -1669,12 +1672,12 @@ public static class SequenceSnapshotBuilder
             var o=O();P(o,"Id",s.Id);P(o,"ModelId",s.ModelId);
             var node=s as ISequenceNodeShape;
             string c=Collection(s);
-            if(node!=null && c!="Operands"){P(o,"X",node.LocationX);if(c!="Lifelines")P(o,"Y",node.LocationY);P(o,"Width",node.Width);if(c!="Lifelines")P(o,"Height",node.Height);}
-            var bar=s as IExecutionSpecificationShape;if(bar!=null){P(o,"Length",bar.Length);P(o,"Height",bar.Length);}
-            var wire=s as IMessageShape;if(wire!=null){P(o,"SourceY",wire.SourceY);P(o,"TargetY",wire.TargetY);P(o,"SelfloopBendsX",wire.SelfloopBendsX);}
-            var branch=s as IOperandShape;if(branch!=null)P(o,"Position",branch.Position);
-            var lane=s as ILifelineShape;if(lane!=null)P(o,"LaneLength",lane.TimelineLength);
-            var anchor=s as INoteAnchorShape;if(anchor!=null){P(o,"TargetX",anchor.TargetX);P(o,"TargetY",anchor.TargetY);}
+            if(node!=null && c!="Operands"){G(o,"X",node.LocationX);if(c!="Lifelines")G(o,"Y",node.LocationY);G(o,"Width",node.Width);if(c!="Lifelines")G(o,"Height",node.Height);}
+            var bar=s as IExecutionSpecificationShape;if(bar!=null){G(o,"Length",bar.Length);G(o,"Height",bar.Length);}
+            var wire=s as IMessageShape;if(wire!=null){G(o,"SourceY",wire.SourceY);G(o,"TargetY",wire.TargetY);G(o,"SelfloopBendsX",wire.SelfloopBendsX);}
+            var branch=s as IOperandShape;if(branch!=null)G(o,"Position",branch.Position);
+            var lane=s as ILifelineShape;if(lane!=null)G(o,"LaneLength",lane.TimelineLength);
+            var anchor=s as INoteAnchorShape;if(anchor!=null){G(o,"TargetX",anchor.TargetX);G(o,"TargetY",anchor.TargetY);}
             if(c=="Frame"){editor.Properties["Frame"]=o;continue;}
             List<SequenceJson> list;if(!lists.TryGetValue(c,out list))lists[c]=list=new List<SequenceJson>();
             list.Add(o);

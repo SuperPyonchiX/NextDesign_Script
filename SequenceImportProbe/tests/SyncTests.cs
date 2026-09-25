@@ -199,8 +199,17 @@
         Require(doc.Elements.Count(e=>e.Kind=="execution" && e.Links["participant"].SequenceEqual(bar.Links["participant"]))==2,"the bar written after its send was dropped");
         Require(!doc.Elements.Any(e=>e.Kind=="message" && e.Text=="prepare()" && e.Links["sendExecution"].SequenceEqual(report.Links["sendExecution"])),"report() still leaves from the outer bar");
     }
+    // A reply leaves the bar its receiver called, not a bar another lane called on top of it.
+    static void ReplyUnderCallee()
+    {
+        var doc=SequenceDocument.Parse("@startuml\nparticipant A\nparticipant B\nparticipant C\nactivate A\nA -> B : wait()\nactivate A\nactivate B\nactivate C\nC ->> B : answer()\nactivate B\ndeactivate C\nB --> A : got()\ndeactivate B\ndeactivate B\ndeactivate A\ndeactivate A\n@enduml");
+        var wait=doc.Elements.Single(e=>e.Kind=="message" && e.Text=="wait()");
+        var got=doc.Elements.Single(e=>e.Kind=="message" && e.Text=="got()");
+        Require(got.Links["sendExecution"].SequenceEqual(wait.Links["receiveExecution"]),"the reply left the bar another lane called");
+    }
     public static void Run()
     {
+        ReplyUnderCallee();
         LateSendBar();
         FrameNesting();
         FoldedNames();

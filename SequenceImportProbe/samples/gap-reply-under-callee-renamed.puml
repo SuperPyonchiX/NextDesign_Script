@@ -1,0 +1,18 @@
+@startuml
+participant A
+participant B
+participant C
+activate A
+A -> B : wait()
+activate A
+activate B
+activate C
+C ->> B : answer()
+activate B
+deactivate C
+B --> A : received()
+deactivate B
+deactivate B
+deactivate A
+deactivate A
+@enduml

@@ -213,6 +213,27 @@ public sealed class SequenceDocument
                         answered.Attributes["end"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
                         item.Attributes["answers"]="1";
                     }
+                    // A reply answers the bar its receiver called, not a bar another lane called
+                    // on top of it. The export ends a short receive-only bar where the lane's next
+                    // send is, so that bar can still be open here; it ended before this reply.
+                    if(n.Kind=="reply" && n.Left!="[" && n.Right!="]" && !item.Links.ContainsKey("sendExecution")
+                        && active.ContainsKey(n.Left) && active[n.Left].Count>1)
+                    {
+                        var stack=active[n.Left].ToArray();string callee=aliases[n.Right];
+                        Func<SequenceElement,string> callerOf=b=>{string c;return b.Attributes.TryGetValue("caller",out c)?c:null;};
+                        if(!closed(stack[0]) && callerOf(stack[0])!=null && callerOf(stack[0])!=callee)
+                        {
+                            int k=Array.FindIndex(stack,b=>!closed(b) && callerOf(b)==callee);
+                            if(k>0)
+                            {
+                                string at=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                                for(int i=0;i<=k;i++)
+                                    if(!closed(stack[i])){stack[i].Attributes["closed"]="1";stack[i].Attributes["endParent"]=parent;stack[i].Attributes["end"]=at;}
+                                item.Links["sendExecution"]=new[]{stack[k].Id};
+                                item.Attributes["answers"]="1";
+                            }
+                        }
+                    }
                     foreach(var endpoint in new[]{new[]{"sendExecution",n.Left},new[]{"receiveExecution",n.Right}})
                     {
                         if(item.Links.ContainsKey(endpoint[0]))continue;

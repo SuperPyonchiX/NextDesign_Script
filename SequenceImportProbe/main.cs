@@ -30,7 +30,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.11.8";
+    public const string Title = "シーケンス生成実験 / 0.11.9";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -2654,6 +2654,9 @@ public static class SequenceSnapshotBuilder
     }
     static SequenceJson O(){return new SequenceJson{Properties=new Dictionary<string,SequenceJson>(StringComparer.Ordinal)};}
     static void P(SequenceJson o,string k,object v){var j=J(v);if(j!=null)o.Properties[k]=j;}
+    // The SDK reads every stored coordinate 1e-6 over its stored value (0 as 1E-06, 42 as
+    // 42.000001). The snapshot holds stored values, so the offset comes off again.
+    static void G(SequenceJson o,string k,double v){P(o,k,Math.Round(v-0.000001,6));}
     // The collection a shape is kept in, as the generator writes it.
     public static string Collection(ISequenceShape shape)
     {
@@ -2729,12 +2732,12 @@ public static class SequenceSnapshotBuilder
             var o=O();P(o,"Id",s.Id);P(o,"ModelId",s.ModelId);
             var node=s as ISequenceNodeShape;
             string c=Collection(s);
-            if(node!=null && c!="Operands"){P(o,"X",node.LocationX);if(c!="Lifelines")P(o,"Y",node.LocationY);P(o,"Width",node.Width);if(c!="Lifelines")P(o,"Height",node.Height);}
-            var bar=s as IExecutionSpecificationShape;if(bar!=null){P(o,"Length",bar.Length);P(o,"Height",bar.Length);}
-            var wire=s as IMessageShape;if(wire!=null){P(o,"SourceY",wire.SourceY);P(o,"TargetY",wire.TargetY);P(o,"SelfloopBendsX",wire.SelfloopBendsX);}
-            var branch=s as IOperandShape;if(branch!=null)P(o,"Position",branch.Position);
-            var lane=s as ILifelineShape;if(lane!=null)P(o,"LaneLength",lane.TimelineLength);
-            var anchor=s as INoteAnchorShape;if(anchor!=null){P(o,"TargetX",anchor.TargetX);P(o,"TargetY",anchor.TargetY);}
+            if(node!=null && c!="Operands"){G(o,"X",node.LocationX);if(c!="Lifelines")G(o,"Y",node.LocationY);G(o,"Width",node.Width);if(c!="Lifelines")G(o,"Height",node.Height);}
+            var bar=s as IExecutionSpecificationShape;if(bar!=null){G(o,"Length",bar.Length);G(o,"Height",bar.Length);}
+            var wire=s as IMessageShape;if(wire!=null){G(o,"SourceY",wire.SourceY);G(o,"TargetY",wire.TargetY);G(o,"SelfloopBendsX",wire.SelfloopBendsX);}
+            var branch=s as IOperandShape;if(branch!=null)G(o,"Position",branch.Position);
+            var lane=s as ILifelineShape;if(lane!=null)G(o,"LaneLength",lane.TimelineLength);
+            var anchor=s as INoteAnchorShape;if(anchor!=null){G(o,"TargetX",anchor.TargetX);G(o,"TargetY",anchor.TargetY);}
             if(c=="Frame"){editor.Properties["Frame"]=o;continue;}
             List<SequenceJson> list;if(!lists.TryGetValue(c,out list))lists[c]=list=new List<SequenceJson>();
             list.Add(o);
@@ -4522,6 +4525,21 @@ public class PumlBuild
                 bool incoming=n.Left=="[";
                 string claimed=null,ask;
                 if(n.Kind=="reply" && !incoming && justEnded.TryGetValue(n.Left,out claimed) && !(caller.TryGetValue(claimed,out ask) && ask==n.Right))claimed=null;
+                // A reply answers the bar its receiver called, below a bar another lane called on
+                // top of it, which ends there (see SequenceDocument.Parse).
+                string top,who;
+                if(claimed==null && n.Kind=="reply" && !incoming && n.Right!="]" && active.TryGetValue(n.Left,out top) && top!=null && !closed.Contains(top)
+                    && caller.TryGetValue(top,out ask) && ask!=n.Right && activities.ContainsKey(n.Left))
+                {
+                    var below=activities[n.Left].ToArray();
+                    int k=Array.FindIndex(below,bar=>bar!=null && !closed.Contains(bar) && caller.TryGetValue(bar,out who) && who==n.Right);
+                    if(k>=0)
+                    {
+                        closed.Add(top);
+                        for(int i=0;i<k;i++)if(below[i]!=null)closed.Add(below[i]);
+                        claimed=below[k];
+                    }
+                }
                 string send; if(incoming)send=null; else if(claimed!=null)send=claimed; else if(!active.TryGetValue(n.Left,out send) || closed.Contains(send))active[n.Left]=send=Execution(n.Left,y-20);
                 bool outgoing=n.Right=="]"; bool self=n.Left==n.Right; int targetY=y+(self?24:0);
                 string receive;
@@ -5428,6 +5446,27 @@ public sealed class SequenceDocument
                         answered.Attributes["closed"]="1";answered.Attributes["endParent"]=parent;
                         answered.Attributes["end"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
                         item.Attributes["answers"]="1";
+                    }
+                    // A reply answers the bar its receiver called, not a bar another lane called
+                    // on top of it. The export ends a short receive-only bar where the lane's next
+                    // send is, so that bar can still be open here; it ended before this reply.
+                    if(n.Kind=="reply" && n.Left!="[" && n.Right!="]" && !item.Links.ContainsKey("sendExecution")
+                        && active.ContainsKey(n.Left) && active[n.Left].Count>1)
+                    {
+                        var stack=active[n.Left].ToArray();string callee=aliases[n.Right];
+                        Func<SequenceElement,string> callerOf=b=>{string c;return b.Attributes.TryGetValue("caller",out c)?c:null;};
+                        if(!closed(stack[0]) && callerOf(stack[0])!=null && callerOf(stack[0])!=callee)
+                        {
+                            int k=Array.FindIndex(stack,b=>!closed(b) && callerOf(b)==callee);
+                            if(k>0)
+                            {
+                                string at=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                                for(int i=0;i<=k;i++)
+                                    if(!closed(stack[i])){stack[i].Attributes["closed"]="1";stack[i].Attributes["endParent"]=parent;stack[i].Attributes["end"]=at;}
+                                item.Links["sendExecution"]=new[]{stack[k].Id};
+                                item.Attributes["answers"]="1";
+                            }
+                        }
                     }
                     foreach(var endpoint in new[]{new[]{"sendExecution",n.Left},new[]{"receiveExecution",n.Right}})
                     {
