@@ -542,6 +542,12 @@ public static class SequenceSimulator
             string mismatch=Compare(expectConnected,connectedState,"接続変更後")??Compare(expectFinal,finalState,"削除後");
             if(mismatch!=null)return mismatch;
             stage="読み直し";
+            // What the update draws is already what the product makes of it on the next edit.
+            {
+                Func<string,string> barsOf=json=>{var v=SequenceJson.Parse(json)["Editors"].Items.Single()["ExecutionSpecifications"];
+                    return v==null?"":string.Join(";",v.Items.Select(x=>D(x,"Y")+"+"+D(x,"Length")).OrderBy(t=>t,StringComparer.Ordinal));};
+                if(barsOf(after)!=barsOf(Settle(after)))return "反映したバーが製品の整え方と違う: "+barsOf(after)+" / "+barsOf(Settle(after));
+            }
             string invalid=Editable(after);
             if(invalid!=null)return "製品が編集を拒否する形: "+invalid;
             var read=Read(after);

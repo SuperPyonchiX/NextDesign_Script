@@ -1771,6 +1771,50 @@ public sealed class SequenceStructurePreparation
             var o=bars[outer[0]];var mine=bars[b.Id];
             o[1]=Math.Min(o[1],mine[1]);o[2]=Math.Max(o[2],mine[2]);
         }
+        // Then every bar that holds a message goes where Next Design puts it once the diagram is
+        // edited (K194), as the generator draws it and SettleExecutions reads it: from its first
+        // message to the reply closing it, or 20 under the later of its last message and the
+        // bars its calls opened; a lane's destruction after its last message ends it there.
+        {
+            var ends=new Dictionary<string,Tuple<double,bool>>(StringComparer.Ordinal);
+            var uses=plan.Expected.Elements.Where(e=>e.Kind=="execution").ToDictionary(e=>e.Id,e=>
+                plan.Expected.Elements.Where(m=>m.Kind=="message" && Link(m,"sendExecution").Contains(e.Id)).Select(m=>new{Id=m.Id,Send=true,At=messageY(m.Id)})
+                .Concat(plan.Expected.Elements.Where(m=>m.Kind=="message" && Link(m,"receiveExecution").Contains(e.Id)).Select(m=>new{Id=m.Id,Send=false,At=targetY(m.Id)}))
+                .OrderBy(u=>u.At).ToList(),StringComparer.Ordinal);
+            Func<string,string> sortOf=id=>{string v;return after[id].Attributes.TryGetValue("sort",out v)?v:"";};
+            var destructions=plan.Expected.Elements.Where(e=>e.Kind=="destroy").Select(e=>new{Lane=Link(e,"participant").FirstOrDefault(),Y=eventY(e.Id)}).ToList();
+            Func<string,int,Tuple<double,bool>> end=null;
+            end=(id,depth)=>{
+                Tuple<double,bool> known;if(ends.TryGetValue(id,out known))return known;
+                var held=uses[id];var last=held.Last();Tuple<double,bool> result;
+                if(last.Send && sortOf(last.Id)=="reply")result=Tuple.Create(last.At,false);
+                else
+                {
+                    double point=last.At,reach=last.At;
+                    foreach(var u in held.Where(u=>u.Send && sortOf(u.Id)!="reply"))
+                        foreach(var callee in Link(after[u.Id],"receiveExecution").Where(c=>c!=id && uses.ContainsKey(c) && uses[c].Count>0 && uses[c][0].Id==u.Id))
+                        {
+                            if(depth>=64)continue;
+                            var theirs=end(callee,depth+1);
+                            if(!theirs.Item2)reach=Math.Max(reach,theirs.Item1);
+                        }
+                    result=Tuple.Create(Math.Max(point,reach)+20,false);
+                    string lane=Link(after[id],"participant").FirstOrDefault();
+                    var destroy=destructions.Where(d=>d.Lane==lane && d.Y>point).OrderBy(d=>d.Y).FirstOrDefault();
+                    if(destroy!=null && !uses.Any(o=>o.Key!=id && Link(after[o.Key],"participant").FirstOrDefault()==lane && o.Value.Count>0 && o.Value[0].At>point && o.Value[0].At<destroy.Y))
+                        result=Tuple.Create(destroy.Y,true);
+                }
+                ends[id]=result;return result;
+            };
+            // Every bar that holds a message, those the update does not touch too: the placement
+            // above would put back margins Next Design drops on the next edit. A bar already where
+            // the product puts it gets the same numbers, so nothing is written for it.
+            foreach(var pair in bars.Where(p=>uses.ContainsKey(p.Key) && uses[p.Key].Count>0).ToList())
+            {
+                pair.Value[1]=uses[pair.Key][0].At;
+                pair.Value[2]=end(pair.Key,0).Item1;
+            }
+        }
 
         // ---- Shapes already drawn: what changes on each.
         var shifted=new List<SequenceShiftedShape>();

@@ -1,5 +1,13 @@
-public static class StructurePreparationTests
+﻿public static class StructurePreparationTests
 {
+    // A shape as the SDK reads it back: bars as [X, Y, Width, Height, Length], lanes as [X, Width]
+    // followed by their length; anything else as its JSON.
+    static string ReadBack(SequenceJson sh)
+    {
+        if(sh["Length"]!=null && sh["Y"]!=null)return PumlBuild.Json(new[]{"X","Y","Width","Height","Length"}.Select(k=>sh[k]==null?"16":sh[k].Raw).ToArray());
+        if(sh["LaneLength"]!=null)return PumlBuild.Json(new[]{sh["X"]==null?"0":sh["X"].Raw,sh["Width"]==null?"100":sh["Width"].Raw})+sh["LaneLength"].Raw;
+        return sh.ToJsonString();
+    }
     static void Require(bool value,string reason){if(!value)throw new Exception(reason);}
     static SequenceJson Clone(SequenceJson n){return SequenceJson.Parse(n.ToJsonString());}
     static void Set(SequenceJson n,string key,string value){n.Properties[key]=SequenceJson.Parse(SequencePayload.Q(value));}
@@ -49,7 +57,7 @@ public static class StructurePreparationTests
         foreach(var e in data["Entities"].Items)snapshot.Models[e["Id"].StringValue()]=e.ToJsonString();
         foreach(var r in data["Relations"].Items)snapshot.Relations[r["Id"].StringValue()]=new[]{r["SourceId"].StringValue(),r["TargetId"].StringValue(),"7","3"};
         foreach(var sh in SequenceEditorDocument.Read(data.ToJsonString(),before.Elements.Single(e=>e.Kind=="interaction").Id,editorId).Shapes())
-        {snapshot.Shapes[sh["Id"].StringValue()]=sh.ToJsonString();snapshot.ShapeModels[sh["Id"].StringValue()]=sh["ModelId"].StringValue();}
+        {snapshot.Shapes[sh["Id"].StringValue()]=ReadBack(sh);snapshot.ShapeModels[sh["Id"].StringValue()]=sh["ModelId"].StringValue();}
         snapshot.Ports[message]=state.Ports[message].ToArray();snapshot.Ports[map[message]]=state.Ports[message].ToArray();snapshot.Ports[map[message]][1]=map[oldPort];
         string signature=snapshot.Signature();var connected=snapshot.Expected(package,combined,false);var final=snapshot.Expected(package,combined,true);
         Require(package.DeleteIds.All(id=>connected.Models.ContainsKey(id) && !final.Models.ContainsKey(id)),"batch deletion not staged");
@@ -170,8 +178,9 @@ public static class StructurePreparationTests
         }
         var bars=patch["Editors"].Items.Single()["ExecutionSpecifications"].Items;
         var created=bars.Single(sh=>sh["ModelId"].StringValue()==bar);
-        Require(bars.Count==3 && created["X"].Raw=="278" && created["Y"].Raw=="80" && created["Length"].Raw=="80" && created["Height"].Raw=="80",
-            "new bar geometry does not follow the generator rule");
+        Require(bars.Count==3 && created["X"].Raw=="278" && created["Y"].Raw=="80" && created["Length"].Raw=="20" && created["Height"].Raw=="20",
+            // A bar that only receives is 20 long where Next Design lays it out (K194).
+            "new bar geometry does not follow the generator rule: "+created.ToJsonString());
         Require(SequenceJson.Parse(package.EditorAfterDeleteJson)["Editors"].Items.Single()["ExecutionSpecifications"].Items
             .Count(sh=>sh["ModelId"].StringValue()==bar)==1,"new bar was dropped from the deletion stage editor");
 
@@ -194,7 +203,7 @@ public static class StructurePreparationTests
             state.RelationFields[id]=r["MetamodelId"].StringValue();
         }
         foreach(var sh in SequenceEditorDocument.Read(raw.ToJsonString(),ids[0],editorId).Shapes())
-        {string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        {string id=sh["Id"].StringValue();state.Shapes[id]=ReadBack(sh);state.ShapeModels[id]=sh["ModelId"].StringValue();}
         state.Shapes[add.TemplateShapeId]=PumlBuild.Json(new[]{"270","80","16","80","80"});
         state.Ports[ids[6]]=new[]{ids[4],ids[5],ids[2],ids[3],"sync"};
         string before=state.Signature();
@@ -203,7 +212,7 @@ public static class StructurePreparationTests
         Require(expected.Relations[add.RelationIds[0]].SequenceEqual(new[]{ids[3],bar,"1","0"}),"participant owning order not appended");
         Require(expected.Relations[add.RelationIds[1]].SequenceEqual(new[]{ids[0],bar,"2","0"}),"interaction owning order not appended");
         Require(add.RelationSources[0]==ids[3],"the lifeline link is not sent first");
-        Require(expected.Shapes[add.ShapeId]==PumlBuild.Json(new[]{"278","80","16","80","80"}),"new bar shape not predicted");
+        Require(expected.Shapes[add.ShapeId]==PumlBuild.Json(new[]{"278","80","16","20","20"}),"new bar shape not predicted: "+expected.Shapes[add.ShapeId]);
         Require(expected.ShapeModels[add.ShapeId]==bar,"new shape owner missing");
         Require(expected.Ports[ids[6]][1]==bar,"receive port not moved onto the new bar");
         Require(state.Signature()==before,"expected state mutated the snapshot");
@@ -265,7 +274,7 @@ public static class StructurePreparationTests
             state.RelationFields[id]=r["MetamodelId"].StringValue();
         }
         foreach(var sh in SequenceEditorDocument.Read(raw.ToJsonString(),ids[0],editorId).Shapes())
-        {string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        {string id=sh["Id"].StringValue();state.Shapes[id]=ReadBack(sh);state.ShapeModels[id]=sh["ModelId"].StringValue();}
         state.Shapes[added.TemplateShapeId]=PumlBuild.Json(new[]{"220","20","100","40"})+"300";
         string before=state.Signature();
         var expected=state.Expected(package,plan,false);
@@ -322,7 +331,7 @@ public static class StructurePreparationTests
             state.RelationFields[id]=r["MetamodelId"].StringValue();
         }
         foreach(var sh in SequenceEditorDocument.Read(raw.ToJsonString(),ids[0],editorId).Shapes())
-        {string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        {string id=sh["Id"].StringValue();state.Shapes[id]=ReadBack(sh);state.ShapeModels[id]=sh["ModelId"].StringValue();}
         state.Ports[ids[6]]=new[]{ids[4],ids[5],ids[2],ids[3],"sync"};
         string before=state.Signature();
         var final=state.Expected(package,plan,true);
@@ -406,8 +415,14 @@ public static class StructurePreparationTests
             state.RelationFields[id]=r["MetamodelId"].StringValue();
         }
         foreach(var sh in SequenceEditorDocument.Read(raw.ToJsonString(),ids[0],editorId).Shapes())
-        {string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        {string id=sh["Id"].StringValue();state.Shapes[id]=ReadBack(sh);state.ShapeModels[id]=sh["ModelId"].StringValue();}
         state.Shapes[added.TemplateShapeId]=PumlBuild.Json(new[]{"probe()","80","80","0"});
+        // Bars read back as [X, Y, Width, Height, Length], as the product returns them.
+        foreach(var bar in raw["Editors"].Items.Single()["ExecutionSpecifications"].Items)
+            state.Shapes[bar["Id"].StringValue()]=PumlBuild.Json(new[]{"X","Y","Width","Height","Length"}.Select(k=>bar[k]==null?"20":bar[k].Raw).ToArray());
+        // Lanes read back as [X, Width] followed by their length.
+        foreach(var lane in raw["Editors"].Items.Single()["Lifelines"].Items)
+            state.Shapes[lane["Id"].StringValue()]=PumlBuild.Json(new[]{lane["X"].Raw,lane["Width"].Raw})+lane["LaneLength"].Raw;
         state.Ports[ids[6]]=new[]{ids[4],ids[5],ids[2],ids[3],"sync"};
         string before=state.Signature();
         var expected=state.Expected(package,plan,false);
@@ -417,15 +432,16 @@ public static class StructurePreparationTests
         Require(expected.Ports[wire].SequenceEqual(new[]{ids[4],ids[5],ids[2],ids[3],"sync"}),"new message ports not predicted");
         Require(expected.Ports[ids[6]].SequenceEqual(state.Ports[ids[6]]),"the sample message ports changed");
         Require(state.Signature()==before,"expected state mutated the snapshot");
-        // A generated bar ends 16 under its last message: the receiver's bar grows to reach
+        // The receiver's bar, cut short, grows to reach
         // the one appended a step lower, and the lanes grow as far as the diagram does.
         var shortRaw=SequenceJson.Parse(raw.ToJsonString());
         var shortBar=shortRaw["Editors"].Items.Single()["ExecutionSpecifications"].Items[1];
         shortBar.Properties["Length"]=SequenceJson.Parse("16");shortBar.Properties["Height"]=SequenceJson.Parse("16");
         var reached=SequenceStructurePreparation.Build(shortRaw.ToJsonString(),editorId,current,plan);
         var grown=reached.ShiftedShapes.Single(x=>x.ShapeId==shortBar["Id"].StringValue());
-        Require(grown.Keys.SequenceEqual(new[]{"Length","Height"}) && grown.Values.SequenceEqual(new[]{"56","56"}),"the bar did not reach the appended message: "+string.Join(",",grown.Values));
-        Require(!reached.ShiftedShapes.Any(x=>x.Kind=="participant"),"lanes grew although the diagram did not go lower");
+        // Laid out as the product does (K194): from probe() at 80 to 20 under again() at 120.
+        Require(grown.Keys.SequenceEqual(new[]{"Length","Height"}) && grown.Values.SequenceEqual(new[]{"60","60"}),"the bar did not reach the appended message: "+string.Join(",",grown.Keys)+"="+string.Join(",",grown.Values));
+        Require(!reached.ShiftedShapes.Any(x=>x.Kind=="participant" && double.Parse(x.Values[Array.IndexOf(x.Keys,"LaneLength")],System.Globalization.CultureInfo.InvariantCulture)>240),"lanes grew although the diagram did not go lower");
         // The message received on a bar this update also adds, as a destroy message is: the
         // bar has no shape yet, so it is not held to the existing bars' check.
         var opened=desired.Copy();
@@ -519,7 +535,10 @@ public static class StructurePreparationTests
             Require(moved("inner-shape","TargetY")=="180","the message inside the frame below did not move");
         }
         Require(view["Fragments"].Items.Single()["Height"].Raw==(into?"130":"90"),"the frame change was not written to the editor");
-        Require(moved(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Length")=="160","a bar open across the point did not grow");
+        // Both bars take the inserted message and are laid out as the product does (K194): the
+        // receiver's from probe() at 80 to 20 under the last message at 180, the sender's 20 lower.
+        Require(moved(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Y")=="80" && moved(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Length")=="140"
+            && moved(editor["ExecutionSpecifications"].Items[1]["Id"].StringValue(),"Length")=="120","a bar open across the point did not grow");
         var after=SequenceJson.Parse(package.EditorAfterDeleteJson)["Editors"].Items.Single();
         Require(after["Operands"].Items.Single(sh=>sh["Id"].StringValue()=="second-shape")["Position"].Raw==(into?"110":"70"),
             "the delete stage editor lost the operand offset");
@@ -533,7 +552,7 @@ public static class StructurePreparationTests
             state.RelationFields[id]=r["MetamodelId"].StringValue();
         }
         foreach(var sh in SequenceEditorDocument.Read(raw.ToJsonString(),ids[0],editorId).Shapes())
-        {string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        {string id=sh["Id"].StringValue();state.Shapes[id]=ReadBack(sh);state.ShapeModels[id]=sh["ModelId"].StringValue();}
         // What the SDK side reads back for the shapes that move.
         state.Shapes["frame-shape"]=PumlBuild.Json(new[]{"4","100","332","90"})+"alt";
         state.Shapes["first-shape"]="[]"+PumlBuild.Json(new[]{"ready","30"});
@@ -553,17 +572,20 @@ public static class StructurePreparationTests
             "operand readback not predicted: "+expected.Shapes["second-shape"]);
         Require(expected.Shapes["first-shape"]=="[]"+PumlBuild.Json(new[]{"ready","30"}),"the first operand readback changed");
     }
-    // Three messages at 80, 130 and 180 on bars from 50 to 250 and 80 to 230. The middle
+    // Three messages at 80, 130 and 180 on bars from 80 to 220 and 80 to 200. The middle
     // one gets a frame around it.
     static void WrappedMessage()
     {
         var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
         var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
         var editor=raw["Editors"].Items.Single();string editorId=editor["Id"].StringValue();
-        editor["ExecutionSpecifications"].Items[0].Properties["Length"]=SequenceJson.Parse("200");
-        editor["ExecutionSpecifications"].Items[0].Properties["Height"]=SequenceJson.Parse("200");
-        editor["ExecutionSpecifications"].Items[1].Properties["Length"]=SequenceJson.Parse("150");
-        editor["ExecutionSpecifications"].Items[1].Properties["Height"]=SequenceJson.Parse("150");
+        // Drawn as the product lays them out (K194): B from probe() at 80 to 20 under after() at
+        // 180, A 20 under that.
+        editor["ExecutionSpecifications"].Items[0].Properties["Y"]=SequenceJson.Parse("80");
+        editor["ExecutionSpecifications"].Items[0].Properties["Length"]=SequenceJson.Parse("140");
+        editor["ExecutionSpecifications"].Items[0].Properties["Height"]=SequenceJson.Parse("140");
+        editor["ExecutionSpecifications"].Items[1].Properties["Length"]=SequenceJson.Parse("120");
+        editor["ExecutionSpecifications"].Items[1].Properties["Height"]=SequenceJson.Parse("120");
         foreach(var pair in new[]{new[]{"wrapped","130"},new[]{"after","180"}})
         {
             var entity=Clone(raw["Entities"].Items.Single(e=>e["Id"].StringValue()==ids[6]));Set(entity,"Id",pair[0]);raw["Entities"].Items.Add(entity);
@@ -621,8 +643,9 @@ public static class StructurePreparationTests
         Require(moved("wrapped-shape","TargetY")=="200" && moved("wrapped-shape","SourceY")=="200","the wrapped message did not go under the guard");
         Require(moved("after-shape","TargetY")=="274","the message below did not clear the frame: "+moved("after-shape","TargetY"));
         string barA=editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),barB=editor["ExecutionSpecifications"].Items[1]["Id"].StringValue();
-        Require(moved(barA,"Y")==null && moved(barA,"Length")=="294" && moved(barA,"Height")=="294","a bar open across the frame did not grow by the room made");
-        Require(moved(barB,"Y")==null && moved(barB,"Length")=="244","the other bar did not grow");
+        // after() now at 274: B to 294, A 20 under that.
+        Require(moved(barA,"Y")==null && moved(barA,"Length")=="234" && moved(barA,"Height")=="234","a bar open across the frame did not grow by the room made: "+moved(barA,"Length"));
+        Require(moved(barB,"Y")==null && moved(barB,"Length")=="214","the other bar did not grow: "+moved(barB,"Length"));
         // It ends 35 under the wrapped message, past the split; it still does, inside the frame.
         Require(moved("inner-bar-shape","Y")=="200" && moved("inner-bar-shape","Length")==null,
             "a bar closed inside the frame reached out of it: "+moved("inner-bar-shape","Length"));
@@ -645,7 +668,7 @@ public static class StructurePreparationTests
             state.RelationFields[id]=r["MetamodelId"].StringValue();
         }
         foreach(var sh in SequenceEditorDocument.Read(raw.ToJsonString(),ids[0],editorId).Shapes())
-        {string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        {string id=sh["Id"].StringValue();state.Shapes[id]=ReadBack(sh);state.ShapeModels[id]=sh["ModelId"].StringValue();}
         foreach(var wire in editor["Messages"].Items)
             state.Shapes[wire["Id"].StringValue()]=PumlBuild.Json(new[]{"m",wire["TargetY"].Raw,wire["TargetY"].Raw,"0"});
         foreach(var bar in editor["ExecutionSpecifications"].Items)
@@ -657,18 +680,21 @@ public static class StructurePreparationTests
         var link=expected.Relations[package.MovedMessages[0].RelationId];
         Require(link.SequenceEqual(new[]{"wrap-operand","wrapped","0","0"}),"the operand reference was not predicted: "+string.Join(",",link));
         Require(expected.Shapes["after-shape"]==PumlBuild.Json(new[]{"m","274","274","0"}),"the moved message readback was not predicted");
-        Require(expected.Shapes[barA]==PumlBuild.Json(new[]{"70","50","16","294","294"}),"the grown bar readback was not predicted: "+expected.Shapes[barA]);
+        Require(expected.Shapes[barA]==PumlBuild.Json(new[]{"70","80","16","234","234"}),"the grown bar readback was not predicted: "+expected.Shapes[barA]);
         Require(expected.Models.ContainsKey("wrap-frame") && expected.Models.ContainsKey("wrap-operand"),"the frame was not predicted");
     }
-    // A note under the message at 80, above another at 130, on bars 50-250 and 80-230.
+    // A note under the message at 80, above another at 130, on bars 80-170 and 80-150.
     static void AddedNote()
     {
         var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
         var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
         var editor=raw["Editors"].Items.Single();string editorId=editor["Id"].StringValue();
+        // Drawn as the product lays them out (K194): B from probe() at 80 to 20 under later() at
+        // 130, A 20 under that.
         foreach(var bar in editor["ExecutionSpecifications"].Items)
         {
-            string length=bar==editor["ExecutionSpecifications"].Items[0]?"200":"150";
+            string length=bar==editor["ExecutionSpecifications"].Items[0]?"90":"70";
+            bar.Properties["Y"]=SequenceJson.Parse("80");
             bar.Properties["Length"]=SequenceJson.Parse(length);bar.Properties["Height"]=SequenceJson.Parse(length);
         }
         var entity=Clone(raw["Entities"].Items.Single(e=>e["Id"].StringValue()==ids[6]));Set(entity,"Id","later");raw["Entities"].Items.Add(entity);
@@ -723,7 +749,8 @@ public static class StructurePreparationTests
         };
         Require(moved(editor["Messages"].Items[0]["Id"].StringValue(),"TargetY")==null,"the message above the note moved");
         Require(moved("later-shape","TargetY")=="218","the message below did not make room for the note");
-        Require(moved(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Length")=="288","a bar open across the note did not grow");
+        // later() now at 218: B to 238, A to 258.
+        Require(moved(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Length")=="178","a bar open across the note did not grow: "+moved(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Length"));
         Require(moved("closing-shape","Length")==null && moved("closing-shape","Y")==null,"a bar closed above the note grew past it");
         var afterDelete=SequenceJson.Parse(package.EditorAfterDeleteJson)["Editors"].Items.Single();
         Require(afterDelete["Notes"]!=null && afterDelete["Notes"].Items.Count==1,"the delete stage editor lost the note");
@@ -736,7 +763,7 @@ public static class StructurePreparationTests
             state.RelationFields[id]=r["MetamodelId"].StringValue();
         }
         foreach(var sh in SequenceEditorDocument.Read(raw.ToJsonString(),ids[0],editorId).Shapes())
-        {string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        {string id=sh["Id"].StringValue();state.Shapes[id]=ReadBack(sh);state.ShapeModels[id]=sh["ModelId"].StringValue();}
         foreach(var w in editor["Messages"].Items)state.Shapes[w["Id"].StringValue()]=PumlBuild.Json(new[]{"m",w["TargetY"].Raw,w["TargetY"].Raw,"0"});
         foreach(var bar in editor["ExecutionSpecifications"].Items)
             state.Shapes[bar["Id"].StringValue()]=PumlBuild.Json(new[]{bar["X"].Raw,bar["Y"].Raw,"16",bar["Height"].Raw,bar["Length"].Raw});
@@ -793,7 +820,7 @@ public static class StructurePreparationTests
             state.RelationFields[id]=r["MetamodelId"].StringValue();
         }
         foreach(var sh in SequenceEditorDocument.Read(raw.ToJsonString(),ids[0],editorId).Shapes())
-        {string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        {string id=sh["Id"].StringValue();state.Shapes[id]=ReadBack(sh);state.ShapeModels[id]=sh["ModelId"].StringValue();}
         var view=raw["Editors"].Items.Single();
         foreach(var w in view["Messages"].Items)state.Shapes[w["Id"].StringValue()]=PumlBuild.Json(new[]{"m",w["TargetY"].Raw,w["TargetY"].Raw,"0"});
         foreach(var bar in view["ExecutionSpecifications"].Items)
@@ -814,9 +841,12 @@ public static class StructurePreparationTests
         var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
         var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
         var editor=raw["Editors"].Items.Single();string editorId=editor["Id"].StringValue();
-        foreach(var pair in new[]{new[]{"0","298"},new[]{"1","248"}})
+        // Drawn as the product lays them out (K194): B from probe() at 80 to 20 under after() at
+        // 278, A 20 under that.
+        foreach(var pair in new[]{new[]{"0","238"},new[]{"1","218"}})
         {
             var bar=editor["ExecutionSpecifications"].Items[int.Parse(pair[0])];
+            bar.Properties["Y"]=SequenceJson.Parse("80");
             bar.Properties["Length"]=SequenceJson.Parse(pair[1]);bar.Properties["Height"]=SequenceJson.Parse(pair[1]);
         }
         foreach(var pair in new[]{new[]{"wrapped","190"},new[]{"after","278"}})
@@ -868,21 +898,24 @@ public static class StructurePreparationTests
         Require(at("wrapped-shape","TargetY")=="120","the message the frame held did not close up under the one above: "+at("wrapped-shape","TargetY"));
         Require(at("after-shape","TargetY")=="160","the message below did not close up: "+at("after-shape","TargetY"));
         string barA=editor["ExecutionSpecifications"].Items[0]["Id"].StringValue();
-        Require(at(barA,"Y")==null && at(barA,"Length")=="180","a bar across the frame did not shrink with it: "+at(barA,"Length"));
+        Require(at(barA,"Y")==null && at(barA,"Length")=="120","a bar across the frame did not shrink with it: "+at(barA,"Length"));
         Require(at("old-frame-shape","Y")==null,"the frame being removed was moved");
         foreach(var lane in editor["Lifelines"].Items)Require(at(lane["Id"].StringValue(),"LaneLength")=="122","a lane did not shorten with the diagram");
         Require(package.DeleteFrameIds.Contains("old-frame") && package.DeleteFrameIds.Contains("old-operand"),"the frame was not deleted");
     }
     // A note from 120 to 168 under probe() at 80, and later() one step under it at 208, on
-    // bars from 50 (288 long) and 80 (238 long). Removing the note closes that room.
+    // bars from 80. Removing the note closes that room.
     static void DeletedNote()
     {
         var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
         var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
         var editor=raw["Editors"].Items.Single();string editorId=editor["Id"].StringValue();
-        foreach(var pair in new[]{new[]{"0","288"},new[]{"1","238"}})
+        // Drawn as the product lays them out (K194): B from probe() at 80 to 20 under later() at
+        // 208, A 20 under that.
+        foreach(var pair in new[]{new[]{"0","168"},new[]{"1","148"}})
         {
             var bar=editor["ExecutionSpecifications"].Items[int.Parse(pair[0])];
+            bar.Properties["Y"]=SequenceJson.Parse("80");
             bar.Properties["Length"]=SequenceJson.Parse(pair[1]);bar.Properties["Height"]=SequenceJson.Parse(pair[1]);
         }
         var entity=Clone(raw["Entities"].Items.Single(e=>e["Id"].StringValue()==ids[6]));Set(entity,"Id","later");raw["Entities"].Items.Add(entity);
@@ -921,20 +954,26 @@ public static class StructurePreparationTests
         Require(at("later-shape","TargetY")=="120","the message under the note did not move up to where the note began: "+at("later-shape","TargetY"));
         Require(at(editor["Messages"].Items[0]["Id"].StringValue(),"TargetY")==null,"the message above the note moved");
         string barA=editor["ExecutionSpecifications"].Items[0]["Id"].StringValue();
-        Require(at(barA,"Y")==null && at(barA,"Length")=="200","a bar across the note did not shrink: "+at(barA,"Length"));
+        // Laid out as the product does (K194): B from probe() at 80 to 20 under later() at 120,
+        // A 20 under that: 80 to 160.
+        Require(at(barA,"Y")==null && at(barA,"Length")=="80","a bar across the note did not shrink: "+at(barA,"Y")+"+"+at(barA,"Length"));
         Require(at("old-note-shape","Y")==null,"the note being removed was moved");
-        foreach(var lane in editor["Lifelines"].Items)Require(at(lane["Id"].StringValue(),"LaneLength")=="152","a lane did not shorten");
+        foreach(var lane in editor["Lifelines"].Items)Require(at(lane["Id"].StringValue(),"LaneLength")=="152","a lane did not shorten: "+at(lane["Id"].StringValue(),"LaneLength")+" from "+lane["LaneLength"].Raw);
         Require(package.DeleteNoteIds.SequenceEqual(new[]{"old-note"}),"the note was not deleted");
     }
-    // probe() at 80, two() at 120 and three() at 160, each answered on its own short bar
-    // on B (80+24, 120+24, 160+24). three() and its bar move above two().
+    // probe() at 80, two() at 120 and three() at 160, each received on its own short bar on B.
+    // three() and its bar move above two().
     static void ReorderedMessages()
     {
         var seed=SequencePayload.Build(new[]{"root","frame","laneA","laneB","execA","execB","message"},"view","11.1");
         var raw=SequenceJson.Parse(seed.Json);var ids=seed.Ids;
         var editor=raw["Editors"].Items.Single();string editorId=editor["Id"].StringValue();
+        // Drawn as the product lays them out (K194): B's bars only receive, so 20 long; A's runs
+        // from probe() at 80 to 20 under the last of them, 180, so to 200.
         var barB=editor["ExecutionSpecifications"].Items[1];
-        barB.Properties["Length"]=SequenceJson.Parse("24");barB.Properties["Height"]=SequenceJson.Parse("24");
+        barB.Properties["Length"]=SequenceJson.Parse("20");barB.Properties["Height"]=SequenceJson.Parse("20");
+        var barA=editor["ExecutionSpecifications"].Items[0];
+        barA.Properties["Y"]=SequenceJson.Parse("80");barA.Properties["Length"]=SequenceJson.Parse("120");barA.Properties["Height"]=SequenceJson.Parse("120");
         foreach(var row in new[]{new[]{"two","120"},new[]{"three","160"}})
         {
             var entity=Clone(raw["Entities"].Items.Single(e=>e["Id"].StringValue()==ids[6]));Set(entity,"Id",row[0]);raw["Entities"].Items.Add(entity);
@@ -949,7 +988,8 @@ public static class StructurePreparationTests
             var wire=Clone(editor["Messages"].Items[0]);Set(wire,"Id",row[0]+"-shape");Set(wire,"ModelId",row[0]);
             wire.Properties["SourceY"]=SequenceJson.Parse(row[1]);wire.Properties["TargetY"]=SequenceJson.Parse(row[1]);editor["Messages"].Items.Add(wire);
             var barShape=Clone(barB);Set(barShape,"Id",row[0]+"-bar-shape");Set(barShape,"ModelId",row[0]+"-bar");
-            barShape.Properties["Y"]=SequenceJson.Parse(row[1]);editor["ExecutionSpecifications"].Items.Add(barShape);
+            // Drawn as the product lays out a bar that only receives: 20 long (K194).
+            barShape.Properties["Y"]=SequenceJson.Parse(row[1]);barShape.Properties["Length"]=SequenceJson.Parse("20");barShape.Properties["Height"]=SequenceJson.Parse("20");editor["ExecutionSpecifications"].Items.Add(barShape);
         }
         var current=new SequenceDocument();
         current.Elements.Add(new SequenceElement{Id=ids[0],Kind="interaction"});
@@ -1055,7 +1095,12 @@ public static class StructurePreparationTests
         // It ended at 200, past the frame's old bottom at 190, so it goes on past the new
         // bottom by as much as the frame grew, which also covers the new message.
         var grownBar=grownPackage.ShiftedShapes.Single(x=>x.Kind=="execution" && x.ShapeId==shortBar["Id"].StringValue());
-        Require(grownBar.Values.SequenceEqual(new[]{"250","250"}),"the sender's bar did not follow the frame: "+string.Join(",",grownBar.Values));
+        // Laid out as the product does (K194): from its first message, probe() at 80, to 20 under
+        // the later of its last message and the bar its call opened, so it covers the new message.
+        double fallbackY=double.Parse(SequenceJson.Parse(grownPackage.ReconnectJson)["Editors"].Items.Single()["Messages"].Items.Single(w=>w["ModelId"].StringValue()=="fallback")["SourceY"].Raw,System.Globalization.CultureInfo.InvariantCulture);
+        int top=Array.IndexOf(grownBar.Keys,"Y"),length=Array.IndexOf(grownBar.Keys,"Length");
+        Require(top>=0 && grownBar.Values[top]=="80" && length>=0 && 80+double.Parse(grownBar.Values[length],System.Globalization.CultureInfo.InvariantCulture)>=fallbackY+20,
+            "the sender's bar did not follow the frame: "+string.Join(",",grownBar.Keys)+" = "+string.Join(",",grownBar.Values)+" / fallback "+fallbackY);
         var branch=package.AddedOperands.Single();
         // The guard takes the generator's step under the last message: 40, 8 and 12.
         Require(branch.OwnerId=="the-frame" && branch.Position=="100","the branch did not start a generator step under the last message: "+branch.Position);
@@ -1064,10 +1109,12 @@ public static class StructurePreparationTests
         var frame=package.ShiftedShapes.Single(s=>s.ShapeId=="the-frame-shape");
         Require(frame.Keys.SequenceEqual(new[]{"Height"}) && frame.Values[0]=="190","the frame did not grow to hold the branch: "+string.Join(",",frame.Values));
         Require(package.StretchedLifelines.All(l=>l.Length=="340"),"the lanes did not grow with the frame");
-        // The sender's bar ended at 300; the new message at 240 is inside it, the receiver's at 330 too.
-        // Both bars close below the frame, so both follow it down by the 100 it grew.
-        Require(package.ShiftedShapes.Where(x=>x.Kind=="execution").All(x=>x.Values.SequenceEqual(new[]{"350","350"}))
-            && package.ShiftedShapes.Count(x=>x.Kind=="execution")==2,"bars closing below the frame did not follow it");
+        // Both bars take the new message, so both are laid out as the product does (K194): the
+        // receiver's from probe() at 80 (its top already there) to 20 under fallback() at 240, the
+        // sender's 20 under that.
+        Func<SequenceShiftedShape,string,string> value=(x,key)=>{int i=Array.IndexOf(x.Keys,key);return i<0?null:x.Values[i];};
+        var moved=package.ShiftedShapes.Where(x=>x.Kind=="execution").Select(x=>(value(x,"Y")??"80")+"+"+value(x,"Length")).OrderBy(v=>v,StringComparer.Ordinal).ToArray();
+        Require(moved.SequenceEqual(new[]{"80+180","80+200"}),"bars closing below the frame did not follow it: "+string.Join(" ",moved));
     }
     static void TrimmedBranch()
     {
@@ -1123,6 +1170,8 @@ public static class StructurePreparationTests
         state.Models[ids[6]]=PumlBuild.Json(new[]{"message","probe()",ids[0],"False"});
         var wire=raw["Editors"].Items.Single()["Messages"].Items.Single();
         state.Shapes[wire["Id"].StringValue()]=PumlBuild.Json(new[]{"probe()","80","80","0"});state.ShapeModels[wire["Id"].StringValue()]=ids[6];
+        foreach(var sh in raw["Editors"].Items.Single()["ExecutionSpecifications"].Items.Concat(raw["Editors"].Items.Single()["Lifelines"].Items))
+        {state.Shapes[sh["Id"].StringValue()]=ReadBack(sh);state.ShapeModels[sh["Id"].StringValue()]=sh["ModelId"].StringValue();}
         var expected=state.Expected(package,plan,false);
         Require(expected.Models[ids[6]]==PumlBuild.Json(new[]{"message","renamed()",ids[0],"False"}),"the renamed model was not predicted");
         Require(expected.Shapes[wire["Id"].StringValue()]==PumlBuild.Json(new[]{"renamed()","80","80","0"}),"the renamed shape was not predicted");
@@ -1181,7 +1230,9 @@ public static class StructurePreparationTests
         Require(view["Notes"].Items.Single()["Y"].StringValue()=="200","the note is not under two() where it now is: "+view["Notes"].Items.Single()["Y"].StringValue());
         // three() moves by both: 40 for the message, 48 + 40 for the note.
         Require(at("three-shape","TargetY")=="288","three() did not move by both rooms: "+at("three-shape","TargetY"));
-        Require(at(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Length")=="328","a bar across both did not grow by both");
+        // Laid out as the product does: from probe() at 80 to 20 under the bar its call opened,
+        // which ends 20 under three() at 288: 328, so 248 long.
+        Require(at(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Y")=="80" && at(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Length")=="248","a bar across both did not grow by both: "+at(editor["ExecutionSpecifications"].Items[0]["Id"].StringValue(),"Length"));
         Require(package.ShiftedShapes.Count(x=>x.ShapeId=="three-shape")==1,"a shape was moved twice");
     }
     public static void Run()
@@ -1327,7 +1378,7 @@ public static class StructurePreparationTests
         var state=new SequenceTrialState();
         foreach(var e in raw["Entities"].Items)state.Models[e["Id"].StringValue()]=e.ToJsonString();
         foreach(var r in raw["Relations"].Items)state.Relations[r["Id"].StringValue()]=new[]{r["SourceId"].StringValue(),r["TargetId"].StringValue(),r["SourceIndex"].Raw,r["TargetIndex"].Raw};
-        foreach(var sh in SequenceEditorDocument.Read(original,ids[0],editorId).Shapes()){string id=sh["Id"].StringValue();state.Shapes[id]=sh.ToJsonString();state.ShapeModels[id]=sh["ModelId"].StringValue();}
+        foreach(var sh in SequenceEditorDocument.Read(original,ids[0],editorId).Shapes()){string id=sh["Id"].StringValue();state.Shapes[id]=ReadBack(sh);state.ShapeModels[id]=sh["ModelId"].StringValue();}
         state.Ports[ids[6]]=new[]{ids[4],ids[5],ids[2],ids[3],"sync"};
         string beforeState=state.Signature();
         var connected=state.Expected(package,plan,false);var finalState=state.Expected(package,plan,true);
@@ -1356,11 +1407,13 @@ public static class StructurePreparationTests
         Require(changed["SourceIndex"]==null,"stale source order carried to the destination");
         expected.Properties.Remove("SourceIndex");
         Require(changed.ToJsonString()==expected.ToJsonString(),"relation identity, target order or unknown data changed");
-        Require(reconnect["Entities"].Items.Count==0 && reconnect["Editors"].Items.Single().ToJsonString()==editor.ToJsonString(),"reconnect altered models or editor");
+        // The bars are laid out where the product puts them (K194), and the lanes follow them.
+        Func<SequenceJson,string> apartFromBars=v=>{var c=Clone(v);foreach(var bar in c["ExecutionSpecifications"].Items)foreach(string k in new[]{"Y","Length","Height"})bar.Properties.Remove(k);foreach(var lane in c["Lifelines"].Items)lane.Properties.Remove("LaneLength");return c.ToJsonString();};
+        Require(reconnect["Entities"].Items.Count==0 && apartFromBars(reconnect["Editors"].Items.Single())==apartFromBars(editor),"reconnect altered models or editor");
         Require(reconnect["SchemaVersion"].StringValue()=="11.1" && reconnect["TopElementId"].StringValue()==ids[0],"patch targets wrong root/schema");
         var deleted=Clone(editor);deleted["ExecutionSpecifications"].Items.RemoveAt(1);
         var final=SequenceJson.Parse(package.EditorAfterDeleteJson);
-        Require(final["Entities"].Items.Count==0 && final["Relations"].Items.Count==0 && final["Editors"].Items.Single().ToJsonString()==deleted.ToJsonString(),"delete editor did not preserve exact retained data");
+        Require(final["Entities"].Items.Count==0 && final["Relations"].Items.Count==0 && apartFromBars(final["Editors"].Items.Single())==apartFromBars(deleted),"delete editor did not preserve exact retained data");
         Require(package.DeleteIds.SequenceEqual(new[]{ids[5]}) && semantic==current.ToJson()+plan.Expected.ToJson(),"plan mutated or wrong deletions");
         Require(SequenceStructurePreparation.Build(original,editorId,current,plan).ReconnectJson==package.ReconnectJson,"preparation is not deterministic");
         var stale=Clone(raw);Set(stale["Relations"].Items.Single(r=>r["Id"].StringValue()==receiver["Id"].StringValue()),"SourceId",ids[4]);
