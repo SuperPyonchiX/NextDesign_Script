@@ -1,4 +1,4 @@
-# SequenceImportProbe 引き継ぎ（2026-09-25 / 0.11.6）
+# SequenceImportProbe 引き継ぎ（2026-09-25 / 0.11.7）
 
 PlantUML を正本に Next Design の既存シーケンス図を差分更新する C# スクリプト拡張。この文書は作業を別セッションへ引き継ぐためのもの。**まず `.local/nd-knowledge/index.md` を読むこと。** K001〜K160 に実機で確かめた事実が入っている。推測で候補を潰す前に、そこと製品ログを見る。
 
@@ -23,6 +23,14 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 | Note・ref の削除で隙間を詰める | 済（0.9.19） |
 | Note と ref の差し替え | 済（0.9.14） |
 | 途中へのメッセージ挿入 | 済（0.9.1）。**Undo は製品が停止する（A15）** |
+
+## 2-000000000000000000000000000000000. 0.11.7: SDK から写しを組み立てる本体と置き場所の照合
+
+- 0.11.6 調査（2図）: RelationType は IsEmbedded から全件一致、IsDerivation 全件一致。関連 Metamodel は名前と一部だけ一致（取込には不要、生成器も書かない）。TargetIndex は写し -1 / SDK 0 が大半で、相手フィールドや上限では決まらない。2図目に TargetX/TargetY を持つ図形が2件（Note のアンカーと推定）
+- 反映は図のエディタをまるごと取り込み直すので、組み立てた写しに無い図形は消える。数値より先に、図形の置き場所（コレクション）の一致が要る
+- `SequenceSnapshotBuilder.Build`: 図の木のモデル（EntityType は図形の種類から導出、Fields は SDK の値、名前が空なら Fields.Name）、関連（RelationType・MetamodelId・索引・IsDerivation）、エディタ（図形を種類ごとのコレクションへ。Style・LeftPadding・IsRightAtFrame は省く）を生成器と同じ形で作る。SchemaVersion はプロジェクトファイルの見出しから
+- 調査ボタンに「図形の置き場所（写し → 組み立て）」「エディタの値」「EntityType の一致」を追加。反映にはまだ使っていない
+- 0.11.4 全図チェック: 一致 474（0.11.2 の 438 から増）・差分あり 204・停止 6。note 所属 90→44、note move 112→68。sendExecution 124 は 0.11.5 の修正前
 
 ## 2-00000000000000000000000000000000. 0.11.6: 保存なし反映の調査（導出規則の照合）
 

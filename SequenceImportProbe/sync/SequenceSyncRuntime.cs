@@ -1429,6 +1429,36 @@ public static class SequenceSnapshotProbe
                 List<string> seen;if(shown.TryGetValue(k,out seen))report.AppendLine("  例（写し / SDK）: "+string.Join(" ; ",seen));
             }
             report.AppendLine("（全件一致のキーは省略）");
+            // The snapshot an unsaved update would use: every shape must sit where the export
+            // keeps it, or re-importing the editor would drop it.
+            {
+                string built=SequenceSnapshotBuilder.Build(project,root,diagram,SequenceSnapshotBuilder.Schema(project),log);
+                var builtEditor=SequenceJson.Parse(built)["Editors"].Items.Single();
+                var want=SequenceSnapshotBuilder.Places(editor);var got=SequenceSnapshotBuilder.Places(builtEditor);
+                var placeTally=new SortedDictionary<string,int>(StringComparer.Ordinal);
+                foreach(var pair in want)
+                {
+                    string at;got.TryGetValue(pair.Key,out at);
+                    string key=pair.Value+(at==null?" → 組み立てに無い":at==pair.Value?" 一致":" → "+at);
+                    int n;placeTally.TryGetValue(key,out n);placeTally[key]=n+1;
+                }
+                foreach(var pair in got.Where(p=>!want.ContainsKey(p.Key))){string key="組み立てだけ: "+pair.Value;int n;placeTally.TryGetValue(key,out n);placeTally[key]=n+1;}
+                report.AppendLine("図形の置き場所（写し → 組み立て）:");
+                foreach(var pair in placeTally)report.AppendLine("  "+pair.Key+": "+pair.Value);
+                var editorKeys=editor.Properties.Where(p=>p.Value!=null && p.Value.Raw!=null).Select(p=>p.Key+"="+(p.Key=="MetamodelId" || p.Key=="ViewType"?p.Value.Raw:"…")).ToList();
+                report.AppendLine("エディタの値: "+string.Join(", ",editorKeys)+" / 組み立て: "+string.Join(", ",builtEditor.Properties.Where(p=>p.Value!=null && p.Value.Raw!=null).Select(p=>p.Key)));
+                var builtData=SequenceJson.Parse(built);
+                var builtEntities=builtData["Entities"].Items.ToDictionary(x=>x["Id"].StringValue());
+                int typeSame=0,typeDiff=0;var typeExamples=new List<string>();
+                foreach(var ent in data["Entities"].Items)
+                {
+                    SequenceJson mine;if(!builtEntities.TryGetValue(ent["Id"].StringValue(),out mine))continue;
+                    if(ent["EntityType"]==null)continue;
+                    if(Same(ent["EntityType"],mine["EntityType"]))typeSame++;
+                    else {typeDiff++;if(typeExamples.Count<5)typeExamples.Add(ent["EntityType"].StringValue()+"/"+mine["EntityType"].StringValue());}
+                }
+                report.AppendLine("EntityType（図形の種類から導出）: 一致 "+typeSame+" 不一致 "+typeDiff+(typeExamples.Count>0?" 例 "+string.Join(" ; ",typeExamples):""));
+            }
             report.AppendLine("導出の候補と写しの一致数:");
             foreach(var pair in matches.OrderBy(p=>p.Key,StringComparer.Ordinal))report.AppendLine("  "+pair.Key+": "+pair.Value);
             string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.SequenceSync","snapshot-probe");
@@ -1522,5 +1552,146 @@ public static class SequenceOmissionProbe
         catch(Exception ex){report.AppendLine("調査を完了できません: "+ex.Message);log.AppendLine(ex.ToString());}
         SequenceExperiment.Summary=report.ToString();SequenceExperiment.Details=report+"\f"+log;
         app.Window.UI.ShowInformationDialog(report.ToString(),title);
+    }
+}
+
+// The diagram's snapshot built from what the SDK reads live, for an update of a project with
+// unsaved changes (ExportModelUnit refuses then). Laid out like the export and like the
+// generator's payload. What the SDK cannot read is left out: part of Style, LeftPadding and
+// IsRightAtFrame, which an editor import keeps or sets to their defaults (K217).
+public static class SequenceSnapshotBuilder
+{
+    static string N(double v){return v.ToString("R",System.Globalization.CultureInfo.InvariantCulture);}
+    static SequenceJson J(object v)
+    {
+        if(v==null)return null;
+        if(v is bool)return SequenceJson.Parse((bool)v?"true":"false");
+        if(v is int || v is long || v is short)return SequenceJson.Parse(Convert.ToInt64(v).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if(v is double || v is float || v is decimal)return SequenceJson.Parse(N(Convert.ToDouble(v)));
+        if(v is string)return SequenceJson.Parse(SequencePayload.Q((string)v));
+        var model=v as IModel;if(model!=null)return SequenceJson.Parse(SequencePayload.Q(model.Id));
+        return SequenceJson.Parse(SequencePayload.Q(v.ToString()));
+    }
+    static SequenceJson O(){return new SequenceJson{Properties=new Dictionary<string,SequenceJson>(StringComparer.Ordinal)};}
+    static void P(SequenceJson o,string k,object v){var j=J(v);if(j!=null)o.Properties[k]=j;}
+    // The collection a shape is kept in, as the generator writes it.
+    public static string Collection(ISequenceShape shape)
+    {
+        if(shape is IFrameShape)return "Frame";
+        if(shape is ILifelineShape)return "Lifelines";
+        if(shape is IExecutionSpecificationShape)return "ExecutionSpecifications";
+        if(shape is IMessageShape)return "Messages";
+        if(shape is IFragmentShape)return "Fragments";
+        if(shape is IOperandShape)return "Operands";
+        if(shape is IInteractionUseShape)return "InteractionUses";
+        if(shape is INoteShape)return "Notes";
+        if(shape is IMessageEndShape)return "MessageEnds";
+        if(shape is IDestructionShape)return "Destructions";
+        if(shape is INoteAnchorShape)return "NoteAnchors";
+        return "?"+shape.GetType().Name;
+    }
+    static string EntityType(IModel m,Dictionary<string,ISequenceShape> shapeOf,string root)
+    {
+        if(m.Id==root)return "Interaction";
+        ISequenceShape s;
+        if(shapeOf.TryGetValue(m.Id,out s))
+        {
+            string c=Collection(s);
+            switch(c)
+            {
+                case "Frame":return "Frame";case "Lifelines":return "Lifeline";case "ExecutionSpecifications":return "ExecutionSpecification";
+                case "Messages":return "Message";case "Fragments":return "CombinedFragment";case "Operands":return "InteractionOperand";
+                case "InteractionUses":return "InteractionUse";case "Notes":return "InteractionNote";case "MessageEnds":return "MessageEnd";case "Destructions":return "Destruction";
+            }
+        }
+        return m.Metaclass==null?"":m.Metaclass.Name;
+    }
+    public static string Build(IProject project,IInteraction root,ISequenceDiagram diagram,string schema,StringBuilder log)
+    {
+        var tree=SequenceMappedUpdate.Tree(root).ToList();
+        var inTree=new HashSet<string>(tree.Select(m=>m.Id));
+        var shapes=diagram.Shapes.ToList();
+        var shapeOf=new Dictionary<string,ISequenceShape>(StringComparer.Ordinal);
+        foreach(var s in shapes)if(s.ModelId!=null && !shapeOf.ContainsKey(s.ModelId))shapeOf[s.ModelId]=s;
+        var entities=new List<SequenceJson>();var relations=new List<SequenceJson>();var seen=new HashSet<string>(StringComparer.Ordinal);
+        foreach(var m in tree)
+        {
+            var e=O();P(e,"Id",m.Id);P(e,"EntityType",EntityType(m,shapeOf,root.Id));P(e,"MetamodelId",m.Metaclass==null?null:m.Metaclass.Id);
+            var fields=O();
+            if(m.Metaclass!=null)
+                foreach(var f in m.Metaclass.GetFields().Cast<IField>().Where(f=>f.RelationshipClass==null))
+                {
+                    try {P(fields,f.Name,m.GetField(f.Name));}
+                    catch(Exception ex){log.AppendLine("snapshot field "+f.Name+": "+ex.GetType().Name);}
+                }
+            string name=m.Name;
+            if(string.IsNullOrEmpty(name) && fields["Name"]!=null && fields["Name"].Raw.StartsWith("\""))name=fields["Name"].StringValue();
+            P(e,"Name",name??"");
+            e.Properties["Fields"]=fields;
+            entities.Add(e);
+            foreach(var r in m.GetRelationsWhere((relation,field)=>true))
+            {
+                if(!seen.Add(r.Id))continue;
+                var o=O();P(o,"Id",r.Id);P(o,"RelationType",r.IsEmbedded?"Embed":"Ref");P(o,"MetamodelId",r.Metaclass==null?null:r.Metaclass.Id);
+                P(o,"SourceId",r.Source.Id);P(o,"TargetId",r.Target.Id);P(o,"SourceIndex",r.SourceIndex);P(o,"TargetIndex",r.TargetIndex);
+                if(r.IsDerivation)P(o,"IsDerivation",true);
+                relations.Add(o);
+            }
+        }
+        var editor=O();
+        P(editor,"Id",diagram.Id);P(editor,"ViewType","SequenceDiagram");
+        P(editor,"MetamodelId","DensoCreate.Indio.IMF.Extensions.Sequence.ViewInstance.SequenceDiagramViewInstance");
+        P(editor,"DefinitionId",diagram.EditorDefinition==null?null:diagram.EditorDefinition.Id);P(editor,"ModelId",root.Id);
+        var lists=new Dictionary<string,List<SequenceJson>>(StringComparer.Ordinal);
+        foreach(var s in shapes)
+        {
+            var o=O();P(o,"Id",s.Id);P(o,"ModelId",s.ModelId);
+            var node=s as ISequenceNodeShape;
+            string c=Collection(s);
+            if(node!=null && c!="Operands"){P(o,"X",node.LocationX);if(c!="Lifelines")P(o,"Y",node.LocationY);P(o,"Width",node.Width);if(c!="Lifelines")P(o,"Height",node.Height);}
+            var bar=s as IExecutionSpecificationShape;if(bar!=null){P(o,"Length",bar.Length);P(o,"Height",bar.Length);}
+            var wire=s as IMessageShape;if(wire!=null){P(o,"SourceY",wire.SourceY);P(o,"TargetY",wire.TargetY);P(o,"SelfloopBendsX",wire.SelfloopBendsX);}
+            var branch=s as IOperandShape;if(branch!=null)P(o,"Position",branch.Position);
+            var lane=s as ILifelineShape;if(lane!=null)P(o,"LaneLength",lane.TimelineLength);
+            if(c=="Frame"){editor.Properties["Frame"]=o;continue;}
+            List<SequenceJson> list;if(!lists.TryGetValue(c,out list))lists[c]=list=new List<SequenceJson>();
+            list.Add(o);
+        }
+        foreach(var pair in lists)editor.Properties[pair.Key]=new SequenceJson{Items=pair.Value};
+        var top=O();P(top,"Type","Model");P(top,"SchemaVersion",schema);P(top,"TopElementId",root.Id);
+        top.Properties["Entities"]=new SequenceJson{Items=entities};top.Properties["Relations"]=new SequenceJson{Items=relations};
+        top.Properties["Editors"]=new SequenceJson{Items=new List<SequenceJson>{editor}};
+        log.AppendLine("Snapshot built from the SDK: entities "+entities.Count+", relations "+relations.Count+", shapes "+shapes.Count);
+        return top.ToJsonString();
+    }
+    // The schema the project file declares, as the import reads it.
+    public static string Schema(IProject project)
+    {
+        try
+        {
+            using(var reader=new StreamReader(project.Path,Encoding.UTF8,true))
+            {
+                char[] header=new char[4096];int n=reader.Read(header,0,header.Length);
+                var match=Regex.Match(new string(header,0,n),"\"SchemaVersion\"\\s*:\\s*\"([0-9]+\\.[0-9]+)\"");
+                if(match.Success)return match.Groups[1].Value;
+            }
+        }
+        catch(Exception){}
+        return "13.0";
+    }
+    // Where every shape sits in an editor, as a path of collection names.
+    public static Dictionary<string,string> Places(SequenceJson editor)
+    {
+        var result=new Dictionary<string,string>(StringComparer.Ordinal);
+        Action<SequenceJson,string> walk=null;
+        walk=(node,path)=>{
+            if(node==null)return;
+            if(node.Items!=null){foreach(var i in node.Items)walk(i,path);return;}
+            if(node.Properties==null)return;
+            if(node["Id"]!=null && node["ModelId"]!=null && node["Id"].Raw.StartsWith("\"") && path.Length>0)result[node["Id"].StringValue()]=path;
+            foreach(var p in node.Properties)if(p.Value!=null && (p.Value.Items!=null || p.Value.Properties!=null))walk(p.Value,path.Length==0?p.Key:path+"/"+p.Key);
+        };
+        walk(editor,"");
+        return result;
     }
 }
