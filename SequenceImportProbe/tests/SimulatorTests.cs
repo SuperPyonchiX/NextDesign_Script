@@ -124,7 +124,8 @@ public static class SequenceSimulator
                 add(oid,"operand",i>0 && string.Equals(SequenceLabels.Fold(guard),"else",StringComparison.OrdinalIgnoreCase)?"":guard,i==0?fy:top);
                 doc.Elements.Last().Parent=id;
                 Require(!(top<fy-0.00001 || bottom>fy+fh+0.00001 || bottom<=top),"S210: オペランドの境界が不正です: "+oid);
-                operandRegions.Add(new SequenceRegion{Id=oid,Fragment=id,X=D(f,"X"),Y=top,Width=D(f,"Width"),Height=bottom-top});
+                double from=i==0?fy:top;
+                operandRegions.Add(new SequenceRegion{Id=oid,Fragment=id,X=D(f,"X"),Y=from,Width=D(f,"Width"),Height=bottom-from});
             }
         }
         var bars=shapes("ExecutionSpecifications").ToDictionary(e=>V(e,"ModelId"));

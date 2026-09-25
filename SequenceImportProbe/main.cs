@@ -30,7 +30,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.11.10";
+    public const string Title = "シーケンス生成実験 / 0.11.11";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1138,7 +1138,10 @@ public sealed class DiagramSnapshot
                 log.AppendLine("Operand bounds: id="+operand.ModelId+" fragment="+f.ModelId+" top="+top+" bottom="+bottom+" rawPosition="+operand.Position);
                 if(top<f.LocationY-0.00001 || bottom>f.LocationY+f.Height+0.00001 || bottom<=top)
                     throw new InvalidOperationException("S210: オペランドの境界が不正です: "+operand.ModelId);
-                operandRegions.Add(new SequenceRegion{Id=operand.ModelId,Fragment=f.ModelId,X=f.LocationX,Y=top,Width=f.Width,Height=bottom-top});
+                // The first branch starts at the frame's top edge, as the export has it: anything drawn
+                // in the frame's head area is in the first branch.
+                double from=i==0?f.LocationY:top;
+                operandRegions.Add(new SequenceRegion{Id=operand.ModelId,Fragment=f.ModelId,X=f.LocationX,Y=from,Width=f.Width,Height=bottom-from});
             }
         }
         foreach(var e in diagram.ExecutionSpecifications)
@@ -4470,6 +4473,7 @@ public class PumlBuild
     // A bar just deactivated, and who called it: a reply from that lane to that caller answers
     // the call and leaves from that bar, even when the input deactivates it first.
     private Dictionary<string,string> justEnded=new Dictionary<string,string>(), caller=new Dictionary<string,string>();
+    private string pendingSendAlias, pendingSendExecution;
     private string Execution(string alias,int start)
     {
         string id=Entity("ExecutionSpecification",""); Owned("ExecutionSpecifications",id); Link("OwnedExecutionSpecification",lifelines[alias],id);
@@ -4510,7 +4514,8 @@ public class PumlBuild
                 justEnded.Remove(n.Left);
                 string previous; active.TryGetValue(n.Left,out previous);
                 if(!activities.ContainsKey(n.Left))activities[n.Left]=new Stack<string>();
-                string id=pendingAlias==n.Left?pendingExecution:Execution(n.Left,y-20);
+                string id=pendingAlias==n.Left?pendingExecution:pendingSendAlias==n.Left?pendingSendExecution:Execution(n.Left,y-20);
+                if(pendingSendAlias==n.Left)pendingSendAlias=null;
                 // A receive followed by activate opens that receive execution, not a second bar.
                 if(id==previous)previous=activities[n.Left].Count>0?activities[n.Left].Peek():null;
                 activities[n.Left].Push(previous); active[n.Left]=id;
@@ -4548,7 +4553,8 @@ public class PumlBuild
                         claimed=below[k];
                     }
                 }
-                string send; if(incoming)send=null; else if(claimed!=null)send=claimed; else if(!active.TryGetValue(n.Left,out send) || closed.Contains(send))active[n.Left]=send=Execution(n.Left,y-20);
+                string send; bool freshSend=false;
+                if(incoming)send=null; else if(claimed!=null)send=claimed; else if(!active.TryGetValue(n.Left,out send) || closed.Contains(send)){freshSend=!active.ContainsKey(n.Left) || send==null;active[n.Left]=send=Execution(n.Left,y-20);}
                 bool outgoing=n.Right=="]"; bool self=n.Left==n.Right; int targetY=y+(self?24:0);
                 string receive;
                 bool beginsActivation=index+1<items.Count && items[index+1].Kind=="activate" && items[index+1].Left==n.Right;
@@ -4579,6 +4585,9 @@ public class PumlBuild
                 if(!outgoing && (!activities.ContainsKey(n.Right) || activities[n.Right].Count==0))active[n.Right]=receive;
                 if(!outgoing && !incoming && !caller.ContainsKey(receive))caller[receive]=n.Left;
                 pendingAlias=outgoing?null:n.Right; pendingExecution=receive;
+                // A lane with no bar open that sends and is then activated: that bar sent it (see
+                // SequenceDocument.Parse); the activate takes the bar made for the send.
+                pendingSendAlias=freshSend && !self && !incoming?n.Left:null; pendingSendExecution=send;
                 if(!incoming)Extend(send,y); if(!outgoing)Extend(receive,targetY);
                 foreach(var pair in activities)if(pair.Value.Count>0 && active.ContainsKey(pair.Key))Extend(active[pair.Key],targetY);
                 string id=Entity("Message",n.Text,Obj("Name",n.Text,"MessageSort",n.Kind=="reply"?profile.Reply
@@ -5421,6 +5430,15 @@ public sealed class SequenceDocument
                     {
                         previousEvent.Links["receiveExecution"]=new[]{e.Id};awaitAnswer(previousEvent);
                         if(previousEvent.Links["sender"].Length==1)e.Attributes["caller"]=previousEvent.Links["sender"][0];
+                    }
+                    // A message sent from a lane with no bar open, then an activate of that lane:
+                    // the export writes a bar that opens with a send after that send (its activate
+                    // waits for the next message after a deactivate), so this bar sent it.
+                    if(previousEvent!=null && previousEvent.Kind=="message" && !previousEvent.Links.ContainsKey("sendExecution")
+                        && previousEvent.Links["sender"].SequenceEqual(new[]{aliases[n.Left]}) && e.Links.ContainsKey("outer")==false
+                        && !(previousEvent.Links.ContainsKey("receiveExecution") && previousEvent.Links["receiveExecution"].Contains(e.Id)))
+                    {
+                        previousEvent.Links["sendExecution"]=new[]{e.Id};
                     }
                     continue;
                 }

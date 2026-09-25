@@ -180,6 +180,15 @@ public sealed class SequenceDocument
                         previousEvent.Links["receiveExecution"]=new[]{e.Id};awaitAnswer(previousEvent);
                         if(previousEvent.Links["sender"].Length==1)e.Attributes["caller"]=previousEvent.Links["sender"][0];
                     }
+                    // A message sent from a lane with no bar open, then an activate of that lane:
+                    // the export writes a bar that opens with a send after that send (its activate
+                    // waits for the next message after a deactivate), so this bar sent it.
+                    if(previousEvent!=null && previousEvent.Kind=="message" && !previousEvent.Links.ContainsKey("sendExecution")
+                        && previousEvent.Links["sender"].SequenceEqual(new[]{aliases[n.Left]}) && e.Links.ContainsKey("outer")==false
+                        && !(previousEvent.Links.ContainsKey("receiveExecution") && previousEvent.Links["receiveExecution"].Contains(e.Id)))
+                    {
+                        previousEvent.Links["sendExecution"]=new[]{e.Id};
+                    }
                     continue;
                 }
                 if(n.Kind=="deactivate")

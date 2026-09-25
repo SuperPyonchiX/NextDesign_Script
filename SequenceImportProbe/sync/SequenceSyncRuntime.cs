@@ -78,7 +78,10 @@ public sealed class DiagramSnapshot
                 log.AppendLine("Operand bounds: id="+operand.ModelId+" fragment="+f.ModelId+" top="+top+" bottom="+bottom+" rawPosition="+operand.Position);
                 if(top<f.LocationY-0.00001 || bottom>f.LocationY+f.Height+0.00001 || bottom<=top)
                     throw new InvalidOperationException("S210: オペランドの境界が不正です: "+operand.ModelId);
-                operandRegions.Add(new SequenceRegion{Id=operand.ModelId,Fragment=f.ModelId,X=f.LocationX,Y=top,Width=f.Width,Height=bottom-top});
+                // The first branch starts at the frame's top edge, as the export has it: anything drawn
+                // in the frame's head area is in the first branch.
+                double from=i==0?f.LocationY:top;
+                operandRegions.Add(new SequenceRegion{Id=operand.ModelId,Fragment=f.ModelId,X=f.LocationX,Y=from,Width=f.Width,Height=bottom-from});
             }
         }
         foreach(var e in diagram.ExecutionSpecifications)
