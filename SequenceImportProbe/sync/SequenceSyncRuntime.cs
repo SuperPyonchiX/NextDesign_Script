@@ -344,6 +344,20 @@ public static class SequenceSyncRuntime
     }
     // HasUnsavedChanges answers false when the dirty state holds nothing savable, but the
     // export still refuses, so ask the design model as well.
+    // Set by a caller that may save the project before an update without asking, such as an
+    // MCP tool acting for the user. Otherwise the user is asked each time.
+    public static bool SaveBeforeUpdate;
+    static bool SaveFirst(IApplication app,IProject project,StringBuilder log)
+    {
+        if(!SaveBeforeUpdate)
+        {
+            if(Batch)return false;
+            if(!app.Window.UI.ShowConfirmDialog("プロジェクトに未保存の変更があります。\n反映の前に図の写しを取るため、保存が必要です（作業中の他の変更も一緒に保存されます）。\n\nOK: 保存して反映を続ける\nキャンセル: 中止する（何も変更しません）",SequenceExperiment.Title))return false;
+        }
+        if(!app.Workspace.SaveProject(project,false))throw new InvalidOperationException("S220: プロジェクトを保存できませんでした。");
+        log.AppendLine("反映の前にプロジェクトを保存しました（"+(SaveBeforeUpdate?"呼び出し元が許可":"利用者が承認")+"）。");
+        return true;
+    }
     static bool Unsaved(IProject project)
     {
         try {return project.HasUnsavedChanges() || (project.DesignModel!=null && project.DesignModel.IsDirty);}
@@ -411,9 +425,15 @@ public static class SequenceSyncRuntime
             var preflight=SequenceStructurePreflight.Check(current.Document,plan);
             Lap("差分計画");
             // The snapshot goes through ExportModelUnit, which refuses to run while the
-            // project has unsaved changes. Say so before any work instead of letting the
-            // export throw halfway. This command never saves for you.
-            if(prepare && SequenceEditorCapture.BatchSource==null && Unsaved(project))throw new InvalidOperationException(UnsavedAdvice);
+            // project has unsaved changes. The project is saved only when the caller allows
+            // it (SaveBeforeUpdate, for a caller such as an MCP tool) or the user agrees here;
+            // otherwise the run stops before any work.
+            bool mayRetry=false;
+            if(prepare && SequenceEditorCapture.BatchSource==null && Unsaved(project))
+            {
+                if(!SaveFirst(app,project,log))throw new InvalidOperationException(UnsavedAdvice);
+            }
+            else mayRetry=prepare && SequenceEditorCapture.BatchSource==null;
 
             report="{\"version\":1,\"project\":"+SequencePayload.Q(project.Id)+",\"diagram\":"+SequencePayload.Q(diagram.Id)
                 +",\"current\":"+current.Document.ToJson()+",\"desired\":"+desired.ToJson()+",\"plan\":"+plan.ToJson()
@@ -456,9 +476,11 @@ public static class SequenceSyncRuntime
                     catch(Exception ex)
                     {
                         // The export refuses on a dirty project even when nothing is savable,
-                        // for instance right after a trial has rolled its changes back.
+                        // for instance right after a trial has rolled its changes back. Saving
+                        // clears that; it is offered once, like above.
                         if(ex.Message.IndexOf("保存",StringComparison.Ordinal)<0)throw;
-                        throw new InvalidOperationException(UnsavedAdvice,ex);
+                        if(!mayRetry || !SaveFirst(app,project,log))throw new InvalidOperationException(UnsavedAdvice,ex);
+                        SequenceEditorCapture.Read(project,root,diagram,log,delegate(string value){exported=value;});
                     }
                     Lap("エクスポート");
                     exported=CompleteGeometry(exported,diagram,log);
@@ -1199,5 +1221,163 @@ public static class SequenceBatch
             +string.Join("\n",rows)+(apply?"\n\nプロジェクトを閉じて開き直し、もう一度このボタンで「キャンセル」（再検証）を選んでください。":"");
         SequenceExperiment.Details=SequenceExperiment.Summary+"\f"+detail;
         app.Window.UI.ShowInformationDialog(SequenceExperiment.Summary,title);
+    }
+}
+
+// Research for updating without saving. The update takes the diagram's snapshot through
+// ExportModelUnit, which refuses while the project has unsaved changes. This rebuilds that
+// snapshot from what the SDK reads live and compares it, key by key, with the exported one:
+// what the SDK cannot give is what an unsaved update would have to do without. Read only.
+public static class SequenceSnapshotProbe
+{
+    static string Num(double v){return v.ToString("R",System.Globalization.CultureInfo.InvariantCulture);}
+    static SequenceJson Value(object v)
+    {
+        if(v==null)return null;
+        if(v is bool)return SequenceJson.Parse((bool)v?"true":"false");
+        if(v is int || v is long || v is short)return SequenceJson.Parse(Convert.ToInt64(v).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if(v is double || v is float || v is decimal)return SequenceJson.Parse(Num(Convert.ToDouble(v)));
+        if(v is string)return SequenceJson.Parse(SequencePayload.Q((string)v));
+        var model=v as IModel;if(model!=null)return SequenceJson.Parse(SequencePayload.Q(model.Id));
+        return SequenceJson.Parse(SequencePayload.Q(v.ToString()));
+    }
+    static SequenceJson Obj(){return new SequenceJson{Properties=new Dictionary<string,SequenceJson>(StringComparer.Ordinal)};}
+    static void Put(SequenceJson o,string key,object v){var j=Value(v);if(j!=null)o.Properties[key]=j;}
+    // What the SDK gives of each model, relation and shape.
+    public static Dictionary<string,SequenceJson> Synthesize(IInteraction root,ISequenceDiagram diagram,StringBuilder log)
+    {
+        var all=new Dictionary<string,SequenceJson>(StringComparer.Ordinal);
+        foreach(var m in SequenceMappedUpdate.Tree(root))
+        {
+            var e=Obj();Put(e,"Id",m.Id);Put(e,"MetamodelId",m.Metaclass==null?null:m.Metaclass.Id);Put(e,"Name",m.Name);
+            var fields=Obj();
+            if(m.Metaclass!=null)
+                foreach(var f in m.Metaclass.GetFields().Cast<IField>().Where(f=>f.RelationshipClass==null))
+                {
+                    try {Put(fields,f.Name,m.GetField(f.Name));}
+                    catch(Exception ex){log.AppendLine("field "+f.Name+": "+ex.GetType().Name);}
+                }
+            e.Properties["Fields"]=fields;
+            all["E:"+m.Id]=e;
+            foreach(var r in m.GetRelationsWhere((relation,field)=>true))
+            {
+                if(all.ContainsKey("R:"+r.Id))continue;
+                var o=Obj();Put(o,"Id",r.Id);Put(o,"MetamodelId",r.Metaclass==null?null:r.Metaclass.Id);
+                Put(o,"SourceId",r.Source.Id);Put(o,"TargetId",r.Target.Id);Put(o,"SourceIndex",r.SourceIndex);Put(o,"TargetIndex",r.TargetIndex);
+                all["R:"+r.Id]=o;
+            }
+        }
+        foreach(var sh in diagram.Shapes)
+        {
+            var o=Obj();Put(o,"Id",sh.Id);Put(o,"ModelId",sh.ModelId);
+            var node=sh as ISequenceNodeShape;
+            if(node!=null){Put(o,"X",node.LocationX);Put(o,"Y",node.LocationY);Put(o,"Width",node.Width);Put(o,"Height",node.Height);}
+            var bar=sh as IExecutionSpecificationShape;if(bar!=null)Put(o,"Length",bar.Length);
+            var wire=sh as IMessageShape;if(wire!=null){Put(o,"SourceY",wire.SourceY);Put(o,"TargetY",wire.TargetY);Put(o,"SelfloopBendsX",wire.SelfloopBendsX);}
+            var branch=sh as IOperandShape;if(branch!=null)Put(o,"Position",branch.Position);
+            var lane=sh as ILifelineShape;if(lane!=null)Put(o,"LaneLength",lane.TimelineLength);
+            try
+            {
+                var style=sh.Style;
+                if(style!=null)
+                {
+                    var st=Obj();Put(st,"BackColor",style.BackColor);Put(st,"BorderColor",style.BorderColor);Put(st,"BorderStyle",style.BorderStyle);
+                    Put(st,"BorderThickness",style.BorderThickness);Put(st,"ForeColor",style.ForeColor);Put(st,"QuickStyle",style.QuickStyle);
+                    o.Properties["(SDK Style)"]=st;
+                }
+            }
+            catch(Exception ex){log.AppendLine("style: "+ex.GetType().Name);}
+            all["S:"+sh.Id]=o;
+        }
+        return all;
+    }
+    static bool Same(SequenceJson a,SequenceJson b)
+    {
+        if(a==null || b==null)return a==b;
+        if(a.Raw!=null && b.Raw!=null)
+        {
+            double x,y;var f=System.Globalization.NumberStyles.Float;var c=System.Globalization.CultureInfo.InvariantCulture;
+            string ra=a.Raw.Trim('"'),rb=b.Raw.Trim('"');
+            if(double.TryParse(ra,f,c,out x) && double.TryParse(rb,f,c,out y))return Math.Abs(x-y)<=0.0000011;
+            return a.Raw==b.Raw || string.Equals(ra,rb,StringComparison.OrdinalIgnoreCase);
+        }
+        return a.ToJsonString()==b.ToJsonString();
+    }
+    // Every object with an Id in the exported snapshot, keyed as Synthesize keys its own.
+    static void Collect(SequenceJson node,string kind,Dictionary<string,SequenceJson> into)
+    {
+        if(node==null)return;
+        if(node.Items!=null){foreach(var i in node.Items)Collect(i,kind,into);return;}
+        if(node.Properties==null)return;
+        if(node["Id"]!=null && node["Id"].Raw!=null && node["Id"].Raw.StartsWith("\""))
+        {
+            string id=node["Id"].StringValue();
+            if(kind=="S" && node["ModelId"]!=null)into["S:"+id]=node;
+            else if(kind!="S")into[kind+":"+id]=node;
+        }
+        if(kind=="S")foreach(var p in node.Properties.Values)Collect(p,kind,into);
+    }
+    public static void Run(IApplication app)
+    {
+        string title=SequenceExperiment.Title;var log=new StringBuilder();var report=new StringBuilder();
+        try
+        {
+            var project=app.Workspace.CurrentProject;
+            var diagram=app.Workspace.CurrentEditor as ISequenceDiagram;
+            if(project==null || diagram==null){app.Window.UI.ShowInformationDialog("調べるシーケンス図を開いてください。",title);return;}
+            var root=diagram.Model as IInteraction;
+            string exported=null;
+            try {SequenceEditorCapture.Read(project,root,diagram,log,delegate(string v){exported=v;});}
+            catch(Exception ex){app.Window.UI.ShowInformationDialog("比べる元の写しが取れません。保存してから実行してください（調査のための比較元です）。\n"+ex.Message,title);return;}
+            var data=SequenceJson.Parse(exported);
+            var real=new Dictionary<string,SequenceJson>(StringComparer.Ordinal);
+            Collect(data["Entities"],"E",real);Collect(data["Relations"],"R",real);
+            var editor=data["Editors"].Items.FirstOrDefault(v=>v["Id"]!=null && v["Id"].StringValue()==diagram.Id);
+            foreach(var p in editor.Properties.Values)Collect(p,"S",real);
+            var made=Synthesize(root,diagram,log);
+            // Per kind and key: how often it is missing from what the SDK gives, and how often it differs.
+            var missing=new Dictionary<string,int>();var differs=new Dictionary<string,int>();var total=new Dictionary<string,int>();
+            Action<Dictionary<string,int>,string> add=(d,k)=>{int n;d.TryGetValue(k,out n);d[k]=n+1;};
+            var samples=new StringBuilder();
+            foreach(var pair in real)
+            {
+                string kind=pair.Key.Substring(0,1);
+                SequenceJson mine;made.TryGetValue(pair.Key,out mine);
+                if(mine==null){add(missing,kind+" (対象ごと)");continue;}
+                Action<SequenceJson,SequenceJson,string> walk=null;
+                walk=(a,b,path)=>{
+                    foreach(var p in a.Properties)
+                    {
+                        string key=path+p.Key;add(total,kind+" "+key);
+                        var other=b==null?null:b[p.Key];
+                        if(p.Value!=null && p.Value.Properties!=null){walk(p.Value,other!=null && other.Properties!=null?other:null,key+".");continue;}
+                        if(other==null){add(missing,kind+" "+key);continue;}
+                        if(!Same(p.Value,other)){add(differs,kind+" "+key);if(samples.Length<20000)samples.AppendLine(kind+" "+key+" export="+p.Value.ToJsonString()+" sdk="+other.ToJsonString());}
+                    }
+                };
+                walk(pair.Value,mine,"");
+            }
+            foreach(var pair in made.Where(p=>!real.ContainsKey(p.Key)))add(missing,pair.Key.Substring(0,1)+" (SDKだけにある対象)");
+            // Editor-level values other than shapes.
+            foreach(var p in editor.Properties.Where(p=>p.Value!=null && p.Value.Items==null && p.Value.Properties==null))add(total,"V "+p.Key);
+            var keys=total.Keys.Union(missing.Keys).Union(differs.Keys).OrderBy(k=>k,StringComparer.Ordinal);
+            report.AppendLine("保存なし反映の調査（読み取りのみ）: 図形 "+diagram.Shapes.Count()+" / モデル "+real.Keys.Count(k=>k.StartsWith("E:"))+" / 関連 "+real.Keys.Count(k=>k.StartsWith("R:")));
+            report.AppendLine("E=モデル R=関連 S=図形 V=エディタ自体の値。 欠け=SDKから作れない 不一致=値が違う");
+            foreach(string k in keys)
+            {
+                int t,m,d;total.TryGetValue(k,out t);missing.TryGetValue(k,out m);differs.TryGetValue(k,out d);
+                if(m>0 || d>0 || k.StartsWith("V "))report.AppendLine(k+": 全"+t+" 欠け"+m+" 不一致"+d);
+            }
+            report.AppendLine("（全件一致のキーは省略）");
+            string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.SequenceSync","snapshot-probe");
+            Directory.CreateDirectory(directory);
+            string stem=Path.Combine(directory,DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+            File.WriteAllText(stem+"-report.txt",report+"\n値の例（名前等を含む・ローカルのみ）\n"+samples+"\n"+log,new UTF8Encoding(false));
+            File.WriteAllText(stem+"-export.json",exported,new UTF8Encoding(false));
+            report.AppendLine("詳細: "+stem+"-report.txt");
+        }
+        catch(Exception ex){report.AppendLine("調査を完了できません: "+ex.Message);log.AppendLine(ex.ToString());}
+        SequenceExperiment.Summary=report.ToString();SequenceExperiment.Details=report+"\f"+log;
+        app.Window.UI.ShowInformationDialog(report.Length>3000?report.ToString().Substring(0,3000):report.ToString(),title);
     }
 }
