@@ -6,6 +6,11 @@ public sealed class DiagramSnapshot
     public Dictionary<string,string> ShapeIds=new Dictionary<string,string>();
     public Dictionary<string,object> Geometry=new Dictionary<string,object>();
     public List<string> Limitations=new List<string>();
+    // A message tied to an operation shows a label the product builds from it ("EndProcess :
+    // void", "sleep(100ms)"), while its model keeps the plain name. An open diagram reads the
+    // label, the export (which reads diagrams as not shown) writes the name. Kept per message
+    // model where the two differ, so either reads as unchanged (AlignOperationLabels).
+    public Dictionary<string,string> ModelNames=new Dictionary<string,string>();
     // Where each bar starts and ends against the messages on it, in the diagram's own numbers,
     // to measure how Next Design lays bars out once the diagram is edited by hand. Lanes and
     // messages are numbered, never named.
@@ -95,6 +100,7 @@ public sealed class DiagramSnapshot
             add(m,"message",m.Text,m.SourceY);var e=doc.Elements.Last();var model=m.Model as IMessage;
             if(model==null)throw new InvalidOperationException("S210: メッセージの型が不正です。");
             e.Attributes["sort"]=model.Kind;
+            if(model.Name!=null && SequenceLabels.Fold(model.Name)!=SequenceLabels.Fold(m.Text))snapshot.ModelNames[model.Id]=model.Name;
             // A message a destruction points back at is the one that destroys the lane, whatever
             // sort the profile records for it; the parser reads it the same way.
             if(model.GetRelationsWhere((r,f)=>r.Target!=null && r.Target.Id==model.Id && r.Metaclass!=null
@@ -305,6 +311,19 @@ public static class SequenceSyncRuntime
     }
     // A ref linked to an interaction may show that interaction's name instead of its own text.
     // When the input's ref resolves to the same interaction, those texts are the same ref.
+    // A message whose input text is its model's name, where the diagram shows the label built
+    // from its operation, is unchanged: it reads as that name (see DiagramSnapshot.ModelNames).
+    internal static void AlignOperationLabels(DiagramSnapshot snapshot,SequenceDocument desired)
+    {
+        if(snapshot.ModelNames.Count==0)return;
+        var written=new HashSet<string>(desired.Elements.Where(d=>d.Kind=="message").Select(d=>SequenceLabels.Fold(d.Text)));
+        foreach(var e in snapshot.Document.Elements.Where(e=>e.Kind=="message"))
+        {
+            string name;
+            if(!snapshot.ModelNames.TryGetValue(e.Id,out name))continue;
+            if(written.Contains(SequenceLabels.Fold(name)) && !written.Contains(SequenceLabels.Fold(e.Text)))e.Text=name;
+        }
+    }
     internal static void AlignLinkedRefs(IProject project,SequenceDocument current,SequenceDocument desired)
     {
         foreach(var e in current.Elements.Where(e=>e.Kind=="ref"))
@@ -460,6 +479,7 @@ public static class SequenceSyncRuntime
             // nothing changed while preparing compares a fresh read with this.
             string readAs=current.Document.ToJson();
             AlignLinkedRefs(project,current.Document,desired);
+            AlignOperationLabels(current,desired);
             var plan=SequenceNotePolicy.Build(current.Document,desired,()=>Guid.NewGuid().ToString());
             LastChanges=plan.Changes.Count;
             var preflight=SequenceStructurePreflight.Check(current.Document,plan);
@@ -587,6 +607,9 @@ public static class SequenceSyncRuntime
                     }
                     Lap("型の解決");
                     var preparation=SequenceStructurePreparation.Build(exported,diagram.Id,current.Document,plan,frameTypes,noteTypes,refTypes);
+                    // A renamed message tied to an operation shows whatever label the product builds.
+                    preparation.LooseTextShapeIds=preparation.Renamed.Where(r=>current.ModelNames.ContainsKey(r[0]) && current.ShapeIds.ContainsKey(r[0]))
+                        .Select(r=>current.ShapeIds[r[0]]).ToArray();
                     var raw=SequenceJson.Parse(exported);
                     var exportedRelations=new HashSet<string>(raw["Relations"].Items.Select(r=>SequenceEditorDocument.Value(r,"Id")));
                     foreach(string id in preflight.DeleteExecutions.Concat(preflight.ReconnectMessages))
@@ -862,7 +885,7 @@ public static class SequenceStructureTrial
                     found.UnRelate();
                 }
             }
-            var connected=Rounded(project,rootId,fresh,newShapes);expectedReconnect.Loosen(prepared.LooseShapeIds,connected);
+            var connected=Rounded(project,rootId,fresh,newShapes);expectedReconnect.Loosen(prepared.LooseShapeIds,connected);expectedReconnect.LoosenText(prepared.LooseTextShapeIds,connected);
             Verify(expectedReconnect,connected,"接続変更後",log);
             log.AppendLine("receiver reconnection count: "+prepared.ReconnectCount
                 +"; added executions: "+prepared.AddedExecutions.Length
@@ -882,7 +905,7 @@ public static class SequenceStructureTrial
                 log.AppendLine("\f所有関連の順序 / 削除段階\n削除前(*が消える関連)\n"+before.OrderReport(deletionOwners,prepared)
                     +"\n削除後 期待\n"+expectedFinal.OrderReport(deletionOwners,prepared)
                     +"\n削除後 実測\n"+afterDelete.OrderReport(deletionOwners,prepared)+"\f");
-            expectedFinal.Loosen(prepared.LooseShapeIds,afterDelete);
+            expectedFinal.Loosen(prepared.LooseShapeIds,afterDelete);expectedFinal.LoosenText(prepared.LooseTextShapeIds,afterDelete);
             Verify(expectedFinal,afterDelete,"削除後",log);
             log.AppendLine("trial execution deletion and SDK state: verified");
         };

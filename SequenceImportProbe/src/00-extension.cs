@@ -10,7 +10,7 @@ public partial class SequenceImportProbeExtension : IExtension
 {
     public void Activate(IContext context)
     {
-        SequenceExperiment.Title="シーケンス生成実験 / 0.13.0";
+        SequenceExperiment.Title="シーケンス生成実験 / 0.13.1";
     }
 
     public void Deactivate(IContext context)

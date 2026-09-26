@@ -257,8 +257,22 @@
         var bar=read.Elements.First(e=>e.Id==back.Links["sendExecution"][0]);
         Require(bar.Parent==erase.Parent,"the bar was placed in the frame, not where its call arrives");
     }
+    // A renamed message tied to an operation: only its label is taken as read back.
+    static void LoosenLabel()
+    {
+        var expected=new SequenceTrialState();var actual=new SequenceTrialState();
+        expected.Shapes["m"]=PumlBuild.Json(new[]{"EndProcess","4113","4113","0"});
+        actual.Shapes["m"]=PumlBuild.Json(new[]{"EndProcess : void","4113","4113","0"});
+        expected.LoosenText(new[]{"m"},actual);
+        Require(expected.Shapes["m"]==actual.Shapes["m"],"the label was not taken as read back");
+        expected.Shapes["m"]=PumlBuild.Json(new[]{"EndProcess","4113","4113","0"});
+        actual.Shapes["m"]=PumlBuild.Json(new[]{"EndProcess : void","4200","4200","0"});
+        expected.LoosenText(new[]{"m"},actual);
+        Require(expected.Shapes["m"]!=actual.Shapes["m"],"a moved message was let through with its label");
+    }
     public static void Run()
     {
+        LoosenLabel();
         CreateMessageSort();
         LateSelfBarInFrame();
         CreatedLaneOrder();

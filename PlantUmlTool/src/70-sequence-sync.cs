@@ -1637,6 +1637,9 @@ public sealed class SequenceStructurePreparation
     // New shapes built without a sample: the product decides their size, so the check takes
     // what it reads back for them and only holds them to existing and belonging to their model.
     public string[] LooseShapeIds=new string[0];
+    // Shapes whose label the product builds (a renamed message tied to an operation): only the
+    // text is taken as read back, the rest of the row is still checked.
+    public string[] LooseTextShapeIds=new string[0];
     static string V(SequenceJson n,string key) { return SequenceEditorDocument.Value(n,key); }
     static SequenceJson[] Array(SequenceJson n,string key)
     {
@@ -3035,6 +3038,18 @@ public sealed class SequenceTrialState
     { return value.ToString("R",System.Globalization.CultureInfo.InvariantCulture); }
     // Takes the read-back values for shapes the product sizes itself, keeping the check that
     // they exist and belong to the model they were made for.
+    public void LoosenText(IEnumerable<string> shapeIds,SequenceTrialState actual)
+    {
+        foreach(string id in shapeIds)
+        {
+            string mine,theirs;
+            if(!Shapes.TryGetValue(id,out mine) || !actual.Shapes.TryGetValue(id,out theirs))continue;
+            var a=SequenceJson.Parse(mine).Items;var b=SequenceJson.Parse(theirs).Items;
+            if(a==null || b==null || a.Count!=b.Count || a.Count==0)continue;
+            bool rest=true;for(int i=1;i<a.Count;i++)if(a[i].Raw!=b[i].Raw)rest=false;
+            if(rest)Shapes[id]=theirs;
+        }
+    }
     public void Loosen(IEnumerable<string> shapeIds,SequenceTrialState actual)
     {
         foreach(string id in shapeIds)
