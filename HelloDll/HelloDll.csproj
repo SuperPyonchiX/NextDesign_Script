@@ -6,12 +6,31 @@
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <!-- SDK 9 で net6.0 をビルドするときのサポート終了警告は抑止する -->
+    <!-- 新しい SDK で net6.0 をビルドするときのサポート終了警告は抑止する -->
     <CheckEolTargetFramework>false</CheckEolTargetFramework>
   </PropertyGroup>
 
-  <ItemGroup>
-    <!-- 実行時は Next Design 本体の DLL を使う。出力へ同梱すると競合するため runtime を除外 -->
+  <!--
+    NextDesign.Core / NextDesign.Desktop の参照元を切り替える。
+    - NextDesignDir を渡したとき: インストール先の DLL を直接参照する（実行環境と版が一致する）
+        dotnet build -p:NextDesignDir="C:\Program Files\DENSO CREATE\Next Design"
+    - 渡さないとき: NuGet の 3.1.3 を参照する（V3 系で公開されている最新）
+    どちらの場合も、実行時は Next Design 本体の DLL を使うので出力には含めない。
+  -->
+  <ItemGroup Condition="'$(NextDesignDir)' != ''">
+    <!-- NuGet の NextDesign.Desktop が宣言している WPF 参照を、直接参照でも補う -->
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
+    <Reference Include="NextDesign.Core">
+      <HintPath>$(NextDesignDir)\NextDesign.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="NextDesign.Desktop">
+      <HintPath>$(NextDesignDir)\NextDesign.Desktop.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(NextDesignDir)' == ''">
     <PackageReference Include="NextDesign.Core" Version="3.1.3.30714" ExcludeAssets="runtime" />
     <PackageReference Include="NextDesign.Desktop" Version="3.1.3.30714" ExcludeAssets="runtime" />
   </ItemGroup>

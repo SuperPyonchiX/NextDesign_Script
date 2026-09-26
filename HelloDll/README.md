@@ -8,8 +8,9 @@ Next Design V3 で DLL 形式のエクステンションが動くかを確かめ
 dotnet publish HelloDll -c Release -o work/hellodll-publish
 ```
 
-- 公式手順は .NET 6 SDK。.NET 9 SDK でも `net6.0-windows` 向けにビルドできる
-- NuGet の `NextDesign.Core` / `NextDesign.Desktop` は V3 系の最新が 3.1.3。実行時は Next Design 本体の DLL を使うので、出力には含めない（`ExcludeAssets="runtime"`）
+- `-p:NextDesignDir="<Next Design のインストール先>"` を付けると、本体の DLL を直接参照する。付けなければ NuGet の 3.1.3 を参照する
+- 実行時は Next Design 本体の DLL を使うので、どちらの場合も出力には含めない
+- Visual Studio なしでの環境構築（会社PC向け）は [DLL 形式エクステンションの開発環境](../docs/dll-extension-setup.md)
 
 ## 配置
 
