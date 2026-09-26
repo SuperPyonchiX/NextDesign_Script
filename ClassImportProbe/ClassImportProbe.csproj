@@ -21,6 +21,7 @@
   <ItemGroup>
     <Compile Include="src\00-extension.cs" />
     <Compile Include="src\20-class-probe.cs" />
+    <Compile Include="src\30-node-placement-probe.cs" />
     <Compile Include="..\PlantUmlTool\src\05-output-pane.cs" />
     <Compile Include="..\PlantUmlTool\src\shims\metamap.cs" />
     <Compile Include="..\PlantUmlTool\src\10-sequence-export.cs" />

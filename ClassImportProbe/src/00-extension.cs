@@ -24,6 +24,8 @@ public partial class ClassImportProbeExtension : IExtension
     // The last result's pages; results of PlantUmlTool's buttons are in its diagnostics files.
     public void ShowClassSyncDetails(ICommandContext context, ICommandParams commandParams) { foreach (var page in ClassExperiment.Details.Split((char)12)) context.App.Window.UI.ShowInformationDialog(page, ClassExperiment.Title); }
 
+    public void ProbeNodePlacement(ICommandContext context, ICommandParams commandParams) { NodePlacementProbe.Run(context.App); }
+
     public void ProbeClassDiagram(ICommandContext context, ICommandParams commandParams)
     {
         try
