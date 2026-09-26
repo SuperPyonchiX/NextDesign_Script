@@ -2278,10 +2278,12 @@ public sealed class SequenceStructurePreparation
                 added.RelationFields=added.RelationFields.Concat(new[]{type[2]}).ToArray();
             }
             var b=box2[id];
+            // New shapes carry numbers, as the moved ones do: a coordinate written as text stopped the
+            // editor import of a copy made from the SDK (InvalidCastException String to Double).
             string shapeId=Guid.NewGuid().ToString();added.ShapeId=shapeId;added.TemplateShapeId="";
             added.Geometry=PumlBuild.Json(new[]{Number(b[0]),Number(b[1]),Number(b[2]-b[0]),Number(b[3]-b[1])});
             newFrameShapes.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,
-                "X",Number(b[0]),"Y",Number(b[1]),"Width",Number(b[2]-b[0]),"Height",Number(b[3]-b[1])))));
+                "X",b[0],"Y",b[1],"Width",b[2]-b[0],"Height",b[3]-b[1]))));
             frames.Add(added);
         }
         foreach(string id in gate.AddOperands)
@@ -2342,7 +2344,7 @@ public sealed class SequenceStructurePreparation
             end.RelationFields=new[]{owns!=null?"relation:"+V(owns,"Id"):BaseTypes.OwnsMessageEnd[2]};
             string endShape=Guid.NewGuid().ToString();end.ShapeId=endShape;
             end.Geometry=PumlBuild.Json(new[]{Number(endX),Number(endAt),"10","10"});
-            newEndShapes.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",endShape,"ModelId",endId,"X",Number(endX),"Y",Number(endAt),"Width",10,"Height",10))));
+            newEndShapes.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",endShape,"ModelId",endId,"X",endX,"Y",endAt,"Width",10,"Height",10))));
             notes.Add(end);
             return endId;
         };
@@ -2502,7 +2504,7 @@ public sealed class SequenceStructurePreparation
             // A ref linked to an interaction may show that interaction's name; take what it reads back.
             if(isRef && wanted.Attributes.TryGetValue("reference",out reference) && !string.IsNullOrEmpty(reference) && refTypes.RefersTo!=null)loose.Add(shapeId);
             var shape=SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,
-                "X",Number(b[0]),"Y",Number(b[1]),"Width",Number(b[2]-b[0]),"Height",Number(b[3]-b[1]))));
+                "X",b[0],"Y",b[1],"Width",b[2]-b[0],"Height",b[3]-b[1])));
             (isRef?newRefShapes:newNoteShapes).Add(shape);
             notes.Add(added);
         }
@@ -2538,7 +2540,7 @@ public sealed class SequenceStructurePreparation
                 added.RelationFields=added.RelationFields.Concat(new[]{type[2]}).ToArray();
             }
             string shapeId=Guid.NewGuid().ToString();added.ShapeId=shapeId;
-            newDestroyShapes.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,"X",Number(x),"Y",Number(y),"Width",20,"Height",20))));
+            newDestroyShapes.Add(SequenceJson.Parse(PumlBuild.Json(PumlBuild.Obj("Id",shapeId,"ModelId",id,"X",x,"Y",y,"Width",20,"Height",20))));
             notes.Add(added);
         }
         if(newDestroyShapes.Count>0)Collection(view,"Destructions").Items.AddRange(newDestroyShapes);

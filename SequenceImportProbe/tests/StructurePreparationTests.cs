@@ -660,7 +660,7 @@
         foreach(var lane in editor["Lifelines"].Items)Require(moved(lane["Id"].StringValue(),"LaneLength")=="334","a lane did not follow the growth");
         var patch=SequenceJson.Parse(package.ReconnectJson);
         var frameShape=patch["Editors"].Items.Single()["Fragments"].Items.Single();
-        Require(frameShape["X"].StringValue()=="4" && frameShape["Y"].StringValue()=="120" && frameShape["Width"].StringValue()=="332" && frameShape["Height"].StringValue()=="128",
+        Require(frameShape["X"].Raw.Trim('"')=="4" && frameShape["Y"].Raw.Trim('"')=="120" && frameShape["Width"].Raw.Trim('"')=="332" && frameShape["Height"].Raw.Trim('"')=="128",
             "frame not drawn around the message: "+frameShape.ToJsonString());
         Require(patch["Editors"].Items.Single()["Operands"].Items.Single()["Position"].StringValue()=="30","guard not at the generator's offset");
         Require(patch["Relations"].Items.Count(r=>r["MetamodelId"].StringValue()=="operand-message" && r["SourceId"].StringValue()=="wrap-operand"
@@ -748,7 +748,7 @@
         Require(built["MetamodelId"].StringValue()=="note-class" && built["Fields"]["Body"].StringValue()=="checked","the note body was not written");
         Require(patch["Relations"].Items.Count(r=>r["MetamodelId"].StringValue()=="owns-note" && r["SourceId"].StringValue()==ids[0])==1,"the note is not owned by the interaction");
         var shape=patch["Editors"].Items.Single()["Notes"].Items.Single();
-        Require(shape["X"].StringValue()=="20" && shape["Y"].StringValue()=="120" && shape["Width"].StringValue()=="300" && shape["Height"].StringValue()=="48",
+        Require(shape["X"].Raw.Trim('"')=="20" && shape["Y"].Raw.Trim('"')=="120" && shape["Width"].Raw.Trim('"')=="300" && shape["Height"].Raw.Trim('"')=="48",
             "the note is not one step under the message across both lanes: "+shape.ToJsonString());
         Func<string,string,string> moved=(id,key)=>{
             var hit=package.ShiftedShapes.Where(m=>m.ShapeId==id).ToArray();
@@ -816,7 +816,7 @@
         Require(patch["Relations"].Items.Single(r=>r["MetamodelId"].StringValue()=="refers")["TargetId"].StringValue()=="other-interaction","the ref does not refer to its interaction");
         var shape=patch["Editors"].Items.Single()["InteractionUses"].Items.Single();
         // Lane centres 70 and 270: 55 out on the left, 110 wider than the span.
-        Require(shape["X"].StringValue()=="15" && shape["Y"].StringValue()=="120" && shape["Width"].StringValue()=="310" && shape["Height"].StringValue()=="48",
+        Require(shape["X"].Raw.Trim('"')=="15" && shape["Y"].Raw.Trim('"')=="120" && shape["Width"].Raw.Trim('"')=="310" && shape["Height"].Raw.Trim('"')=="48",
             "the ref is not placed over its lanes: "+shape.ToJsonString());
         Require(SequenceJson.Parse(package.EditorAfterDeleteJson)["Editors"].Items.Single()["InteractionUses"].Items.Count==1,"the delete stage editor lost the ref");
         var state=new SequenceTrialState();
@@ -1235,7 +1235,7 @@
         var view=SequenceJson.Parse(package.ReconnectJson)["Editors"].Items.Single();
         Require(view["Messages"].Items.Single(sh=>sh["ModelId"].StringValue()=="added")["TargetY"].Raw=="120","the new message is not under probe()");
         Require(at("two-shape","TargetY")=="160","two() did not make room for the message above it");
-        Require(view["Notes"].Items.Single()["Y"].StringValue()=="200","the note is not under two() where it now is: "+view["Notes"].Items.Single()["Y"].StringValue());
+        Require(view["Notes"].Items.Single()["Y"].Raw=="200","the note is not under two() where it now is: "+view["Notes"].Items.Single()["Y"].Raw);
         // three() moves by both: 40 for the message, 48 + 40 for the note.
         Require(at("three-shape","TargetY")=="288","three() did not move by both rooms: "+at("three-shape","TargetY"));
         // Laid out as the product does: from probe() at 80 to 20 under the bar its call opened,
