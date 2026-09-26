@@ -144,7 +144,7 @@ state=Example.Design.StateGroup
 
 ### 0.8.1 の適用と確認
 
-1. `powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Name AgentReview -Deploy` で、ビルドした拡張（`AgentReview.dll`・`manifest.json`・`skills` など）を既存の配置先へ更新する。
+1. `powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1 -Name AgentReview -Deploy` で、ビルドした拡張（`AgentReview.dll`・`manifest.json`・`skills` など）を既存の配置先へ更新する。
 2. 対応表の追加設定は不要。0.8.0 で設定した対応表を使い続けてもよい。自動判別へ戻す場合は 「設定」→「詳細設定」の「図の階層ルール」を空欄にして保存する。
 3. Next Design を再起動し、3種類の図があるモデルを選択して、新しいフォルダへ「設計情報を出力」する。
 4. グループ名からの階層、別グループにある同名図、`design.md` と `_index.md` のリンク、出力ウィンドウの警告を確認する。

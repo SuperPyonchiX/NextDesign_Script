@@ -315,7 +315,7 @@ Next Design には `ClassDiagram` というエディタ種別が**存在しな�
 **PlantUML 出力の正本はここ。** AgentReview・NdMcp・SequenceImportProbe の csproj が `src/` のファイルを直接ビルドする（どれを使うかは [DLL 形式エクステンションの開発環境](../docs/dll-extension-setup.md) の「ソースの共有」）。出力や同期を直したら、使う拡張をすべてビルドし直す。
 
 ```
-powershell -NoProfile -File Tools/Publish-Extensions.ps1   # 4つの拡張をビルドして検査する（-Deploy で配置）
+powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1   # 4つの拡張をビルドして検査する（-Deploy で配置）
 python PlantUmlTool/tests/run_class_sync_tests.py        # クラス図同期の純粋部テスト（tests/samples）
 python Tools/Test-SequenceExport.py                      # シーケンス図出力のメッセージ処理（全拡張）
 ```

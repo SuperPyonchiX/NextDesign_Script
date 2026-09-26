@@ -90,7 +90,7 @@
 
 ```powershell
 python PlantUmlTool/tests/run_class_sync_tests.py
-powershell -NoProfile -File Tools/Publish-Extensions.ps1   # 全拡張のビルドと validate_manifest.py
+powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1   # 全拡張のビルドと validate_manifest.py
 ```
 
 診断レポートは実行PCの `%LOCALAPPDATA%\NextDesign.ClassSync\reports` へ保存する。モデル名やIDを含むため、公開リポジトリへ追加しない。

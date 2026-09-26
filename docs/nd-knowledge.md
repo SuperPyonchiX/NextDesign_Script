@@ -108,7 +108,7 @@
 ```powershell
 git check-ignore -- .local/nd-knowledge/index.md
 git ls-files -- .local/nd-knowledge
-powershell -NoProfile -File Tools/Test-AgentHarness.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Test-AgentHarness.ps1
 ```
 
 最初のコマンドは索引のパスを表示し、2つ目は何も表示しないこと。通常の `git status` にローカル知識が現れないことも確認する。

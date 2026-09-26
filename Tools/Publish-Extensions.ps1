@@ -12,9 +12,9 @@
        - スクリプト版の main.cs が残っていれば、バックアップしてから外す
 
 .EXAMPLE
-    powershell -NoProfile -File Tools/Publish-Extensions.ps1
-    powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Deploy
-    powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Name PlantUmlTool -Deploy -NextDesignDir "C:\Program Files\DENSO CREATE\Next Design"
+    powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1 -Deploy
+    powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1 -Name PlantUmlTool -Deploy -NextDesignDir "C:\Program Files\DENSO CREATE\Next Design"
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(

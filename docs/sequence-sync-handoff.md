@@ -561,7 +561,7 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 
 ```powershell
 python SequenceImportProbe/tests/run_tests.py --build
-powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Name SequenceImportProbe   # ビルドと validate_manifest.py
+powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1 -Name SequenceImportProbe   # ビルドと validate_manifest.py
 git diff --check
 ```
 

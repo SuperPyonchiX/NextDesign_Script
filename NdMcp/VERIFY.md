@@ -14,12 +14,12 @@ Next Design がインストールされた PC で実施する。McpPoC（技術�
 1. 配置前に検査する（0.1.1 は ERROR 0、内部コマンドがリボン未参照という想定内の WARN 1 を確認済み。ファイルを直した場合は再実行する）。
 
    ```
-   powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Name NdMcp
+   powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1 -Name NdMcp
    ```
 
    ビルドのあとに走る検査（validate_manifest.py）の期待する結果は `ERROR 0 件 / WARN 1 件`。WARN は `NdMcp.Command.ExecuteRequest` がリボンから参照されていない件で、MCP サーバーから呼ぶコマンドなので意図どおり。これ以外の WARN が出たら直す。
 
-2. Next Design を終了し、`powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Name NdMcp -Deploy` で次へ配置する（`work\publish\NdMcp` の中身をコピーする）。[SETUP.md](SETUP.md) のスクリプトでも配置できる。
+2. Next Design を終了し、`powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1 -Name NdMcp -Deploy` で次へ配置する（`work\publish\NdMcp` の中身をコピーする）。[SETUP.md](SETUP.md) のスクリプトでも配置できる。
 
    ```
    %LOCALAPPDATA%\DENSO CREATE\Next Design\extensions\NdMcp\

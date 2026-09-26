@@ -80,7 +80,7 @@ Claude Code は `-Client Claude`、両方なら `-Client Both` を指定する�
 | `SETUP.md` | 環境構築・更新手順 |
 | `VERIFY.md` | 実機検証手順 |
 
-Markdown 出力部は `AgentReview/src` の 01 / 05 / 08（共通ヘルパ・Markdown 出力・`DesignArtifactWriter` などの共有部品）を、PlantUML 出力部とクラス図同期部は `PlantUmlTool/src`（shims/metamap, 10, 15, 40, 50, 60, 61, 63）を `NdMcp.csproj` が直接ビルドする。Markdown 出力の修正は AgentReview 側、PlantUML 出力と同期の修正は PlantUmlTool 側で行い、NdMcp をビルドし直す（`powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Name NdMcp`）。
+Markdown 出力部は `AgentReview/src` の 01 / 05 / 08（共通ヘルパ・Markdown 出力・`DesignArtifactWriter` などの共有部品）を、PlantUML 出力部とクラス図同期部は `PlantUmlTool/src`（shims/metamap, 10, 15, 40, 50, 60, 61, 63）を `NdMcp.csproj` が直接ビルドする。Markdown 出力の修正は AgentReview 側、PlantUML 出力と同期の修正は PlantUmlTool 側で行い、NdMcp をビルドし直す（`powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1 -Name NdMcp`）。
 
 `/export` は AgentReview と同じ図グループ判定・保存階層・索引生成を使う。対応表を設定する場合も、AgentReview の `%USERPROFILE%\.nd-agent-review\config.ini` にある `diagramGroups.rulesFile` を参照する。未設定なら共通の自動判別を使う。図が0件でも `_index.md` を更新する。
 
@@ -122,7 +122,7 @@ uv run pytest                 # モック ND に対するテスト + stdio 経�
 uv run python tests/mock_nd.py   # モック ND を 3560 で単体起動（ブリッジの手動確認用）
 ```
 
-C# 側を直したら `powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Name NdMcp` でビルドと検査を行い、`-Deploy` を付けて配置する。内部コマンドがリボンから参照されていないという警告は想定どおり。
+C# 側を直したら `powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1 -Name NdMcp` でビルドと検査を行い、`-Deploy` を付けて配置する。内部コマンドがリボンから参照されていないという警告は想定どおり。
 
 コマンド境界での設定・例外伝播は `python NdMcp/tests/run_command_tests.py`、共通出力処理は `python AgentReview/tests/run_export_tests.py` で検証する（Windows の .NET Framework C# コンパイラと模擬 SDK を使用）。実機確認の代わりにはならない。
 

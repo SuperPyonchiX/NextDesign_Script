@@ -178,10 +178,12 @@ Next Design が .NET 6 上で動いていれば、VS Code の「C#」拡張で�
 PlantUmlTool・AgentReview・NdMcp・SequenceImportProbe は DLL 方式。各フォルダの `<名前>.csproj` がソースを記載順に列挙し、共通の設定はリポジトリ直下の `Directory.Build.props` にある。main.cs の生成（旧 `build_main.py` / `bundle.py`）は無い。
 
 ```powershell
-powershell -NoProfile -File Tools/Publish-Extensions.ps1            # 4つをビルドして work\publish\<名前> に出力し、検査する
-powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Deploy    # 加えて extensions フォルダへ配置する（Next Design を終了してから）
-powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Name PlantUmlTool -Deploy   # 1つだけ
+powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1            # 4つをビルドして work\publish\<名前> に出力し、検査する
+powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1 -Deploy    # 加えて extensions フォルダへ配置する（Next Design を終了してから）
+powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1 -Name PlantUmlTool -Deploy   # 1つだけ
 ```
+
+`-ExecutionPolicy Bypass` は、スクリプトの実行が無効になっている PC（会社PCの既定）でも、この1回の実行に限ってポリシーを外す。PC の設定は変わらない。グループポリシーで実行ポリシーが固定されている場合（`Get-ExecutionPolicy -List` の MachinePolicy / UserPolicy に値がある）は効かないので、情シスに相談する。
 
 `-Deploy` は Next Design の起動中なら止まる。配置先にスクリプト版の `main.cs` が残っていれば、`main.cs.script-backup-<日時>` に退避してから外す。NdMcp を同僚の PC へ入れるときは、MCP の登録もする `NdMcp/Setup.ps1` を使う。
 
