@@ -342,28 +342,36 @@ public sealed class ClassPumlParser
     sealed class OperationParts { public string Name, Parameters, ReturnType; }
     static OperationParts SplitOperation(string rest)
     {
+        // The parameter list is the first top-level group followed by nothing or " : ret"; any
+        // group before it belongs to the name ("CallbackCancelTxqueue()()" is the operation
+        // "CallbackCancelTxqueue()" with no parameters, "StopTimer(X)(index)" is "StopTimer(X)"
+        // taking index; 3.2.7 on the device).
         int open=rest.IndexOf('(');
-        if(open<=0)return null;
-        // The exporter never puts a space before "(": "Idle (default)" is a bare name.
-        string name=rest.Substring(0,open);
-        if(char.IsWhiteSpace(name[name.Length-1]) || name.IndexOf(':')>=0)return null;
-        int depth=0,close=-1;
-        for(int i=open;i<rest.Length;i++)
+        while(open>0)
         {
-            if(rest[i]=='(')depth++;
-            else if(rest[i]==')' && --depth==0) { close=i;break; }
+            int depth=0,close=-1;
+            for(int i=open;i<rest.Length;i++)
+            {
+                if(rest[i]=='(')depth++;
+                else if(rest[i]==')' && --depth==0) { close=i;break; }
+            }
+            if(close<0)return null;
+            string tail=rest.Substring(close+1);
+            if(tail.Length>0 && tail[0]=='(') { open=close+1;continue; }
+            // The exporter never puts a space before "(": "Idle (default)" is a bare name.
+            string name=rest.Substring(0,open);
+            if(char.IsWhiteSpace(name[name.Length-1]) || name.IndexOf(':')>=0)return null;
+            string returnType="";
+            if(tail.Trim().Length>0)
+            {
+                var m=Regex.Match(tail,@"^\s*:\s*(?<ret>.*)$");
+                if(!m.Success)return null;
+                returnType=m.Groups["ret"].Value.Trim();
+                if(returnType.Contains(" [") || returnType.Contains(" = "))return null;
+            }
+            return new OperationParts{Name=name,Parameters=rest.Substring(open+1,close-open-1),ReturnType=returnType};
         }
-        if(close<0)return null;
-        string tail=rest.Substring(close+1);
-        string returnType="";
-        if(tail.Trim().Length>0)
-        {
-            var m=Regex.Match(tail,@"^\s*:\s*(?<ret>.*)$");
-            if(!m.Success)return null;
-            returnType=m.Groups["ret"].Value.Trim();
-            if(returnType.Contains(" [") || returnType.Contains(" = "))return null;
-        }
-        return new OperationParts{Name=name,Parameters=rest.Substring(open+1,close-open-1),ReturnType=returnType};
+        return null;
     }
     class Frame { public string Kind, Id, Keyword; }
     class Pending { public int Line; public string From, To, Arrow, FromMult, ToMult, Label; }

@@ -1,5 +1,9 @@
 # PlantUmlTool — Next Design × PlantUML 連携
 
+## 3.2.8: 名前に括弧を含む操作
+
+実機（3.2.7、クラス図の反映）: 名前が括弧を含む操作（`CallbackCancelTxqueue()` が出力で `CallbackCancelTxqueue()()`、`StopTimer(EVENT_IDX_P2_EXTEND_CLIENT)` が `StopTimer(EVENT_IDX_P2_EXTEND_CLIENT)(index)`）を、読み取りが最初の括弧を引数と見て属性と読み、「kind の変更は扱えません」で止まった。以前からの読み違いで、デグレではない。引数の括弧は「後ろに何も無いか ` : 戻り値` だけが続く」最初の括弧とし、その前は名前として読む。
+
 ## 3.2.3: 反映後に利用者の編集を Undo していた不具合
 
 実機（3.2.2）: Next Design でメッセージを足した未保存の図に元の PlantUML を反映すると、図は反映されたのに「Index was out of range」と「図は変更していません」が出た。反映の確定直後に、Probe 由来の自己確認（Workspace.Undo → Redo して照合）が動いていた。この更新はコマンドの終了まで Undo の履歴に積まれないので、CanUndo が真なら履歴にあるのは利用者の直前の編集で、それを取り消そうとしていた（保存直後は履歴が空なので動かなかった）。自己確認を外した（Probe も同じ）。確定の後に止まった場合は、変更していないとは言わず確定済みと伝える。

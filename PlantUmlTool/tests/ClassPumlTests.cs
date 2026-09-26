@@ -39,6 +39,14 @@ public static class ClassPumlTests
         Check(ClassPumlWriter.Render(connect) == "+ Connect(transportInfo, appName) : decltype(Skeleton::Connect(transportInfo,appName))", "decltype round trip");
         Check(declType.Elements.Single(e => e.Kind == "operation" && e.Text == "Raw").Attr("returnType") == "uint8 (raw)", "parenthesised return type");
         Check(declType.Elements.Single(e => e.Text == "width (mm)").Kind == "attribute", "space before the parenthesis keeps an attribute");
+        // An operation whose name has its own parentheses: the last group is the parameter list.
+        var named = new ClassPumlParser().Parse("@startuml\nclass \"A\" as A {\n  - CallbackCancelTxqueue()()\n  + StopTimer(EVENT_IDX_P2_EXTEND_CLIENT)(index)\n  + Get(a)() : int\n}\n@enduml\n");
+        var cancel = named.Elements.Single(e => e.Text == "CallbackCancelTxqueue()");
+        Check(cancel.Kind == "operation" && cancel.Attr("parameters") == "" && ClassPumlWriter.Render(cancel) == "- CallbackCancelTxqueue()()", "name ending in ()");
+        var stopTimer = named.Elements.Single(e => e.Text == "StopTimer(EVENT_IDX_P2_EXTEND_CLIENT)");
+        Check(stopTimer.Kind == "operation" && stopTimer.Attr("parameters") == "index" && ClassPumlWriter.Render(stopTimer) == "+ StopTimer(EVENT_IDX_P2_EXTEND_CLIENT)(index)", "name with an argument-like group");
+        var getter = named.Elements.Single(e => e.Text == "Get(a)");
+        Check(getter.Kind == "operation" && getter.Attr("returnType") == "int", "name with a group, then a return type");
         var controller = round.Elements.Single(e => e.Kind == "class" && e.Text == "制御部");
         Check(controller.Attr("alias") == "Controller" && controller.Attr("keyword") == "class" && round.Elements.Single(e => e.Id == controller.Parent).Kind == "package", "class placement");
         Check(round.Elements.Single(e => e.Kind == "class" && e.Text == "Base").Attr("keyword") == "abstract class", "abstract keyword");
