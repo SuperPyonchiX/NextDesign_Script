@@ -640,7 +640,9 @@ public static class SequenceSyncRuntime
                         +"\n保存先: "+directory+"\n準備ファイルの手動インポートはしないでください。保存ファイルから適用する機能はありません。";
                     if(trial)
                     {
-                        SequenceStructureTrial.RoundAllShapes=fromSdk;
+                        // Every shape is compared rounded, whichever snapshot: an editor import also stores
+                        // a hand-drawn "42" back as 42.000001 (3.2.4 on the device, saved project).
+                        SequenceStructureTrial.RoundAllShapes=true;
                         try {SequenceExperiment.Summary=SequenceStructureTrial.Run(app,project,diagram,preparation,plan,exported,directory,log,retain,reconnectCommit);}
                         finally {SequenceStructureTrial.RoundAllShapes=false;}
                         screenshot=SequenceExperiment.Summary+"\f試行診断\n"+log.ToString();
@@ -814,6 +816,8 @@ public static class SequenceStructureTrial
         var removedModels=prepared.DeleteIds.Concat(prepared.DeleteParticipantIds)
             .Concat(prepared.DeleteMessageIds).Concat(prepared.DeleteFrameIds).Concat(prepared.DeleteNoteIds).Concat(prepared.DeleteRefIds).Concat(prepared.DeleteDestroyIds)
             .Concat(prepared.DeleteEndIds).ToArray();
+        var removedSet=new HashSet<string>(removedModels);
+        var going=diagram.Shapes.Where(sh=>removedSet.Contains(sh.ModelId)).Select(sh=>sh.Id).ToArray();
         var before=Read(root,diagram);before.Round(newShapes);string original=before.Signature();
         var expectedReconnect=before.Expected(prepared,plan,false);
         var expectedFinal=before.Expected(prepared,plan,true);
@@ -885,7 +889,10 @@ public static class SequenceStructureTrial
                     found.UnRelate();
                 }
             }
-            var connected=Rounded(project,rootId,fresh,newShapes);expectedReconnect.Loosen(prepared.LooseShapeIds,connected);expectedReconnect.LoosenText(prepared.LooseTextShapeIds,connected);
+            var connected=Rounded(project,rootId,fresh,newShapes);expectedReconnect.Loosen(prepared.LooseShapeIds,connected);
+            // What this update deletes is still there after the first import, where the product may
+            // have snapped a hand-drawn 420.75 to 420; it is checked gone after the deletion instead.
+            expectedReconnect.Loosen(going,connected);expectedReconnect.LoosenText(prepared.LooseTextShapeIds,connected);
             Verify(expectedReconnect,connected,"接続変更後",log);
             log.AppendLine("receiver reconnection count: "+prepared.ReconnectCount
                 +"; added executions: "+prepared.AddedExecutions.Length
