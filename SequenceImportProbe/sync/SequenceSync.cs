@@ -439,7 +439,7 @@ public sealed class SyncPlan
     }
     static string Text(string value) { return (value??"").Replace("\r\n","\n").Replace('\r','\n'); }
     static string Properties(SequenceElement e)
-    { return SequencePayload.Q(e.Kind=="participant" || e.Kind=="interaction" || e.Kind=="ref" || e.Kind=="operand" ? SequenceLabels.Fold(e.Text) : Text(e.Text))+string.Join("",e.Attributes.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>SequencePayload.Q(p.Key)+SequencePayload.Q(p.Value))); }
+    { return SequencePayload.Q(e.Kind=="participant" || e.Kind=="interaction" || e.Kind=="ref" || e.Kind=="operand" || e.Kind=="message" || e.Kind=="fragment" ? SequenceLabels.Fold(e.Text) : Text(e.Text))+string.Join("",e.Attributes.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>SequencePayload.Q(p.Key)+SequencePayload.Q(p.Value))); }
     static string LinkKey(SequenceElement e,Dictionary<string,string> ids)
     {
         return string.Join("",e.Links.OrderBy(p=>p.Key,StringComparer.Ordinal).Select(p=>SequencePayload.Q(p.Key)+
@@ -1303,7 +1303,8 @@ public sealed class SequenceStructurePreflight
             // The same test the plan uses: names folded for lanes, refs and guards, line ends
             // only for the rest. A difference the plan does not see is not written, so a name
             // the export put on one line keeps its line breaks in the diagram.
-            bool folded=e.Kind=="participant" || e.Kind=="ref" || e.Kind=="operand";
+            // The export writes every label but a note's on one line with spaces folded.
+            bool folded=e.Kind=="participant" || e.Kind=="ref" || e.Kind=="operand" || e.Kind=="message" || e.Kind=="fragment";
             bool textChanged=folded?SequenceLabels.Fold(old.Text)!=SequenceLabels.Fold(e.Text):Lines(old.Text)!=Lines(e.Text);
             bool parentChanged=old.Parent!=e.Parent;
             bool orderChanged=kept.Contains(e.Id) && !stable.Contains(e.Id);
