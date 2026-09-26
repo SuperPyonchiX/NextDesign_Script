@@ -107,6 +107,8 @@ class Handler(BaseHTTPRequestHandler):
                 status, body = self.route_class_sync(url.path, q, payload)
             elif url.path.startswith("/sequence-sync/"):
                 status, body = self.route_sequence_sync(url.path, q, payload)
+            elif url.path == "/model/edit":
+                status, body = self.route_model_edit(payload)
             else:
                 if payload is not None:
                     status, body = 405, {"error": "GET のみ対応しています"}
@@ -136,6 +138,10 @@ class Handler(BaseHTTPRequestHandler):
             raise KeyError(q.get("path") or q.get("id"))
         if path == "/tree":
             return 200, _tree_node(root, int(q.get("depth", 2)))
+        if path == "/model/schema":
+            return 200, dict(_summary(root), editable=True, fields=[
+                {"name": "Priority", "type": "Priority", "kind": "value", "multiple": False, "literals": ["High", "Low"]},
+                {"name": "Description", "type": "RichText", "kind": "richtext", "multiple": False}])
         if path == "/model":
             body = _summary(root)
             body["fields"] = FIELDS.get(root["id"], [])
@@ -243,6 +249,23 @@ class Handler(BaseHTTPRequestHandler):
             MockState.applied.append(plantuml)
         return 200, dict(diagram, mode=mode, ok=True, changes=changes, committed=mode == "apply" and changes > 0,
                          stopReasons="", summary="(mock)", details="(mock)", reportFile="mock.txt")
+
+
+    # C# 側 ModelEditApi の応答形式を模す。どの操作も受け付け、dryRun なら committed=False。
+    def route_model_edit(self, payload):
+        if payload is None:
+            return 405, {"error": "/model/edit は POST のみ対応しています"}
+        MockState.last_body = dict(payload)
+        ops = payload.get("operations") or []
+        if not ops:
+            return 400, {"error": "operations に操作の配列を指定してください"}
+        for i, op in enumerate(ops):
+            if op.get("op") not in ("set", "set_richtext", "add", "delete", "move", "relate", "unrelate"):
+                return 200, {"ok": False, "dryRun": bool(payload.get("dryRun")), "committed": False, "results": [],
+                             "models": [], "failedIndex": i, "error": "不明な op"}
+        dry = bool(payload.get("dryRun"))
+        return 200, {"ok": True, "dryRun": dry, "committed": not dry,
+                     "results": [{"op": op["op"], "index": i} for i, op in enumerate(ops)], "models": []}
 
 
 SEQUENCE_PUML = "@startuml\nparticipant A\nparticipant B\nA -> B : init()\n@enduml\n"

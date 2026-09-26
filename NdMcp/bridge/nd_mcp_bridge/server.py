@@ -1,5 +1,5 @@
 """stdio MCP サーバー。各ツールは NdMcp 拡張の HTTP API を 1 対 1 で呼び出す。
-モデル読み出しは読み取り専用。書き込みは nd_class_diagram_apply・nd_sequence_diagram_apply / create（と一時適用の trial）だけ。"""
+モデル読み出しは読み取り専用。書き込みは nd_class_diagram_apply・nd_sequence_diagram_apply / create・nd_model_edit（と一時適用の trial / dry_run）だけ。"""
 from __future__ import annotations
 
 import json
@@ -19,6 +19,8 @@ mcp = MCPServer(
         "nd_class_diagram_preview（比較のみ）→ nd_class_diagram_apply（反映）の順で渡すと図とモデルが更新される。"
         "シーケンス図は nd_sequence_diagrams で探し、nd_sequence_diagram_puml で PlantUML として読み、編集して "
         "nd_sequence_diagram_preview → nd_sequence_diagram_apply で図を更新する。新しい図は nd_sequence_diagram_create で作る。"
+        "UML 以外のモデル（フィールド値・リッチテキスト・表の行・参照）は nd_model_schema で書ける項目を確かめ、"
+        "nd_model_edit で編集する（dry_run=True で試してから本番）。"
         "Next Design 側でサーバーが開始されていないと接続に失敗する。"
     ),
 )
@@ -201,6 +203,39 @@ def nd_sequence_diagram_create(plantuml: str, path: str = "", id: str = "", file
     既存の要素へのトレースなどが失われる）。
     """
     return _post("/sequence-sync/create", {"path": path, "id": id, "plantuml": plantuml, "file": file}, timeout=600)
+
+
+# ---- UML 以外のモデル編集（フィールド値・リッチテキスト・表の行・参照） ----
+
+@mcp.tool()
+def nd_model_schema(path: str = "", id: str = "") -> str:
+    """モデルの書き込めるフィールドを返す。各フィールドの kind は
+    value（文字列・数値・真偽・列挙。列挙は literals に候補）/ richtext / embedded（子モデル＝表の行。addableClasses に追加できるクラス）/
+    reference（参照。typeClass が参照先の型）。editable=false のモデルは編集できない。nd_model_edit の前にこれで確かめる。"""
+    return _call("/model/schema", {"path": path, "id": id})
+
+
+@mcp.tool()
+def nd_model_edit(operations: list[dict], dry_run: bool = False) -> str:
+    """モデルを編集する。operations の操作をまとめて 1 回で実行し、1 つでも失敗したら全部取り消す（failedIndex と error を返す）。
+    dry_run=True は実行して結果（models に編集後のフィールド）を返したあと必ず取り消す。確定した編集は Next Design の Ctrl+Z で 1 回で戻せる。保存はしない。
+
+    モデルの指定（target / parent / to / before / after）は {"path": モデルパス} / {"id": ID} / {"ref": 名前}。
+    ref は同じ operations の中で先に add したモデルに "as" で付けた名前。
+    操作:
+    - {"op": "set", "target": …, "fields": {"フィールド名": 値}}  値は文字列・数値・真偽・列挙のリテラル名。リッチテキストは Markdown 文字列
+    - {"op": "set_richtext", "target": …, "field": "名前", "markdown": "…"}（または "html"）。見出し・段落・箇条書き・番号付き・表・引用・コード・太字・斜体・リンク
+    - {"op": "add", "parent": …, "field": "所有フィールド", "class": "クラス名（候補が 1 つなら省略可）",
+       "before" | "after": 兄弟モデル, または "index": 0 始まりの位置（省略時は末尾）,
+       "fields": {…}, "richtext": {"名前": "markdown"}, "as": "名前"}   表の行の追加はこれ（行は所有フィールドの子モデル、列はそのフィールド）
+    - {"op": "delete", "target": …}
+    - {"op": "move", "target": …, "parent": …（省略時は今の親）, "field": …（省略時は今の所有フィールド）, "before" | "after" | "index"}
+    - {"op": "relate" | "unrelate", "target": …, "field": "参照フィールド", "to": …}
+    例: 改訂履歴に 1 行足す
+      [{"op": "add", "parent": {"path": "…/改訂履歴一覧"}, "field": "改訂履歴", "fields": {"バージョン": "1.0.2", "日付": "2026/09/26"},
+        "richtext": {"改訂内容": "- 項目を追加"}}]
+    フィールド名・クラス名は nd_model / nd_model_schema で確かめる。シーケンス図などエディタの中でしか編集できないモデルは製品が拒否する。"""
+    return _post("/model/edit", {"operations": operations, "dryRun": dry_run}, timeout=600)
 
 
 def main() -> None:

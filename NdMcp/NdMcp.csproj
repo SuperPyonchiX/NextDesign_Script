@@ -46,6 +46,7 @@
     <Compile Include="..\PlantUmlTool\src\73-sequence-create.cs" />
     <Compile Include="..\PlantUmlTool\src\74-sequence-commands.cs" />
     <Compile Include="src\sequencesync.cs" />
+    <Compile Include="src\modeledit.cs" />
   </ItemGroup>
 
 </Project>

@@ -1,5 +1,22 @@
 # NdMcp — Next Design を MCP クライアントから読む
 
+## 0.5.0: UML 以外のモデル編集 API
+
+AI がフィールドの値・リッチテキスト・表の行（所有フィールドの子モデル）・参照を編集できるようにした（`src/modeledit.cs`）。
+
+| MCP ツール | HTTP | 内容 |
+|---|---|---|
+| `nd_model_schema(path, id)` | `GET /model/schema` | 書き込めるフィールド（kind: value / richtext / embedded / reference）、列挙の候補、表の行として追加できるクラス、参照先の型、編集可否 |
+| `nd_model_edit(operations, dry_run)` | `POST /model/edit` | 操作をまとめて 1 トランザクションで実行。1 つでも失敗したら全部取り消し。`dry_run` は実行して結果を返したあと必ず取り消す |
+
+操作は `set`（値）・`set_richtext`（Markdown または HTML）・`add`（子モデル＝表の行。位置は before / after / index。`as` で名前を付けて後の操作から `{"ref": 名前}` で指せる）・`delete`・`move`・`relate` / `unrelate`。
+
+- SDK のモデル操作（SetField / SetRichTextField / AddNewModel(At) / MoveTo / Relate / UnRelate / Delete）だけを使い、エディタの取込は使わない。確定した編集は保存していなくても Ctrl+Z で 1 回で戻せる見込み（未確認）
+- リッチテキストは Markdown を HTML にして、テキスト値と一緒に設定する（`MarkdownHtml`。見出し・段落・箇条書き（入れ子）・番号付き・表・引用・コード・太字・斜体・リンク）
+- target / parent の path と id が両方空なのは受け付けない（プロジェクト自体を指さないため）
+- 複数値のスカラーフィールドへの配列の設定は未対応
+- 実機未確認
+
 ## 0.4.0: シーケンス図の PlantUML 同期 API
 
 AI がシーケンス図を読み、編集し、新しく作れるようにした。同期の本体は PlantUmlTool/src/70〜74（リボンの「PlantUMLで更新」「PlantUMLから新規作成」と同じ処理）を直接ビルドする。ダイアログは出さない。

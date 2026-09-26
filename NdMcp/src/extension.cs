@@ -3,7 +3,7 @@
 //
 //  NdMcp.csproj が次を記載順にビルドして NdMcp.dll を作る。
 //    src/extension.cs（このファイル）/ src/server.cs（サーバー本体）/ src/classsync.cs（クラス図同期の窓口）/
-//    src/sequencesync.cs（シーケンス図同期の窓口）
+//    src/sequencesync.cs（シーケンス図同期の窓口）/ src/modeledit.cs（モデル編集の窓口）
 //    AgentReview/src の 01 / 05 / 08（共通ヘルパ・Markdown 出力・共有部品）
 //    PlantUmlTool/src の 10 / 15 / 40 / 50（PlantUML 出力）と 60 / 61 / 63（クラス図同期）と 70〜74（シーケンス図同期）
 //  共有部品の修正はそれぞれの正本（AgentReview/src、PlantUmlTool/src）で行う。
@@ -46,6 +46,10 @@
 //    POST /sequence-sync/trial   {path|id, editor?, plantuml|file, save?}  一時適用して照合し、必ず取り消す
 //    POST /sequence-sync/apply   {path|id, editor?, plantuml|file, save?}  確定する
 //    POST /sequence-sync/create  {path|id, plantuml|file}                  新しい図を作る
+//
+//  モデル編集（src/modeledit.cs。SDK のモデル操作だけ。1 要求を 1 トランザクションで実行）:
+//    GET  /model/schema?path=&id=               書き込めるフィールド・列挙値・追加できるクラス
+//    POST /model/edit {operations:[...], dryRun?}  set / set_richtext / add / delete / move / relate / unrelate
 //
 //  設定: %USERPROFILE%\.nd-mcp\config.ini（port= / exportDir=）
 //  ログ: %USERPROFILE%\.nd-mcp\server.log

@@ -442,6 +442,15 @@ public static class NdMcpServer
         var q = request.QueryString;
         if (path.StartsWith("/class-sync/", StringComparison.Ordinal)) return RouteClassSync(request, path, q);
         if (path.StartsWith("/sequence-sync/", StringComparison.Ordinal)) return RouteSequenceSync(request, path, q);
+        if (path == "/model/edit")
+        {
+            if (request.HttpMethod != "POST") throw new NdMcpHttpError(405, path + " は POST のみ対応しています");
+            ClassJsonNode editBody;
+            try { editBody = ClassJsonNode.Parse(ReadBody(request)); }
+            catch (Exception e) { throw new NdMcpHttpError(400, "本文が JSON として読めません: " + e.Message); }
+            if (editBody == null || editBody.Properties == null) throw new NdMcpHttpError(400, "本文は JSON オブジェクトにしてください");
+            return OnUiThread(app => ModelEditApi.Edit(app, editBody));
+        }
         if (request.HttpMethod != "GET") throw new NdMcpHttpError(405, "GET のみ対応しています");
 
         if (path == "/ping")
@@ -474,6 +483,7 @@ public static class NdMcpServer
             case "/project": work = app => ModelApi.Project(app); break;
             case "/tree": work = app => ModelApi.Tree(app, modelPath, modelId, ParseInt(q["depth"], 2, 0, 20)); break;
             case "/model": work = app => ModelApi.Model(app, modelPath, modelId); break;
+            case "/model/schema": work = app => ModelEditApi.Schema(app, modelPath, modelId); break;
             case "/search": work = app => ModelApi.Search(app, q["q"] ?? "", q["metaclass"] ?? "", ParseInt(q["limit"], 50, 1, 1000)); break;
             case "/markdown": work = app => ModelApi.Markdown(app, modelPath, modelId); break;
             case "/export": work = app => ModelApi.Export(app, modelPath, modelId, q["out"] ?? "", ExportDir); break;
@@ -626,6 +636,7 @@ public static class NdMcpServer
                 "POST /sequence-sync/trial {path|id, editor?, plantuml|file, save?}",
                 "POST /sequence-sync/apply {path|id, editor?, plantuml|file, save?}",
                 "POST /sequence-sync/create {path|id, plantuml|file}",
+                "GET /model/schema?path=&id=", "POST /model/edit {operations:[...], dryRun?}",
             });
     }
 
@@ -807,7 +818,7 @@ public static class ModelApi
         catch (Exception) { return new List<IModel>(); }
     }
 
-    private static JsonObject Summary(IModel m)
+    public static JsonObject Summary(IModel m)
     {
         return new JsonObject()
             .Set("name", m.Name).Set("id", m.Id)
@@ -825,7 +836,7 @@ public static class ModelApi
     }
 
     // 全フィールドを種別つきで返す。判定順は MarkdownExporter.WriteFields と同じ
-    private static List<object> Fields(IModel m)
+    public static List<object> Fields(IModel m)
     {
         var result = new List<object>();
         var cls = m.Metaclass;

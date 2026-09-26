@@ -156,6 +156,19 @@ def test_tool_sequence_diagram_list_puml_apply_create():
     assert bridge.nd_sequence_diagram_puml(path="Sample/要求").startswith("ERROR:")
 
 
+def test_tool_model_schema_and_edit():
+    schema = json.loads(bridge.nd_model_schema(path="Sample/要求/REQ-1 起動時間"))
+    assert schema["fields"][0]["literals"] == ["High", "Low"]
+    ops = [{"op": "set", "target": {"id": "M11"}, "fields": {"Priority": "Low"}},
+           {"op": "set_richtext", "target": {"id": "M11"}, "field": "Description", "markdown": "- a"}]
+    dry = json.loads(bridge.nd_model_edit(ops, dry_run=True))
+    assert dry["ok"] is True and dry["committed"] is False and mock_nd.MockState.last_body["dryRun"] is True
+    done = json.loads(bridge.nd_model_edit(ops))
+    assert done["committed"] is True and len(done["results"]) == 2
+    bad = json.loads(bridge.nd_model_edit([{"op": "rename"}]))
+    assert bad["ok"] is False and bad["failedIndex"] == 0
+
+
 # ---- stdio 経由（本物の MCP クライアントでブリッジを子プロセスとして起動） -------
 
 async def test_end_to_end_stdio(mock):
@@ -170,7 +183,7 @@ async def test_end_to_end_stdio(mock):
             tools = await session.list_tools()
             names = sorted(t.name for t in tools.tools)
             assert names == ["nd_class_diagram_apply", "nd_class_diagram_editors", "nd_class_diagram_preview",
-                             "nd_class_diagram_puml", "nd_export", "nd_markdown", "nd_model", "nd_ping",
+                             "nd_class_diagram_puml", "nd_export", "nd_markdown", "nd_model", "nd_model_edit", "nd_model_schema", "nd_ping",
                              "nd_project", "nd_search", "nd_sequence_diagram_apply", "nd_sequence_diagram_create",
                              "nd_sequence_diagram_preview", "nd_sequence_diagram_puml", "nd_sequence_diagrams", "nd_tree"]
 
