@@ -648,7 +648,7 @@ public static class SequenceSyncRuntime
                 }
             }
         }
-        catch(Exception ex) {SequenceExperiment.Summary=(Plain?"反映できませんでした。図は変更していません。":trial?"構造更新の試行を完了できませんでした。診断表示を確認してください。":prepare?"構造更新データの準備を完了できませんでした。図への反映なし。":"図全体の読取り検証を完了できませんでした。")+"\n"+ex.Message;log.AppendLine(ex.ToString());screenshot=null;}
+        catch(Exception ex) {SequenceExperiment.Summary=(LastCommitted?"図への反映は確定しましたが、その後の処理で止まりました。図を確認し、おかしければ保存せずに開き直してください。":Plain?"反映できませんでした。図は変更していません。":trial?"構造更新の試行を完了できませんでした。診断表示を確認してください。":prepare?"構造更新データの準備を完了できませんでした。図への反映なし。":"図全体の読取り検証を完了できませんでした。")+"\n"+ex.Message;log.AppendLine(ex.ToString());screenshot=null;}
         try
         {
             string directory=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.SequenceSync","reports");
@@ -924,25 +924,12 @@ public static class SequenceStructureTrial
             if(completion.Committed)
             {
                 // This command runs inside the host's own transaction, so ours is nested and
-                // its content only reaches the undo stack after the handler returns. Both
-                // CanUndo answers are false here by design, not by failure.
-                stage="Undo";
-                log.AppendLine("undo availability: project="+project.CanUndo+" workspace="+app.Workspace.CanUndo());
-                if(app.Workspace.CanUndo())
-                {
-                    app.Workspace.Undo();Refresh(app,log);
-                    bool undone=Matches(delegate {Verify(before,Rounded(project,rootId,fresh,newShapes),"Undo後",log);},log);
-                    stage="Redo";
-                    bool available=app.Workspace.CanRedo(),redone=false;
-                    if(available)
-                    {
-                        app.Workspace.Redo();Refresh(app,log);
-                        redone=Matches(delegate {Verify(expectedFinal,Rounded(project,rootId,fresh,newShapes),"Redo後",log);},log);
-                    }
-                    cycle="\nUndo照合: "+(undone?"一致":"不一致")+" / Redo照合: "+(redone?"一致":available?"不一致":"実行できません");
-                    if(!undone || !redone)cycle+="\n保存せずコピーを開き直してください。";
-                }
-                else cycle="\nUndo/Redo: このコマンドの実行中は履歴へ積まれないため自動確認できません。手で1回ずつ確認してください。";
+                // its content only reaches the undo stack after the handler returns. What
+                // CanUndo offers here is the user's own earlier edit, never this update: undoing
+                // it (as the trial once did, 3.2.2) took back the user's work and failed with
+                // an index out of range. Undo/Redo is checked by hand only.
+                log.AppendLine("undo availability (not used): project="+project.CanUndo+" workspace="+app.Workspace.CanUndo());
+                cycle="\nUndo/Redo: このコマンドの実行中は履歴へ積まれないため自動確認できません。手で1回ずつ確認してください。";
             }
             // A stop says why: the exception, and what the check found when it was a mismatch.
             if(!completion.Committed)
