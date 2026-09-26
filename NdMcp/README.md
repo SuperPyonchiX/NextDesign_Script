@@ -6,6 +6,7 @@ MCP サーバー（HTTP・Python）を使えない PC でもモデル編集 API 
 - 書ける項目を出力: モデルナビゲータで選んだモデルの `/model` と `/model/schema` の内容を JSON に書き、表（所有フィールド）があれば最後の行の値を写した「行を 1 つ足す」編集 JSON のひな形（dryRun: true）も作る
 - 編集 JSON を実行: 選んだ JSON を `/model/edit` と同じ処理（ModelEditApi.Edit）で実行し、結果を JSON に書く。dryRun が true でなければ確認してから確定する
 - 出力先は `%USERPROFILE%\.nd-mcp\edit-check\`
+- 実機（2026-09-26）: 改訂履歴一覧で「書ける項目を出力」→ ひな形で dryRun → 本番（行の追加・リッチテキスト）が成功
 
 ## 0.5.0: UML 以外のモデル編集 API
 
