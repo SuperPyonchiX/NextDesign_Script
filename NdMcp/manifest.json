@@ -2,7 +2,7 @@
   "name": "NdMcp",
   "displayName": "NdMcp",
   "description": "Next Design のモデルを MCP クライアント（Claude Code 等）から読み出し、クラス図を PlantUML で更新するための HTTP サーバー",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "publisher": "ksk01",
   "main": "NdMcp.dll",
   "lifecycle": "project",
@@ -60,6 +60,30 @@
                   "imageLarge": "resources/config32.png"
                 }
               ]
+            },
+            {
+              "id": "NdMcp.EditCheckGroup",
+              "label": "編集の確認",
+              "controls": [
+                {
+                  "id": "NdMcp.EditSchemaButton",
+                  "type": "Button",
+                  "label": "書ける項目を出力",
+                  "description": "選んでいるモデルの値・書ける項目と、行を1つ足す編集JSONのひな形を書き出します（MCP サーバーは不要）",
+                  "command": "NdMcp.Command.EditSchema",
+                  "imageSmall": "resources/config16.png",
+                  "imageLarge": "resources/config32.png"
+                },
+                {
+                  "id": "NdMcp.RunEditButton",
+                  "type": "Button",
+                  "label": "編集 JSON を実行",
+                  "description": "選んだ編集JSONを、MCP の nd_model_edit と同じ処理で実行します",
+                  "command": "NdMcp.Command.RunEdit",
+                  "imageSmall": "resources/config16.png",
+                  "imageLarge": "resources/config32.png"
+                }
+              ]
             }
           ]
         }
@@ -85,6 +109,14 @@
       {
         "id": "NdMcp.Command.OpenConfig",
         "execFunc": "OpenNdMcpConfig"
+      },
+      {
+        "id": "NdMcp.Command.EditSchema",
+        "execFunc": "WriteEditSchema"
+      },
+      {
+        "id": "NdMcp.Command.RunEdit",
+        "execFunc": "RunEditJson"
       }
     ]
   }

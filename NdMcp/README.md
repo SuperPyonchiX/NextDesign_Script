@@ -1,5 +1,12 @@
 # NdMcp — Next Design を MCP クライアントから読む
 
+## 0.5.1: モデル編集の確認ボタン
+
+MCP サーバー（HTTP・Python）を使えない PC でもモデル編集 API を試せるよう、リボンに「編集の確認」グループを足した。
+- 書ける項目を出力: モデルナビゲータで選んだモデルの `/model` と `/model/schema` の内容を JSON に書き、表（所有フィールド）があれば最後の行の値を写した「行を 1 つ足す」編集 JSON のひな形（dryRun: true）も作る
+- 編集 JSON を実行: 選んだ JSON を `/model/edit` と同じ処理（ModelEditApi.Edit）で実行し、結果を JSON に書く。dryRun が true でなければ確認してから確定する
+- 出力先は `%USERPROFILE%\.nd-mcp\edit-check\`
+
 ## 0.5.0: UML 以外のモデル編集 API
 
 AI がフィールドの値・リッチテキスト・表の行（所有フィールドの子モデル）・参照を編集できるようにした（`src/modeledit.cs`）。
