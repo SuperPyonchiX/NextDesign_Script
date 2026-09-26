@@ -2,7 +2,7 @@
   "name": "ClassImportProbe",
   "displayName": "クラス図同期実験",
   "description": "PlantUmlTool のクラス図同期を開発・実機確認するための拡張。差分検証・診断表示・クラス図調査を持つ。",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "publisher": "ksk01",
   "main": "ClassImportProbe.dll",
   "lifecycle": "project",

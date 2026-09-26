@@ -6,7 +6,8 @@
 //    止まる（K067）。SDK の説明では、マッピング対象がクラスのシェイプ（手動）は追加でき、
 //    フィールドのシェイプ（自動）は非表示の既存ノードを表示するだけ。どちらなのか、
 //    自動ならどのフィールドかを、開いている既存のクラス図から調べる。
-//    図のモデルを仮に作って試し、最後に取り消す（保存しない）。
+//    図のモデルを仮に作って試す。同じコマンドで置けなければ仮の図を開いたままにし、2回目を
+//    別のコマンドとして試して、最後に仮の図を削除する（保存しない）。
 // ------------------------------------------------------------
 public static class NodePlacementProbe
 {
@@ -38,6 +39,52 @@ public static class NodePlacementProbe
         return string.Join("\n      ", rows);
     }
 
+    const string TrialName = "箱置き調査（削除します）";
+
+    // What to try placing: models shown as outer boxes on the open diagram, else the Domains the
+    // owner holds (for the second press, where the open diagram is the empty trial one).
+    static IEnumerable<IModel> OuterModels(IModel owner, IEnumerable<IModel> shown)
+    {
+        var list = shown.ToList();
+        if (list.Count > 0) return list;
+        try { return owner.GetChildren().Cast<IModel>().Where(m => m != null && !m.IsDeleted && m.ClassName.StartsWith("Domain", StringComparison.Ordinal)).ToList(); }
+        catch (Exception) { return new IModel[0]; }
+    }
+
+    static bool Place(IProject project, IViewDefinitions views, IDiagram target, List<IModel> models, string when, Action<string> say)
+    {
+        bool any = false;
+        var editorDef = ((IEditor)target).EditorDefinition;
+        foreach (var m in models)
+        {
+            bool can = false;
+            try { can = target.CanAddNodeShape(m); } catch (Exception ex) { say("CanAddNodeShape: " + ex.Message); }
+            IElementDef def = null;
+            try { def = views.FindElementDefByClass(editorDef, m.Metaclass, null).Cast<IElementDef>().FirstOrDefault(); } catch (Exception) { }
+            var tx = project.BeginUndoTransaction(false);
+            try
+            {
+                var added = target.AddNodeShape(m, def);
+                tx.Commit();
+                say("[" + when + "] '" + m.Name + "' " + m.ClassName + ": CanAdd=" + can + " AddNodeShape 成功 " + (added == null ? "(null)" : "visible=" + ((INode)added).IsVisible));
+                any = true;
+            }
+            catch (Exception ex)
+            {
+                try { tx.Rollback(); } catch (Exception) { }
+                say("[" + when + "] '" + m.Name + "' " + m.ClassName + ": CanAdd=" + can + " " + ex.GetType().Name + ": " + ex.Message);
+            }
+        }
+        return any;
+    }
+
+    static void Remove(IProject project, IModel trial, Action<string> say)
+    {
+        var tx = project.BeginUndoTransaction(false);
+        try { trial.Delete(); tx.Commit(); say("仮の図を削除しました"); }
+        catch (Exception ex) { try { tx.Rollback(); } catch (Exception) { } say("仮の図を削除できません。手で削除してください: " + ex.Message); }
+    }
+
     public static void Run(IApplication app)
     {
         var w = new Action<string>(text => app.Output.WriteLine(Category, text));
@@ -51,7 +98,18 @@ public static class NodePlacementProbe
             var diagram = editor as IDiagram;
             if (project == null || diagram == null || ClassDiagramKind.Reject(editor) != null)
             { app.Window.UI.ShowInformationDialog("箱のある既存のクラス図を開いてから実行してください。", Category); return; }
-            if (!app.Window.UI.ShowConfirmDialog("【コピーのプロジェクトで実行してください】\n開いているクラス図の箱のビュー定義を調べ、同じ所有先に図のモデルを仮に作って箱を置けるか試します。最後に取り消します（保存しません）。\n\nOK: 実行 / キャンセル: 中止", Category)) return;
+            var current = ClassDiagramKind.ModelOf(editor);
+            if (current != null && current.Name == TrialName)
+            {
+                say("=== 新規作成の箱置き調査（2回目） ===");
+                var views2 = project.Profile.ViewDefinitions;
+                var targets2 = OuterModels(current.Owner, new IModel[0]).Take(3).ToList();
+                Place(project, views2, diagram, targets2, "別のコマンド", say);
+                Remove(project, current, say);
+                say("=== 調査終了 ===");
+                return;
+            }
+            if (!app.Window.UI.ShowConfirmDialog("【コピーのプロジェクトで実行してください】\n開いているクラス図の箱のビュー定義を調べ、同じ所有先に図のモデルを仮に作って箱を置けるか試します。置けなければ仮の図を開いたままにするので、もう一度押してください。最後に仮の図を削除します（保存しません）。\n\nOK: 実行 / キャンセル: 中止", Category)) return;
 
             var model = ClassDiagramKind.ModelOf(editor);
             say("=== 新規作成の箱置き調査 ===");
@@ -87,52 +145,34 @@ public static class NodePlacementProbe
                 foreach (var d in defs.Take(3)) say("    " + Props(d));
             }
 
-            // 3. A diagram model made for the trial, then taken back.
+            // 3. A trial diagram model in the same owner. The same-command attempts come first; the
+            //    diagram is then left open so a second press can try from a command of its own.
             IField field = null;
             try { field = model.GetOwnerField(); } catch (Exception) { }
             if (model == null || model.Owner == null || field == null) { say("所有先を取得できないので試行は省略"); return; }
-            var targets = outer.Select(n => new { Node = n, Model = ClassDiagramKind.ModelOf(n) }).Where(t => t.Model != null).Take(3).ToList();
-            var transaction = project.BeginUndoTransaction(false);
+            var targets = OuterModels(model.Owner, outer.Select(n => ClassDiagramKind.ModelOf(n)).Where(m => m != null)).Take(3).ToList();
+            IModel fresh = null;
+            var make = project.BeginUndoTransaction(false);
             try
             {
-                var fresh = model.Owner.AddNewModel(field, model.Metaclass);
-                fresh.SetField("Name", "箱置き調査（取り消します）");
-                var newDiagram = fresh.GetEditors().Cast<object>().OfType<IEditor>().Where(e => ClassDiagramKind.Reject(e) == null).OfType<IDiagram>().FirstOrDefault();
-                say("仮の図: " + (newDiagram == null ? "クラス図エディタなし" : "ノード " + newDiagram.Nodes.Cast<object>().Count() + " / 表示中 " + newDiagram.DisplayedShapes.Cast<object>().Count()));
-                if (newDiagram != null)
-                {
-                    foreach (var n in newDiagram.Nodes.Cast<object>().OfType<INode>().Take(12))
-                    {
-                        var m = ClassDiagramKind.ModelOf(n);
-                        say("    仮の図のノード '" + (m == null ? "?" : m.Name) + "' visible=" + n.IsVisible);
-                    }
-                    foreach (var t in targets)
-                    {
-                        bool can = false;
-                        try { can = newDiagram.CanAddNodeShape(t.Model); } catch (Exception ex) { say("CanAddNodeShape: " + ex.Message); }
-                        int shapes = 0;
-                        try { shapes = newDiagram.GetShapesByModel(t.Model).Cast<object>().Count(); } catch (Exception) { }
-                        say("'" + t.Model.Name + "': CanAddNodeShape=" + can + " 既存シェイプ=" + shapes);
-                        foreach (var attempt in new[] { "既存の箱の定義", "FindElementDefByClass の定義", "定義なし(null)" })
-                        {
-                            IElementDef def = null;
-                            if (attempt == "既存の箱の定義") def = ((IRepresentation)t.Node).ViewDefinition as IElementDef;
-                            else if (attempt == "FindElementDefByClass の定義") { try { def = views.FindElementDefByClass(editorDef, t.Model.Metaclass, null).Cast<IElementDef>().FirstOrDefault(); } catch (Exception) { } }
-                            try
-                            {
-                                var added = newDiagram.AddNodeShape(t.Model, def);
-                                say("    AddNodeShape（" + attempt + "）: 成功 " + (added == null ? "(null)" : "visible=" + ((INode)added).IsVisible));
-                                break;
-                            }
-                            catch (Exception ex) { say("    AddNodeShape（" + attempt + "）: " + ex.GetType().Name + ": " + ex.Message); }
-                        }
-                    }
-                }
+                fresh = model.Owner.AddNewModel(field, model.Metaclass);
+                fresh.SetField("Name", TrialName);
+                make.Commit();
+                say("仮の図のモデルを作って確定: " + fresh.Id);
             }
-            finally
+            catch (Exception ex) { try { make.Rollback(); } catch (Exception) { } say("仮の図のモデルを作れません: " + ex.Message); return; }
+            var created = fresh.GetEditors().Cast<object>().OfType<IEditor>().Where(e => ClassDiagramKind.Reject(e) == null).OfType<IDiagram>().FirstOrDefault();
+            bool placed = created != null && Place(project, views, created, targets, "確定後（同じコマンド）", say);
+            if (!placed)
             {
-                try { transaction.Rollback(); say("試行は取り消しました"); } catch (Exception ex) { say("取消に失敗: " + ex.Message + "（保存せずに開き直してください）"); }
+                try { app.Workspace.State.SetCurrentModel(fresh); say("仮の図を開きました（SetCurrentModel）: 現在のエディタ=" + (app.Workspace.CurrentEditor == null ? "なし" : app.Workspace.CurrentEditor.ViewDefinitionName + " / " + (ClassDiagramKind.ModelOf(app.Workspace.CurrentEditor) == null ? "?" : ClassDiagramKind.ModelOf(app.Workspace.CurrentEditor).Name))); }
+                catch (Exception ex) { say("SetCurrentModel: " + ex.Message); }
+                var opened = app.Workspace.CurrentEditor as IDiagram;
+                if (opened != null && ClassDiagramKind.ModelOf((IEditor)opened) != null && ClassDiagramKind.ModelOf((IEditor)opened).Id == fresh.Id)
+                    placed = Place(project, views, opened, targets, "開いた後（同じコマンド）", say);
             }
+            if (placed) { Remove(project, fresh, say); }
+            else say("同じコマンドの中では置けませんでした。仮の図「" + TrialName + "」を開いたまま、もう一度「新規作成の箱置き調査」を押してください（2回目は別のコマンドとして試し、最後に仮の図を削除します）。");
             say("=== 調査終了 ===");
         }
         catch (Exception ex) { say("[error] " + ex); }
