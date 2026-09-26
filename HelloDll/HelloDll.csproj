@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Next Design V3 の DLL 形式エクステンション。公式手順は .NET 6 + NuGet 参照 -->
+  <PropertyGroup>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- SDK 9 で net6.0 をビルドするときのサポート終了警告は抑止する -->
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 実行時は Next Design 本体の DLL を使う。出力へ同梱すると競合するため runtime を除外 -->
+    <PackageReference Include="NextDesign.Core" Version="3.1.3.30714" ExcludeAssets="runtime" />
+    <PackageReference Include="NextDesign.Desktop" Version="3.1.3.30714" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="manifest.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

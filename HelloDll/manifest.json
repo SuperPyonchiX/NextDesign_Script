@@ -1,0 +1,43 @@
+{
+  "name": "HelloDll",
+  "displayName": "DLL 形式の動作確認",
+  "description": "DLL 形式のエクステンションが Next Design V3 で読み込まれ、コマンドが動くかを確かめます。",
+  "version": "0.1.0",
+  "publisher": "ksk01",
+  "main": "HelloDll.dll",
+  "lifecycle": "application",
+
+  "extensionPoints": {
+    "ribbon": {
+      "tabs": [
+        {
+          "id": "HelloDll.Tab",
+          "label": "DLL確認",
+          "orderAfter": "System.View",
+          "groups": [
+            {
+              "id": "HelloDll.Group",
+              "label": "確認",
+              "controls": [
+                {
+                  "id": "HelloDll.SayHelloButton",
+                  "type": "Button",
+                  "label": "Hello",
+                  "description": "読み込まれた DLL の場所と Activate 時刻を表示します。",
+                  "command": "HelloDll.SayHello"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "commands": [
+      {
+        "id": "HelloDll.SayHello",
+        "title": "Hello",
+        "execFunc": "SayHello"
+      }
+    ]
+  }
+}
