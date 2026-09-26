@@ -31,6 +31,15 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 - 調査ボタンに「項目の値の型」: メタクラス.項目 / 宣言型 / GetField が返す .NET 型の件数（文字列＝文字列以外）
 - 既存の図形は export 経路でも X 等を文字列で書いて通っている（新規 Note 図形の X は "20"）ので、図形の値が原因とは限らない。例外の発生箇所（スタックトレース）で特定する
 
+## 2-00000000000000000000000000000000000000000000000000000000000. 0.13.0 / PlantUmlTool 3.1.0: S6 統合
+
+- ユーザーの決定（2026-09-26）: PlantUmlTool に載せるのは「PlantUMLを反映」「PlantUMLから新規作成」だけ。未保存なら確認せずに保存なしで反映。Probe は開発用に残す。PlantUmlTool は機能だけにし、診断のボタンはクラス図も含めて Probe に戻す
+- 同期の本体を `PlantUmlTool/src/70-sequence-sync.cs`（旧 sync/SequenceSync.cs）・`71-sequence-generate.cs`（旧 src/20-mapped-update.cs）・`72-sequence-sync-runtime.cs`（旧 sync/SequenceSyncRuntime.cs から一括検証・調査を除いたもの）・`73-sequence-create.cs`（旧 src/10-experiment.cs）へ移した。一括検証・全図チェック・調査は `SequenceImportProbe/src/30-dev-tools.cs`
+- 入口 `74-sequence-commands.cs`: 反映は `SequenceSyncRuntime.Plain`（結果を製品向けの文にする）と `UpdateWithoutSaving` を立てて同じ `Preview` を呼ぶ。新規作成は `SequenceDiagramCreator`（見本なし。`SequenceTypeSource` がビュー定義と相互作用クラスから型を引く。開いているシーケンス図があれば、その要素を見本として優先する）
+- `SequenceExperiment.Title` はホストが設定する（Probe は「シーケンス生成実験 / 0.13.0」、PlantUmlTool は「PlantUML 連携 / シーケンス図」）
+- テストは csproj の並び（73, 72, 10, 71, 70 の順）を連結して 71 の `SequencePayload` 以降を切り出す。並びを崩さない
+- **実機未確認**: PlantUmlTool 3.1.0 の読み込み、反映（保存済み・未保存）、見本なしの新規作成（開いているモデルからの置き場所の決定、エディタ種別の名前）
+
 ## 2-0000000000000000000000000000000000000000000000000000000000. 0.12.1: 新しく作る図形の座標を数値で書く
 
 - 0.11.32 一括検証（保存なし写し）: 68/97 のまま。止まる29件はすべて図形を新しく作るシナリオ（枠・Note・ref・破棄の追加、枠で囲む、差し替え）で、製品のエディタ取込（ViewInstanceXm…）が InvalidCastException String→Double
@@ -575,12 +584,13 @@ git diff --check
 
 ### 守ること
 
-- **PlantUML 出力側（`PlantUmlTool`）は変更しない。** ユーザーの決定。（例外: 2026-09-23 にユーザーの依頼でクラス図同期の「試行して戻す」ボタンを削除した。2.2.1。出力処理は触っていない）（2026-09-26 に DLL 化のため `10-sequence-export.cs` の後半を `15-export-runner.cs` に分けた。出力処理の中身は変えていない）
+- **S6（2026-09-26、PlantUmlTool 3.1.0）で統合した。** 同期の本体は `PlantUmlTool/src/70〜74` が正本。SequenceImportProbe（0.13.0、開発用）は同じファイルを直接ビルドし、開発用のボタンだけを持つ。PlantUmlTool は機能（反映・新規作成）だけで、診断・調査のボタンは持たない（ユーザーの決定。クラス図も同じで、診断は ClassImportProbe 0.8.0 に戻した）
+- 以前の決まり（統合前）: PlantUML 出力側（`PlantUmlTool`）は変更しない。ユーザーの決定。（例外: 2026-09-23 にユーザーの依頼でクラス図同期の「試行して戻す」ボタンを削除した。2.2.1。出力処理は触っていない）（2026-09-26 に DLL 化のため `10-sequence-export.cs` の後半を `15-export-runner.cs` に分けた。出力処理の中身は変えていない）
 - 実在する構造差分を比較条件の緩和で消さない。入力にない実行区間・長さ0の区間・MessageEnd を発明しない
-- 同期処理の正本は `sync/`。`src/` はハンドラと実験用の処理
+- 同期処理の正本は `PlantUmlTool/src/70〜74`（0.13.0 から。`sync/` は無くなった）。`SequenceImportProbe/src/` は開発用のハンドラと処理
 - プロジェクトを自動保存しない。`ExportModelUnit` の未保存制約を自動保存で回避しない。例外は「シナリオ一括検証」だけ（2026-09-23 ユーザーの判断。実験用コピーで使う前提で、各段階の後に `IWorkspace.SaveProject` する）
 - ID・既存配置・未知の属性を維持する。座標の 1e-6 表現差を理由に無関係な座標を書き換えない
-- リボンは5ボタン（診断表示／PlantUML取込／差分を検証／PlantUMLを反映／シナリオ一括検証）。一括検証は開発用で、S6 の統合では外す。診断のためにボタンを増やさない
+- PlantUmlTool のシーケンス図のボタンは「PlantUMLを反映」「PlantUMLから新規作成」の2つだけ。差分検証・診断・一括検証・全図チェック・調査は SequenceImportProbe にだけ置く
 - PlantUmlTool の「メタモデル調査」「クラス図調査」はユーザーの判断で残す
 - 会社固有のメタデータ・診断原文・要約・索引は `.local/nd-knowledge/` のみ。追跡対象へ転記しない。強制 add しない
 - `.gitignore` の既存未コミット変更は触らない

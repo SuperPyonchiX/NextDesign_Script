@@ -1,5 +1,5 @@
 // MetaMap シム（PlantUmlTool の旧 Part 2 のうち、出力エンジンが使う ModelOf だけ）。
-// AgentReview と NdMcp が転記時に使う。PlantUmlTool 自身の生成には含めない。
+// PlantUmlTool・AgentReview・NdMcp・ClassImportProbe がビルドに含める（旧 Part 2 本体は SequenceImportProbe/src/40-legacy-import.cs）。
 public static class MetaMap
 {
     public static IModel ModelOf(object shape)

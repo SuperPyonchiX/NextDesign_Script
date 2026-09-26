@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <!--
     共通の設定（TargetFramework、NextDesign の参照、出力へのコピー）は ../Directory.Build.props。
@@ -22,16 +22,20 @@
     <Compile Include="src\05-output-pane.cs" />
     <Compile Include="src\10-sequence-export.cs" />
     <Compile Include="src\15-export-runner.cs" />
-    <Compile Include="src\20-sequence-import-legacy.cs" />
+    <Compile Include="src\shims\metamap.cs" />
     <Compile Include="src\30-handlers.cs" />
     <Compile Include="src\40-class-export.cs" />
-    <Compile Include="src\45-class-probe.cs" />
     <Compile Include="src\50-state-export.cs" />
     <Compile Include="src\60-class-sync.cs" />
     <Compile Include="src\61-class-snapshot.cs" />
     <Compile Include="src\62-class-sync-ui.cs" />
     <Compile Include="src\63-class-sync-runtime.cs" />
     <Compile Include="src\64-class-diagram-create.cs" />
+    <Compile Include="src\70-sequence-sync.cs" />
+    <Compile Include="src\71-sequence-generate.cs" />
+    <Compile Include="src\72-sequence-sync-runtime.cs" />
+    <Compile Include="src\73-sequence-create.cs" />
+    <Compile Include="src\74-sequence-commands.cs" />
   </ItemGroup>
 
 </Project>

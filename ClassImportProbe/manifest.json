@@ -1,0 +1,85 @@
+{
+  "name": "ClassImportProbe",
+  "displayName": "クラス図同期実験",
+  "description": "PlantUmlTool のクラス図同期を開発・実機確認するための拡張。差分検証・診断表示・クラス図調査を持つ。",
+  "version": "0.8.0",
+  "publisher": "ksk01",
+  "main": "ClassImportProbe.dll",
+  "lifecycle": "project",
+  "extensionPoints": {
+    "ribbon": {
+      "tabs": [
+        {
+          "id": "ClassImportProbe.Tab",
+          "label": "クラス図同期実験",
+          "groups": [
+            {
+              "id": "ClassImportProbe.Sync",
+              "label": "反映",
+              "controls": [
+                {
+                  "id": "ClassImportProbe.PreviewButton",
+                  "type": "Button",
+                  "label": "差分を検証",
+                  "command": "ClassImportProbe.Preview"
+                },
+                {
+                  "id": "ClassImportProbe.ApplyButton",
+                  "type": "Button",
+                  "label": "PlantUMLを反映",
+                  "command": "ClassImportProbe.Apply"
+                },
+                {
+                  "id": "ClassImportProbe.CreateButton",
+                  "type": "Button",
+                  "label": "PlantUMLから新規作成",
+                  "command": "ClassImportProbe.Create"
+                }
+              ]
+            },
+            {
+              "id": "ClassImportProbe.Diagnostics",
+              "label": "結果・診断",
+              "controls": [
+                {
+                  "id": "ClassImportProbe.DetailsButton",
+                  "type": "Button",
+                  "label": "診断表示",
+                  "command": "ClassImportProbe.Details"
+                },
+                {
+                  "id": "ClassImportProbe.ProbeButton",
+                  "type": "Button",
+                  "label": "クラス図調査",
+                  "command": "ClassImportProbe.Probe"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "commands": [
+      {
+        "id": "ClassImportProbe.Preview",
+        "execFunc": "PreviewClassSync"
+      },
+      {
+        "id": "ClassImportProbe.Apply",
+        "execFunc": "ApplyClassSync"
+      },
+      {
+        "id": "ClassImportProbe.Create",
+        "execFunc": "CreateClassDiagram"
+      },
+      {
+        "id": "ClassImportProbe.Details",
+        "execFunc": "ShowClassSyncDetails"
+      },
+      {
+        "id": "ClassImportProbe.Probe",
+        "execFunc": "ProbeClassDiagram"
+      }
+    ]
+  }
+}

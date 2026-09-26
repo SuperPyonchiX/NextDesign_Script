@@ -1362,7 +1362,7 @@ public static class ClassSyncRuntime
         catch(Exception ex)
         {
             outcome.ErrorMessage=ex.Message;
-            outcome.Summary=(trial?"反映を完了できませんでした。診断表示を確認してください。":"図全体の読取り検証を完了できませんでした。")+"\n"+ex.Message;
+            outcome.Summary=(trial?"反映を完了できませんでした。詳細は診断ファイルにあります。":"図全体の読取り検証を完了できませんでした。")+"\n"+ex.Message;
             log.AppendLine(ex.ToString());screenshot=null;
         }
         finally { targetEditorId=null;targetModelId=null;applyMode=false; }

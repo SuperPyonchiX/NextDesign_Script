@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    開発用の拡張（クラス図同期の差分検証・診断表示・クラス図調査）。
+    共通の設定（TargetFramework、NextDesign の参照、出力へのコピー）は ../Directory.Build.props。
+    同期の本体は PlantUmlTool/src（60〜64）を直接ビルドし、PlantUmlTool と同じものを使う。
+  -->
+  <ItemGroup>
+    <Using Include="System" />
+    <Using Include="System.Collections.Generic" />
+    <Using Include="System.Globalization" />
+    <Using Include="System.IO" />
+    <Using Include="System.Linq" />
+    <Using Include="System.Text" />
+    <Using Include="System.Text.RegularExpressions" />
+    <Using Include="NextDesign.Core" />
+    <Using Include="NextDesign.Desktop" />
+    <Using Include="NextDesign.Extension" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="src\00-extension.cs" />
+    <Compile Include="src\20-class-probe.cs" />
+    <Compile Include="..\PlantUmlTool\src\05-output-pane.cs" />
+    <Compile Include="..\PlantUmlTool\src\shims\metamap.cs" />
+    <Compile Include="..\PlantUmlTool\src\10-sequence-export.cs" />
+    <Compile Include="..\PlantUmlTool\src\15-export-runner.cs" />
+    <Compile Include="..\PlantUmlTool\src\40-class-export.cs" />
+    <Compile Include="..\PlantUmlTool\src\60-class-sync.cs" />
+    <Compile Include="..\PlantUmlTool\src\61-class-snapshot.cs" />
+    <Compile Include="..\PlantUmlTool\src\62-class-sync-ui.cs" />
+    <Compile Include="..\PlantUmlTool\src\63-class-sync-runtime.cs" />
+    <Compile Include="..\PlantUmlTool\src\64-class-diagram-create.cs" />
+  </ItemGroup>
+
+</Project>

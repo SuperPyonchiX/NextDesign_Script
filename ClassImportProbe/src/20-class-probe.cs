@@ -38,8 +38,8 @@ public class ClassProbe
             if (model != null) models.Add(model);
         }
 
-        MetaProbe.DumpModel(w, "ノード(1件目)", models.Count > 0 ? models[0] : null);
-        MetaProbe.DumpModel(w, "ノードの子(1件目)", FirstChild(models));
+        DumpModel(w, "ノード(1件目)", models.Count > 0 ? models[0] : null);
+        DumpModel(w, "ノードの子(1件目)", FirstChild(models));
 
         DumpClassNames(w, "ノードのクラス名一覧", models);
         DumpClassNames(w, "子のクラス名一覧", AllChildren(models));
@@ -186,6 +186,73 @@ public class ClassProbe
             foreach (var pair in counts.OrderByDescending(p => p.Value).ThenBy(p => p.Key, StringComparer.Ordinal))
                 w("  " + pair.Key + " : " + pair.Value + " 件");
         w("");
+    }
+    // メタモデル調査（SequenceImportProbe の MetaProbe）と同じ書式。
+    public static void DumpModel(Action<string> w, string title, IModel m)
+    {
+        w("---- " + title + " ----");
+        if (m == null)
+        {
+            w("  (見本なし)");
+            w("");
+            return;
+        }
+
+        w("  ClassName  : " + m.ClassName);
+        w("  Name       : " + m.Name);
+
+        var cls = m.Metaclass;
+        if (cls != null)
+        {
+            w("  FullName   : " + cls.FullName);
+            w("  IsAbstract : " + cls.IsAbstract);
+            var supers = cls.GetAllSuperClasses().Cast<IClass>().Select(c => c.Name).ToList();
+            w("  SuperClass : " + (supers.Count > 0 ? string.Join(", ", supers.ToArray()) : "(なし)"));
+        }
+
+        try
+        {
+            var ownerField = m.GetOwnerField();
+            w("  OwnerField : " + (ownerField != null ? ownerField.Name : "(不明)"));
+        }
+        catch (Exception) { w("  OwnerField : (取得できません)"); }
+
+        w("  Owner      : " + (m.Owner != null ? m.Owner.ClassName + " / " + m.Owner.Name : "(なし)"));
+
+        if (cls != null)
+        {
+            w("  Fields:");
+            foreach (var f in cls.GetFields().Cast<IField>())
+            {
+                var sb = new StringBuilder();
+                sb.Append("    ").Append(Pad(f.Name, 30));
+                sb.Append(" kind=").Append(f.IsEmbedded ? "所有" : (f.IsReference ? "参照" : "値  "));
+                sb.Append(" type=").Append(Pad(f.Type, 24));
+                sb.Append(" mult=").Append(f.LowerBound).Append("..")
+                  .Append(f.UpperBound < 0 ? "*" : f.UpperBound.ToString());
+
+                if (!f.IsEmbedded && !f.IsReference)
+                {
+                    string value = null;
+                    try { value = m.GetFieldString(f.Name); }
+                    catch (Exception) { }
+                    if (!string.IsNullOrEmpty(value)) sb.Append(" value='").Append(Shorten(value)).Append("'");
+                }
+                w(sb.ToString());
+            }
+        }
+        w("");
+    }
+    private static string Pad(string s, int width)
+    {
+        var t = s ?? "";
+        return t.Length >= width ? t : t + new string(' ', width - t.Length);
+    }
+
+    private static string Shorten(string s)
+    {
+        var t = PlantUmlText.Inline(PlantUmlText.Normalize(s));
+        return t.Length <= 40 ? t : t.Substring(0, 40) + "…";
     }
 }
 

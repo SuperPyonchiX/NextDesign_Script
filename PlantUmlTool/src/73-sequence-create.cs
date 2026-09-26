@@ -1,6 +1,7 @@
 ﻿public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.12.1";
+    // The host sets its own name and version (PlantUmlTool, or the SequenceImportProbe dev extension).
+    public static string Title = "PlantUML 連携";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -490,8 +491,53 @@ public class SequenceReplacement
     }
 }
 
+// Where the generator and the structure update read the types of a sequence diagram from: the
+// editor's view definition, the interaction class, and (when a diagram is open) the elements it
+// already has, which settle a type more surely than the definition. A new diagram made with no
+// diagram open has only the first two.
+public sealed class SequenceTypeSource
+{
+    public IEditorDef Definition;
+    public IClass Interaction;
+    public IEnumerable<IModel> Frames=new IModel[0],Lifelines=new IModel[0],Executions=new IModel[0],Messages=new IModel[0],
+        Notes=new IModel[0],MessageEnds=new IModel[0],Uses=new IModel[0],Fragments=new IModel[0],Destructions=new IModel[0];
+    Func<string,IEnumerable<IModel>> operands=id=>new IModel[0];
+    public IEnumerable<IModel> OperandsOf(string fragmentClass){return operands(fragmentClass);}
+    public static SequenceTypeSource Of(ISequenceDiagram d)
+    {
+        return new SequenceTypeSource{Definition=d.EditorDefinition,Interaction=d.Model==null?null:d.Model.Metaclass,
+            Frames=d.Frame==null?new IModel[0]:new[]{d.Frame.Model},Lifelines=d.Lifelines.Select(l=>l.Model),
+            Executions=d.ExecutionSpecifications.Select(e=>e.Model),Messages=d.Messages.Select(m=>m.Model),
+            Notes=d.Notes.Select(n=>n.Model),MessageEnds=d.MessageEnds.Select(e=>e.Model),Uses=d.InteractionUses.Select(u=>u.Model),
+            Fragments=d.Fragments.Select(f=>f.Model),Destructions=d.Destructions.Select(e=>e.Model),
+            operands=id=>d.Fragments.Where(f=>f.Model.Metaclass.Id==id).SelectMany(f=>f.Operands).Select(o=>o.Model)};
+    }
+    public static SequenceTypeSource Blank(IEditorDef definition,IClass interaction)
+    { return new SequenceTypeSource{Definition=definition,Interaction=interaction}; }
+    // A sequence editor places lifelines, bars and messages; that tells its definition apart
+    // whatever name the product gives the editor kind.
+    public static bool IsSequence(IEditorDef definition)
+    {
+        if(definition==null)return false;
+        try
+        {
+            var kinds=new HashSet<string>(definition.Elements.Where(e=>e!=null && e.Type!=null).Select(e=>e.Type),StringComparer.OrdinalIgnoreCase);
+            return kinds.Contains("Lifeline") && kinds.Contains("Message") && kinds.Contains("ExecutionSpecification");
+        }
+        catch(Exception){return false;}
+    }
+}
+
 public static class PumlRuntime
 {
+    // Entry points for an open diagram: its elements are the surest samples.
+    public static IClass[] BaseTypes(ISequenceDiagram diagram){return BaseTypes(SequenceTypeSource.Of(diagram));}
+    public static SequenceNoteTypes NoteTypes(ISequenceDiagram diagram,IProject project){return NoteTypes(SequenceTypeSource.Of(diagram),project);}
+    public static SequenceDestroyTypes DestroyTypes(ISequenceDiagram diagram){return DestroyTypes(SequenceTypeSource.Of(diagram));}
+    public static SequenceRefTypes RefTypes(ISequenceDiagram diagram,IProject project){return RefTypes(SequenceTypeSource.Of(diagram),project);}
+    public static SequenceFrameTypes FrameTypes(ISequenceDiagram diagram,IProject project){return FrameTypes(SequenceTypeSource.Of(diagram),project);}
+    public static SequenceBaseTypes SyncBaseTypes(ISequenceDiagram diagram,IProject project,bool ends){return SyncBaseTypes(SequenceTypeSource.Of(diagram),project,ends);}
+    public static PumlProfile Profile(ISequenceDiagram diagram,IClass[] source,PumlPlan plan,IProject project){return Profile(SequenceTypeSource.Of(diagram),source,plan,project);}
     static IField Field(IClass c,string name) { return c.GetFields().Cast<IField>().FirstOrDefault(f=>f.Name==name); }
     static string Literal(IClass c,string field,string value)
     {
@@ -515,7 +561,7 @@ public static class PumlRuntime
     // An element already in the diagram is the surest sample, but a diagram being built
     // from nothing has none. The view definition names the classes the editor may place,
     // so read the concrete type from there instead of falling back to the abstract one.
-    static IClass Resolve(ISequenceDiagram diagram,string[] definitionTypes,IEnumerable<IModel> observed,string label)
+    static IClass Resolve(SequenceTypeSource diagram,string[] definitionTypes,IEnumerable<IModel> observed,string label)
     { return Resolve(diagram,definitionTypes,observed,(IClass)null,label); }
     // Known concrete type ids, filled in once they have been read off a real profile.
     // Metaclass ids are fixed, so a value here removes the need for any sample at all.
@@ -546,14 +592,14 @@ public static class PumlRuntime
     }
     // Whatever route found a type, remember it against this view definition so a project
     // that has no example of its own can still be filled in later.
-    static string LearnedPath(ISequenceDiagram diagram)
+    static string LearnedPath(SequenceTypeSource diagram)
     {
-        string id=diagram==null || diagram.EditorDefinition==null?null:diagram.EditorDefinition.Id;
+        string id=diagram==null || diagram.Definition==null?null:diagram.Definition.Id;
         if(string.IsNullOrEmpty(id) || id.IndexOfAny(Path.GetInvalidFileNameChars())>=0)return null;
         return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "NextDesign.SequenceSync","types",id+".txt");
     }
-    static Dictionary<string,string> Learned(ISequenceDiagram diagram)
+    static Dictionary<string,string> Learned(SequenceTypeSource diagram)
     {
         var result=new Dictionary<string,string>(StringComparer.Ordinal);
         string path=LearnedPath(diagram);
@@ -569,7 +615,7 @@ public static class PumlRuntime
         catch(Exception){}
         return result;
     }
-    static void Learn(ISequenceDiagram diagram,string label,IClass type)
+    static void Learn(SequenceTypeSource diagram,string label,IClass type)
     {
         string path=LearnedPath(diagram);
         if(path==null || type==null)return;
@@ -585,7 +631,7 @@ public static class PumlRuntime
     }
     // A remembered id is only used when it still names a concrete class that really
     // derives from the declared one, checked against the metamodel this diagram uses.
-    static IClass Remembered(ISequenceDiagram diagram,IClass anchor,IClass declared,string label)
+    static IClass Remembered(SequenceTypeSource diagram,IClass anchor,IClass declared,string label)
     {
         string id;
         if(!Learned(diagram).TryGetValue(label,out id))return null;
@@ -653,16 +699,16 @@ public static class PumlRuntime
     // Some kinds are not placeable on their own and so are absent from the view
     // definition; an operand only exists inside a fragment. For those the field on the
     // concrete owner class carries the type, as long as it is not the abstract one.
-    static IClass Resolve(ISequenceDiagram diagram,string[] definitionTypes,IEnumerable<IModel> observed,IClass declared,string label)
+    static IClass Resolve(SequenceTypeSource diagram,string[] definitionTypes,IEnumerable<IModel> observed,IClass declared,string label)
     { return Resolve(diagram,definitionTypes,observed,()=>declared,label); }
     // The fallback searches can walk the whole project, so they run only when neither a
     // sample nor the view definition settles the type.
-    static IClass Resolve(ISequenceDiagram diagram,string[] definitionTypes,IEnumerable<IModel> observed,Func<IClass> fallback,string label)
+    static IClass Resolve(SequenceTypeSource diagram,string[] definitionTypes,IEnumerable<IModel> observed,Func<IClass> fallback,string label)
     {
         var seen=observed.Select(m=>m.Metaclass).GroupBy(c=>c.Id).Select(g=>g.First()).ToArray();
         if(seen.Length>1)throw new InvalidOperationException("E121: 見本の"+label+"に複数の型があり、自動選択できません。");
         if(seen.Length==1)return seen[0];
-        var elements=diagram.EditorDefinition.Elements.Where(e=>e!=null && e.ModelClass!=null).ToArray();
+        var elements=diagram.Definition.Elements.Where(e=>e!=null && e.ModelClass!=null).ToArray();
         var defined=elements
             .Where(e=>definitionTypes.Any(name=>string.Equals(e.Type,name,StringComparison.OrdinalIgnoreCase)))
             .Select(e=>e.ModelClass).GroupBy(c=>c.Id).Select(g=>g.First()).ToArray();
@@ -677,16 +723,16 @@ public static class PumlRuntime
             +label+"がある図を開いて取り込むか、この種別名を開発側へ伝えてください。定義の種別: "+available);
     }
     // The seven base classes, in the order the payload builder expects them.
-    public static IClass[] BaseTypes(ISequenceDiagram diagram)
+    public static IClass[] BaseTypes(SequenceTypeSource diagram)
     {
-        var interaction=diagram.Model==null?null:diagram.Model.Metaclass;
+        var interaction=diagram.Interaction;
         if(interaction==null)throw new InvalidOperationException("E104: 図のモデル型を取得できません。");
         var frame=Resolve(diagram,new[]{"Frame","InteractionFrame"},
-            diagram.Frame==null?new IModel[0]:new[]{diagram.Frame.Model},"枠");
-        var lifeline=Resolve(diagram,new[]{"Lifeline","Lifelines"},diagram.Lifelines.Select(l=>l.Model),"ライフライン");
+            diagram.Frames,"枠");
+        var lifeline=Resolve(diagram,new[]{"Lifeline","Lifelines"},diagram.Lifelines,"ライフライン");
         var execution=Resolve(diagram,new[]{"ExecutionSpecification","ExecutionSpecifications","Execution"},
-            diagram.ExecutionSpecifications.Select(e=>e.Model),"実行区間");
-        var messageClass=Resolve(diagram,new[]{"Message","Messages"},diagram.Messages.Select(m=>m.Model),"メッセージ");
+            diagram.Executions,"実行区間");
+        var messageClass=Resolve(diagram,new[]{"Message","Messages"},diagram.Messages,"メッセージ");
         return new[]{interaction,frame,lifeline,lifeline,execution,execution,messageClass};
     }
     // What the structure update needs to build a frame when the diagram holds none to
@@ -708,13 +754,13 @@ public static class PumlRuntime
     // What a new note is built from when the diagram may hold none to copy: the class the
     // view places, the interaction's ownership of it, and the field its text goes in.
     // Same resolution as the generator uses for a note.
-    public static SequenceNoteTypes NoteTypes(ISequenceDiagram diagram,IProject project)
+    public static SequenceNoteTypes NoteTypes(SequenceTypeSource diagram,IProject project)
     {
         var source=BaseTypes(diagram);
         var interaction=source[0];
         var declaredNote=Child(new PumlProfile(),interaction,"Notes","Notes","___Interaction_InteractionNote");
         var note=Resolve(diagram,new[]{"InteractionNote","Note","Notes"},
-            diagram.Notes.Select(n=>n.Model),()=>declaredNote!=null && declaredNote.IsAbstract
+            diagram.Notes,()=>declaredNote!=null && declaredNote.IsAbstract
                 ?(Anywhere(project,declaredNote) ?? Sibling(interaction,declaredNote)
                     ?? Pin(interaction,declaredNote,"Note") ?? Remembered(diagram,interaction,declaredNote,"Note") ?? Descend(project,declaredNote,"Note"))
                 :declaredNote,"Note");
@@ -729,14 +775,14 @@ public static class PumlRuntime
     // coverage uses the same relation as a frame's; RefersTo is left out when the profile
     // has no such field, and the ref is then written without its target.
     // What a new destruction is built from, resolved the way the generator resolves one.
-    public static SequenceDestroyTypes DestroyTypes(ISequenceDiagram diagram)
+    public static SequenceDestroyTypes DestroyTypes(SequenceTypeSource diagram)
     {
         var source=BaseTypes(diagram);
         var declared=Child(new PumlProfile(),source[0],"Destructions","Destructions","___Interaction_Destruction");
-        var definitions=diagram.EditorDefinition.Elements
+        var definitions=diagram.Definition.Elements
             .Where(e=>string.Equals(e.Type,"Destruction",StringComparison.OrdinalIgnoreCase) && e.ModelClass!=null)
             .Select(e=>e.ModelClass).GroupBy(t=>t.Id).Select(g=>g.First()).ToArray();
-        var observed=diagram.Destructions.Select(e=>e.Model.Metaclass).GroupBy(t=>t.Id).Select(g=>g.First()).ToArray();
+        var observed=diagram.Destructions.Select(m=>m.Metaclass).GroupBy(t=>t.Id).Select(g=>g.First()).ToArray();
         string selected=PumlTypeSelection.Destruction(definitions.Select(t=>t.Id).ToArray(),observed.Select(t=>t.Id).ToArray());
         var c=definitions.Concat(observed).First(t=>t.Id==selected);
         string[] message=null;
@@ -744,13 +790,13 @@ public static class PumlRuntime
         return new SequenceDestroyTypes{Class=c.Id,Owns=Wiring(source[0],c,"Destructions","___Interaction_Destruction",true),
             Target=Wiring(c,source[2],"Lifeline","DestructionTargetLifeline",false),Message=message};
     }
-    public static SequenceRefTypes RefTypes(ISequenceDiagram diagram,IProject project)
+    public static SequenceRefTypes RefTypes(SequenceTypeSource diagram,IProject project)
     {
         var source=BaseTypes(diagram);
         var interaction=source[0];
         var declaredUse=Child(new PumlProfile(),interaction,"InteractionUses","InteractionUses","___Interaction_InteractionUse");
         var use=Resolve(diagram,new[]{"InteractionUse","InteractionUses","Ref"},
-            diagram.InteractionUses.Select(f=>f.Model),()=>declaredUse!=null && declaredUse.IsAbstract
+            diagram.Uses,()=>declaredUse!=null && declaredUse.IsAbstract
                 ?(Anywhere(project,declaredUse) ?? Sibling(interaction,declaredUse)
                     ?? Pin(interaction,declaredUse,"相互作用の利用") ?? Remembered(diagram,interaction,declaredUse,"相互作用の利用") ?? Descend(project,declaredUse,"相互作用の利用"))
                 :declaredUse,"相互作用の利用");
@@ -762,13 +808,13 @@ public static class PumlRuntime
             RefersTo=refers==null || refers.RelationshipClass==null?null
                 :Wiring(use,interaction,"RefersTo",refers.RelationshipClass.Id.Substring(SequencePayload.Prefix.Length),false)};
     }
-    public static SequenceFrameTypes FrameTypes(ISequenceDiagram diagram,IProject project)
+    public static SequenceFrameTypes FrameTypes(SequenceTypeSource diagram,IProject project)
     {
         var source=BaseTypes(diagram);
         var interaction=source[0];
         var declaredFragment=Child(new PumlProfile(),interaction,"Fragments","CombinedFragments","___Interaction_CombinedFragment");
         var fragment=Resolve(diagram,new[]{"CombinedFragment","Fragment","CombinedFragments"},
-            diagram.Fragments.Select(f=>f.Model),()=>declaredFragment!=null && declaredFragment.IsAbstract
+            diagram.Fragments,()=>declaredFragment!=null && declaredFragment.IsAbstract
                 ?(Anywhere(project,declaredFragment) ?? Sibling(interaction,declaredFragment)
                     ?? Pin(interaction,declaredFragment,"複合フラグメント") ?? Remembered(diagram,interaction,declaredFragment,"複合フラグメント")
                     ?? Descend(project,declaredFragment,"複合フラグメント"))
@@ -776,8 +822,7 @@ public static class PumlRuntime
         var declaredOperand=Child(new PumlProfile(),fragment,"Operands","Operands","___CombinedFragment_InteractionOperand");
         // The operand is not a class of its own: the product names it after the
         // interaction class with a suffix, which is why no class list ever held it.
-        var sampleOperands=diagram.Fragments.Where(f=>f.Model.Metaclass.Id==fragment.Id)
-            .SelectMany(f=>f.Operands).Select(o=>o.Model).ToArray();
+        var sampleOperands=diagram.OperandsOf(fragment.Id).ToArray();
         string operandId=sampleOperands.Length>0?sampleOperands[0].Metaclass.Id:interaction.Id+"_Operand";
         var types=new SequenceFrameTypes{Fragment=fragment.Id,Operand=operandId};
         var operatorField=Field(fragment,"Operator");
@@ -796,7 +841,7 @@ public static class PumlRuntime
     // What the structure update builds messages, bars and free message ends from when the
     // diagram holds nothing of the kind to copy. Every row is resolved on its own; a row that
     // cannot be resolved stays empty and stops the update only where it is needed.
-    public static SequenceBaseTypes SyncBaseTypes(ISequenceDiagram diagram,IProject project,bool ends)
+    public static SequenceBaseTypes SyncBaseTypes(SequenceTypeSource diagram,IProject project,bool ends)
     {
         var source=BaseTypes(diagram);
         var result=new SequenceBaseTypes{Message=source[6].Id,Execution=source[4].Id,Lifeline=source[2].Id};
@@ -811,7 +856,7 @@ public static class PumlRuntime
         if(ends)
         {
             var declaredEnd=Child(new PumlProfile(),source[0],"MessageEnds","MessageEnds","___Interaction_MessageEnd");
-            var end=Resolve(diagram,new[]{"MessageEnd","MessageEnds"},diagram.MessageEnds.Select(e=>e.Model),()=>declaredEnd!=null && declaredEnd.IsAbstract
+            var end=Resolve(diagram,new[]{"MessageEnd","MessageEnds"},diagram.MessageEnds,()=>declaredEnd!=null && declaredEnd.IsAbstract
                     ?(Anywhere(project,declaredEnd) ?? Sibling(source[0],declaredEnd)
                         ?? Pin(source[0],declaredEnd,"メッセージ端") ?? Remembered(diagram,source[0],declaredEnd,"メッセージ端") ?? Descend(project,declaredEnd,"メッセージ端"))
                     :declaredEnd,"メッセージ端");
@@ -823,9 +868,9 @@ public static class PumlRuntime
         }
         return result;
     }
-    public static PumlProfile Profile(ISequenceDiagram diagram,IClass[] source,PumlPlan plan)
+    public static PumlProfile Profile(SequenceTypeSource diagram,IClass[] source,PumlPlan plan)
     { return Profile(diagram,source,plan,null); }
-    public static PumlProfile Profile(ISequenceDiagram diagram,IClass[] source,PumlPlan plan,IProject project)
+    public static PumlProfile Profile(SequenceTypeSource diagram,IClass[] source,PumlPlan plan,IProject project)
     {
         var p=new PumlProfile();
         p.Resolved.Add("相互作用\t"+source[0].Id);
@@ -853,10 +898,10 @@ public static class PumlRuntime
         if(plan.All().Any(n=>n.Kind=="destroy"))
         {
             var c=Child(p,source[0],"Destructions","Destructions","___Interaction_Destruction");
-            var definitions=diagram.EditorDefinition.Elements
+            var definitions=diagram.Definition.Elements
                 .Where(e=>string.Equals(e.Type,"Destruction",StringComparison.OrdinalIgnoreCase) && e.ModelClass!=null)
                 .Select(e=>e.ModelClass).GroupBy(t=>t.Id).Select(g=>g.First()).ToArray();
-            var observed=diagram.Destructions.Select(e=>e.Model.Metaclass).GroupBy(t=>t.Id).Select(g=>g.First()).ToArray();
+            var observed=diagram.Destructions.Select(m=>m.Metaclass).GroupBy(t=>t.Id).Select(g=>g.First()).ToArray();
             string selected=PumlTypeSelection.Destruction(definitions.Select(t=>t.Id).ToArray(),observed.Select(t=>t.Id).ToArray());
             c=definitions.Concat(observed).First(t=>t.Id==selected);
             p.Types["Destruction"]=c.Id;
@@ -875,7 +920,7 @@ public static class PumlRuntime
         if(plan.All().Any(n=>n.Left=="[" || n.Right=="]"))
         {
             var declaredEnd=Child(p,source[0],"MessageEnds","MessageEnds","___Interaction_MessageEnd");
-            var c=Resolve(diagram,new[]{"MessageEnd","MessageEnds"},diagram.MessageEnds.Select(e=>e.Model),()=>declaredEnd!=null && declaredEnd.IsAbstract
+            var c=Resolve(diagram,new[]{"MessageEnd","MessageEnds"},diagram.MessageEnds,()=>declaredEnd!=null && declaredEnd.IsAbstract
                     ?(Anywhere(project,declaredEnd) ?? Sibling(source[0],declaredEnd)
                         ?? Pin(source[0],declaredEnd,"メッセージ端") ?? Remembered(diagram,source[0],declaredEnd,"メッセージ端") ?? Descend(project,declaredEnd,"メッセージ端"))
                     :declaredEnd,"メッセージ端");
@@ -886,7 +931,7 @@ public static class PumlRuntime
         {
             var declaredFragment=Child(p,source[0],"Fragments","CombinedFragments","___Interaction_CombinedFragment");
             var c=Resolve(diagram,new[]{"CombinedFragment","Fragment","CombinedFragments"},
-                diagram.Fragments.Select(f=>f.Model),()=>declaredFragment!=null && declaredFragment.IsAbstract
+                diagram.Fragments,()=>declaredFragment!=null && declaredFragment.IsAbstract
                     ?(Anywhere(project,declaredFragment) ?? Sibling(source[0],declaredFragment)
                         ?? Pin(source[0],declaredFragment,"複合フラグメント") ?? Remembered(diagram,source[0],declaredFragment,"複合フラグメント") ?? Descend(project,declaredFragment,"複合フラグメント"))
                     :declaredFragment,"複合フラグメント");
@@ -896,7 +941,7 @@ public static class PumlRuntime
             // The operand is not a class of its own: the product names it after the
             // interaction class with a suffix, which is why no class list ever held it.
             string operandId=source[0].Id+"_Operand";
-            var sampleOperands=diagram.Fragments.Where(f=>f.Model.Metaclass.Id==c.Id).SelectMany(f=>f.Operands).Select(o=>o.Model).ToArray();
+            var sampleOperands=diagram.OperandsOf(c.Id).ToArray();
             var operand=sampleOperands.Length>0?Resolve(diagram,new[]{"InteractionOperand","Operand","Operands"},sampleOperands,
                     ()=>declaredOperand!=null && declaredOperand.IsAbstract
                         ?(Anywhere(project,declaredOperand) ?? Sibling(c,declaredOperand)
@@ -912,7 +957,7 @@ public static class PumlRuntime
         {
             var declaredUse=Child(p,source[0],"InteractionUses","InteractionUses","___Interaction_InteractionUse");
             var c=Resolve(diagram,new[]{"InteractionUse","InteractionUses","Ref"},
-                diagram.InteractionUses.Select(f=>f.Model),()=>declaredUse!=null && declaredUse.IsAbstract
+                diagram.Uses,()=>declaredUse!=null && declaredUse.IsAbstract
                     ?(Anywhere(project,declaredUse) ?? Sibling(source[0],declaredUse)
                         ?? Pin(source[0],declaredUse,"相互作用の利用") ?? Remembered(diagram,source[0],declaredUse,"相互作用の利用") ?? Descend(project,declaredUse,"相互作用の利用"))
                     :declaredUse,"相互作用の利用");
@@ -926,7 +971,7 @@ public static class PumlRuntime
         {
             var declaredNote=Child(p,source[0],"Notes","Notes","___Interaction_InteractionNote");
             var c=Resolve(diagram,new[]{"InteractionNote","Note","Notes"},
-                diagram.Notes.Select(n=>n.Model),()=>declaredNote!=null && declaredNote.IsAbstract
+                diagram.Notes,()=>declaredNote!=null && declaredNote.IsAbstract
                     ?(Anywhere(project,declaredNote) ?? Sibling(source[0],declaredNote)
                         ?? Pin(source[0],declaredNote,"Note") ?? Remembered(diagram,source[0],declaredNote,"Note") ?? Descend(project,declaredNote,"Note"))
                     :declaredNote,"Note");

@@ -67,77 +67,17 @@ public partial class PlantUmlToolExtension
         }
     }
 
-    // ============================================================
-    //  Part 6 / 診断側のコマンドハンドラ
-    //  （manifest.json の execFunc と名前を一致させる）
-    //
-    //  注: PlantUML からの取り込み（ImportFromFile / ImportFromFolder）は
-    //      撤去済み。Part 1〜5 の旧ライターはリボンから到達しない。
-    //      汎用モデル更新だけでシーケンスの構造と表示を構築できるとは限らない。
-    //      V3全般の作成不可、純正PlantUMLImporterの提供は根拠未確認。
-    //      公開SDKのインポートAPI候補と未確認事項は
-    //      docs/sequence-import-api-research.md を参照する。
-    // ============================================================
-
-    public void ProbeClassDiagram(ICommandContext context, ICommandParams commandParams)
-    {
-        try
-        {
-            var app = context.App;
-            var editor = app.Workspace.CurrentEditor;
-            var diagram = editor as IDiagram;
-            if (diagram == null)
-            {
-                app.Window.UI.ShowInformationDialog(
-                    "クラス図を開いた状態で実行してください。（EditorType = "
-                    + (editor != null ? editor.EditorType : "エディタなし") + "）", ClassProbe.Category);
-                return;
-            }
-
-            OutputPane.Show(app, ClassProbe.Category);
-
-            ClassProbe.Run(app, diagram);
-        }
-        catch (Exception ex)
-        {
-            context.App.Output.WriteLine(ClassProbe.Category, "[error] " + ex.ToString());
-            context.App.Window.UI.ShowInformationDialog(
-                "クラス図調査に失敗しました。\n\n" + ex.Message, ClassProbe.Category);
-        }
-    }
-
-    public void ProbeMetamodel(ICommandContext context, ICommandParams commandParams)
-    {
-        try
-        {
-            var app = context.App;
-            var diagram = app.Workspace.CurrentEditor as ISequenceDiagram;
-            if (diagram == null)
-            {
-                app.Window.UI.ShowInformationDialog(
-                    "シーケンス図を開いた状態で実行してください。", MetaProbe.Category);
-                return;
-            }
-
-            OutputPane.Show(app, MetaProbe.Category);
-
-            MetaProbe.Run(app, diagram);
-        }
-        catch (Exception ex)
-        {
-            context.App.Output.WriteLine(MetaProbe.Category, "[error] " + ex.ToString());
-            context.App.Window.UI.ShowInformationDialog(
-                "メタモデル調査に失敗しました。\n\n" + ex.Message, MetaProbe.Category);
-        }
-    }
-
-
     // ------------------------------------------------------------
     //  クラス図同期（Part 9）。本体は ClassSyncRuntime（61-class-sync-runtime.cs）
     // ------------------------------------------------------------
 
-    public void PreviewClassSync(ICommandContext context, ICommandParams commandParams) { ClassSyncRuntime.Preview(context.App); }
     public void ApplyClassSync(ICommandContext context, ICommandParams commandParams) { ClassSyncRuntime.Preview(context.App, true, true, true); }
     public void CreateClassDiagram(ICommandContext context, ICommandParams commandParams) { ClassDiagramCreator.Create(context.App); }
-    public void ShowClassSyncDetails(ICommandContext context, ICommandParams commandParams) { foreach (var page in ClassExperiment.Details.Split((char)12)) context.App.Window.UI.ShowInformationDialog(page, ClassExperiment.Title); }
+
+    // ------------------------------------------------------------
+    //  シーケンス図同期（Part 10）。本体は 70〜73、入口は SequenceCommands（74-sequence-commands.cs）
+    // ------------------------------------------------------------
+
+    public void ApplySequenceSync(ICommandContext context, ICommandParams commandParams) { SequenceCommands.Apply(context.App); }
+    public void CreateSequenceDiagram(ICommandContext context, ICommandParams commandParams) { SequenceCommands.Create(context.App); }
 }

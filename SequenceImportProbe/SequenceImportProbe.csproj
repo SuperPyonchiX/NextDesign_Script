@@ -1,9 +1,9 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <!--
     共通の設定（TargetFramework、NextDesign の参照、出力へのコピー）は ../Directory.Build.props。
-    ソースは記載順に並べる。テスト（Tools/csproj_sources.py）もこの順で連結して読む。
-    シーケンス図の出力エンジンは PlantUmlTool/src を直接ビルドし、PlantUmlTool と同じものを使う。
+    ソースは記載順に並べる。テスト（Tools/csproj_sources.py）もこの順で連結して読み、71 の SequencePayload から 70 の末尾までを SDK なしで試験する（この並びを崩さない）。
+    シーケンス図の出力エンジンと同期の本体（PlantUmlTool/src/10・70〜73）は PlantUmlTool/src を直接ビルドし、PlantUmlTool と同じものを使う。ここにあるのは開発用のボタンだけ。
   -->
   <ItemGroup>
     <Using Include="System" />
@@ -19,11 +19,15 @@
 
   <ItemGroup>
     <Compile Include="src\00-extension.cs" />
-    <Compile Include="src\10-experiment.cs" />
-    <Compile Include="sync\SequenceSyncRuntime.cs" />
+    <Compile Include="src\30-dev-tools.cs" />
+    <Compile Include="src\40-legacy-import.cs" />
+    <Compile Include="..\PlantUmlTool\src\05-output-pane.cs" />
+    <Compile Include="..\PlantUmlTool\src\15-export-runner.cs" />
+    <Compile Include="..\PlantUmlTool\src\73-sequence-create.cs" />
+    <Compile Include="..\PlantUmlTool\src\72-sequence-sync-runtime.cs" />
     <Compile Include="..\PlantUmlTool\src\10-sequence-export.cs" />
-    <Compile Include="src\20-mapped-update.cs" />
-    <Compile Include="sync\SequenceSync.cs" />
+    <Compile Include="..\PlantUmlTool\src\71-sequence-generate.cs" />
+    <Compile Include="..\PlantUmlTool\src\70-sequence-sync.cs" />
   </ItemGroup>
 
 </Project>

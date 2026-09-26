@@ -1,12 +1,11 @@
 {
   "name": "PlantUmlTool",
   "displayName": "PlantUML 連携",
-  "description": "シーケンス図・クラス図・状態遷移図を PlantUML 形式で出力し、編集した PlantUML をクラス図へ反映します。PlantUML から新しいクラス図も作れます。",
-  "version": "3.0.0",
+  "description": "シーケンス図・クラス図・状態遷移図を PlantUML 形式で出力し、編集した PlantUML をシーケンス図・クラス図へ反映します。PlantUML から新しいシーケンス図・クラス図も作れます。",
+  "version": "3.1.0",
   "publisher": "ksk01",
   "main": "PlantUmlTool.dll",
   "lifecycle": "project",
-
   "extensionPoints": {
     "ribbon": {
       "tabs": [
@@ -40,18 +39,33 @@
               ]
             },
             {
+              "id": "PlantUmlTool.SequenceSyncGroup",
+              "label": "反映（シーケンス図）",
+              "controls": [
+                {
+                  "id": "PlantUmlTool.ApplySequenceSyncButton",
+                  "type": "Button",
+                  "label": "PlantUMLを反映",
+                  "description": "PlantUML ファイルの内容を表示中のシーケンス図に反映します。照合が一致したときだけ確定し、一致しなければ元に戻します。未保存でも反映します（保存はしません）。",
+                  "imageSmall": "resources/import16.png",
+                  "imageLarge": "resources/import32.png",
+                  "command": "PlantUmlTool.ApplySequenceSync"
+                },
+                {
+                  "id": "PlantUmlTool.CreateSequenceDiagramButton",
+                  "type": "Button",
+                  "label": "PlantUMLから新規作成",
+                  "description": "PlantUML ファイルの内容で新しいシーケンス図を作ります。開いているシーケンス図と同じ所有先、または開いている・選んでいるモデルの下に作ります（保存はしません）。",
+                  "imageSmall": "resources/importall16.png",
+                  "imageLarge": "resources/importall32.png",
+                  "command": "PlantUmlTool.CreateSequenceDiagram"
+                }
+              ]
+            },
+            {
               "id": "PlantUmlTool.SyncGroup",
               "label": "反映（クラス図）",
               "controls": [
-                {
-                  "id": "PlantUmlTool.PreviewClassSyncButton",
-                  "type": "Button",
-                  "label": "差分を検証",
-                  "description": "表示中のクラス図と PlantUML ファイルを比較し、追加・削除・更新の候補を表示します。図は変更しません。",
-                  "imageSmall": "resources/probeclass16.png",
-                  "imageLarge": "resources/probeclass32.png",
-                  "command": "PlantUmlTool.PreviewClassSync"
-                },
                 {
                   "id": "PlantUmlTool.ApplyClassSyncButton",
                   "type": "Button",
@@ -69,39 +83,6 @@
                   "imageSmall": "resources/newclass16.png",
                   "imageLarge": "resources/newclass32.png",
                   "command": "PlantUmlTool.CreateClassDiagram"
-                },
-                {
-                  "id": "PlantUmlTool.ClassSyncDetailsButton",
-                  "type": "Button",
-                  "label": "診断表示",
-                  "description": "直前の検証・反映の詳細（変更候補の内訳、要照合項目、停止理由）を表示します。",
-                  "imageSmall": "resources/probe16.png",
-                  "imageLarge": "resources/probe32.png",
-                  "command": "PlantUmlTool.ClassSyncDetails"
-                }
-              ]
-            },
-            {
-              "id": "PlantUmlTool.DiagnosticsGroup",
-              "label": "診断",
-              "controls": [
-                {
-                  "id": "PlantUmlTool.ProbeButton",
-                  "type": "Button",
-                  "label": "メタモデル調査",
-                  "description": "アクティブなシーケンス図のメタモデル構造を出力ウィンドウにダンプします。",
-                  "imageSmall": "resources/probe16.png",
-                  "imageLarge": "resources/probe32.png",
-                  "command": "PlantUmlTool.Probe"
-                },
-                {
-                  "id": "PlantUmlTool.ProbeClassButton",
-                  "type": "Button",
-                  "label": "クラス図調査",
-                  "description": "アクティブなクラス図のノード・コネクタ・参照フィールドを出力ウィンドウにダンプします。",
-                  "imageSmall": "resources/probeclass16.png",
-                  "imageLarge": "resources/probeclass32.png",
-                  "command": "PlantUmlTool.ProbeClass"
                 }
               ]
             }
@@ -109,67 +90,66 @@
         }
       ]
     },
-
     "commandGroups": [
-      { "name": "plantuml", "title": "PlantUML 連携" }
+      {
+        "name": "plantuml",
+        "title": "PlantUML 連携"
+      }
     ],
-
     "commands": [
       {
         "id": "PlantUmlTool.ExportCurrent",
         "title": "表示中の図を出力",
         "group": "plantuml",
         "execFunc": "ExportCurrentDiagram",
-        "canExecWhen": { "uiState": "ProjectOpened" }
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
       },
       {
         "id": "PlantUmlTool.ExportAll",
         "title": "選択モデル配下を一括出力",
         "group": "plantuml",
         "execFunc": "ExportAllDiagrams",
-        "canExecWhen": { "uiState": "ProjectOpened" }
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
       },
       {
-        "id": "PlantUmlTool.Probe",
-        "title": "メタモデル調査",
+        "id": "PlantUmlTool.ApplySequenceSync",
+        "title": "PlantUMLを反映（シーケンス図）",
         "group": "plantuml",
-        "execFunc": "ProbeMetamodel",
-        "canExecWhen": { "uiState": "ProjectOpened" }
+        "execFunc": "ApplySequenceSync",
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
       },
       {
-        "id": "PlantUmlTool.ProbeClass",
-        "title": "クラス図調査",
+        "id": "PlantUmlTool.CreateSequenceDiagram",
+        "title": "PlantUMLから新規作成（シーケンス図）",
         "group": "plantuml",
-        "execFunc": "ProbeClassDiagram",
-        "canExecWhen": { "uiState": "ProjectOpened" }
-      },
-      {
-        "id": "PlantUmlTool.PreviewClassSync",
-        "title": "差分を検証",
-        "group": "plantuml",
-        "execFunc": "PreviewClassSync",
-        "canExecWhen": { "uiState": "ProjectOpened" }
+        "execFunc": "CreateSequenceDiagram",
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
       },
       {
         "id": "PlantUmlTool.ApplyClassSync",
         "title": "PlantUMLを反映",
         "group": "plantuml",
         "execFunc": "ApplyClassSync",
-        "canExecWhen": { "uiState": "ProjectOpened" }
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
       },
       {
         "id": "PlantUmlTool.CreateClassDiagram",
         "title": "PlantUMLから新規作成",
         "group": "plantuml",
         "execFunc": "CreateClassDiagram",
-        "canExecWhen": { "uiState": "ProjectOpened" }
-      },
-      {
-        "id": "PlantUmlTool.ClassSyncDetails",
-        "title": "診断表示",
-        "group": "plantuml",
-        "execFunc": "ShowClassSyncDetails",
-        "canExecWhen": { "uiState": "ProjectOpened" }
+        "canExecWhen": {
+          "uiState": "ProjectOpened"
+        }
       }
     ]
   }

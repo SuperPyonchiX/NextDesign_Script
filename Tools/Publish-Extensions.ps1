@@ -4,7 +4,7 @@
     エクステンション（DLL 方式）をビルドして検証し、必要なら Next Design の extensions フォルダへ配置する。
 
 .DESCRIPTION
-    既定では PlantUmlTool / AgentReview / NdMcp / SequenceImportProbe を対象にする。
+    既定では PlantUmlTool / AgentReview / NdMcp / SequenceImportProbe / ClassImportProbe を対象にする（後ろ2つは開発用）。
     1. dotnet publish で work\publish\<名前> に出力する
     2. validate_manifest.py（nextdesign-extension スキル）が見つかれば、出力を検査する
     3. -Deploy を付けたときだけ、extensions\<名前> を出力と同じ中身にする
@@ -21,7 +21,7 @@
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string[]]$Name = @('PlantUmlTool', 'AgentReview', 'NdMcp', 'SequenceImportProbe'),
+    [string[]]$Name = @('PlantUmlTool', 'AgentReview', 'NdMcp', 'SequenceImportProbe', 'ClassImportProbe'),
     [switch]$Deploy,
     # インストール先の DLL を直接参照してビルドする場合に渡す（省略時は NuGet の NextDesign 3.1.3）
     [string]$NextDesignDir,

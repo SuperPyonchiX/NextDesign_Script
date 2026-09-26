@@ -1,5 +1,16 @@
 # PlantUmlTool — Next Design × PlantUML 連携
 
+## 3.1.0: シーケンス図の反映・新規作成を統合し、診断のボタンを外す
+
+- リボン「PlantUML」タブに「反映（シーケンス図）」グループ（PlantUMLを反映 / PlantUMLから新規作成）を追加した。本体は SequenceImportProbe 0.12.1 で実機検証したもの（全図チェック 680/684、一括検証 97/97）を `src/70〜73` に移した。入口は `src/74-sequence-commands.cs`
+  - 反映: 未保存のプロジェクトでも確認せずに反映する（図の写しを SDK から組み立てる。保存はしない）。照合が一致したときだけ確定し、一致しなければ元に戻す
+  - 新規作成: 見本の図は要らない。シーケンス図を開いていればその隣に、開いていなければ開いている・選んでいるモデルの、シーケンス図を持てる欄に作る。シーケンスのビュー定義は、要素に Lifeline・Message・ExecutionSpecification を持つもので見分ける（エディタ種別の名前は実機で未確認）
+- PlantUmlTool は機能だけを持つ。診断・調査のボタン（クラス図の「差分を検証」「診断表示」、「メタモデル調査」「クラス図調査」）は外し、開発用の拡張に移した
+  - クラス図: `ClassImportProbe`（0.8.0 で開発用として復活。`src/60〜64` を直接ビルドし、差分を検証・反映・新規作成・診断表示・クラス図調査を持つ）。`45-class-probe.cs` は `ClassImportProbe/src/20-class-probe.cs` へ
+  - シーケンス図: `SequenceImportProbe`（一括検証・全図チェック・調査・メタモデル調査）。`20-sequence-import-legacy.cs` は `SequenceImportProbe/src/40-legacy-import.cs` へ。PlantUmlTool は代わりに `shims/metamap.cs` をビルドする
+- 反映・作成の詳細は `%LOCALAPPDATA%\NextDesign.SequenceSync\reports`・`NextDesign.ClassSync\reports` の診断ファイルに残る（結果の画面に場所を出す）
+- 実機未確認
+
 ## 3.0.0: DLL 方式に移行
 
 スクリプト（main.cs）から DLL（`PlantUmlTool.dll`）に移した。機能は 2.4.4 と同じ。初回のコンパイル待ちがなくなる。`src/` をそのまま `PlantUmlTool.csproj` でビルドし、main.cs の生成（`tools/build_main.py`）はやめた。`10-sequence-export.cs` の後半（`DiagramEntry` / `ExportSettings` / `ExportRunner`）は `15-export-runner.cs` に分けた。ビルドと配置は [DLL 形式エクステンションの開発環境](../docs/dll-extension-setup.md)。実機での読み込みは未確認。
@@ -88,7 +99,7 @@ Next Design V3.x 向けの C# スクリプト拡張機能。
 
 | 図 | 出力（ND → PlantUML） | 反映（PlantUML → ND） |
 |---|---|---|
-| シーケンス図 | 対応 | SequenceImportProbe で検証中（検証完了後に統合） |
+| シーケンス図 | 対応 | 対応（3.1.0 で既存の図への差分反映と新しい図の作成） |
 | クラス図 | 対応 | 対応（2.2.0 で既存の図への差分反映、2.4.0 で新しい図の作成） |
 | 状態遷移図 | 対応 | 未対応 |
 
@@ -116,18 +127,16 @@ Next Design V3.x 向けの C# スクリプト拡張機能。
 
 ## リボン
 
-「PlantUML」タブに3グループ。
+「PlantUML」タブに3グループ。診断・調査のボタンは開発用の ClassImportProbe / SequenceImportProbe にある（3.1.0）。
 
 | グループ | ボタン | 動作 |
 |---|---|---|
 | 出力 | 表示中の図を出力 | アクティブな**シーケンス図・クラス図・状態遷移図**を `.puml` に書き出す（図の種類は自動判別） |
 | 出力 | 選択モデル配下を一括出力 | 選択モデル配下のシーケンス図・状態遷移図・クラス図をまとめて書き出す |
-| 反映（クラス図） | 差分を検証 | 表示中のクラス図と `.puml` を比較して差分候補を表示する（図は変えない） |
 | 反映（クラス図） | PlantUMLを反映 | `.puml` の内容を表示中のクラス図とモデルに反映する（Undo 可） |
 | 反映（クラス図） | PlantUMLから新規作成 | クラス図グループの下に、`.puml` の内容で新しいクラス図を作る（2.4.0。見本の図は不要） |
-| 反映（クラス図） | 診断表示 | 直前の検証・反映・作成の詳細を表示する |
-| 診断 | メタモデル調査 | アクティブな**シーケンス図**のメタモデル構造を出力ウィンドウにダンプする |
-| 診断 | クラス図調査 | アクティブな**図（クラス図・状態遷移図とも可）**のノード・コネクタ・参照フィールドをダンプする |
+| 反映（シーケンス図） | PlantUMLを反映 | `.puml` の内容を表示中のシーケンス図に反映する。照合が一致したときだけ確定。未保存でも反映する（保存はしない） |
+| 反映（シーケンス図） | PlantUMLから新規作成 | `.puml` の内容で新しいシーケンス図を作る（見本の図は不要） |
 
 「配下をまとめて出力」は、シーケンス図の出力を終えたあと、状態遷移図・クラス図が
 1枚でもあれば続けて出力を実行する（出力先フォルダはそれぞれ別に聞かれる）。
@@ -301,15 +310,20 @@ Next Design には `ClassDiagram` というエディタ種別が**存在しな�
 | `src/05-output-pane.cs` | 出力ウィンドウの表示（AgentReview / NdMcp は自前のものを使うのでビルドしない） |
 | `src/10-sequence-export.cs` | シーケンス図の出力エンジン（SequenceImportProbe も使う） |
 | `src/15-export-runner.cs` | 出力対象の収集とファイル書き出し（`DiagramEntry` / `ExportSettings` / `ExportRunner`） |
-| `src/20-sequence-import-legacy.cs` | 旧シーケンス取り込み（Part 1〜5）。リボンから到達しない。`MetaProbe` だけ「メタモデル調査」が使う |
+| `src/shims/metamap.cs` | 出力エンジンが使う `MetaMap.ModelOf`（旧取り込みは SequenceImportProbe/src/40-legacy-import.cs） |
 | `src/30-handlers.cs` | コマンドハンドラ（`PlantUmlToolExtension` の partial） |
 | `src/40-class-export.cs` | クラス図の出力（Part 7）。本文は 60/61 の Snapshot + Writer で作る |
-| `src/45-class-probe.cs` | クラス図調査（`MetaProbe` に依存するので PlantUmlTool 専用） |
 | `src/50-state-export.cs` | 状態遷移図の出力（Part 8） |
 | `src/60-class-sync.cs` | クラス図同期の純粋部（SDK 非依存。解析・書出し・差分計画・事前判定）。`tests/run_class_sync_tests.py` の対象 |
 | `src/61-class-snapshot.cs` | クラス図の読取り（図 → 文書）。出力と同期の両方が使う |
 | `src/62-class-sync-ui.cs` | 同期の結果表示と診断ファイル |
 | `src/63-class-sync-runtime.cs` | クラス図同期の書込み・照合（SDK 依存） |
+| `src/64-class-diagram-create.cs` | PlantUML から新しいクラス図を作る |
+| `src/70-sequence-sync.cs` | シーケンス図同期の純粋部（文書・差分計画・事前判定・準備）。SequenceImportProbe のテストの対象 |
+| `src/71-sequence-generate.cs` | PlantUML の解析と図の生成データ（`PumlPlan` / `PumlBuild` / `SequencePayload` / `SequenceJson`） |
+| `src/72-sequence-sync-runtime.cs` | 図の読取り・反映・照合（SDK 依存） |
+| `src/73-sequence-create.cs` | 型の解決（`PumlRuntime` / `SequenceTypeSource`）と Probe の旧取込 |
+| `src/74-sequence-commands.cs` | リボンの入口（反映・新規作成） |
 | `src/shims/metamap.cs` | AgentReview / NdMcp がビルドする `MetaMap` シム。PlantUmlTool はビルドしない |
 
 **PlantUML 出力の正本はここ。** AgentReview・NdMcp・SequenceImportProbe の csproj が `src/` のファイルを直接ビルドする（どれを使うかは [DLL 形式エクステンションの開発環境](../docs/dll-extension-setup.md) の「ソースの共有」）。出力や同期を直したら、使う拡張をすべてビルドし直す。
