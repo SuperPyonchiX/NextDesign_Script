@@ -2,7 +2,7 @@
   "name": "PlantUmlTool",
   "displayName": "PlantUML 連携",
   "description": "シーケンス図・クラス図・状態遷移図を PlantUML 形式で出力し、編集した PlantUML をシーケンス図・クラス図へ反映します。PlantUML から新しいシーケンス図・クラス図も作れます。",
-  "version": "3.3.0",
+  "version": "3.3.1",
   "publisher": "ksk01",
   "main": "PlantUmlTool.dll",
   "lifecycle": "project",
@@ -45,7 +45,7 @@
                 {
                   "id": "PlantUmlTool.ApplyButton",
                   "type": "Button",
-                  "label": "PlantUMLを反映",
+                  "label": "PlantUMLで更新",
                   "description": "PlantUML ファイルの内容を、開いているシーケンス図またはクラス図に反映します。照合が一致したときだけ確定し、一致しなければ元に戻します。",
                   "imageSmall": "resources/import16.png",
                   "imageLarge": "resources/import32.png",
@@ -93,7 +93,7 @@
       },
       {
         "id": "PlantUmlTool.Apply",
-        "title": "PlantUMLを反映",
+        "title": "PlantUMLで更新",
         "group": "plantuml",
         "execFunc": "ApplyPlantUml",
         "canExecWhen": {
