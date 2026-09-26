@@ -10,7 +10,7 @@ public partial class SequenceImportProbeExtension : IExtension
 {
     public void Activate(IContext context)
     {
-        SequenceExperiment.Title="シーケンス生成実験 / 0.13.4";
+        SequenceExperiment.Title="シーケンス生成実験 / 0.13.5";
     }
 
     public void Deactivate(IContext context)
@@ -19,6 +19,7 @@ public partial class SequenceImportProbeExtension : IExtension
 
     public void CommitReceiverStructure(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.Preview(context.App,true,true,true,true); }
     public void ProbeUndoOverlay(ICommandContext context, ICommandParams parameters) { SequenceUndoProbe.Run(context.App); }
+    public void ProbeDeleteUndo(ICommandContext context, ICommandParams parameters) { SequenceDeleteUndoProbe.Run(context.App); }
     public void RunScenarioBatch(ICommandContext context, ICommandParams parameters) { SequenceBatch.Run(context.App); }
     public void RunScenarioBatchFromSdk(ICommandContext context, ICommandParams parameters) { SequenceSyncRuntime.ForceSdkSnapshot=true; try { SequenceBatch.Run(context.App); } finally { SequenceSyncRuntime.ForceSdkSnapshot=false; } }
     public void CheckAllSequences(ICommandContext context, ICommandParams parameters) { SequenceBatch.Sweep(context.App, context); }

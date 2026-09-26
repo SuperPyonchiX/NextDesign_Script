@@ -723,3 +723,29 @@ public static class SequenceUndoProbe
         ui.ShowInformationDialog("置き換えた部分: "+(parts.Count==0?"なし（SDK のまま）":string.Join(" / ",parts))+"\n\n反映が確定していたら、Ctrl+Z を 1 回だけ押し、図を開き直して消えた要素が戻るかを確かめてください。",title);
     }
 }
+
+// 保存前の要素の削除が Ctrl+Z で戻るかの切り分け（開発用）
+//
+//   図で選んでいる要素を、反映と同じ API（IModel.Delete、SuspendModelVerification の中）で
+//   削除するだけ。エディタの取り込みはしない。これで戻れば、戻らない原因は反映の中の
+//   取り込みの側にある。
+public static class SequenceDeleteUndoProbe
+{
+    public static void Run(IApplication app)
+    {
+        var ui=app.Window.UI;const string title="削除の Ctrl+Z 切り分け";
+        var project=app.Workspace.CurrentProject;
+        IModel target=null;
+        try{target=app.Workspace.State.ActiveEditorSelectedModel;}catch(Exception){}
+        if(project==null || target==null){ui.ShowInformationDialog("図で削除する要素（保存前に追加したもの）を1つ選んでから実行してください。",title);return;}
+        bool suspend=ui.ShowConfirmDialog("「"+target.Name+"」（"+target.ClassName+"）を削除します。\n\nOK: 反映と同じく SuspendModelVerification の中で削除\nキャンセル: そのまま削除",title);
+        var transaction=project.BeginUndoTransaction(false);
+        try
+        {
+            if(suspend)using(project.SuspendModelVerification())target.Delete();else target.Delete();
+            transaction.Commit();
+        }
+        catch(Exception ex){try{transaction.Rollback();}catch(Exception){}ui.ShowInformationDialog("削除できませんでした: "+ex.Message,title);return;}
+        ui.ShowInformationDialog("削除しました（"+(suspend?"SuspendModelVerification の中":"そのまま")+"）。\nCtrl+Z を 1 回押し、図を開き直して戻るかを確かめてください。",title);
+    }
+}
