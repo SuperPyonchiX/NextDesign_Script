@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    共通の設定（TargetFramework、NextDesign の参照、出力へのコピー）は ../Directory.Build.props。
+    ソースは記載順に並べる。テスト（Tools/csproj_sources.py）もこの順で連結して読む。
+    共有部品は正本を直接ビルドする（Markdown 出力は AgentReview/src、PlantUML は PlantUmlTool/src）。
+  -->
+  <ItemGroup>
+    <Using Include="System" />
+    <Using Include="System.Collections" />
+    <Using Include="System.Collections.Generic" />
+    <Using Include="System.Collections.Specialized" />
+    <Using Include="System.Diagnostics" />
+    <Using Include="System.Globalization" />
+    <Using Include="System.IO" />
+    <Using Include="System.Linq" />
+    <Using Include="System.Net" />
+    <Using Include="System.Text" />
+    <Using Include="System.Text.RegularExpressions" />
+    <Using Include="System.Threading" />
+    <Using Include="NextDesign.Core" />
+    <Using Include="NextDesign.Desktop" />
+    <Using Include="NextDesign.Extension" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="src\extension.cs" />
+    <!-- 共通ヘルパ・Markdown 出力・共有部品（AgentReview の Part 0 / 4 と 08） -->
+    <Compile Include="..\AgentReview\src\01-common.cs" />
+    <Compile Include="..\AgentReview\src\05-markdown-export.cs" />
+    <Compile Include="..\AgentReview\src\08-shared.cs" />
+    <Compile Include="src\server.cs" />
+    <!-- PlantUML 出力とクラス図同期。OutputPane は AgentReview の 01-common.cs のものを使う -->
+    <Compile Include="..\PlantUmlTool\src\shims\metamap.cs" />
+    <Compile Include="..\PlantUmlTool\src\10-sequence-export.cs" />
+    <Compile Include="..\PlantUmlTool\src\15-export-runner.cs" />
+    <Compile Include="..\PlantUmlTool\src\40-class-export.cs" />
+    <Compile Include="..\PlantUmlTool\src\50-state-export.cs" />
+    <Compile Include="..\PlantUmlTool\src\60-class-sync.cs" />
+    <Compile Include="..\PlantUmlTool\src\61-class-snapshot.cs" />
+    <Compile Include="..\PlantUmlTool\src\63-class-sync-runtime.cs" />
+    <Compile Include="src\classsync.cs" />
+  </ItemGroup>
+
+</Project>

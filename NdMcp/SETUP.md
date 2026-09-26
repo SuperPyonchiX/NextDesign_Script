@@ -86,7 +86,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\NdMcp\Setup.ps1 -Client Bo
 | クライアント確認 | 選択した CLI が使えるか確認。見つからなければ変更前に停止 |
 | uv の準備 | 既存の uv を使用。見つからない場合は Astral 公式インストーラーで導入 |
 | Python・依存ライブラリの準備 | Python 3.12 と `uv.lock` に記録されたライブラリを準備 |
-| 拡張機能の配置 | `manifest.json`・`main.cs`・アイコンを Next Design のユーザー用拡張フォルダーへコピー |
+| 拡張機能の配置 | ビルド済みの `publish\`（`NdMcp.dll`・`manifest.json`・アイコンなど）を Next Design のユーザー用拡張フォルダーへコピー。`publish\` が無ければ .NET SDK でその場でビルドする。スクリプト版の `main.cs` はバックアップしてから外す |
 | MCP 登録 | 選択したクライアントへ `nextdesign` を登録。既存の同名設定は更新 |
 
 既存の拡張ファイルとクライアント設定ファイルは、変更前に同じ場所へ `.ndmcp-backup-日時` を付けて保存する。他の MCP サーバーの登録は維持する。Claude Code はユーザー設定だけを対象とし、プロジェクト固有の同名登録がある場合は後述の対処を行う。
@@ -157,7 +157,7 @@ codex mcp remove nextdesign
 claude mcp remove --scope user nextdesign
 ```
 
-拡張機能を取り外す場合は Next Design を終了し、配置先の `NdMcp` フォルダーを拡張フォルダーの外へ移す。以前の版へ戻す場合は、バックアップの `manifest.json` と `main.cs` を元の名前で戻す。クライアント設定全体をバックアップから戻す際は、セットアップ後に行った他の設定変更も戻るため、変更内容を確認する。
+拡張機能を取り外す場合は Next Design を終了し、配置先の `NdMcp` フォルダーを拡張フォルダーの外へ移す。以前の版へ戻す場合は、バックアップの `manifest.json` と本体を元の名前で戻す。本体は、スクリプト版（0.2.1 以前）なら `main.cs`、DLL 版（0.3.0 以降）なら `NdMcp.dll`。スクリプト版へ戻すときは、配置先に残った `NdMcp.dll` などを拡張フォルダーの外へ移す。クライアント設定全体をバックアップから戻す際は、セットアップ後に行った他の設定変更も戻るため、変更内容を確認する。
 
 # 5. トラブルシューティング
 

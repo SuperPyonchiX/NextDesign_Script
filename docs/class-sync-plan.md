@@ -86,13 +86,11 @@
 
 ## 検査とソース構成
 
-`PlantUmlTool/src/60-class-sync.cs`（純粋部）/ `61-class-sync-runtime.cs`（SDK 依存部）/ `62-class-sync-ui.cs` が正本。`main.cs` は生成物で直接編集しない。NdMcp は `NdMcp/tools/build_main.py` が 60/61 を転記する。
+`PlantUmlTool/src/60-class-sync.cs`（純粋部）/ `61-class-sync-runtime.cs`（SDK 依存部）/ `62-class-sync-ui.cs` が正本。2026-09-26 から DLL 方式で、PlantUmlTool・AgentReview・NdMcp の csproj が正本を直接ビルドする（転記と main.cs は廃止）。
 
 ```powershell
-python PlantUmlTool/tools/build_main.py
 python PlantUmlTool/tests/run_class_sync_tests.py
-python PlantUmlTool/tests/compile_sdk.py --sdk-root work/sequence-api-research
-python NdMcp/tools/build_main.py
+powershell -NoProfile -File Tools/Publish-Extensions.ps1   # 全拡張のビルドと validate_manifest.py
 ```
 
 診断レポートは実行PCの `%LOCALAPPDATA%\NextDesign.ClassSync\reports` へ保存する。モデル名やIDを含むため、公開リポジトリへ追加しない。

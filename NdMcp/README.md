@@ -1,5 +1,9 @@
 # NdMcp — Next Design を MCP クライアントから読む
 
+## 0.3.0: DLL 方式に移行
+
+スクリプト（main.cs）から DLL（`NdMcp.dll`）に移した。機能は 0.2.1 と同じ。AgentReview と PlantUmlTool の共有部品は、転記せず正本のファイルを `NdMcp.csproj` が直接ビルドする。`Setup.ps1` はビルド済みの `publish\`（無ければ .NET SDK でその場でビルド）を配置し、スクリプト版の `main.cs` はバックアップしてから外す。実機での読み込みは未確認。
+
 ## 0.2.1: PlantUML 出力を PlantUmlTool/src から転記
 
 `/export` の .puml と `/class-sync/current` が同じ出力コードになるよう、シーケンス図・クラス図・状態遷移図の出力部を AgentReview 経由ではなく `PlantUmlTool/src` から直接転記するようにした。AgentReview からは Part 0 / 4（共通ヘルパ・Markdown 出力）だけを転記する。クラス図の .puml は PlantUmlTool 2.2.0 の書式（戻り値・多重度付き）になる。実機は未確認（`/export` で以前と同じフォルダ構成が出ること）。
@@ -37,7 +41,7 @@ PlantUmlTool 2.2.0 のクラス図同期本体（`PlantUmlTool/src/60〜61`。Cl
 Next Design（V3.x）で開いているプロジェクトのモデルを、Codex・Claude Code などの MCP クライアントから読み出す仕組み。読み取り専用。
 
 ```
-Codex / Claude Code ── stdio (MCP) ── Python ブリッジ (bridge/) ── HTTP GET / JSON ── C# スクリプト拡張 (main.cs) ── Next Design API
+Codex / Claude Code ── stdio (MCP) ── Python ブリッジ (bridge/) ── HTTP GET / JSON ── DLL 拡張 (NdMcp.dll) ── Next Design API
                                                             127.0.0.1:3560
 ```
 
@@ -65,11 +69,10 @@ Claude Code は `-Client Claude`、両方なら `-Client Both` を指定する�
 | パス | 役割 |
 |---|---|
 | `manifest.json` | 拡張定義（lifecycle=project、リボン「NdMcp」タブ） |
-| `main.cs` | **生成物**。`tools/build_main.py` が `src/` と AgentReview の転記から組み立てる。直接編集しない |
-| `src/header.cs` | ファイルヘッダと using |
-| `src/server.cs` | HTTP サーバー本体・ハンドラ・JSON 化・モデル読み出し API |
-| `src/classsync.cs` | クラス図同期 API の窓口（`ClassSyncApi`）と、転記した同期本体が参照する `ClassExperiment` の代替 |
-| `tools/build_main.py` | `main.cs` の生成と `--check` |
+| `NdMcp.csproj` | ビルドするソースの一覧（記載順）。AgentReview / PlantUmlTool の共有部品は正本を直接指す |
+| `src/extension.cs` | ファイルヘッダとエントリ `NdMcpExtension`（IExtension） |
+| `src/server.cs` | HTTP サーバー本体・ハンドラ（`NdMcpExtension` の partial）・JSON 化・モデル読み出し API |
+| `src/classsync.cs` | クラス図同期 API の窓口（`ClassSyncApi`）と、同期本体が参照する `ClassExperiment` の代替 |
 | `bridge/` | Python ブリッジ（`uv` プロジェクト）。`nd_mcp_bridge/` 本体、`tests/` モック ND とテスト |
 | `Setup.ps1` | Windows 用セットアップ |
 | `resources/` | リボンの開始・停止・状態確認・設定アイコン（16px / 32px） |
@@ -77,7 +80,7 @@ Claude Code は `-Client Claude`、両方なら `-Client Both` を指定する�
 | `SETUP.md` | 環境構築・更新手順 |
 | `VERIFY.md` | 実機検証手順 |
 
-`main.cs` の Markdown 出力部は `AgentReview/main.cs` の Part 0 / 4 と `WriteDesignArtifacts` を、PlantUML 出力部とクラス図同期部は `PlantUmlTool/src`（shims/metamap, 10, 40, 50, 60, 61, 63）を生成時に転記する。Markdown 出力の修正は AgentReview 側、PlantUML 出力と同期の修正は PlantUmlTool 側で行い、`python NdMcp/tools/build_main.py` で再生成する。コンパイル検査は `python PlantUmlTool/tests/compile_sdk.py --sdk-root work/sequence-api-research --main NdMcp/main.cs`。
+Markdown 出力部は `AgentReview/src` の 01 / 05 / 08（共通ヘルパ・Markdown 出力・`DesignArtifactWriter` などの共有部品）を、PlantUML 出力部とクラス図同期部は `PlantUmlTool/src`（shims/metamap, 10, 15, 40, 50, 60, 61, 63）を `NdMcp.csproj` が直接ビルドする。Markdown 出力の修正は AgentReview 側、PlantUML 出力と同期の修正は PlantUmlTool 側で行い、NdMcp をビルドし直す（`powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Name NdMcp`）。
 
 `/export` は AgentReview と同じ図グループ判定・保存階層・索引生成を使う。対応表を設定する場合も、AgentReview の `%USERPROFILE%\.nd-agent-review\config.ini` にある `diagramGroups.rulesFile` を参照する。未設定なら共通の自動判別を使う。図が0件でも `_index.md` を更新する。
 
@@ -119,7 +122,7 @@ uv run pytest                 # モック ND に対するテスト + stdio 経�
 uv run python tests/mock_nd.py   # モック ND を 3560 で単体起動（ブリッジの手動確認用）
 ```
 
-C# 側を直したら `python NdMcp/tools/build_main.py` で `main.cs` を再生成し、`validate_manifest.py` を通してから配置する。内部コマンドがリボンから参照されていないという警告は想定どおり。
+C# 側を直したら `powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Name NdMcp` でビルドと検査を行い、`-Deploy` を付けて配置する。内部コマンドがリボンから参照されていないという警告は想定どおり。
 
 コマンド境界での設定・例外伝播は `python NdMcp/tests/run_command_tests.py`、共通出力処理は `python AgentReview/tests/run_export_tests.py` で検証する（Windows の .NET Framework C# コンパイラと模擬 SDK を使用）。実機確認の代わりにはならない。
 

@@ -7,6 +7,8 @@ import os
 import subprocess
 import tempfile
 
+import csproj_sources
+
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = r'''
 using System;
@@ -69,7 +71,8 @@ compiler = Path(os.environ['WINDIR']) / 'Microsoft.NET/Framework64/v4.0.30319/cs
 handlers = []
 with tempfile.TemporaryDirectory(prefix='sequence-export-') as tmp:
     for extension in ['AgentReview', 'PlantUmlTool', 'NdMcp']:
-        source = (ROOT / extension / 'main.cs').read_text(encoding='utf-8-sig')
+        # each extension's sources in csproj order (the files its DLL is built from)
+        source = csproj_sources.joined(ROOT / extension)
         start = source.index('    private void OnMessage(IMessageShape m)')
         end = source.index('    // ---------- 相互作用の利用・ノート ----------', start)
         production = source[start:end]
@@ -108,7 +111,7 @@ class Test {
     }
 }
 '''
-source=(ROOT/'PlantUmlTool/main.cs').read_text(encoding='utf-8-sig')
+source=csproj_sources.joined(ROOT/'PlantUmlTool')
 start=source.index('    private void OnNote(INoteShape n)')
 end=source.index('    private ILifelineShape AnchoredLifelineOf',start)
 with tempfile.TemporaryDirectory(prefix='sequence-note-') as tmp:

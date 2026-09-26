@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    共通の設定（TargetFramework、NextDesign の参照、出力へのコピー）は ../Directory.Build.props。
+    ソースは記載順に並べる。テスト（Tools/csproj_sources.py）もこの順で連結して読む。
+    PlantUML 出力は PlantUmlTool/src を直接ビルドする（修正は PlantUmlTool 側で行う）。
+  -->
+  <ItemGroup>
+    <Using Include="System" />
+    <Using Include="System.Collections.Generic" />
+    <Using Include="System.Diagnostics" />
+    <Using Include="System.Globalization" />
+    <Using Include="System.IO" />
+    <Using Include="System.Linq" />
+    <Using Include="System.Text" />
+    <Using Include="System.Text.RegularExpressions" />
+    <Using Include="NextDesign.Core" />
+    <Using Include="NextDesign.Desktop" />
+    <Using Include="NextDesign.Extension" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="src\00-extension.cs" />
+    <Compile Include="src\01-common.cs" />
+    <Compile Include="src\02-config.cs" />
+    <Compile Include="src\03-session.cs" />
+    <Compile Include="src\04-workspace.cs" />
+    <Compile Include="src\05-markdown-export.cs" />
+    <Compile Include="src\06-process.cs" />
+    <Compile Include="src\07-handlers.cs" />
+    <Compile Include="src\08-shared.cs" />
+    <!-- PlantUML 出力。MetaMap は ModelOf だけ使うので shims で代替し、OutputPane は 01-common.cs のものを使う -->
+    <Compile Include="..\PlantUmlTool\src\shims\metamap.cs" />
+    <Compile Include="..\PlantUmlTool\src\10-sequence-export.cs" />
+    <Compile Include="..\PlantUmlTool\src\15-export-runner.cs" />
+    <Compile Include="..\PlantUmlTool\src\40-class-export.cs" />
+    <Compile Include="..\PlantUmlTool\src\50-state-export.cs" />
+    <Compile Include="..\PlantUmlTool\src\60-class-sync.cs" />
+    <Compile Include="..\PlantUmlTool\src\61-class-snapshot.cs" />
+  </ItemGroup>
+
+  <!-- レビューに使うスキル。実行時に拡張フォルダ（ExtensionInfo.ExtensionPath）から読む -->
+  <ItemGroup>
+    <None Include="skills\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

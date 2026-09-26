@@ -1,5 +1,9 @@
 # PlantUmlTool — Next Design × PlantUML 連携
 
+## 3.0.0: DLL 方式に移行
+
+スクリプト（main.cs）から DLL（`PlantUmlTool.dll`）に移した。機能は 2.4.4 と同じ。初回のコンパイル待ちがなくなる。`src/` をそのまま `PlantUmlTool.csproj` でビルドし、main.cs の生成（`tools/build_main.py`）はやめた。`10-sequence-export.cs` の後半（`DiagramEntry` / `ExportSettings` / `ExportRunner`）は `15-export-runner.cs` に分けた。ビルドと配置は [DLL 形式エクステンションの開発環境](../docs/dll-extension-setup.md)。実機での読み込みは未確認。
+
 ## 2.4.4: 外側の箱は図のモデルから参照してから置く
 
 2.4.3 は既存モデルの解決（箱 10・クラス 64）と新しい図のエディタ作成まで進んだが、最初の Domain の箱で「ビュー定義 "ドメイン（実装モデル）" を用いて … シェイプを追加できません」と止まった。このクラス図は、図のモデルが参照している Domain だけを箱として表示するとみている（推定）。いちばん外側の箱は、図のモデルの参照フィールド（型が合うもの。同じグループの既存クラス図が使っているものを優先）で参照を張ってから置く。箱の中の箱・クラスは所有関係で入るのでそのまま置く。置き終えたら図全体を自動整列する。実機未確認。
@@ -172,7 +176,7 @@ Next Design の拡張 API には状態遷移図専用のインタフェースが
    （`Vertex` / `State` / `Pseudostate` / `HistoryState` 等の**完全一致**）と突き合わせ、
    状態系のノードがクラス系以上に多ければ状態遷移図
 
-判定が外れた場合の直し方（`main.cs` の `StatePlantUmlOptions`）:
+判定が外れた場合の直し方（`src/50-state-export.cs` の `StatePlantUmlOptions`）:
 
 | 症状 | 直す場所 |
 |---|---|
@@ -224,7 +228,7 @@ Next Design には `ClassDiagram` というエディタ種別が**存在しな�
 
 ### メタクラス名・フィールド名の対応表
 
-判別に使う対応表は `main.cs` の `ClassPlantUmlOptions` にある。
+判別に使う対応表は `src/40-class-export.cs` の `ClassPlantUmlOptions` にある。
 **プロファイル依存**なので、思ったとおりに出ない場合はここを直す。
 
 | メンバ | 用途 |
@@ -283,22 +287,22 @@ Next Design には `ClassDiagram` というエディタ種別が**存在しな�
 - 取り込みは未提供。図や要素の追加・削除・順序変更は行わない。
 - `IInteraction.Messages` の順序は作成順であり、図の上からの順序とは限らない。
 
-- 拡張機能の**エントリポイントは1ファイル**（`main.cs`）。分割できない。
-- **デバッガは使えない。** C# スクリプトはハンドラの初回呼び出し時にコンパイルされるので、コンパイルエラーもそのタイミングで初めて出力ウィンドウに出る。
+- 3.0.0 から DLL 方式。DLL は Next Design の起動時にしか読み込まれない。差し替えるときは Next Design を終了してから配置する。
 
 ---
 
 ## 開発
 
-`main.cs` は生成物。`src/*.cs` をファイル名順に連結したもので、編集は `src/` 側で行う。
+`PlantUmlTool.csproj` が `src/` の `.cs` を記載順にビルドして `PlantUmlTool.dll` を作る。using は csproj の `Using` 項目（global using）にまとめている。
 
 | ファイル | 内容 |
 |---|---|
-| `src/00-header.cs` | ヘッダコメントと using |
-| `src/05-output-pane.cs` | 出力ウィンドウの表示（AgentReview / NdMcp は自前のものを使うので転記しない） |
-| `src/10-sequence-export.cs` | シーケンス図の出力（Part 0） |
+| `src/00-extension.cs` | エントリ `PlantUmlToolExtension`（IExtension） |
+| `src/05-output-pane.cs` | 出力ウィンドウの表示（AgentReview / NdMcp は自前のものを使うのでビルドしない） |
+| `src/10-sequence-export.cs` | シーケンス図の出力エンジン（SequenceImportProbe も使う） |
+| `src/15-export-runner.cs` | 出力対象の収集とファイル書き出し（`DiagramEntry` / `ExportSettings` / `ExportRunner`） |
 | `src/20-sequence-import-legacy.cs` | 旧シーケンス取り込み（Part 1〜5）。リボンから到達しない。`MetaProbe` だけ「メタモデル調査」が使う |
-| `src/30-handlers.cs` | コマンドハンドラ（Part 6） |
+| `src/30-handlers.cs` | コマンドハンドラ（`PlantUmlToolExtension` の partial） |
 | `src/40-class-export.cs` | クラス図の出力（Part 7）。本文は 60/61 の Snapshot + Writer で作る |
 | `src/45-class-probe.cs` | クラス図調査（`MetaProbe` に依存するので PlantUmlTool 専用） |
 | `src/50-state-export.cs` | 状態遷移図の出力（Part 8） |
@@ -306,24 +310,21 @@ Next Design には `ClassDiagram` というエディタ種別が**存在しな�
 | `src/61-class-snapshot.cs` | クラス図の読取り（図 → 文書）。出力と同期の両方が使う |
 | `src/62-class-sync-ui.cs` | 同期の結果表示と診断ファイル |
 | `src/63-class-sync-runtime.cs` | クラス図同期の書込み・照合（SDK 依存） |
-| `src/shims/metamap.cs` | AgentReview / NdMcp が転記時に使う `MetaMap` シム。PlantUmlTool の生成には含めない |
+| `src/shims/metamap.cs` | AgentReview / NdMcp がビルドする `MetaMap` シム。PlantUmlTool はビルドしない |
 
-**PlantUML 出力の正本はここ。** AgentReview（`python AgentReview/tools/build_main.py`）と NdMcp（`python NdMcp/tools/build_main.py`）は `src/` の 10 / 40 / 50 / 60 / 61（NdMcp は 63 も）を転記して自分の `main.cs` を生成する。出力を直したら 3 つとも再生成する。
+**PlantUML 出力の正本はここ。** AgentReview・NdMcp・SequenceImportProbe の csproj が `src/` のファイルを直接ビルドする（どれを使うかは [DLL 形式エクステンションの開発環境](../docs/dll-extension-setup.md) の「ソースの共有」）。出力や同期を直したら、使う拡張をすべてビルドし直す。
 
 ```
-python PlantUmlTool/tools/build_main.py            # main.cs を再生成
-python PlantUmlTool/tools/build_main.py --check    # main.cs が src/ と一致するか
-python PlantUmlTool/tests/compile_sdk.py --sdk-root work/sequence-api-research   # 公式 SDK に対するコンパイル検査
-python PlantUmlTool/tests/run_class_sync_tests.py   # クラス図同期の純粋部テスト（tests/samples）
+powershell -NoProfile -File Tools/Publish-Extensions.ps1   # 4つの拡張をビルドして検査する（-Deploy で配置）
+python PlantUmlTool/tests/run_class_sync_tests.py        # クラス図同期の純粋部テスト（tests/samples）
+python Tools/Test-SequenceExport.py                      # シーケンス図出力のメッセージ処理（全拡張）
 ```
-
-同期本体や出力を直したら AgentReview（`python AgentReview/tools/build_main.py`）と NdMcp（`python NdMcp/tools/build_main.py`）も再生成し、`compile_sdk.py --main <拡張>/main.cs` で両方をコンパイル検査する。
 
 `manifest.json` を変更したら、配置する前に必ず検証を通すこと。マニフェストの誤りは
 Next Design 自体をエラーなしで起動不能にする。
 
 ```
-python <skills>/nextdesign-extension/scripts/validate_manifest.py PlantUmlTool --nd-version 3
+python <skills>/nextdesign-extension/scripts/validate_manifest.py PlantUmlTool --nd-version 3 --publish-dir work/publish/PlantUmlTool
 ```
 
 終了コード 0（WARN のみも可）で合格。

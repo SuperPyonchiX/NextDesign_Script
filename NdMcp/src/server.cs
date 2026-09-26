@@ -6,64 +6,67 @@
 //  コマンドハンドラ（UI スレッドで同期実行される）
 // ------------------------------------------------------------
 
-public void StartNdMcpServer(ICommandContext context, ICommandParams parameters)
+public partial class NdMcpExtension
 {
-    var category = "NdMcp";
-    var app = context.App;
-    try
+    public void StartNdMcpServer(ICommandContext context, ICommandParams parameters)
     {
-        if (NdMcpServer.IsRunning)
+        var category = "NdMcp";
+        var app = context.App;
+        try
         {
-            app.Output.WriteLine(category, "[info] サーバーは既に稼働中です: " + NdMcpServer.BaseUrl());
-            return;
-        }
+            if (NdMcpServer.IsRunning)
+            {
+                app.Output.WriteLine(category, "[info] サーバーは既に稼働中です: " + NdMcpServer.BaseUrl());
+                return;
+            }
 
-        // UI スレッド（＝このハンドラのスレッド）の情報を捕獲する
-        NdMcpServer.UiThreadId = Thread.CurrentThread.ManagedThreadId;
-        NdMcpServer.SyncContext = SynchronizationContext.Current;
-        NdMcpServer.App = app;
-        if (NdMcpServer.SyncContext == null)
+            // UI スレッド（＝このハンドラのスレッド）の情報を捕獲する
+            NdMcpServer.UiThreadId = Thread.CurrentThread.ManagedThreadId;
+            NdMcpServer.SyncContext = SynchronizationContext.Current;
+            NdMcpServer.App = app;
+            if (NdMcpServer.SyncContext == null)
+            {
+                app.Output.WriteLine(category, "[error] SynchronizationContext.Current が null のため、UI スレッドへ戻せません。サーバーは開始しません。");
+                app.Window.UI.ShowInformationDialog(
+                    "SynchronizationContext が取得できないため、この環境ではサーバーを開始できません。\n"
+                    + "（出力ウィンドウの NdMcp カテゴリを添えて報告してください）", category);
+                return;
+            }
+
+            var config = NdMcpConfig.Load();
+            NdMcpServer.Port = config.Port;
+            NdMcpServer.ExportDir = config.ExportDir;
+            NdMcpServer.Start();
+
+            OutputPane.Show(app, category);
+            app.Output.WriteLine(category, "=== NdMcp サーバー開始 ===");
+            app.Output.WriteLine(category, "[info] URL      : " + NdMcpServer.BaseUrl());
+            app.Output.WriteLine(category, "[info] UI thread: " + NdMcpServer.UiThreadId + " / " + NdMcpServer.SyncContext.GetType().FullName);
+            app.Output.WriteLine(category, "[info] 出力先   : " + NdMcpServer.ExportDir);
+            app.Output.WriteLine(category, "[info] ログ     : " + NdMcpServer.LogPath());
+            app.Output.WriteLine(category, "[info] 確認     : curl " + NdMcpServer.BaseUrl() + "/ping");
+        }
+        catch (Exception ex)
         {
-            app.Output.WriteLine(category, "[error] SynchronizationContext.Current が null のため、UI スレッドへ戻せません。サーバーは開始しません。");
-            app.Window.UI.ShowInformationDialog(
-                "SynchronizationContext が取得できないため、この環境ではサーバーを開始できません。\n"
-                + "（出力ウィンドウの NdMcp カテゴリを添えて報告してください）", category);
-            return;
+            app.Output.WriteLine(category, "[error] サーバー開始に失敗: " + ex.ToString());
+            app.Window.UI.ShowInformationDialog("サーバー開始に失敗しました。\n\n" + ex.Message, category);
         }
-
-        var config = NdMcpConfig.Load();
-        NdMcpServer.Port = config.Port;
-        NdMcpServer.ExportDir = config.ExportDir;
-        NdMcpServer.Start();
-
-        OutputPane.Show(app, category);
-        app.Output.WriteLine(category, "=== NdMcp サーバー開始 ===");
-        app.Output.WriteLine(category, "[info] URL      : " + NdMcpServer.BaseUrl());
-        app.Output.WriteLine(category, "[info] UI thread: " + NdMcpServer.UiThreadId + " / " + NdMcpServer.SyncContext.GetType().FullName);
-        app.Output.WriteLine(category, "[info] 出力先   : " + NdMcpServer.ExportDir);
-        app.Output.WriteLine(category, "[info] ログ     : " + NdMcpServer.LogPath());
-        app.Output.WriteLine(category, "[info] 確認     : curl " + NdMcpServer.BaseUrl() + "/ping");
     }
-    catch (Exception ex)
+
+    // HTTP から UI スレッドへ戻した後、正式なコマンドとして呼び出す。
+    // エディタ取得設定の有効期間内に、モデル取得からファイル出力まで完了させる。
+    public void ExecuteNdMcpRequest(ICommandContext context, ICommandParams parameters)
     {
-        app.Output.WriteLine(category, "[error] サーバー開始に失敗: " + ex.ToString());
-        app.Window.UI.ShowInformationDialog("サーバー開始に失敗しました。\n\n" + ex.Message, category);
+        var request = parameters[0] as NdMcpCommandRequest;
+        if (request == null) throw new ArgumentException("NdMcp の要求がありません。");
+        try
+        {
+            context.ContextOption.EditorAccessMode = EditorAccessMode.GetInactiveValue;
+            request.Result = request.Work(context.App);
+        }
+        catch (Exception ex) { request.Error = ex; }
+        finally { request.Completed = true; }
     }
-}
-
-// HTTP から UI スレッドへ戻した後、正式なコマンドとして呼び出す。
-// エディタ取得設定の有効期間内に、モデル取得からファイル出力まで完了させる。
-public void ExecuteNdMcpRequest(ICommandContext context, ICommandParams parameters)
-{
-    var request = parameters[0] as NdMcpCommandRequest;
-    if (request == null) throw new ArgumentException("NdMcp の要求がありません。");
-    try
-    {
-        context.ContextOption.EditorAccessMode = EditorAccessMode.GetInactiveValue;
-        request.Result = request.Work(context.App);
-    }
-    catch (Exception ex) { request.Error = ex; }
-    finally { request.Completed = true; }
 }
 
 public class NdMcpCommandRequest
@@ -74,61 +77,64 @@ public class NdMcpCommandRequest
     public bool Completed;
 }
 
-public void StopNdMcpServer(ICommandContext context, ICommandParams parameters)
+public partial class NdMcpExtension
 {
-    var category = "NdMcp";
-    var app = context.App;
-    try
+    public void StopNdMcpServer(ICommandContext context, ICommandParams parameters)
     {
-        if (!NdMcpServer.IsRunning)
+        var category = "NdMcp";
+        var app = context.App;
+        try
         {
-            app.Output.WriteLine(category, "[info] サーバーは稼働していません。");
-            return;
+            if (!NdMcpServer.IsRunning)
+            {
+                app.Output.WriteLine(category, "[info] サーバーは稼働していません。");
+                return;
+            }
+            NdMcpServer.Stop();
+            app.Output.WriteLine(category, "[info] サーバーを停止しました（累計 " + NdMcpServer.RequestCount + " 件受信）。");
         }
-        NdMcpServer.Stop();
-        app.Output.WriteLine(category, "[info] サーバーを停止しました（累計 " + NdMcpServer.RequestCount + " 件受信）。");
+        catch (Exception ex)
+        {
+            app.Output.WriteLine(category, "[error] 停止に失敗: " + ex.ToString());
+        }
     }
-    catch (Exception ex)
-    {
-        app.Output.WriteLine(category, "[error] 停止に失敗: " + ex.ToString());
-    }
-}
 
-public void ShowNdMcpStatus(ICommandContext context, ICommandParams parameters)
-{
-    var category = "NdMcp";
-    var app = context.App;
-    try
+    public void ShowNdMcpStatus(ICommandContext context, ICommandParams parameters)
     {
-        OutputPane.Show(app, category);
-        app.Output.WriteLine(category, "=== NdMcp 状態 ===");
-        app.Output.WriteLine(category, "稼働    : " + (NdMcpServer.IsRunning ? "稼働中 " + NdMcpServer.BaseUrl() : "停止"));
-        app.Output.WriteLine(category, "受信数  : " + NdMcpServer.RequestCount);
-        app.Output.WriteLine(category, "UI thread: " + NdMcpServer.UiThreadId + " / "
-            + (NdMcpServer.SyncContext != null ? NdMcpServer.SyncContext.GetType().FullName : "(null)"));
-        app.Output.WriteLine(category, "設定    : " + NdMcpConfig.ConfigPath());
-        foreach (var line in NdMcpServer.RecentLog())
-            app.Output.WriteLine(category, "[log] " + line);
+        var category = "NdMcp";
+        var app = context.App;
+        try
+        {
+            OutputPane.Show(app, category);
+            app.Output.WriteLine(category, "=== NdMcp 状態 ===");
+            app.Output.WriteLine(category, "稼働    : " + (NdMcpServer.IsRunning ? "稼働中 " + NdMcpServer.BaseUrl() : "停止"));
+            app.Output.WriteLine(category, "受信数  : " + NdMcpServer.RequestCount);
+            app.Output.WriteLine(category, "UI thread: " + NdMcpServer.UiThreadId + " / "
+                + (NdMcpServer.SyncContext != null ? NdMcpServer.SyncContext.GetType().FullName : "(null)"));
+            app.Output.WriteLine(category, "設定    : " + NdMcpConfig.ConfigPath());
+            foreach (var line in NdMcpServer.RecentLog())
+                app.Output.WriteLine(category, "[log] " + line);
+        }
+        catch (Exception ex)
+        {
+            app.Output.WriteLine(category, "[error] 状態確認に失敗: " + ex.ToString());
+        }
     }
-    catch (Exception ex)
-    {
-        app.Output.WriteLine(category, "[error] 状態確認に失敗: " + ex.ToString());
-    }
-}
 
-public void OpenNdMcpConfig(ICommandContext context, ICommandParams parameters)
-{
-    var category = "NdMcp";
-    var app = context.App;
-    try
+    public void OpenNdMcpConfig(ICommandContext context, ICommandParams parameters)
     {
-        var path = NdMcpConfig.EnsureFile();
-        Process.Start(new ProcessStartInfo { FileName = "notepad.exe", Arguments = "\"" + path + "\"", UseShellExecute = true });
-        app.Output.WriteLine(category, "[info] 設定ファイルを開きました: " + path + "（変更はサーバー再開始で反映）");
-    }
-    catch (Exception ex)
-    {
-        app.Output.WriteLine(category, "[error] 設定を開けません: " + ex.ToString());
+        var category = "NdMcp";
+        var app = context.App;
+        try
+        {
+            var path = NdMcpConfig.EnsureFile();
+            Process.Start(new ProcessStartInfo { FileName = "notepad.exe", Arguments = "\"" + path + "\"", UseShellExecute = true });
+            app.Output.WriteLine(category, "[info] 設定ファイルを開きました: " + path + "（変更はサーバー再開始で反映）");
+        }
+        catch (Exception ex)
+        {
+            app.Output.WriteLine(category, "[error] 設定を開けません: " + ex.ToString());
+        }
     }
 }
 

@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    共通の設定（TargetFramework、NextDesign の参照、出力へのコピー）は ../Directory.Build.props。
+    ソースは記載順に並べる。テスト（Tools/csproj_sources.py）もこの順で連結して読む。
+    シーケンス図の出力エンジンは PlantUmlTool/src を直接ビルドし、PlantUmlTool と同じものを使う。
+  -->
+  <ItemGroup>
+    <Using Include="System" />
+    <Using Include="System.Collections.Generic" />
+    <Using Include="System.IO" />
+    <Using Include="System.Linq" />
+    <Using Include="System.Text" />
+    <Using Include="System.Text.RegularExpressions" />
+    <Using Include="NextDesign.Core" />
+    <Using Include="NextDesign.Desktop" />
+    <Using Include="NextDesign.Extension" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="src\00-extension.cs" />
+    <Compile Include="src\10-experiment.cs" />
+    <Compile Include="sync\SequenceSyncRuntime.cs" />
+    <Compile Include="..\PlantUmlTool\src\10-sequence-export.cs" />
+    <Compile Include="src\20-mapped-update.cs" />
+    <Compile Include="sync\SequenceSync.cs" />
+  </ItemGroup>
+
+</Project>

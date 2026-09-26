@@ -1,5 +1,7 @@
 ﻿# AgentReview — Claude Code / Codex による設計レビュー支援
 
+0.14.0 では、スクリプト（main.cs）から DLL（`AgentReview.dll`）に移した。機能は 0.13.3 と同じ。`src/00-agentreview.cs` は Part ごとのファイル（`src/01-common.cs`〜`07-handlers.cs`）に分け、NdMcp と共有する部品を `src/08-shared.cs` に切り出した。PlantUML 出力は `PlantUmlTool/src` を `AgentReview.csproj` が直接ビルドする（転記と `tools/build_main.py` はやめた）。`skills/` は csproj が出力へコピーする。ビルドと配置は [DLL 形式エクステンションの開発環境](../docs/dll-extension-setup.md)。実機での読み込みは未確認。
+
 0.13.3 では、PlantUML 出力部（シーケンス図・クラス図・状態遷移図）を `PlantUmlTool/src` からの転記に切り替え、`main.cs` を `tools/build_main.py` の生成物にした（この拡張固有のコードは `src/00-agentreview.cs`）。クラス図の .puml は PlantUmlTool 2.2.0 と同じ書式になり、操作の戻り値 `: T` と属性の多重度 `[a..b]` が出る。出力の修正は PlantUmlTool 側で行い、`python AgentReview/tools/build_main.py` で再生成する（`--check` で差分検査、`python PlantUmlTool/tests/compile_sdk.py --sdk-root work/sequence-api-research --main AgentReview/main.cs` でコンパイル検査）。Next Design での再出力は実機確認待ち。
 
 0.13.2 では、シーケンス図の破棄後に余分な `activate` / `deactivate` を出力する不具合を修正。破棄メッセージと破棄点の両方に適用する。3拡張の共通回帰テストは `python Tools/Test-SequenceExport.py`。Next Designでの再出力・描画は実機確認待ち。
@@ -142,7 +144,7 @@ state=Example.Design.StateGroup
 
 ### 0.8.1 の適用と確認
 
-1. `main.cs`・`manifest.json`・`skills` を含む拡張機能一式を既存の配置先へ更新する。
+1. `powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Name AgentReview -Deploy` で、ビルドした拡張（`AgentReview.dll`・`manifest.json`・`skills` など）を既存の配置先へ更新する。
 2. 対応表の追加設定は不要。0.8.0 で設定した対応表を使い続けてもよい。自動判別へ戻す場合は 「設定」→「詳細設定」の「図の階層ルール」を空欄にして保存する。
 3. Next Design を再起動し、3種類の図があるモデルを選択して、新しいフォルダへ「設計情報を出力」する。
 4. グループ名からの階層、別グループにある同名図、`design.md` と `_index.md` のリンク、出力ウィンドウの警告を確認する。

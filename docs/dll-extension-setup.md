@@ -173,6 +173,31 @@ Next Design が .NET 6 上で動いていれば、VS Code の「C#」拡張で�
 
 実行後にプロセス一覧から `NextDesign.exe` を選ぶ。配置した `.pdb` がビルド時のものと一致していれば、ブレークポイントで止まる。
 
+## このリポジトリの拡張をビルドして配置する
+
+PlantUmlTool・AgentReview・NdMcp・SequenceImportProbe は DLL 方式。各フォルダの `<名前>.csproj` がソースを記載順に列挙し、共通の設定はリポジトリ直下の `Directory.Build.props` にある。main.cs の生成（旧 `build_main.py` / `bundle.py`）は無い。
+
+```powershell
+powershell -NoProfile -File Tools/Publish-Extensions.ps1            # 4つをビルドして work\publish\<名前> に出力し、検査する
+powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Deploy    # 加えて extensions フォルダへ配置する（Next Design を終了してから）
+powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Name PlantUmlTool -Deploy   # 1つだけ
+```
+
+`-Deploy` は Next Design の起動中なら止まる。配置先にスクリプト版の `main.cs` が残っていれば、`main.cs.script-backup-<日時>` に退避してから外す。NdMcp を同僚の PC へ入れるときは、MCP の登録もする `NdMcp/Setup.ps1` を使う。
+
+### ソースの共有
+
+共有するソースは正本のファイルを各 csproj が直接ビルドする。修正は正本で行い、使う拡張をすべてビルドし直す。
+
+| 正本 | 使う拡張 |
+|---|---|
+| `PlantUmlTool/src/10-sequence-export.cs`（シーケンス図の出力エンジン） | PlantUmlTool / AgentReview / NdMcp / SequenceImportProbe |
+| `PlantUmlTool/src/15-export-runner.cs`・`40`・`50`・`60`・`61`・`shims/metamap.cs` | PlantUmlTool（shims 以外）/ AgentReview / NdMcp |
+| `PlantUmlTool/src/63-class-sync-runtime.cs` | PlantUmlTool / NdMcp |
+| `AgentReview/src/01-common.cs`・`05-markdown-export.cs`・`08-shared.cs` | AgentReview / NdMcp |
+
+テストは `Tools/csproj_sources.py` で csproj のソースを記載順に連結して読む。ビルドするファイルとテストが読むファイルは常に同じになる。
+
 ## 上司・情シスへの説明
 
 ### 口頭での答え方

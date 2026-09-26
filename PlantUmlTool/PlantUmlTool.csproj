@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    共通の設定（TargetFramework、NextDesign の参照、出力へのコピー）は ../Directory.Build.props。
+    ソースは記載順に並べる。テスト（Tools/csproj_sources.py）もこの順で連結して読む。
+  -->
+  <ItemGroup>
+    <Using Include="System" />
+    <Using Include="System.Collections.Generic" />
+    <Using Include="System.Globalization" />
+    <Using Include="System.IO" />
+    <Using Include="System.Linq" />
+    <Using Include="System.Text" />
+    <Using Include="System.Text.RegularExpressions" />
+    <Using Include="NextDesign.Core" />
+    <Using Include="NextDesign.Desktop" />
+    <Using Include="NextDesign.Extension" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="src\00-extension.cs" />
+    <Compile Include="src\05-output-pane.cs" />
+    <Compile Include="src\10-sequence-export.cs" />
+    <Compile Include="src\15-export-runner.cs" />
+    <Compile Include="src\20-sequence-import-legacy.cs" />
+    <Compile Include="src\30-handlers.cs" />
+    <Compile Include="src\40-class-export.cs" />
+    <Compile Include="src\45-class-probe.cs" />
+    <Compile Include="src\50-state-export.cs" />
+    <Compile Include="src\60-class-sync.cs" />
+    <Compile Include="src\61-class-snapshot.cs" />
+    <Compile Include="src\62-class-sync-ui.cs" />
+    <Compile Include="src\63-class-sync-runtime.cs" />
+    <Compile Include="src\64-class-diagram-create.cs" />
+  </ItemGroup>
+
+</Project>

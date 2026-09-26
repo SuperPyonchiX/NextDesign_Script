@@ -2,7 +2,9 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [ValidateSet('Codex', 'Claude', 'Both')][string]$Client = 'Codex',
-    [string]$ExtensionDirectory = (Join-Path $env:LOCALAPPDATA 'DENSO CREATE\Next Design\extensions\NdMcp')
+    [string]$ExtensionDirectory = (Join-Path $env:LOCALAPPDATA 'DENSO CREATE\Next Design\extensions\NdMcp'),
+    # Built extension (dotnet publish output). Built here from NdMcp.csproj when missing and the .NET SDK is available.
+    [string]$PublishDirectory = (Join-Path $PSScriptRoot 'publish')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,32 +32,25 @@ function Backup-File([string]$Path) {
 
 try {
     $bridge = Join-Path $PSScriptRoot 'bridge'
-    foreach ($file in @('manifest.json', 'main.cs', 'bridge\pyproject.toml', 'bridge\uv.lock', 'bridge\nd_mcp_bridge\server.py')) {
+    foreach ($file in @('manifest.json', 'bridge\pyproject.toml', 'bridge\uv.lock', 'bridge\nd_mcp_bridge\server.py')) {
         if (!(Test-Path -LiteralPath (Join-Path $PSScriptRoot $file) -PathType Leaf)) {
             throw "Missing $file. Obtain the complete NdMcp folder before setup."
         }
     }
     $manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($manifest.name -ne 'NdMcp') { throw 'Unexpected extension manifest.' }
-    $installFiles = @('manifest.json', 'main.cs')
-    foreach ($tab in $manifest.extensionPoints.ribbon.tabs) {
-        foreach ($group in $tab.groups) {
-            foreach ($control in $group.controls) {
-                foreach ($key in @('imageSmall', 'imageLarge')) {
-                    if ($control.PSObject.Properties[$key]) {
-                        $icon = [string]$control.$key
-                        if ($icon -notmatch '^resources/[a-zA-Z0-9_-]+\.png$') { throw "Unexpected icon path: $icon" }
-                        if (!(Test-Path -LiteralPath (Join-Path $PSScriptRoot $icon) -PathType Leaf)) { throw "Missing icon: $icon" }
-                        $installFiles += $icon
-                    }
-                }
-            }
+    $PublishDirectory = [IO.Path]::GetFullPath($PublishDirectory)
+    $dotnet = $null
+    if (!(Test-Path -LiteralPath (Join-Path $PublishDirectory $manifest.main) -PathType Leaf)) {
+        # No built extension: build it here only when the project and the .NET SDK are both present.
+        $dotnet = Find-Program 'dotnet'
+        if (!$dotnet -or !(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'NdMcp.csproj') -PathType Leaf)) {
+            throw "Missing built extension $($manifest.main) in $PublishDirectory. Build it with 'dotnet publish NdMcp -c Release -o NdMcp\publish' (needs the .NET SDK), or obtain the NdMcp folder with publish\ included."
         }
     }
-    $installFiles = @($installFiles | Select-Object -Unique)
     $ExtensionDirectory = [IO.Path]::GetFullPath($ExtensionDirectory)
-    if ($ExtensionDirectory.TrimEnd('\') -eq $PSScriptRoot.TrimEnd('\')) {
-        throw 'Extension destination must differ from the source folder.'
+    if ($ExtensionDirectory.TrimEnd('\') -eq $PSScriptRoot.TrimEnd('\') -or $ExtensionDirectory.TrimEnd('\') -eq $PublishDirectory.TrimEnd('\')) {
+        throw 'Extension destination must differ from the source and publish folders.'
     }
     if (!$PSCmdlet.ShouldProcess($ExtensionDirectory, "Prepare uv/Python, install NdMcp $($manifest.version), register nextdesign in $Client")) { return }
 
@@ -85,12 +80,29 @@ try {
     Invoke-Checked $uv @('--directory', $bridge, 'run', '--frozen', '--no-dev', 'python', '-c', 'import nd_mcp_bridge.server')
 
     Write-Host '[3/4] Installing Next Design extension...'
+    if ($dotnet) {
+        Invoke-Checked $dotnet @('publish', (Join-Path $PSScriptRoot 'NdMcp.csproj'), '-c', 'Release', '-o', $PublishDirectory)
+    }
+    # Install exactly the publish output: manifest, NdMcp.dll and its files, resources.
+    $installFiles = @(Get-ChildItem -LiteralPath $PublishDirectory -Recurse -File | ForEach-Object { $_.FullName.Substring($PublishDirectory.TrimEnd('\').Length + 1) })
+    foreach ($required in @('manifest.json', $manifest.main)) {
+        if ($installFiles -notcontains $required) { throw "Publish output lacks $required." }
+    }
+    foreach ($file in $installFiles) {
+        if ($file -match '^NextDesign\.(Core|Desktop)\.dll$') { throw "Publish output contains $file; it conflicts with Next Design's own DLL." }
+    }
     New-Item -ItemType Directory -Path $ExtensionDirectory -Force | Out-Null
+    # The script version's entry file would sit unused beside the DLL; keep it only as a backup.
+    $oldScript = Join-Path $ExtensionDirectory 'main.cs'
+    if (Test-Path -LiteralPath $oldScript -PathType Leaf) {
+        Backup-File $oldScript
+        Remove-Item -LiteralPath $oldScript
+    }
     foreach ($file in $installFiles) {
         $target = Join-Path $ExtensionDirectory $file
         New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force | Out-Null
         Backup-File $target
-        Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $target -Force
+        Copy-Item -LiteralPath (Join-Path $PublishDirectory $file) -Destination $target -Force
     }
 
     Write-Host '[4/4] Registering MCP server nextdesign...'

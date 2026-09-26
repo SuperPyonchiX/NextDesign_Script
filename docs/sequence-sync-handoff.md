@@ -204,7 +204,7 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 - 背景: 試験の図はすべて生成器が作ったもので、手で描いた図に固有のデータ（既定値の省略・型への参照・配置の癖）を実機より先に見つけられなかった
 - リボン「取込・比較」に「全図チェック」: プロジェクトの全シーケンス図を、PlantUmlTool と同じ変換で出力し、その図と差分を検証する。図・モデル・プロジェクトへは書き込まず、保存もしない。未表示の図は EditorAccessMode.GetInactiveValue で読む
 - 結果: %LOCALAPPDATA%\NextDesign.SequenceSync\sweep\<日時>\（出力した puml、result.tsv、detail.txt）。図の名前・パスを含むのでローカルのみ
-- 出力処理は PlantUmlTool/src/10-sequence-export.cs の出力エンジン部分を bundle.py が無改変で main.cs に写す（PlantUmlTool は編集しない。bundle.py --check で写しの鮮度も検査）
+- 出力処理は PlantUmlTool/src/10-sequence-export.cs（出力エンジン）を SequenceImportProbe.csproj が直接ビルドする（0.12.0 から。写しは無いので鮮度の検査も要らない）
 - 読取り側（出力→解析→差分）の不一致を洗い出す。反映（書込み）側の不一致は、コピーのプロジェクトでの反映で確かめる必要がある
 
 ## 2-0000000000000000000000000. 0.10.25: 横に並んだ枠の所属（0.10.20 の退行）
@@ -560,17 +560,18 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 ### 検証コマンド
 
 ```powershell
-python SequenceImportProbe/sync/bundle.py
-python SequenceImportProbe/tests/run_tests.py --sdk-root work/sequence-api-research
-python C:/Users/ksk01/.agents/skills/nextdesign-extension/scripts/validate_manifest.py SequenceImportProbe --nd-version 3
+python SequenceImportProbe/tests/run_tests.py --build
+powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Name SequenceImportProbe   # ビルドと validate_manifest.py
 git diff --check
 ```
 
+0.12.0（2026-09-26）で DLL 方式に移行した。`bundle.py` と main.cs は無くなり、`SequenceImportProbe.csproj` が `src/` `sync/` と `PlantUmlTool/src/10-sequence-export.cs` を直接ビルドする。配置は `Tools/Publish-Extensions.ps1 -Name SequenceImportProbe -Deploy`（Next Design を終了してから）。
+
 ### 守ること
 
-- **PlantUML 出力側（`PlantUmlTool`）は変更しない。** ユーザーの決定。（例外: 2026-09-23 にユーザーの依頼でクラス図同期の「試行して戻す」ボタンを削除した。2.2.1。出力処理は触っていない）`AgentReview/main.cs` と `NdMcp/main.cs` の複製も触らない
+- **PlantUML 出力側（`PlantUmlTool`）は変更しない。** ユーザーの決定。（例外: 2026-09-23 にユーザーの依頼でクラス図同期の「試行して戻す」ボタンを削除した。2.2.1。出力処理は触っていない）（2026-09-26 に DLL 化のため `10-sequence-export.cs` の後半を `15-export-runner.cs` に分けた。出力処理の中身は変えていない）
 - 実在する構造差分を比較条件の緩和で消さない。入力にない実行区間・長さ0の区間・MessageEnd を発明しない
-- `main.cs` の生成領域は直接編集しない。`sync/` を直して `bundle.py`
+- 同期処理の正本は `sync/`。`src/` はハンドラと実験用の処理
 - プロジェクトを自動保存しない。`ExportModelUnit` の未保存制約を自動保存で回避しない。例外は「シナリオ一括検証」だけ（2026-09-23 ユーザーの判断。実験用コピーで使う前提で、各段階の後に `IWorkspace.SaveProject` する）
 - ID・既存配置・未知の属性を維持する。座標の 1e-6 表現差を理由に無関係な座標を書き換えない
 - リボンは5ボタン（診断表示／PlantUML取込／差分を検証／PlantUMLを反映／シナリオ一括検証）。一括検証は開発用で、S6 の統合では外す。診断のためにボタンを増やさない

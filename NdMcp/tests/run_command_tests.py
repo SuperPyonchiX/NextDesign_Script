@@ -14,8 +14,9 @@ source = (root / "src/server.cs").read_text(encoding="utf-8")
 def between(start, end):
     return source[source.index(start):source.index(end, source.index(start))]
 
-handler = between("public void ExecuteNdMcpRequest(", "public class NdMcpCommandRequest")
-request = between("public class NdMcpCommandRequest", "public void StopNdMcpServer")
+# ハンドラは NdMcpExtension（partial class）の中にある。包みの閉じ括弧と次の包みの宣言は含めない
+handler = between("public void ExecuteNdMcpRequest(", "\n}\n\npublic class NdMcpCommandRequest")
+request = between("public class NdMcpCommandRequest", "public partial class NdMcpExtension")
 dispatch = between("private static object OnUiThread(", "private static int ParseInt(")
 error = between("public class NdMcpHttpError", "public static class NdMcpServer")
 program = """

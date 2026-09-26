@@ -18,8 +18,13 @@ class SetupTests(unittest.TestCase):
             source = root / 'source with spaces'
             source.mkdir()
             shutil.copy2(SOURCE / 'Setup.ps1', source / 'Setup.ps1')
-            shutil.copytree(SOURCE / 'resources', source / 'resources')
-            for name in ('manifest.json', 'main.cs', 'bridge/pyproject.toml',
+            # A built extension as dotnet publish lays it out (the DLL bytes are a stand-in).
+            publish = source / 'publish'
+            shutil.copytree(SOURCE / 'resources', publish / 'resources')
+            shutil.copy2(SOURCE / 'manifest.json', publish / 'manifest.json')
+            (publish / 'NdMcp.dll').write_bytes(b'MZ built NdMcp')
+            (publish / 'NdMcp.deps.json').write_text('{}', encoding='utf-8')
+            for name in ('manifest.json', 'bridge/pyproject.toml',
                          'bridge/uv.lock', 'bridge/nd_mcp_bridge/server.py'):
                 dest = source / name
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -74,14 +79,20 @@ if ($LASTEXITCODE) { exit $LASTEXITCODE }
             self.assertFalse((root / 'extension').exists())
             (root / 'calls.jsonl').unlink()
 
+            # An earlier script install leaves main.cs; setup keeps it only as a backup.
+            (root / 'extension').mkdir()
+            (root / 'extension/main.cs').write_text('// script version', encoding='utf-8')
             for _ in range(2):
                 result = run()
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(b'SETUP COMPLETE', result.stdout)
-            self.assertEqual((root / 'extension/main.cs').read_bytes(), (SOURCE / 'main.cs').read_bytes())
+            self.assertEqual((root / 'extension/NdMcp.dll').read_bytes(), (publish / 'NdMcp.dll').read_bytes())
+            self.assertEqual((root / 'extension/manifest.json').read_bytes(), (SOURCE / 'manifest.json').read_bytes())
             for icon in (SOURCE / 'resources').glob('*.png'):
                 self.assertEqual((root / 'extension/resources' / icon.name).read_bytes(), icon.read_bytes())
-            self.assertTrue(list((root / 'extension').glob('main.cs.ndmcp-backup-*')))
+            self.assertFalse((root / 'extension/main.cs').exists())
+            self.assertEqual(len(list((root / 'extension').glob('main.cs.ndmcp-backup-*'))), 1)
+            self.assertEqual(len(list((root / 'extension').glob('NdMcp.dll.ndmcp-backup-*'))), 1)
             self.assertEqual(len(list(config.glob('config.toml.ndmcp-backup-*'))), 2)
             self.assertEqual(json.loads((config / '.claude.json').read_text())['mcpServers']['other']['command'], 'keep')
             calls = [json.loads(line.lstrip('\ufeff')) for line in (root / 'calls.jsonl').read_text(encoding='utf-8-sig').splitlines()]

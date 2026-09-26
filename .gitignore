@@ -95,3 +95,8 @@ $RECYCLE.BIN/
 # Output directories
 output/
 dist/
+# dotnet publish output (NdMcp/Setup.ps1 builds into NdMcp/publish/)
+publish/
+
+# Python bytecode
+__pycache__/

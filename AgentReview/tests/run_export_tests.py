@@ -6,10 +6,15 @@ This verifies export orchestration, not the PlantUML engines or the real SDK.
 from pathlib import Path
 import os
 import subprocess
+import sys
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
-source = (root / "main.cs").read_text(encoding="utf-8-sig")
+sys.path.insert(0, str(root.parent / "Tools"))
+import csproj_sources
+
+# AgentReview.csproj のソースを記載順に連結したもの（ビルドするファイルと同じ）
+source = csproj_sources.joined(root)
 parts = [
     source[source.index("public static class AgentText"):source.index("public static class OutputPane")],
     source[source.index("public class AgentConfig"):source.index("public class SessionInfo")],
@@ -19,6 +24,8 @@ parts = [
     .replace("private void WriteDesignArtifacts", "public void WriteDesignArtifacts")
     + "\n}",
     source[source.index("public class SessionInfo"):source.index("public static class WorkspaceBuilder")],
+    # NdMcp と共有する部品（ReviewSnapshot.Cell / ChangeRecord / DesignArtifactWriter）
+    source[source.index("//  NdMcp と共有する部品"):source.index("// ---- ここまで NdMcp と共有")],
     source[source.index("public static class ReviewResultViewer"):source.index("public static class CliProbe")],
     source[source.index("public static class WorkspaceBuilder"):source.index("//  ファイルシステムのリンク・コピー")],
     "public class ReviewCommandHarness {\n"

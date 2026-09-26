@@ -14,13 +14,12 @@ Next Design がインストールされた PC で実施する。McpPoC（技術�
 1. 配置前に検査する（0.1.1 は ERROR 0、内部コマンドがリボン未参照という想定内の WARN 1 を確認済み。ファイルを直した場合は再実行する）。
 
    ```
-   python NdMcp/tools/build_main.py --check
-   python C:\Users\ksk01\.claude\skills\nextdesign-extension\scripts\validate_manifest.py NdMcp --nd-version 3
+   powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Name NdMcp
    ```
 
-   期待する結果は `ERROR 0 件 / WARN 1 件`。WARN は `NdMcp.Command.ExecuteRequest` がリボンから参照されていない件で、MCP サーバーから呼ぶコマンドなので意図どおり。これ以外の WARN が出たら直す。
+   ビルドのあとに走る検査（validate_manifest.py）の期待する結果は `ERROR 0 件 / WARN 1 件`。WARN は `NdMcp.Command.ExecuteRequest` がリボンから参照されていない件で、MCP サーバーから呼ぶコマンドなので意図どおり。これ以外の WARN が出たら直す。
 
-2. `NdMcp` フォルダのうち `manifest.json`・`main.cs`・`resources/` を次へコピーする（`src/` `tools/` `bridge/` は不要）。[SETUP.md](SETUP.md) のスクリプトでも配置できる。
+2. Next Design を終了し、`powershell -NoProfile -File Tools/Publish-Extensions.ps1 -Name NdMcp -Deploy` で次へ配置する（`work\publish\NdMcp` の中身をコピーする）。[SETUP.md](SETUP.md) のスクリプトでも配置できる。
 
    ```
    %LOCALAPPDATA%\DENSO CREATE\Next Design\extensions\NdMcp\
@@ -153,6 +152,6 @@ PowerShell の `curl.exe` は JSON の引用符が崩れやすいので、POST �
 
 | 結果 | 判定 |
 |---|---|
-| Step 4 まで成立 | 方式成立。Step 6〜8 の不具合は個別に修正（`src/server.cs` を直して `build_main.py` で再生成） |
+| Step 4 まで成立 | 方式成立。Step 6〜8 の不具合は個別に修正（`src/server.cs` を直してビルドし直す） |
 | Step 2 は通るが Step 4 が失敗/ハング | マーシャリング方式の再検討（WPF Dispatcher の参照可否の追試、またはリクエストキュー+手動ボタン駆動の縮退案） |
 | Step 1 でコンパイルエラー | HttpListener 不可。ファイルベース連携（スナップショットエクスポート + Python 側で serve）へ方式転換 |

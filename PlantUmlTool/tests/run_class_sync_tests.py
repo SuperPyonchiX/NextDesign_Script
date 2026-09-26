@@ -4,7 +4,7 @@ python PlantUmlTool/tests/run_class_sync_tests.py
 
 The pure core (src/60-class-sync.cs) is compiled with the .NET Framework C# compiler together
 with tests/ClassPumlTests.cs and tests/ClassSyncTests.cs and run against tests/samples.
-The SDK compile of the whole script is tests/compile_sdk.py. Neither executes Next Design.
+The whole extension is compiled by dotnet build (Tools/Publish-Extensions.ps1). Neither executes Next Design.
 """
 import os
 from pathlib import Path

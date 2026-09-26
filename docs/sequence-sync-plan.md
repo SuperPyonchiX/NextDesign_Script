@@ -55,11 +55,10 @@ SDK読取りの正確さは実機未確認。比較結果は差分候補であ�
 
 ## 検査とソース構成
 
-`SequenceImportProbe/sync/`が新しい同期処理の正本。Next Designの単一エントリポイント制約に合わせ、`bundle.py`が`main.cs`の生成区画へ埋め込む。生成区画は直接編集しない。テスト時には正本と生成物の一致も検査する。
+`SequenceImportProbe/sync/`が新しい同期処理の正本。0.12.0 から DLL 方式になり、`SequenceImportProbe.csproj` が `sync/` と `src/` と `PlantUmlTool/src/10-sequence-export.cs` を直接ビルドする（`bundle.py` と main.cs の生成区画は廃止）。テストは csproj と同じ並びのソースを読む。
 
 ```powershell
-python SequenceImportProbe/sync/bundle.py
-python SequenceImportProbe/tests/run_tests.py --sdk-root work/sequence-api-research
+python SequenceImportProbe/tests/run_tests.py --build
 ```
 
 診断レポートは実行PCの`%LOCALAPPDATA%\NextDesign.SequenceSync\reports`へ保存する。JSONには入力・現在図・対応ID・変更候補・要照合項目が含まれる。モデル名やIDを含むため、公開リポジトリへ追加しない。

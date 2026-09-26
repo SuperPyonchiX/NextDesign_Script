@@ -1,7 +1,8 @@
-"""Windows: pure payload checks + optional exact V3.1/.NET6 API compile.
+"""Windows: pure payload checks + optional build of the DLL against the V3.1 SDK.
 
-python SequenceImportProbe/tests/run_tests.py --sdk-root work/sequence-api-research
-SDK files are local development dependencies, never shipped with the extension.
+python SequenceImportProbe/tests/run_tests.py --build
+--build runs dotnet build on SequenceImportProbe.csproj (NuGet NextDesign 3.1.3, .NET 6 references).
+The sources are read in csproj order (Tools/csproj_sources.py), the same files the DLL is built from.
 This does not execute Next Design or prove successful import/rollback/rendering.
 """
 import argparse
@@ -9,17 +10,21 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--sdk-root', type=Path)
+parser.add_argument('--build', action='store_true', help='also dotnet build the extension')
+# --sdk-root is the old name of --build (the csproj now finds its own references)
+parser.add_argument('--sdk-root', type=Path, help=argparse.SUPPRESS)
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
 
 import lint_samples
 print('PASS: samples PlantUML accepts: %d' % lint_samples.check(root / 'samples'))
-subprocess.run([os.sys.executable, str(root/'sync/bundle.py'), '--check'], check=True)
-source = (root / 'main.cs').read_text(encoding='utf-8-sig')
+sys.path.insert(0, str(root.parent / 'Tools'))
+import csproj_sources
+source = csproj_sources.joined(root)
 test_workspace = root.parent / 'work'
 test_workspace.mkdir(exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='sequence-payload-', dir=test_workspace) as tmp:
@@ -593,23 +598,6 @@ public static class PayloadTest {
     assert json.loads((work/'escape.json').read_text(encoding='utf-8-sig')) == '日本語\n\t"\\'
     assert 'transaction.Dispose(' not in source, 'explicit transaction completion followed by implicit termination'
     print('PASS: transaction completion paths; generated IDs, ownership, ports, labels, shapes, coordinates, JSON escaping and rejection')
-    if args.sdk_root:
-        sdk = args.sdk_root.resolve()
-        refs = list((sdk/'net6-ref/ref/net6.0').glob('*.dll'))
-        assert refs, 'obtain Microsoft.NETCore.App.Ref 6.0.36 in sdk-root/net6-ref first'
-        start = source.index('public void ')
-        end = source.index('public static class SequenceExperiment')
-        wrapped = source[:start] + 'public class Handlers {\n' + source[start:end] + '}\n' + source[end:]
-        production = work/'Production.cs'
-        production.write_text(wrapped, encoding='utf-8-sig')
-        commands = ['/nologo', '/target:library', '/warnaserror+', '/out:' + str(work/'Probe.dll'), str(production)]
-        refs += [sdk/'core/lib/netstandard2.0/NextDesign.Core.dll', sdk/'desktop/lib/net6.0-windows7.0/NextDesign.Desktop.dll']
-        commands += ['/r:' + str(p) for p in refs]
-        rsp = work/'compile.rsp'
-        rsp.write_text('\n'.join('"' + v + '"' for v in commands))
-        sdks = subprocess.check_output(['dotnet', '--list-sdks'], text=True).splitlines()
-        latest = sdks[-1]
-        version, location = latest.split(' [', 1)
-        csc = Path(location.rstrip(']')) / version / 'Roslyn/bincore/csc.dll'
-        subprocess.run(['dotnet', str(csc), '@' + str(rsp)], check=True)
-        print('PASS: full script compiled against official V3.1.3 SDK and .NET 6 references')
+    if args.build or args.sdk_root:
+        subprocess.run(['dotnet', 'build', str(root / 'SequenceImportProbe.csproj'), '-c', 'Release', '-o', str(work / 'build')], check=True)
+        print('PASS: extension DLL built against the V3.1.3 SDK and .NET 6 references')
