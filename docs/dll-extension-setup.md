@@ -2,7 +2,7 @@
 
 Next Design V3 の DLL 形式エクステンションを、Visual Studio を入れずに .NET SDK と VS Code でビルドする手順。対象は `HelloDll/` と、今後 DLL 化する拡張。
 
-2026年9月26日に、Visual Studio の入っていない会社PCで .NET 10 SDK（10.0.401）を使って `HelloDll` をビルドし、Next Design V3.1.9 での読み込みとコマンド実行を確認した。デバッガのアタッチは未確認。
+2026年9月26日に、Visual Studio の入っていない会社PCで .NET 10 SDK（10.0.401）を使って `HelloDll` をビルドし、Next Design V3.1.9 での読み込みとコマンド実行を確認した。このとき `NextDesignDir` は付けず、NuGet の 3.1.3 に対してビルドした DLL が 3.1.9 で動いた。デバッガのアタッチは未確認。
 
 ## 使うものとライセンス
 
@@ -52,7 +52,7 @@ Next Design V3 の DLL 形式エクステンションを、Visual Studio を入�
 
 ## 1. 事前に確かめること
 
-1. Next Design のインストール先を調べる。スタートメニューの Next Design を右クリックし、「ファイルの場所を開く」でショートカットのリンク先を見る。そのフォルダに `NextDesign.Core.dll` と `NextDesign.Desktop.dll` があることを確かめる
+1. （インストール先の DLL を直接参照する場合だけ）Next Design のインストール先を調べる。スタートメニューの Next Design を右クリックし、「ファイルの場所を開く」でショートカットのリンク先を見る。そのフォルダに `NextDesign.Core.dll` と `NextDesign.Desktop.dll` があることを確かめる
 2. ブラウザで `https://api.nuget.org/v3/index.json` が開けるか試す。開ければ手順 4 はそのまま進める。開けなければ手順 4 の「nuget.org に接続できない場合」を使う
 
 ## 2. .NET 10 SDK を入れる
@@ -111,13 +111,19 @@ C# 拡張は、言語サーバー用の .NET ランタイムを「.NET Install T
 
 ## 4. ビルドする
 
-リポジトリ直下で、インストール先の DLL を直接参照してビルドする。`NextDesignDir` には手順 1 で調べたフォルダを渡す。
+リポジトリ直下で実行する。通常はこれで足りる。NuGet の `NextDesign.Core` / `NextDesign.Desktop` 3.1.3 に対してビルドする。
+
+```powershell
+dotnet publish HelloDll -c Release -o work/hellodll-publish
+```
+
+ビルド時に参照する API 定義を実行環境の版と揃えたい場合は、`NextDesignDir` に手順 1 で調べたフォルダを渡す。3.1.3 より後の版で追加された API があれば、それを使うときはこちらが要る。
 
 ```powershell
 dotnet publish HelloDll -c Release -o work/hellodll-publish -p:NextDesignDir="C:\Program Files\DENSO CREATE\Next Design"
 ```
 
-`NextDesignDir` を省くと NuGet の `NextDesign.Core` / `NextDesign.Desktop` 3.1.3 を参照する。社内の実行環境と版を揃えるため、会社PCでは直接参照を使う。
+どちらの場合も、実行時に使われるのは Next Design 本体の DLL。
 
 初回は `net6.0` 向けの参照パックを nuget.org から取得する。
 
@@ -131,7 +137,7 @@ dotnet publish HelloDll -c Release -o work/hellodll-publish -p:NextDesignDir="C:
 | `microsoft.windowsdesktop.app.ref.6.0.36.nupkg` | `%USERPROFILE%\.nuget\packages\microsoft.windowsdesktop.app.ref\6.0.36\` |
 | `microsoft.aspnetcore.app.ref.6.0.36.nupkg` | `%USERPROFILE%\.nuget\packages\microsoft.aspnetcore.app.ref\6.0.36\` |
 
-会社PCの任意のフォルダ（例 `C:\nuget-local`）に置き、取得元をそのフォルダに限定してビルドする。
+会社PCの任意のフォルダ（例 `C:\nuget-local`）に置き、取得元をそのフォルダに限定してビルドする。NuGet の NextDesign パッケージも取得できないので、`NextDesignDir` でインストール先の DLL を直接参照する。
 
 ```powershell
 dotnet publish HelloDll -c Release -o work/hellodll-publish -p:NextDesignDir="C:\Program Files\DENSO CREATE\Next Design" -p:RestoreSources="C:\nuget-local"
