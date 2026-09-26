@@ -18,6 +18,8 @@ Next Design がインストールされた PC で実施する。McpPoC（技術�
    python C:\Users\ksk01\.claude\skills\nextdesign-extension\scripts\validate_manifest.py NdMcp --nd-version 3
    ```
 
+   期待する結果は `ERROR 0 件 / WARN 1 件`。WARN は `NdMcp.Command.ExecuteRequest` がリボンから参照されていない件で、MCP サーバーから呼ぶコマンドなので意図どおり。これ以外の WARN が出たら直す。
+
 2. `NdMcp` フォルダのうち `manifest.json`・`main.cs`・`resources/` を次へコピーする（`src/` `tools/` `bridge/` は不要）。[SETUP.md](SETUP.md) のスクリプトでも配置できる。
 
    ```
