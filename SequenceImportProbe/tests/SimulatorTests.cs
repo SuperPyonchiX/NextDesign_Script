@@ -185,7 +185,11 @@ public static class SequenceSimulator
             if(V(r,"MetamodelId")==P+"NestedInteractionFragment" || V(r,"MetamodelId")==P+"OperandTargetMessage")
                 memberships.Add(new SequenceMembership{Child=V(r,"TargetId"),Parent=V(r,"SourceId"),Evidence=V(r,"MetamodelId")});
         }
-        memberships.AddRange(SequenceRegion.Nesting(operandRegions,fragmentRegions,annotationRegions));
+        var byPosition=SequenceRegion.Nesting(operandRegions,fragmentRegions,annotationRegions).ToList();
+        var placed=new HashSet<string>(byPosition.Select(m=>m.Child));
+        foreach(var m in wires)if(SequenceRegion.BranchAt(operandRegions,D(m,"SourceY"))!=null)placed.Add(V(m,"ModelId"));
+        memberships.RemoveAll(m=>placed.Contains(m.Child));
+        memberships.AddRange(byPosition);
         SequenceMembership.Resolve(doc,memberships,line=>{});
         Func<double,double,string> containerAt=(x,at)=>{
             var candidates=operandRegions.Where(r=>x>=r.X && x<=r.X+r.Width && at>=r.Y && at<r.Y+r.Height-1.0).ToArray();

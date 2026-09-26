@@ -30,7 +30,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.11.27";
+    public const string Title = "シーケンス生成実験 / 0.11.28";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -1218,7 +1218,13 @@ public sealed class DiagramSnapshot
         {
             memberships.Add(new SequenceMembership{Child=message.ModelId,Parent=operand.ModelId,Evidence="SDK operand.Messages"});
         }
-        memberships.AddRange(SequenceRegion.Nesting(operandRegions,fragmentRegions,annotationRegions));
+        var byPosition=SequenceRegion.Nesting(operandRegions,fragmentRegions,annotationRegions).ToList();
+        // Where the drawing decides (the user's decision), the model's relations are not asked:
+        // a frame, note or ref the position places, and a message drawn in one branch or none.
+        var placed=new HashSet<string>(byPosition.Select(m=>m.Child));
+        foreach(var m in diagram.Messages)if(SequenceRegion.BranchAt(operandRegions,m.SourceY)!=null)placed.Add(m.ModelId);
+        memberships.RemoveAll(m=>placed.Contains(m.Child));
+        memberships.AddRange(byPosition);
         SequenceMembership.Resolve(doc,memberships,line=>log.AppendLine(line));
 
         Func<double,double,string> containerAt=(x,y)=>{
