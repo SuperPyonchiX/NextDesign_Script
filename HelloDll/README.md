@@ -4,6 +4,8 @@ Next Design V3 で DLL 形式のエクステンションが動くかを確かめ
 
 ## ビルド
 
+リポジトリ直下で実行する。配置先（`extensions\HelloDll`）ではビルドしない。
+
 ```powershell
 dotnet publish HelloDll -c Release -o work/hellodll-publish
 ```
@@ -14,7 +16,7 @@ dotnet publish HelloDll -c Release -o work/hellodll-publish
 
 ## 配置
 
-`work/hellodll-publish` の中身を次のフォルダへコピーする。
+`work/hellodll-publish` の中身だけを次のフォルダへコピーする。ソース（`.csproj`、`.cs`、`bin`、`obj`）は置かない。
 
 ```
 %LOCALAPPDATA%\DENSO CREATE\Next Design\extensions\HelloDll\
