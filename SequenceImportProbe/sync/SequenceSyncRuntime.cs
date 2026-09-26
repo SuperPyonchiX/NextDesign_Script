@@ -113,9 +113,12 @@ public sealed class DiagramSnapshot
                 var other=anchor.Source.Id==n.Id?anchor.Target:anchor.Source;
                 var l=other as ILifelineShape;
                 if(l!=null)targets.Add(l.ModelId);
-                else { e.Links["anchors"]=n.NoteAnchors.Select(a=>a.Source.Id==n.Id?a.Target.ModelId:a.Source.ModelId).Distinct().ToArray();snapshot.Limitations.Add("Noteの非ライフライン接続: "+n.ModelId); }
+                else { e.Links["anchors"]=n.NoteAnchors.Select(a=>a.Source.Id==n.Id?a.Target.ModelId:a.Source.ModelId).Where(id=>id!=null && id!=n.ModelId).Distinct().ToArray();snapshot.Limitations.Add("Noteの非ライフライン接続: "+n.ModelId); }
             }
             e.Links["targets"]=targets.Distinct().OrderBy(id=>snapshot.Y[id]).ToArray();
+            // A note may be tied to the frame or to something this reading does not keep (a message end, the
+            // frame itself); the comparison does not use anchors, so only what the reading has stays.
+            if(e.Links.ContainsKey("anchors"))e.Links["anchors"]=e.Links["anchors"].Where(id=>doc.Elements.Any(x=>x.Id==id)).ToArray();
             e.Attributes["position"]="over";
             if(targets.Count==0) {e.Attributes["position"]="free";snapshot.Limitations.Add("自由配置Note（近傍ライフラインには結び付けない）: "+n.ModelId);}
             else
