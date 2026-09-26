@@ -1013,7 +1013,7 @@ JSON形式で保存されたプロジェクトでは、先頭の `SchemaVersion`
 ```text
 python SequenceImportProbe/tests/run_tests.py
 python SequenceImportProbe/tests/run_tests.py --sdk-root work/sequence-api-research
-python <skills>/nextdesign-script-extension/scripts/validate_manifest.py SequenceImportProbe --nd-version 3
+python <skills>/nextdesign-extension/scripts/validate_manifest.py SequenceImportProbe --nd-version 3
 ```
 
 1つ目はPlantUMLの解析、同期・非同期・返信種別、自己折り返し、実行区間の入れ子と復帰、分岐・入れ子、refとNoteの生成、未対応構文の拒否に加え、生成JSONのID独立性、所有構造、送受信、シェイプ、座標、文字列エスケープと不正入力を検査する。2つ目はさらに公式 `NextDesign.Core / Desktop 3.1.3.30714` と `.NET 6` 参照アセンブリで配布スクリプト全体をコンパイルする。SDKは開発PCの作業フォルダにのみ配置する。

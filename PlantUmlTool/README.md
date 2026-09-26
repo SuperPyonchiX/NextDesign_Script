@@ -323,7 +323,7 @@ python PlantUmlTool/tests/run_class_sync_tests.py   # クラス図同期の純�
 Next Design 自体をエラーなしで起動不能にする。
 
 ```
-python <skills>/nextdesign-script-extension/scripts/validate_manifest.py PlantUmlTool --nd-version 3
+python <skills>/nextdesign-extension/scripts/validate_manifest.py PlantUmlTool --nd-version 3
 ```
 
 終了コード 0（WARN のみも可）で合格。

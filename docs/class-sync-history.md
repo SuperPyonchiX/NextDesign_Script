@@ -366,7 +366,7 @@ package "所有元" {
 ```powershell
 python ClassImportProbe/sync/bundle.py
 python ClassImportProbe/tests/run_tests.py --sdk-root work/sequence-api-research
-python C:\Users\ksk01\.claude\skills\nextdesign-script-extension\scripts\validate_manifest.py ClassImportProbe --nd-version 3
+python C:\Users\ksk01\.claude\skills\nextdesign-extension\scripts\validate_manifest.py ClassImportProbe --nd-version 3
 ```
 
 テストは `samples/*.puml` の解析・書出しの往復（バイト一致）、差分計画の件数、画面文言、版の一致を検査する。`--sdk-root` は公式SDKに対するコンパイルで、APIの実在を確認するだけ。実機での読取り結果は保証しない。
