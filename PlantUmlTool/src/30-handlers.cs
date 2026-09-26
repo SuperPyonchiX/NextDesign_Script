@@ -37,7 +37,8 @@ public partial class PlantUmlToolExtension
         try
         {
             var settings = new ExportSettings();
-            ExportRunner.ExportAll(context.App, context, new PlantUmlOptions(), settings);
+            // 出力先はシーケンス図で選んだフォルダを状態遷移図・クラス図でも使う（種別ごとのフォルダに分かれる）
+            var folder = ExportRunner.ExportAll(context.App, context, new PlantUmlOptions(), settings);
 
             // 状態遷移図・クラス図が 1 枚でもあれば続けて出力する。
             // どちらも無いプロジェクトでは従来と同じ操作感のまま何も起きない
@@ -53,11 +54,11 @@ public partial class PlantUmlToolExtension
 
             if (stateTargets.Count > 0)
                 StateExportRunner.ExportAll(context.App, context, stateOptions, settings,
-                                            null, false, root, stateTargets, skipCount);
+                                            folder, false, root, stateTargets, skipCount);
 
             if (classTargets.Count > 0)
                 ClassExportRunner.ExportAll(context.App, context, new ClassPlantUmlOptions(), settings,
-                                            null, false, root, classTargets, skipCount);
+                                            folder, false, root, classTargets, skipCount);
         }
         catch (Exception ex)
         {

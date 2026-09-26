@@ -1136,6 +1136,7 @@ public class ClassExportRunner
         }
 
         var fileNames = BuildFileNames(targets);
+        var layout = settings.GroupFolders ? new PumlExportFolders("クラス図") : null;
 
         app.Output.WriteLine(Category, "");
         app.Output.WriteLine(Category, "=== クラス図 : " + targets.Count + " 件 ===");
@@ -1149,7 +1150,7 @@ public class ClassExportRunner
             {
                 var exporter = new ClassPlantUmlExporter(entry.Diagram, options);
                 var uml = exporter.Export();
-                SaveText(System.IO.Path.Combine(folder, fileNames[entry.EditorId]), uml);
+                PumlExportFolders.Save(folder, layout == null ? null : layout.Relative(entry.Owner), fileNames[entry.EditorId], uml);
                 okCount++;
                 app.Output.WriteLine(Category, "[ok]    " + entry.Label
                                      + "  (クラス " + exporter.NodeCount

@@ -953,6 +953,7 @@ public class StateExportRunner
         }
 
         var fileNames = BuildFileNames(targets);
+        var layout = settings.GroupFolders ? new PumlExportFolders("状態遷移図") : null;
 
         app.Output.WriteLine(Category, "");
         app.Output.WriteLine(Category, "=== 状態遷移図 : " + targets.Count + " 件 ===");
@@ -966,7 +967,7 @@ public class StateExportRunner
             {
                 var exporter = new StatePlantUmlExporter(entry.Diagram, options);
                 var uml = exporter.Export();
-                SaveText(System.IO.Path.Combine(folder, fileNames[entry.EditorId]), uml);
+                PumlExportFolders.Save(folder, layout == null ? null : layout.Relative(entry.Owner), fileNames[entry.EditorId], uml);
                 okCount++;
                 app.Output.WriteLine(Category, "[ok]    " + entry.Label
                                      + "  (状態 " + exporter.NodeCount

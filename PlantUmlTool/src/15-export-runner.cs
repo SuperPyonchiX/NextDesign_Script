@@ -41,6 +41,98 @@ public class ExportSettings
     public bool WriteIndexFile = true;      // 出力フォルダに _index.md を作る
     public bool SkipEmptyDiagram = true;    // ライフラインが 0 本の図はスキップ
     public bool Confirm = true;             // 件数を確認ダイアログで確認する
+    public bool GroupFolders = true;        // 一括出力で 種別/図グループ/… のフォルダに分ける
+}
+
+// ------------------------------------------------------------
+//  一括出力のフォルダ分け（AgentReview の図の保存先と同じ決め方）
+//
+//    <出力先>/<種別フォルダ>/<図グループ>/…/<図の直接の親>/<図名>.puml
+//    図グループは、図のメタクラスを所有フィールドの型として宣言している祖先の
+//    うち、いちばん上のもの。そこから図の直接の親までをフォルダにする。
+//    判別できないときは図の直接の親だけを使う。同じ親の下で名前が重なる別の
+//    モデルには ID の短いハッシュを付ける。
+// ------------------------------------------------------------
+public class PumlExportFolders
+{
+    private readonly string _kindFolder;
+    private readonly Dictionary<string, string> _taken = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    public readonly List<string> Warnings = new List<string>();
+
+    public PumlExportFolders(string kindFolder) { _kindFolder = Segment(kindFolder, "diagrams"); }
+
+    static string Segment(string name, string fallback)
+    {
+        var s = PlantUmlText.SafeFileName(name ?? "").TrimEnd(' ', '.');
+        if (s.Length == 0) s = fallback;
+        if (s.Length > 80) s = s.Substring(0, 80);
+        if (Regex.IsMatch(s, @"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)", RegexOptions.IgnoreCase)) s = "_" + s;
+        return s;
+    }
+
+    // Owners from the group down to the diagram's direct parent.
+    public List<IModel> GroupChain(IModel diagramModel)
+    {
+        var chain = new List<IModel>();
+        if (diagramModel == null) return chain;
+        var seen = new HashSet<string>(StringComparer.Ordinal) { diagramModel.Id };
+        for (var owner = diagramModel.Owner; owner != null && chain.Count < 1024; owner = owner.Owner)
+        {
+            if (!seen.Add(owner.Id)) break;
+            chain.Add(owner);
+        }
+        var groupIndex = -1;
+        var diagramType = diagramModel.Metaclass != null ? diagramModel.Metaclass.FullName : null;
+        if (!string.IsNullOrEmpty(diagramType))
+            for (var i = 0; i < chain.Count; i++)
+            {
+                var cls = chain[i].Metaclass;
+                if (cls == null) continue;
+                try
+                {
+                    if (cls.GetFields().Cast<IField>().Any(f => f != null && f.IsEmbedded && !f.IsReference && f.TypeClass != null
+                        && string.Equals(f.TypeClass.FullName, diagramType, StringComparison.Ordinal)))
+                        groupIndex = i;
+                }
+                catch (Exception) { }
+            }
+        if (groupIndex < 0)
+        {
+            Warnings.Add("図「" + diagramModel.Name + "」: 図グループを特定できません。図の直接の親だけをフォルダにします。");
+            return chain.Take(1).ToList();
+        }
+        var result = chain.Take(groupIndex + 1).ToList();
+        result.Reverse();
+        return result;
+    }
+
+    // The folder (relative to the chosen one, with '/') for a diagram of this model.
+    public string Relative(IModel diagramModel)
+    {
+        var path = _kindFolder;
+        foreach (var model in GroupChain(diagramModel))
+        {
+            var segment = Segment(model.Name, "unnamed");
+            var key = path + "/" + segment;
+            string owner;
+            if (_taken.TryGetValue(key, out owner) && owner != model.Id)
+            {
+                segment = segment + "_" + PlantUmlText.ShortHash(model.Id);
+                key = path + "/" + segment;
+            }
+            _taken[key] = model.Id;
+            path = key;
+        }
+        return path;
+    }
+
+    public static string Save(string folder, string relative, string fileName, string text)
+    {
+        var directory = string.IsNullOrEmpty(relative) ? folder : System.IO.Path.Combine(folder, relative.Replace('/', System.IO.Path.DirectorySeparatorChar));
+        System.IO.Directory.CreateDirectory(directory);
+        System.IO.File.WriteAllText(System.IO.Path.Combine(directory, fileName), text, new UTF8Encoding(false));
+        return string.IsNullOrEmpty(relative) ? fileName : relative + "/" + fileName;
+    }
 }
 
 // ------------------------------------------------------------
@@ -101,7 +193,8 @@ public class ExportRunner
 
     // ==================== 配下をまとめて出力 ====================
 
-    public static void ExportAll(IApplication app, IContext context,
+    // Returns the folder the files went to, so the class and state diagrams can follow it.
+    public static string ExportAll(IApplication app, IContext context,
                                  PlantUmlOptions options, ExportSettings settings)
     {
         options = options ?? new PlantUmlOptions();
@@ -116,7 +209,7 @@ public class ExportRunner
         if (root == null)
         {
             ui.ShowInformationDialog("プロジェクトが開かれていません。", Category);
-            return;
+            return null;
         }
 
         var skipCount = 0;
@@ -127,7 +220,7 @@ public class ExportRunner
             ui.ShowInformationDialog(
                 "「" + root.Name + "」配下に出力対象のシーケンス図が見つかりませんでした。"
                 + (skipCount > 0 ? "（空の図 " + skipCount + " 件をスキップ）" : ""), Category);
-            return;
+            return null;
         }
 
         if (settings.Confirm)
@@ -136,7 +229,7 @@ public class ExportRunner
                         + " 件を PlantUML に変換します。"
                         + (skipCount > 0 ? "\n（ライフラインなしの " + skipCount + " 件はスキップ）" : "")
                         + "\n\n続行しますか？";
-            if (!ui.ShowConfirmDialog(message, Category)) return;
+            if (!ui.ShowConfirmDialog(message, Category)) return null;
         }
 
         string folder = null;
@@ -145,7 +238,7 @@ public class ExportRunner
         if (settings.OneFilePerDiagram)
         {
             folder = ui.ShowSelectFolderDialog("PlantUML の出力先フォルダを選択してください");
-            if (string.IsNullOrEmpty(folder)) return;
+            if (string.IsNullOrEmpty(folder)) return null;
         }
         else
         {
@@ -155,11 +248,12 @@ public class ExportRunner
                 "PlantUML ファイルの保存",
                 "PlantUML (*.puml)|*.puml|すべてのファイル (*.*)|*.*",
                 rootName + ".puml");
-            if (string.IsNullOrEmpty(singlePath)) return;
+            if (string.IsNullOrEmpty(singlePath)) return null;
         }
 
         // ファイル名は出現順に依存しない形で先に確定させる
         var fileNames = BuildFileNames(targets);
+        var layout = settings.GroupFolders ? new PumlExportFolders("シーケンス図") : null;
 
         ShowPane(app);
         app.Output.WriteLine(Category, "=== PlantUML Export : " + root.Name + " ===");
@@ -181,9 +275,9 @@ public class ExportRunner
                 if (settings.OneFilePerDiagram)
                 {
                     var fileName = fileNames[entry.Diagram.Id];
-                    SaveText(System.IO.Path.Combine(folder, fileName), uml);
+                    var saved = PumlExportFolders.Save(folder, layout == null ? null : layout.Relative(entry.Diagram.Model), fileName, uml);
                     indexRows.Add("| " + (i + 1) + " | " + entry.OwnerPath + " | " + entry.Name
-                                  + " | [" + fileName + "](" + fileName + ") |");
+                                  + " | [" + saved + "](" + string.Join("/", saved.Split('/').Select(Uri.EscapeDataString).ToArray()) + ") |");
                 }
                 else
                 {
@@ -218,6 +312,7 @@ public class ExportRunner
             app.Output.WriteLine(Category, "[saved] " + indexPath);
         }
 
+        if (layout != null) foreach (var warning in layout.Warnings.Distinct()) app.Output.WriteLine(Category, "[warn]  " + warning);
         app.Output.WriteLine(Category, "");
         app.Output.WriteLine(Category, "=== 完了 : 成功 " + okCount
                              + " / スキップ " + skipCount + " / エラー " + errorCount + " ===");
@@ -228,6 +323,7 @@ public class ExportRunner
             + "スキップ: " + skipCount + " 件\n"
             + "エラー: " + errorCount + " 件\n\n"
             + "出力先: " + (folder ?? singlePath), Category);
+        return settings.OneFilePerDiagram ? folder : null;
     }
 
     // ==================== 対象の決定 ====================
