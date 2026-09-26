@@ -69,16 +69,50 @@ public partial class PlantUmlToolExtension
     }
 
     // ------------------------------------------------------------
-    //  クラス図同期（Part 9）。本体は ClassSyncRuntime（61-class-sync-runtime.cs）
+    //  反映・新規作成（シーケンス図とクラス図で共通のボタン）
+    //    開いている図・モデルで図の種類を決める。本体はクラス図が Part 9
+    //    （ClassSyncRuntime / ClassDiagramCreator）、シーケンス図が Part 10（SequenceCommands）
     // ------------------------------------------------------------
 
-    public void ApplyClassSync(ICommandContext context, ICommandParams commandParams) { ClassSyncRuntime.Preview(context.App, true, true, true); }
-    public void CreateClassDiagram(ICommandContext context, ICommandParams commandParams) { ClassDiagramCreator.Create(context.App); }
+    const string SyncTitle = "PlantUML 連携";
 
-    // ------------------------------------------------------------
-    //  シーケンス図同期（Part 10）。本体は 70〜73、入口は SequenceCommands（74-sequence-commands.cs）
-    // ------------------------------------------------------------
+    // 状態遷移図とクラス図はエディタ種別が重なることがあるので、出力と同じく状態遷移図を先に見分ける
+    static bool IsStateDiagram(IEditor editor)
+    {
+        return editor is IDiagram && StateExportRunner.IsStateDiagram((IDiagram)editor, new StatePlantUmlOptions());
+    }
 
-    public void ApplySequenceSync(ICommandContext context, ICommandParams commandParams) { SequenceCommands.Apply(context.App); }
-    public void CreateSequenceDiagram(ICommandContext context, ICommandParams commandParams) { SequenceCommands.Create(context.App); }
+    public void ApplyPlantUml(ICommandContext context, ICommandParams commandParams)
+    {
+        var app = context.App;
+        var editor = app.Workspace.CurrentEditor;
+        if (IsStateDiagram(editor)) app.Window.UI.ShowInformationDialog("状態遷移図への反映には対応していません。", SyncTitle);
+        else if (editor is ISequenceDiagram) SequenceCommands.Apply(app);
+        else if (editor != null && ClassDiagramKind.Reject(editor) == null) ClassSyncRuntime.Preview(app, true, true, true);
+        else app.Window.UI.ShowInformationDialog("反映先のシーケンス図かクラス図を開いてから実行してください。", SyncTitle);
+    }
+
+    public void CreateFromPlantUml(ICommandContext context, ICommandParams commandParams)
+    {
+        var app = context.App;
+        var editor = app.Workspace.CurrentEditor;
+        if (IsStateDiagram(editor)) { app.Window.UI.ShowInformationDialog("状態遷移図の新規作成には対応していません。", SyncTitle); return; }
+        if (editor is ISequenceDiagram) { SequenceCommands.Create(app); return; }
+        if (editor != null && ClassDiagramKind.Reject(editor) == null) { ClassDiagramCreator.Create(app); return; }
+        // A model is open or selected: the kinds of diagram it can hold decide.
+        string sequenceReason, classReason = null;
+        bool sequence = SequenceDiagramCreator.CanCreateHere(app, out sequenceReason);
+        bool klass;
+        try { IModel owner; IField field; IClass diagramClass; ClassDiagramCreator.ResolveGroup(app, editor, out owner, out field, out diagramClass); klass = true; }
+        catch (Exception ex) { klass = false; classReason = ex.Message; }
+        if (sequence && klass)
+        {
+            if (app.Window.UI.ShowConfirmDialog("ここにはシーケンス図とクラス図のどちらも作れます。\n\nOK: シーケンス図を作る\nキャンセル: クラス図を作る", SyncTitle))
+                SequenceCommands.Create(app);
+            else ClassDiagramCreator.Create(app);
+        }
+        else if (sequence) SequenceCommands.Create(app);
+        else if (klass) ClassDiagramCreator.Create(app);
+        else app.Window.UI.ShowInformationDialog("ここにはシーケンス図もクラス図も作れません。図を置くモデルを開くか選んでから実行してください。\n\nシーケンス図: " + sequenceReason + "\nクラス図: " + classReason, SyncTitle);
+    }
 }

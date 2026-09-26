@@ -59,6 +59,15 @@ public static class SequenceDiagramCreator
 
     sealed class Place { public IModel Owner; public IField Field; public SequenceTypeSource Types; public string Where; }
 
+    // Whether a sequence diagram can be made from where the user is (the ribbon's single
+    // "新規作成" chooses between sequence and class diagrams with this).
+    public static bool CanCreateHere(IApplication app, out string reason)
+    {
+        reason = null;
+        try { Resolve(app, app.Workspace.CurrentProject, new StringBuilder()); return true; }
+        catch (Exception ex) { reason = ex.Message; return false; }
+    }
+
     // With a sequence diagram open: beside it, of the same kind. Otherwise the open or selected
     // model: the embedded field whose element type has a sequence editor in the profile,
     // preferring the one the model's existing sequence diagrams already use.
