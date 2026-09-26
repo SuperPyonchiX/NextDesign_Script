@@ -16,6 +16,8 @@ public sealed class SequenceElement
 public sealed class SequenceDocument
 {
     public List<SequenceElement> Elements = new List<SequenceElement>();
+    // Lanes the input declares with "create participant" (see PumlPlan.Created).
+    public HashSet<string> CreatedLanes = new HashSet<string>();
     public bool HasTitle;
     public static readonly string[] Kinds = { "interaction","participant","message","execution",
         "fragment","operand","note","ref","create","destroy" };
@@ -134,6 +136,7 @@ public sealed class SequenceDocument
         {
             string id="p"+i;aliases.Add(parsed.Aliases[i],id);
             result.Elements.Add(new SequenceElement{Id=id,Kind="participant",Parent="root",Order=i-1000,Text=parsed.Names[i]});
+            if(parsed.Created.Contains(parsed.Aliases[i]))result.CreatedLanes.Add(id);
         }
         var active=new Dictionary<string,Stack<SequenceElement>>();int next=0;
         // A synchronous call blocks the bar that sent it until the bar it opened ends: Next Design
@@ -918,8 +921,10 @@ public sealed class SequenceRegion
     {
         var taking=operands.Where(o=>y>=o.Y-0.5 && y<o.Y+o.Height-0.5).ToList();
         if(taking.Count==0)return "";
-        var innermost=taking.Where(o=>!taking.Any(p=>p.Id!=o.Id && p.Y>=o.Y-0.5 && p.Y+p.Height<=o.Y+o.Height+0.5
-            && (p.Y>o.Y+0.5 || p.Y+p.Height<o.Y+o.Height-0.5 || p.Width<o.Width-0.5))).ToList();
+        // The export keeps a stack of open frames: the innermost is the branch that started last,
+        // even where an inner frame is drawn reaching past the branch around it.
+        double latest=taking.Max(o=>o.Y);
+        var innermost=taking.Where(o=>o.Y>=latest-0.5).ToList();
         return innermost.Count==1?innermost[0].Id:null;
     }
     public static IEnumerable<SequenceMembership> Nesting(IEnumerable<SequenceRegion> operands,IEnumerable<SequenceRegion> fragments,IEnumerable<SequenceRegion> annotations=null)
@@ -927,10 +932,16 @@ public sealed class SequenceRegion
         // As the PlantUML export places them: by where the top edge falls, whatever the box
         // reaches past below, since the export enters a branch by Y. Across, it must sit inside
         // the branch, or frames side by side would each claim the other.
-        foreach(var fragment in fragments)foreach(var operand in operands)
-            if(operand.Fragment!=fragment.Id && fragment.Y>=operand.Y-0.5 && fragment.Y<operand.Y+operand.Height-0.5
-                && fragment.X>=operand.X-0.5 && fragment.X<operand.X+operand.Width-0.5)
+        // Of the branches that take it, the one that started last, as the export's stack has it.
+        foreach(var fragment in fragments)
+        {
+            var taking=operands.Where(operand=>operand.Fragment!=fragment.Id && fragment.Y>=operand.Y-0.5 && fragment.Y<operand.Y+operand.Height-0.5
+                && fragment.X>=operand.X-0.5 && fragment.X<operand.X+operand.Width-0.5).ToList();
+            if(taking.Count==0)continue;
+            double latest=taking.Max(o=>o.Y);
+            foreach(var operand in taking.Where(o=>o.Y>=latest-0.5))
                 yield return new SequenceMembership{Child=fragment.Id,Parent=operand.Id,Evidence="diagram top edge within branch"};
+        }
         if(annotations==null)yield break;
         // A note or ref goes into the branch its top edge falls in, however far it sticks out
         // sideways: the export enters branches by Y alone, and a note is often drawn beside
@@ -953,7 +964,10 @@ public sealed class SequenceRegion
                     chosen=byY.Where(o=>o==nearest || (o.X<=nearest.X+0.5 && o.X+o.Width>=nearest.X+nearest.Width-0.5));
                 }
             }
-            foreach(var operand in chosen)
+            var chosenList=chosen.ToList();
+            if(chosenList.Count==0)continue;
+            double last=chosenList.Max(o=>o.Y);
+            foreach(var operand in chosenList.Where(o=>o.Y>=last-0.5))
                 yield return new SequenceMembership{Child=box.Id,Parent=operand.Id,Evidence="diagram top edge within branch"};
         }
     }
@@ -1099,6 +1113,30 @@ public static class SequenceNotePolicy
     public static SyncPlan Build(SequenceDocument current,SequenceDocument desired,Func<string> newId)
     {
         var before=current.Copy();var input=desired.Copy();
+        // A lane the input declares with "create participant" goes where the diagram has the
+        // lane of that name: the export moved its declaration to where it is created, so the
+        // declarations' order says nothing about it (the user's decision). Other lanes keep
+        // the input's order, and a change among them is still a change.
+        if(desired.CreatedLanes.Count>0)
+        {
+            var drawn=before.Elements.Where(e=>e.Kind=="participant").OrderBy(e=>e.Order).ToList();
+            var lanes=input.Elements.Where(e=>e.Kind=="participant").OrderBy(e=>e.Order).ToList();
+            var placed=lanes.Where(e=>!desired.CreatedLanes.Contains(e.Id)).ToList();
+            foreach(var lane in lanes.Where(e=>desired.CreatedLanes.Contains(e.Id)))
+            {
+                int k=drawn.FindIndex(d=>SequenceLabels.Fold(d.Text)==SequenceLabels.Fold(lane.Text));
+                if(k<0){placed.Add(lane);continue;}
+                int at=0;
+                for(int j=k-1;j>=0;j--)
+                {
+                    int found=placed.FindIndex(x=>SequenceLabels.Fold(x.Text)==SequenceLabels.Fold(drawn[j].Text));
+                    if(found>=0){at=found+1;break;}
+                }
+                placed.Insert(at,lane);
+            }
+            int order=lanes.Count==0?0:lanes.Min(e=>e.Order);
+            foreach(var lane in placed)lane.Order=order++;
+        }
         foreach(var e in before.Elements.Concat(input.Elements).Where(e=>e.Kind=="note"))
         {
             e.Links["targets"]=new string[0];e.Links.Remove("anchors");e.Attributes["position"]="free";

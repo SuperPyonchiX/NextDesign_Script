@@ -214,8 +214,20 @@
         var got=doc.Elements.Single(e=>e.Kind=="message" && e.Text=="got()");
         Require(got.Links["sendExecution"].SequenceEqual(wait.Links["receiveExecution"]),"the reply left the bar another lane called");
     }
+    // A lane declared with "create participant" is where the diagram has it, whatever its place
+    // among the declarations.
+    static void CreatedLaneOrder()
+    {
+        var model=SequenceDocument.Parse("@startuml\nparticipant A\nparticipant C\nparticipant B\nA -> B : call\nA -> C : make\n@enduml");Ids(model);
+        var input=SequenceDocument.Parse("@startuml\nparticipant A\nparticipant B\nA -> B : call\ncreate participant C\nA -> C : make\n@enduml");
+        var plan=SequenceNotePolicy.Build(model,input,()=>"new-"+(serial++));
+        Require(!plan.Changes.Any(c=>c.Kind=="participant"),"a created lane's declaration place was taken as a move: "+plan.ToJson());
+        var moved=SequenceDocument.Parse("@startuml\nparticipant B\nparticipant A\nA -> B : call\ncreate participant C\nA -> C : make\n@enduml");
+        Require(SequenceNotePolicy.Build(model,moved,()=>"new-"+(serial++)).Changes.Any(c=>c.Kind=="participant"),"a real reorder of other lanes was hidden");
+    }
     public static void Run()
     {
+        CreatedLaneOrder();
         ReplyUnderCallee();
         LateSendBar();
         FrameNesting();
