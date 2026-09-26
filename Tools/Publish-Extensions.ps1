@@ -30,6 +30,9 @@ param(
     [int]$NdVersion = 3
 )
 
+# powershell -File では -Name A,B が "A,B" という 1 つの文字列で届くので、カンマで分ける
+$Name = @($Name | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repo = Split-Path $PSScriptRoot -Parent
