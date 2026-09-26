@@ -28,38 +28,7 @@ Next Design V3 の DLL 形式エクステンションを、Visual Studio を入�
 - 禁止事項（第5条）は、リバースエンジニアリング、技術的制限の回避、SDK そのものを第三者へ共有・公開・貸与すること。SDK は各自が Microsoft から入手すれば当たらない
 - 第4条で利用状況の送信（テレメトリ）が定められている。止め方は手順 2 に書いた
 
-### 上司・情シスへの説明
-
-### 口頭での答え方
-
-> .NET SDK は Microsoft が無償で出している開発キットで、ライセンスは .NET Library License。条項に「プログラムの設計・開発・テストのためなら何台に入れてもよい」とあり、公式サイトにも商用利用で費用がかからないと明記されている。Visual Studio とは別の製品で、Visual Studio のライセンスには依存しない。
-
-### エビデンス（強い順）
-
-| # | 資料 | 示すこと | 入手方法 |
-|---|---|---|---|
-| 1 | インストールした SDK に同梱の LICENSE.txt | 実際に同意したライセンスそのもの。版ごとに固定で、Web の記載が変わっても影響しない | C:\Program Files\dotnet\LICENSE.txt（ユーザーフォルダに入れた場合は %LOCALAPPDATA%\Microsoft\dotnet\LICENSE.txt） |
-| 2 | 同 第1条 a 項 | "You may install and use any number of copies of the software to design, develop and test your programs." | 上のファイルの冒頭（.NET 9 SDK 同梱版で確認。10 は各自で開いて確認する） |
-| 3 | 公式ページ「.NET is free」 | "There are no licensing costs, including for commercial use." | https://dotnet.microsoft.com/platform/free |
-| 4 | dotnet/core の license-information.md | Windows 版の配布物が .NET Library License であること、SDK でビルドしたバイナリは追加の制限なく再配布できること | https://github.com/dotnet/core/blob/main/license-information.md |
-| 5 | C# Dev Kit FAQ | 有償になりうるのは C# Dev Kit で、それを入れていないこと | https://code.visualstudio.com/docs/csharp/cs-dev-kit-faq |
-
-1 がいちばん効く。Web ページ（3〜5）は後から書き換わることがあるので、PDF かスクリーンショットに日付を付けて保存しておく。
-
-### 聞かれそうなこと
-
-| 質問 | 答え |
-|---|---|
-| Visual Studio を入れていないのに大丈夫か | SDK は Visual Studio とは別に配布されている製品で、Visual Studio のライセンスに依存しない。Microsoft の公式サイトから SDK 単体で入れている |
-| データが外に出ないか | ライセンス条項に利用状況の送信が定められている。DOTNET_CLI_TELEMETRY_OPTOUT=1 で止められる。必須設定にするかは社内ポリシー次第 |
-| VS Code の拡張は大丈夫か | 「C#」拡張は、VS Code でアプリを開発・テストする用途なら使える条項で、有償の条件はない。有償になりうる「C# Dev Kit」は入れていない |
-
-### 言い切らないこと
-
-- 「法的に100%問題ない」とは言わない。「条文上は問題ないと判断した。根拠はこれ」と伝え、最終判断は会社のソフトウェア管理部門（情シス・法務）に承認をもらう形にする
-- Next Design 本体の使用許諾契約は確認していないので、その点は「未確認」と伝える
-
-## 参照パック（nuget.org に接続できない場合に持ち込む nupkg）
+### 参照パック（nuget.org に接続できない場合に持ち込む nupkg）
 
 - 3つの nupkg（Microsoft.NETCore.App.Ref / Microsoft.WindowsDesktop.App.Ref / Microsoft.AspNetCore.App.Ref の 6.0.36）は、いずれもパッケージ内の定義で MIT。WindowsDesktop は同梱の LICENSE ファイルが MIT License 本文。自分のPC間で持ち込んで使うことに制限はない
 
@@ -116,6 +85,29 @@ dotnet CLI は既定で利用状況を Microsoft へ送る。社内PCで止め�
 ```powershell
 code --install-extension ms-dotnettools.csharp
 ```
+
+### 「spawn UNKNOWN」の通知が出る場合
+
+C# 拡張を入れた直後に、次の通知が出ることがある。
+
+- An error occurred while installing .NET (10.0.12): spawn UNKNOWN
+- An error occurred while installing .NET: spawn UNKNOWN
+- .NET SDKが見つかりません: Error running dotnet --info: spawn UNKNOWN .NET デバッグは有効になりません。
+
+C# 拡張は、言語サーバー用の .NET ランタイムを「.NET Install Tool」経由で自動ダウンロードして起動する。その起動が失敗している。ターミナルからの dotnet は動くので、ビルドと配置には影響しない。影響を受けるのは補完・エラー表示・デバッガ。
+
+ユーザー設定（Ctrl+Shift+P →「基本設定: ユーザー設定を開く (JSON)」）に次を追加し、自動ダウンロードの代わりに手順 2 で入れた SDK を使わせる。path は SDK を入れた場所に合わせる。
+
+```json
+"dotnetAcquisitionExtension.existingDotnetPath": [
+  {
+    "extensionId": "ms-dotnettools.csharp",
+    "path": "C:\Program Files\dotnet\dotnet.exe"
+  }
+]
+```
+
+2026年9月26日、会社PC（SDK は C:\Program Files\dotnet）でこの設定を入れ、3つとも通知が出なくなった。自動ダウンロードしたランタイムの起動が失敗した原因（セキュリティソフトによるブロックか、SDK 導入前から開いていた VS Code の PATH か）は特定していない。この設定でも同じ通知が出る場合は、Windows セキュリティの「保護の履歴」にブロックの記録がないか確認する。
 
 ## 4. ビルドする
 
@@ -174,6 +166,37 @@ Next Design が .NET 6 上で動いていれば、VS Code の「C#」拡張で�
 ```
 
 実行後にプロセス一覧から `NextDesign.exe` を選ぶ。配置した `.pdb` がビルド時のものと一致していれば、ブレークポイントで止まる。
+
+## 上司・情シスへの説明
+
+### 口頭での答え方
+
+> .NET SDK は Microsoft が無償で出している開発キットで、ライセンスは .NET Library License。条項に「プログラムの設計・開発・テストのためなら何台に入れてもよい」とあり、公式サイトにも商用利用で費用がかからないと明記されている。Visual Studio とは別の製品で、Visual Studio のライセンスには依存しない。
+
+### エビデンス（強い順）
+
+| # | 資料 | 示すこと | 入手方法 |
+|---|---|---|---|
+| 1 | インストールした SDK に同梱の LICENSE.txt | 実際に同意したライセンスそのもの。版ごとに固定で、Web の記載が変わっても影響しない | C:\Program Files\dotnet\LICENSE.txt（ユーザーフォルダに入れた場合は %LOCALAPPDATA%\Microsoft\dotnet\LICENSE.txt） |
+| 2 | 同 第1条 a 項 | "You may install and use any number of copies of the software to design, develop and test your programs." | 上のファイルの冒頭（.NET 9 SDK 同梱版で確認。10 は各自で開いて確認する） |
+| 3 | 公式ページ「.NET is free」 | "There are no licensing costs, including for commercial use." | https://dotnet.microsoft.com/platform/free |
+| 4 | dotnet/core の license-information.md | Windows 版の配布物が .NET Library License であること、SDK でビルドしたバイナリは追加の制限なく再配布できること | https://github.com/dotnet/core/blob/main/license-information.md |
+| 5 | C# Dev Kit FAQ | 有償になりうるのは C# Dev Kit で、それを入れていないこと | https://code.visualstudio.com/docs/csharp/cs-dev-kit-faq |
+
+1 がいちばん効く。Web ページ（3〜5）は後から書き換わることがあるので、PDF かスクリーンショットに日付を付けて保存しておく。
+
+### 聞かれそうなこと
+
+| 質問 | 答え |
+|---|---|
+| Visual Studio を入れていないのに大丈夫か | SDK は Visual Studio とは別に配布されている製品で、Visual Studio のライセンスに依存しない。Microsoft の公式サイトから SDK 単体で入れている |
+| データが外に出ないか | ライセンス条項に利用状況の送信が定められている。DOTNET_CLI_TELEMETRY_OPTOUT=1 で止められる。必須設定にするかは社内ポリシー次第 |
+| VS Code の拡張は大丈夫か | 「C#」拡張は、VS Code でアプリを開発・テストする用途なら使える条項で、有償の条件はない。有償になりうる「C# Dev Kit」は入れていない |
+
+### 言い切らないこと
+
+- 「法的に100%問題ない」とは言わない。「条文上は問題ないと判断した。根拠はこれ」と伝え、最終判断は会社のソフトウェア管理部門（情シス・法務）に承認をもらう形にする
+- Next Design 本体の使用許諾契約は確認していないので、その点は「未確認」と伝える
 
 ## 参照
 
