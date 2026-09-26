@@ -63,21 +63,34 @@ public static class ModelEditApi
     public static object Schema(IApplication app, string path, string id)
     {
         var m = ModelApi.ResolveModel(app, path, id);
+        return ModelApi.Summary(m).Set("editable", m.IsEditable).Set("fields", FieldsOf(m.Metaclass, true));
+    }
+
+    // Each field's name, type and kind; for an owned field, the classes a row can be and (one level
+    // down) the columns of such a row, so a table can be filled or edited without another lookup.
+    static List<object> FieldsOf(IClass cls, bool withRows)
+    {
         var fields = new List<object>();
-        if (m.Metaclass != null)
-            foreach (var f in m.Metaclass.GetFields().Cast<IField>())
+        if (cls == null) return fields;
+        foreach (var f in cls.GetFields().Cast<IField>())
+        {
+            if (f == null || f.Name == null || AgentText.IsSystemName(f.Name)) continue;
+            var e = new JsonObject().Set("name", f.Name).Set("type", f.Type).Set("kind", Kind(f)).Set("multiple", f.UpperBound != 1);
+            try { if (f.TypeEnum != null) e.Set("literals", f.TypeEnum.Literals.Select(l => (object)l.Name).ToList()); } catch (Exception) { }
+            if (f.TypeClass != null)
             {
-                if (f == null || f.Name == null || AgentText.IsSystemName(f.Name)) continue;
-                var e = new JsonObject().Set("name", f.Name).Set("type", f.Type).Set("kind", Kind(f)).Set("multiple", f.UpperBound != 1);
-                try { if (f.TypeEnum != null) e.Set("literals", f.TypeEnum.Literals.Select(l => (object)l.Name).ToList()); } catch (Exception) { }
-                if (f.TypeClass != null)
-                {
-                    e.Set("typeClass", f.TypeClass.FullName);
-                    if (f.IsEmbedded) e.Set("addableClasses", Concrete(f.TypeClass).Select(c => (object)new JsonObject().Set("name", c.Name).Set("fullName", c.FullName)).ToList());
-                }
-                fields.Add(e);
+                e.Set("typeClass", f.TypeClass.FullName);
+                if (f.IsEmbedded)
+                    e.Set("addableClasses", Concrete(f.TypeClass).Select(c =>
+                    {
+                        var row = new JsonObject().Set("name", c.Name).Set("fullName", c.FullName);
+                        if (withRows) row.Set("fields", FieldsOf(c, false));
+                        return (object)row;
+                    }).ToList());
             }
-        return ModelApi.Summary(m).Set("editable", m.IsEditable).Set("fields", fields);
+            fields.Add(e);
+        }
+        return fields;
     }
 
     // ---- POST /model/edit ----
