@@ -58,23 +58,6 @@ public static class ClassDiagramCreator
         return result.GroupBy(c=>c.Id).Select(g=>g.First()).ToList();
     }
     static bool HasClassDiagram(IModel m) { return Editors(m).Any(e=>ClassDiagramKind.Reject(e)==null); }
-    // The reference field of the diagram model through which the diagram shows this model:
-    // one whose type accepts it, preferring the field another class diagram in the group
-    // already uses for the same model, then any it uses at all.
-    static IField DisplayField(IModel diagramModel,IModel shown,IModel group,StringBuilder log)
-    {
-        var all=diagramModel.Metaclass.GetFields().Cast<IField>().ToList();
-        var fits=all.Where(f=>f.IsReference && f.TypeClass!=null && f.TypeClass.IsClassOf(shown.Metaclass)).ToList();
-        if(fits.Count==0)
-            throw new InvalidOperationException("C320: 図のモデル（"+diagramModel.ClassName+"）に '"+Name(shown)+"'（"+shown.ClassName+"）を参照できるフィールドがありません。参照フィールド: "
-                +string.Join(", ",all.Where(f=>f.IsReference).Select(f=>f.Name+":"+f.Type).ToArray()));
-        if(fits.Count==1)return fits[0];
-        var others=Children(group).Where(m=>m.Id!=diagramModel.Id && m.Metaclass!=null && m.Metaclass.FullName==diagramModel.Metaclass.FullName).ToList();
-        Func<IField,Func<IModel,bool>,int> uses=(f,which)=>others.Count(o=>{try{return o.GetFieldValues(f.Name).Cast<object>().OfType<IModel>().Any(which);}catch(Exception){return false;}});
-        var chosen=fits.OrderByDescending(f=>uses(f,m=>m.Id==shown.Id)).ThenByDescending(f=>uses(f,m=>true)).First();
-        log.AppendLine("display field candidates for "+shown.ClassName+": "+string.Join(", ",fits.Select(f=>f.Name).ToArray())+" -> "+chosen.Name);
-        return chosen;
-    }
     static IEnumerable<IClass> Concrete(IClass declared)
     {
         var all=new List<IClass>{declared};
@@ -300,22 +283,30 @@ public static class ClassDiagramCreator
                 +"途中でプロジェクトを保存し、そのあと反映の内容を確認します。";
             if(!confirm(question)) { outcome.Summary="新しい図の作成を中止しました。";outcome.Succeeded=true;return Finish(outcome,log); }
 
-            var transaction=project.BeginUndoTransaction(false);
-            IDiagram created;
+            // The diagram model is committed on its own and opened before any box goes on it: a
+            // new diagram refuses AddNodeShape until it is shown in the editor (ClassImportProbe
+            // 0.8.2 on the real project: refused after commit, accepted once opened).
+            var make=project.BeginUndoTransaction(false);
             try
             {
                 diagramModel=owner.AddNewModel(field,diagramClass);
                 if(diagramModel==null)throw new InvalidOperationException("C320: 図のモデルを作成できませんでした。");
                 diagramModel.SetField("Name",draft.Title);
-                log.AppendLine("diagram model "+diagramModel.ClassName+" id="+diagramModel.Id+" name='"+diagramModel.Name+"'");
-                var editors=Editors(diagramModel);
-                log.AppendLine("editors of the new model: "+string.Join(", ",editors.Select(e=>e.EditorType+"/"+e.ViewDefinitionName).ToArray()));
-                created=editors.Where(e=>ClassDiagramKind.Reject(e)==null).OfType<IDiagram>().FirstOrDefault();
-                if(created==null)throw new InvalidOperationException("C320: 新しい図のモデルにクラス図のエディタがありません（"+string.Join(", ",editors.Select(e=>e.EditorType+"/"+e.ViewDefinitionName).ToArray())+"）。");
+                make.Commit();
+            }
+            catch(Exception) { try { make.Rollback(); } catch(Exception) { } diagramModel=null;throw; }
+            log.AppendLine("diagram model "+diagramModel.ClassName+" id="+diagramModel.Id+" name='"+diagramModel.Name+"'");
+            try { app.Workspace.State.SetCurrentModel(diagramModel); } catch(Exception ex) { log.AppendLine("open the new diagram: "+ex.Message); }
+            var opened=app.Workspace.CurrentEditor;
+            IDiagram created=opened!=null && ClassDiagramKind.Reject(opened)==null && ClassDiagramKind.ModelOf(opened)!=null && ClassDiagramKind.ModelOf(opened).Id==diagramModel.Id?opened as IDiagram:null;
+            log.AppendLine("opened editor: "+(opened==null?"none":opened.EditorType+"/"+opened.ViewDefinitionName)+(created==null?" (not the new class diagram)":""));
+            if(created==null)throw new InvalidOperationException("C320: 作成した図をエディタで開けませんでした（"+(opened==null?"エディタなし":opened.EditorType+"/"+opened.ViewDefinitionName)+"）。");
+            var transaction=project.BeginUndoTransaction(false);
+            try
+            {
                 var views=project.Profile.ViewDefinitions;var editorDef=((IEditor)created).EditorDefinition;
                 // Outer boxes first: a box or class inside a box already on the diagram is shown
-                // through ownership, while an outermost one is shown only when the diagram model
-                // refers to it (AddNodeShape refused a Domain without it on the real project).
+                // through ownership.
                 Func<IModel,int> depth=m=>{int d=0;for(var o=m.Owner;o!=null && d<64;o=o.Owner)d++;return d;};
                 var onDiagram=new HashSet<string>(StringComparer.Ordinal);
                 double x=40,y=40,rowHeight=0;
@@ -331,18 +322,12 @@ public static class ClassDiagramCreator
                     }
                     bool inside=false;
                     for(var o=p.Model.Owner;o!=null && !inside;o=o.Owner)inside=onDiagram.Contains(o.Id);
-                    if(!inside)
-                    {
-                        var shows=DisplayField(diagramModel,p.Model,owner,log);
-                        diagramModel.Relate(shows.Name,p.Model);
-                        log.AppendLine("diagram refers to '"+p.Item.Name+"' through "+shows.Name);
-                    }
                     IElementDef def=null;
                     try { def=views.FindElementDefByClass(editorDef,p.Model.Metaclass,null).Cast<IElementDef>().FirstOrDefault(); }
                     catch(Exception ex) { log.AppendLine("FindElementDefByClass failed for "+p.Model.ClassName+": "+ex.Message); }
                     try { created.AddNodeShape(p.Model,def); } catch(Exception ex) { log.AppendLine("AddNodeShape failed for '"+p.Item.Name+"' ("+(def==null?"no definition":def.Type)+"): "+ex.Message); }
                     var node=created.Nodes.Cast<object>().OfType<INode>().FirstOrDefault(n=>{var m=ClassDiagramKind.ModelOf(n);return m!=null && m.Id==p.Model.Id;});
-                    if(node==null)throw new InvalidOperationException("C320: 新しい図に '"+p.Item.Name+"'（"+p.Model.ClassName+"）の箱を置けませんでした。"+(inside?"":"図のモデルからの参照は張りました。"));
+                    if(node==null)throw new InvalidOperationException("C320: 新しい図に '"+p.Item.Name+"'（"+p.Model.ClassName+"）の箱を置けませんでした。");
                     onDiagram.Add(p.Model.Id);
                     // Outermost boxes go in rows; boxes inside another stay where the product puts them.
                     if(!inside)
@@ -359,7 +344,7 @@ public static class ClassDiagramCreator
             catch(Exception)
             {
                 try { transaction.Rollback(); } catch(Exception rollbackError) { log.AppendLine("rollback failed: "+rollbackError.Message); }
-                diagramModel=null;foreach(var p in placed.Where(x=>x.Created))p.Model=null;
+                foreach(var p in placed.Where(x=>x.Created))p.Model=null;
                 throw;
             }
             // The sync exports the new diagram before adding relationship lines, which the
@@ -404,7 +389,8 @@ public static class ClassDiagramCreator
         {
             outcome.ErrorMessage=ex.Message;
             log.AppendLine(ex.ToString());
-            string removed=saved?Remove(app.Workspace.CurrentProject,diagramModel,placed,log):"";
+            // The diagram model is committed before the boxes go on, so a stop after that removes it.
+            string removed=diagramModel!=null?Remove(app.Workspace.CurrentProject,diagramModel,placed,log):"";
             outcome.Summary="新しい図を作成できませんでした。\n"+ex.Message+(removed.Length>0?"\n"+removed:"");
             return Finish(outcome,log);
         }
