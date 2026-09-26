@@ -238,8 +238,29 @@
         var moved=SequenceDocument.Parse("@startuml\nparticipant B\nparticipant A\nA -> B : call\ncreate participant C\nA -> C : make\n@enduml");
         Require(SequenceNotePolicy.Build(model,moved,()=>"new-"+(serial++)).Changes.Any(c=>c.Kind=="participant"),"a real reorder of other lanes was hidden");
     }
+    // The first message to a lane declared with "create participant" is its create message,
+    // as the diagram has it; later messages to it keep their sort.
+    static void CreateMessageSort()
+    {
+        var read=SequenceDocument.Parse("@startuml\nparticipant A\nA -> A : prepare\ncreate participant B\nA -> B : new\nA -> B : call\n@enduml");
+        var sorts=read.Elements.Where(e=>e.Kind=="message").OrderBy(e=>e.Line).Select(e=>e.Attributes["sort"]).ToArray();
+        Require(sorts.SequenceEqual(new[]{"sync","create","sync"}),"create message sorts: "+string.Join(",",sorts));
+    }
+    // A call to itself whose bar the export writes inside the frame drawn between its send and
+    // its arrival still arrives on that bar, which starts outside the frame.
+    static void LateSelfBarInFrame()
+    {
+        var read=SequenceDocument.Parse("@startuml\nparticipant C\nparticipant A\nactivate C\nC -> A : start()\nactivate A\nA -> A : erase()\ncritical lock\nactivate A\nloop each\nA -> A : remove\nactivate A\ndeactivate A\nend\nA --> A : void\ndeactivate A\nend\nA --> C : done\ndeactivate A\ndeactivate C\n@enduml");
+        var erase=read.Elements.First(e=>e.Kind=="message" && e.Text=="erase()");
+        var back=read.Elements.First(e=>e.Kind=="message" && e.Text=="void");
+        Require(erase.Links["receiveExecution"].SequenceEqual(back.Links["sendExecution"]),"the call to itself did not arrive on the bar opened in the frame");
+        var bar=read.Elements.First(e=>e.Id==back.Links["sendExecution"][0]);
+        Require(bar.Parent==erase.Parent,"the bar was placed in the frame, not where its call arrives");
+    }
     public static void Run()
     {
+        CreateMessageSort();
+        LateSelfBarInFrame();
         CreatedLaneOrder();
         ReplyUnderCallee();
         LateSendBar();

@@ -30,7 +30,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.11.31";
+    public const string Title = "シーケンス生成実験 / 0.11.32";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -869,6 +869,8 @@ public static class PumlRuntime
         for(int i=0;i<keys.Length;i++)p.Relations[keys[i]]=SequencePayload.Prefix+SequencePayload.RelationTypes[i];
         p.Sync=Literal(source[6],"MessageSort","Sync");
         if(plan.All().Any(n=>n.Kind=="async"))p.Async=Literal(source[6],"MessageSort","Async");
+        // A lane declared with "create participant" is created by its first message (see SequenceDocument.Parse).
+        if(plan.Created.Count>0)try{p.Create=Literal(source[6],"MessageSort","Create");}catch(InvalidOperationException){p.Create=null;}
         if(plan.All().Any(n=>n.Kind=="reply"))
         {
             p.Reply=Literal(source[6],"MessageSort","Reply");
@@ -1607,7 +1609,7 @@ public static class SequenceSyncRuntime
                         var messageClass=PumlRuntime.BaseTypes(diagram)[6];
                         var sortField=messageClass.GetFields().Cast<IField>().FirstOrDefault(f=>f.Name=="MessageSort");
                         if(sortField!=null && sortField.TypeEnum!=null)
-                            foreach(string sort in new[]{"sync","async","reply"})
+                            foreach(string sort in new[]{"sync","async","reply","create"})
                             {
                                 var literal=sortField.TypeEnum.Literals.FirstOrDefault(l=>string.Equals(l.Name,sort,StringComparison.OrdinalIgnoreCase));
                                 if(literal!=null)SequenceStructurePreparation.SortLiterals[sort]=literal.Name;
@@ -4469,7 +4471,7 @@ public class PumlProfile
     public Dictionary<string,string> Types = new Dictionary<string,string>();
     public Dictionary<string,string> Relations = new Dictionary<string,string>();
     public Dictionary<string,string> Operators = new Dictionary<string,string>();
-    public string NoteField = "Body", NoteStorage = "String", Sync="Sync", Async="Async", Reply="Reply", Destroy=null;
+    public string NoteField = "Body", NoteStorage = "String", Sync="Sync", Async="Async", Reply="Reply", Destroy=null, Create=null;
     // The interaction each ref refers to, by its input line; a ref without one is drawn unlinked.
     public Dictionary<int,string> References = new Dictionary<int,string>();
     // Label, id and full name of every concrete type this run settled on.
@@ -4503,6 +4505,8 @@ public class PumlBuild
     private Dictionary<string,Stack<string>> activities=new Dictionary<string,Stack<string>>();
     private string pendingAlias,pendingExecution,frameId;
     public HashSet<string> unopened=new HashSet<string>();
+    // Lanes declared with "create participant" that no message has touched yet.
+    public HashSet<string> creating=new HashSet<string>();
     private Dictionary<string,string> executionAliases=new Dictionary<string,string>();
     private int y=40;
     public static Dictionary<string,object> Obj(params object[] values)
@@ -4685,7 +4689,10 @@ public class PumlBuild
                 pendingSendAlias=freshSend && !self && !incoming?n.Left:null; pendingSendExecution=send;
                 if(!incoming)Extend(send,y); if(!outgoing)Extend(receive,targetY);
                 foreach(var pair in activities)if(pair.Value.Count>0 && active.ContainsKey(pair.Key))Extend(active[pair.Key],targetY);
+                bool creates=n.Kind=="sync" && creating.Contains(n.Right) && !creating.Contains(n.Left) && profile.Create!=null;
+                creating.Remove(n.Left);creating.Remove(n.Right);
                 string id=Entity("Message",n.Text,Obj("Name",n.Text,"MessageSort",n.Kind=="reply"?profile.Reply
+                    :creates?profile.Create
                     :profile.Destroy!=null && DestroysNext(items,index)?profile.Destroy
                     :n.Kind=="sync"?profile.Sync:profile.Async)); Owned("Messages",id);
                 Link("SendMessage",send,id,false,0); Link("ReceiveMessage",receive,id,false,0);
@@ -4762,6 +4769,7 @@ public class PumlBuild
             b.Owned("Lifelines",id); b.Shape("Lifelines",id,"X",b.x[alias]-50,"Width",100,"LeftPadding",index==0?190:140,"LaneLength",300);
             p.Expected.Add(new PumlExpected{Id=id,Kind="lifeline",Text=plan.Names[index]});
         }
+        b.creating.UnionWith(plan.Created);
         b.Items(plan.Nodes);
         // A bar is tied to the reply that closes it: the last message on that bar, when it is a
         // reply leaving it. Tied to a reply with more messages on the bar after it, the product
@@ -5776,6 +5784,14 @@ public sealed class SequenceDocument
             e.Attributes.Clear();
         }
         foreach(var e in result.Elements.Where(e=>e.Kind=="message"))e.Attributes.Remove("received");
+        // The export writes "create participant" just before a create message to that lane, and
+        // the create message itself as a plain arrow: the first message to or from a lane so
+        // declared, received by it, is the one that creates it.
+        foreach(string lane in result.CreatedLanes)
+        {
+            var first=result.Elements.Where(e=>e.Kind=="message" && (e.Links["sender"].Contains(lane) || e.Links["receiver"].Contains(lane))).OrderBy(e=>e.Line).FirstOrDefault();
+            if(first!=null && first.Links["receiver"].Contains(lane) && !first.Links["sender"].Contains(lane) && first.Attributes["sort"]=="sync")first.Attributes["sort"]="create";
+        }
         result.SettleExecutions(e=>e.Line);
         result.Validate();return result;
     }
@@ -7659,7 +7675,7 @@ public sealed class SequenceStructurePreparation
         var wires=new List<SequenceAddedMessage>();var newMessageShapes=new List<SequenceJson>();
         var notes=new List<SequenceAddedNote>();var newEndShapes=new List<SequenceJson>();
         var walkNew=SequenceStructurePreflight.Flatten(plan.Expected);
-        Func<SequenceElement,string> written=e=>{string v=SequenceStructurePreflight.Attribute(e);return v=="destroy"?"sync":v;};
+        Func<SequenceElement,string> written=e=>{string v=SequenceStructurePreflight.Attribute(e);return v=="destroy" || (v=="create" && !SortLiterals.ContainsKey("create"))?"sync":v;};
         var messageEntities=current.Elements.Where(e=>e.Kind=="message" && byId.ContainsKey(e.Id) && shapeOf.ContainsKey(e.Id)).ToArray();
         // A message to or from outside the diagram ends in a free end of its own, 60 left of
         // the bar at its other end, as the generator draws it.

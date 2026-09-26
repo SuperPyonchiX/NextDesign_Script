@@ -547,7 +547,7 @@ public static class SequenceSyncRuntime
                         var messageClass=PumlRuntime.BaseTypes(diagram)[6];
                         var sortField=messageClass.GetFields().Cast<IField>().FirstOrDefault(f=>f.Name=="MessageSort");
                         if(sortField!=null && sortField.TypeEnum!=null)
-                            foreach(string sort in new[]{"sync","async","reply"})
+                            foreach(string sort in new[]{"sync","async","reply","create"})
                             {
                                 var literal=sortField.TypeEnum.Literals.FirstOrDefault(l=>string.Equals(l.Name,sort,StringComparison.OrdinalIgnoreCase));
                                 if(literal!=null)SequenceStructurePreparation.SortLiterals[sort]=literal.Name;

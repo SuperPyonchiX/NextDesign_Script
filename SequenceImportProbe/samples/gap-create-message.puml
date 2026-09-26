@@ -1,0 +1,16 @@
+@startuml
+participant A
+activate A
+A -> A : prepare
+activate A
+deactivate A
+create participant B
+A -> B : new
+activate B
+deactivate B
+A -> B : call
+activate B
+B --> A : done
+deactivate B
+deactivate A
+@enduml

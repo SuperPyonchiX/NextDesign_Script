@@ -422,6 +422,14 @@ public sealed class SequenceDocument
             e.Attributes.Clear();
         }
         foreach(var e in result.Elements.Where(e=>e.Kind=="message"))e.Attributes.Remove("received");
+        // The export writes "create participant" just before a create message to that lane, and
+        // the create message itself as a plain arrow: the first message to or from a lane so
+        // declared, received by it, is the one that creates it.
+        foreach(string lane in result.CreatedLanes)
+        {
+            var first=result.Elements.Where(e=>e.Kind=="message" && (e.Links["sender"].Contains(lane) || e.Links["receiver"].Contains(lane))).OrderBy(e=>e.Line).FirstOrDefault();
+            if(first!=null && first.Links["receiver"].Contains(lane) && !first.Links["sender"].Contains(lane) && first.Attributes["sort"]=="sync")first.Attributes["sort"]="create";
+        }
         result.SettleExecutions(e=>e.Line);
         result.Validate();return result;
     }
@@ -2305,7 +2313,7 @@ public sealed class SequenceStructurePreparation
         var wires=new List<SequenceAddedMessage>();var newMessageShapes=new List<SequenceJson>();
         var notes=new List<SequenceAddedNote>();var newEndShapes=new List<SequenceJson>();
         var walkNew=SequenceStructurePreflight.Flatten(plan.Expected);
-        Func<SequenceElement,string> written=e=>{string v=SequenceStructurePreflight.Attribute(e);return v=="destroy"?"sync":v;};
+        Func<SequenceElement,string> written=e=>{string v=SequenceStructurePreflight.Attribute(e);return v=="destroy" || (v=="create" && !SortLiterals.ContainsKey("create"))?"sync":v;};
         var messageEntities=current.Elements.Where(e=>e.Kind=="message" && byId.ContainsKey(e.Id) && shapeOf.ContainsKey(e.Id)).ToArray();
         // A message to or from outside the diagram ends in a free end of its own, 60 left of
         // the bar at its other end, as the generator draws it.
