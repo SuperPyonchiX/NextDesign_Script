@@ -397,6 +397,8 @@ public static class SequenceSyncRuntime
     // Set by the PlantUmlTool ribbon: the result reads as a product's, without the trial's
     // case names and checklists (those stay for the SequenceImportProbe dev extension).
     public static bool Plain;
+    // Whether the last update took its snapshot from the SDK (unsaved project).
+    internal static bool LastFromSdk;
     // Every update takes the snapshot from the SDK, saved or not: to test that path in the batch.
     public static bool ForceSdkSnapshot;
     static bool UseSdkSnapshot(IApplication app)
@@ -642,7 +644,7 @@ public static class SequenceSyncRuntime
                     {
                         // Every shape is compared rounded, whichever snapshot: an editor import also stores
                         // a hand-drawn "42" back as 42.000001 (3.2.4 on the device, saved project).
-                        SequenceStructureTrial.RoundAllShapes=true;
+                        SequenceStructureTrial.RoundAllShapes=true;LastFromSdk=fromSdk;
                         try {SequenceExperiment.Summary=SequenceStructureTrial.Run(app,project,diagram,preparation,plan,exported,directory,log,retain,reconnectCommit);}
                         finally {SequenceStructureTrial.RoundAllShapes=false;}
                         screenshot=SequenceExperiment.Summary+"\f試行診断\n"+log.ToString();
@@ -779,10 +781,17 @@ public static class SequenceStructureTrial
         add("枠で囲んだメッセージ",prepared.MovedMessages.Length);
         return "図へ反映しました。"+(counts.Count>0?"\n"+string.Join(" / ",counts):"")
             +"\nプロジェクトは保存していません。"
-            // 3.2.3 on the device: Ctrl+Z after an update that only deleted left the diagram as it
-            // was, and the next Ctrl+Z (the user's own earlier edit) stopped the product. Until
-            // the update undoes as one step, every result says so.
-            +"\n注意: この反映は Ctrl+Z で戻せません。Ctrl+Z を続けると製品が停止することがあります。取り消すときは保存せずに開き直してください。";
+            // On the device (3.2.3 / 3.2.5): an update of a saved project undoes with one Ctrl+Z (the
+            // diagram shows it once reopened). One made from the SDK snapshot (unsaved) does not
+            // bring deleted elements back, and the next Ctrl+Z stops the product. Adding messages
+            // or frames stops it on Undo either way (A15).
+            +(SequenceSyncRuntime.LastFromSdk
+                ?"\n注意: 未保存のプロジェクトへの反映は Ctrl+Z で戻せません。Ctrl+Z を続けると製品が停止することがあります。取り消すときは保存せずに開き直してください。"
+                :prepared.AddedMessages.Length>0 || prepared.AddedFragments.Length>0 || prepared.AddedNotes.Length>0
+                ?"\n注意: メッセージ・フラグメント・Note・ref を追加した反映は Ctrl+Z で戻せません（戻すと製品が停止します。製品側の不具合）。取り消すときは保存せずに開き直してください。"
+                :prepared.AddedExecutions.Length>0 || prepared.AddedParticipants.Length>0
+                ?"\n注意: 実行区間・参加者を追加した反映を Ctrl+Z で戻せるかは確かめていません。取り消すときは保存せずに開き直してください。"
+                :"\nCtrl+Z で戻せます。戻したあとは図を開き直すと表示が更新されます。");
     }
     public static string Run(IApplication app,IProject project,ISequenceDiagram diagram,SequenceStructurePreparation prepared,SyncPlan plan,string exported,string directory,StringBuilder log,bool retain=false,bool reconnectCommit=false)
     {
