@@ -731,21 +731,50 @@ public static class SequenceUndoProbe
 //   取り込みの側にある。
 public static class SequenceDeleteUndoProbe
 {
+    // The open diagram's editor only, without the shapes of the given model.
+    static string EditorWithout(IProject project,ISequenceDiagram diagram,string modelId,StringBuilder log)
+    {
+        var root=diagram.Model as IInteraction;
+        var doc=SequenceJson.Parse(SequenceSnapshotBuilder.Build(project,root,diagram,SequenceSnapshotBuilder.Schema(project),log));
+        var editor=doc["Editors"].Items[0];
+        foreach(var key in editor.Properties.Keys.ToList())
+        {
+            var list=editor.Properties[key];
+            if(list.Items!=null)list.Items.RemoveAll(x=>x["ModelId"]!=null && x["ModelId"].StringValue()==modelId);
+        }
+        doc.Properties["Entities"]=new SequenceJson{Items=new List<SequenceJson>()};
+        doc.Properties["Relations"]=new SequenceJson{Items=new List<SequenceJson>()};
+        return doc.ToJsonString();
+    }
+    static void Import(IProject project,string json)
+    {
+        var result=project.ImportUnitFromJson(json,null,null);
+        if(result==null || result.State!="success" || result.Errors.Any(e=>e.Kind!=UnitImportErrorKind.Info))
+            throw new InvalidOperationException("取り込みに失敗: "+(result==null?"結果なし":result.State+" "+string.Join(" / ",result.Errors.Select(e=>e.Message))));
+    }
     public static void Run(IApplication app)
     {
         var ui=app.Window.UI;const string title="削除の Ctrl+Z 切り分け";
-        var project=app.Workspace.CurrentProject;
+        var project=app.Workspace.CurrentProject;var diagram=app.Workspace.CurrentEditor as ISequenceDiagram;
         IModel target=null;
         try{target=app.Workspace.State.ActiveEditorSelectedModel;}catch(Exception){}
-        if(project==null || target==null){ui.ShowInformationDialog("図で削除する要素（保存前に追加したもの）を1つ選んでから実行してください。",title);return;}
-        bool suspend=ui.ShowConfirmDialog("「"+target.Name+"」（"+target.ClassName+"）を削除します。\n\nOK: 反映と同じく SuspendModelVerification の中で削除\nキャンセル: そのまま削除",title);
+        if(project==null || diagram==null || target==null){ui.ShowInformationDialog("シーケンス図で、削除する要素（保存前に追加した Note など。アンカーの無いもの）を1つ選んでから実行してください。",title);return;}
+        string mode;
+        if(ui.ShowConfirmDialog("「"+target.Name+"」（"+target.ClassName+"）を削除します。\n\nOK: A 削除だけ\nキャンセル: 次の選択へ",title))mode="A";
+        else if(ui.ShowConfirmDialog("OK: B 削除したあとに図形を取り込み直す（今の反映と同じ順）\nキャンセル: C 先にその図形を除いた図形を取り込み、そのあと削除",title))mode="B";
+        else mode="C";
+        var log=new StringBuilder();
         var transaction=project.BeginUndoTransaction(false);
         try
         {
-            if(suspend)using(project.SuspendModelVerification())target.Delete();else target.Delete();
+            string id=target.Id;
+            if(mode=="C")Import(project,EditorWithout(project,diagram,id,log));
+            using(project.SuspendModelVerification())target.Delete();
+            if(mode=="B")Import(project,EditorWithout(project,diagram,id,log));
             transaction.Commit();
         }
-        catch(Exception ex){try{transaction.Rollback();}catch(Exception){}ui.ShowInformationDialog("削除できませんでした: "+ex.Message,title);return;}
-        ui.ShowInformationDialog("削除しました（"+(suspend?"SuspendModelVerification の中":"そのまま")+"）。\nCtrl+Z を 1 回押し、図を開き直して戻るかを確かめてください。",title);
+        catch(Exception ex){try{transaction.Rollback();}catch(Exception){}ui.ShowInformationDialog("失敗しました（取り消し済み）: "+ex.Message,title);return;}
+        try{app.Window.EditorPage.UpdateEditors();}catch(Exception){}
+        ui.ShowInformationDialog("方式 "+mode+" で削除しました。\nCtrl+Z を 1 回押し、図を開き直して戻るかを確かめてください。モデルナビゲータに要素が戻っているかも見てください。",title);
     }
 }
