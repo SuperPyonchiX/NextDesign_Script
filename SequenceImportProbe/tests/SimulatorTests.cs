@@ -226,7 +226,7 @@ public static class SequenceSimulator
         foreach(var group in doc.Elements.Where(e=>e.Parent!=null).GroupBy(e=>e.Parent))
         {
             int order=0;
-            foreach(var e in group.OrderBy(e=>e.Kind=="participant"?0:1).ThenBy(e=>y[e.Id]).ThenBy(e=>e.Id,StringComparer.Ordinal))e.Order=order++;
+            foreach(var e in group.OrderBy(e=>e.Kind=="participant"?0:1).ThenBy(e=>y[e.Id]).ThenBy(e=>SequenceDocument.ExportRank(e.Kind)).ThenBy(e=>e.Id,StringComparer.Ordinal))e.Order=order++;
         }
         doc.SettleExecutions(n=>y[n.Id]);
         doc.Validate();return doc;

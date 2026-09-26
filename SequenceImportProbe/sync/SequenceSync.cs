@@ -43,12 +43,16 @@ public sealed class SequenceDocument
     // ends of the bars its calls opened. Where the bar starts and ends, what holds it, and the
     // bar around it all follow from that, for the input and for the diagram alike. `at` places
     // each element that is not a bar or participant on one vertical scale.
+    // The order the PlantUML export writes things drawn at the same height in: frame, branch,
+    // ref, note, message, destruction (its event priorities).
+    public static int ExportRank(string kind)
+    {switch(kind){case "fragment":return 10;case "operand":return 20;case "ref":return 30;case "note":return 40;case "execution":return 45;case "message":return 50;case "destroy":return 70;default:return 60;}}
     public void SettleExecutions(Func<SequenceElement,double> at)
     {
         Func<SequenceElement,string,string[]> link=(e,key)=>{string[] v;return e.Links.TryGetValue(key,out v)?v:new string[0];};
         Func<SequenceElement,string> sort=e=>{string v;return e.Attributes.TryGetValue("sort",out v)?v:"";};
         var events=Elements.Where(n=>n.Kind!="participant" && n.Kind!="interaction" && n.Kind!="execution")
-            .Select((n,i)=>new{n,i}).OrderBy(x=>at(x.n)).ThenBy(x=>x.i).Select(x=>x.n).ToList();
+            .Select((n,i)=>new{n,i}).OrderBy(x=>at(x.n)).ThenBy(x=>ExportRank(x.n.Kind)).ThenBy(x=>x.i).Select(x=>x.n).ToList();
         var rank=events.Select((n,i)=>new{n,i}).ToDictionary(x=>x.n.Id,x=>(double)x.i);
         var bars=Elements.Where(e=>e.Kind=="execution").ToList();
         var uses=bars.ToDictionary(b=>b.Id,b=>events.Where(n=>n.Kind=="message"

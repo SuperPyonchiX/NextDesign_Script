@@ -206,7 +206,7 @@ public sealed class DiagramSnapshot
         }
         foreach(var group in doc.Elements.Where(e=>e.Parent!=null).GroupBy(e=>e.Parent))
         {
-            int order=0;foreach(var e in group.OrderBy(e=>e.Kind=="participant"?0:1).ThenBy(e=>snapshot.Y[e.Id]).ThenBy(e=>e.Id,StringComparer.Ordinal))e.Order=order++;
+            int order=0;foreach(var e in group.OrderBy(e=>e.Kind=="participant"?0:1).ThenBy(e=>snapshot.Y[e.Id]).ThenBy(e=>SequenceDocument.ExportRank(e.Kind)).ThenBy(e=>e.Id,StringComparer.Ordinal))e.Order=order++;
         }
         var represented=new HashSet<string>(doc.Elements.Select(e=>e.Id));
         foreach(var m in SequenceMappedUpdate.Tree(root).Where(m=>!represented.Contains(m.Id) && !(m is IFrame) && !(m is IMessageEnd)))

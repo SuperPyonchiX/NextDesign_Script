@@ -31,6 +31,11 @@ PlantUML を正本に Next Design の既存シーケンス図を差分更新す�
 - 調査ボタンに「項目の値の型」: メタクラス.項目 / 宣言型 / GetField が返す .NET 型の件数（文字列＝文字列以外）
 - 既存の図形は export 経路でも X 等を文字列で書いて通っている（新規 Note 図形の X は "20"）ので、図形の値が原因とは限らない。例外の発生箇所（スタックトレース）で特定する
 
+## 2-0000000000000000000000000000000000000000000000000. 0.11.24: 同じ高さの要素の順
+
+- 0.11.22 全図チェック: 一致 648/684（95%）。残る並び（message/note/fragment move 16枚）と endBefore note↔message（10・9枚）の例 51: `note over TargetECU`（79行）とメッセージ（82行）が同じ Y。出力は同じ高さを 枠→分岐→ref→Note→メッセージ→破棄 の順に書くが、読取りは ID 順や読込み順で並べていた
+- 読取り（DiagramSnapshot.Read・シミュレーター）と SettleExecutions の並びで、同じ高さは出力と同じ種類順（`SequenceDocument.ExportRank`）
+
 ## 2-000000000000000000000000000000000000000000000000. 0.11.23: create participant・はみ出した入れ子の枠・S201 の詳細
 
 - 例 273・630: `create participant "…" as X`（出力は途中で生成されるライフラインをこう書く）が未対応の構文で停止。`create` 付きと participant 以外の種類（actor・boundary・control・entity・database・collections・queue）を参加者宣言として読む（生成の意味は持たず、宣言位置で参加者を足す）
