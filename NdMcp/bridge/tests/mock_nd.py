@@ -105,6 +105,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if url.path.startswith("/class-sync/"):
                 status, body = self.route_class_sync(url.path, q, payload)
+            elif url.path.startswith("/sequence-sync/"):
+                status, body = self.route_sequence_sync(url.path, q, payload)
             else:
                 if payload is not None:
                     status, body = 405, {"error": "GET のみ対応しています"}
@@ -201,6 +203,49 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "preview":
             body["currentPlantuml"] = CLASS_PUML
         return 200, body
+
+    # C# 側 SequenceSyncApi の応答形式を模す。M21（初期化）だけがシーケンス図 S21 を持つ。
+    def route_sequence_sync(self, path, q, payload):
+        if not MockState.project_open:
+            return 503, {"error": "プロジェクトが開かれていません"}
+        diagram = {"name": "初期化", "modelPath": "Sample/機能/初期化", "modelId": "M21", "editorId": "S21",
+                   "viewDefinition": "シーケンス図", "lifelines": 2, "messages": 1}
+        if path in ("/sequence-sync/diagrams", "/sequence-sync/current"):
+            if payload is not None:
+                return 405, {"error": path + " は GET のみ対応しています"}
+            if path == "/sequence-sync/diagrams":
+                return 200, {"root": q.get("path") or "Sample", "count": 1, "diagrams": [diagram], "truncated": False}
+            root = _find(q.get("path", ""), q.get("id", ""))
+            if root is None:
+                raise KeyError(q.get("path") or q.get("id"))
+            if root["id"] != "M21":
+                return 404, {"error": "モデルにシーケンス図がありません: " + root["modelPath"]}
+            return 200, dict(diagram, plantuml=SEQUENCE_PUML)
+        mode = path[len("/sequence-sync/"):]
+        if mode not in ("preview", "trial", "apply", "create"):
+            return 404, {"error": f"不明なパス: {path}"}
+        if payload is None:
+            return 405, {"error": path + " は POST のみ対応しています"}
+        MockState.last_body = dict(payload)
+        plantuml = payload.get("plantuml") or ""
+        if not plantuml and not payload.get("file"):
+            return 400, {"error": "plantuml（本文）か file（このPC上の .puml パス）を指定してください"}
+        root = _find(payload.get("path", ""), payload.get("id", ""))
+        if root is None:
+            raise KeyError(payload.get("path") or payload.get("id"))
+        if mode == "create":
+            return 200, {"ok": True, "error": None, "name": "新しい図", "where": "「機能」の下", "modelId": "M99",
+                         "modelPath": "Sample/機能/新しい図", "editorId": "S99", "summary": "(mock)", "reportFile": "mock.txt"}
+        if root["id"] != "M21":
+            return 404, {"error": "モデルにシーケンス図がありません: " + root["modelPath"]}
+        changes = 0 if plantuml == SEQUENCE_PUML else 1
+        if mode == "apply":
+            MockState.applied.append(plantuml)
+        return 200, dict(diagram, mode=mode, ok=True, changes=changes, committed=mode == "apply" and changes > 0,
+                         stopReasons="", summary="(mock)", details="(mock)", reportFile="mock.txt")
+
+
+SEQUENCE_PUML = "@startuml\nparticipant A\nparticipant B\nA -> B : init()\n@enduml\n"
 
 
 def start(port: int = 0) -> tuple[ThreadingHTTPServer, str]:

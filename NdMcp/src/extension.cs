@@ -2,9 +2,10 @@
 //  NdMcp  (Next Design V3.x の DLL 拡張)
 //
 //  NdMcp.csproj が次を記載順にビルドして NdMcp.dll を作る。
-//    src/extension.cs（このファイル）/ src/server.cs（サーバー本体）/ src/classsync.cs（クラス図同期の窓口）
+//    src/extension.cs（このファイル）/ src/server.cs（サーバー本体）/ src/classsync.cs（クラス図同期の窓口）/
+//    src/sequencesync.cs（シーケンス図同期の窓口）
 //    AgentReview/src の 01 / 05 / 08（共通ヘルパ・Markdown 出力・共有部品）
-//    PlantUmlTool/src の 10 / 15 / 40 / 50（PlantUML 出力）と 60 / 61 / 63（クラス図同期）
+//    PlantUmlTool/src の 10 / 15 / 40 / 50（PlantUML 出力）と 60 / 61 / 63（クラス図同期）と 70〜74（シーケンス図同期）
 //  共有部品の修正はそれぞれの正本（AgentReview/src、PlantUmlTool/src）で行う。
 //  using は NdMcp.csproj の Using 項目（global using）にまとめる。
 //
@@ -37,6 +38,14 @@
 //    POST /class-sync/preview  {path|id, editor?, plantuml|file}  比較のみ
 //    POST /class-sync/trial    {path|id, editor?, plantuml|file}  一時適用して照合し、必ず取り消す
 //    POST /class-sync/apply    {path|id, editor?, plantuml|file}  確定する（Undo 可）
+//
+//  シーケンス図同期（PlantUmlTool/src/70〜74 を直接ビルド。src/sequencesync.cs）:
+//    GET  /sequence-sync/diagrams?path=&id=&limit=  配下のシーケンス図の一覧
+//    GET  /sequence-sync/current?path=&id=&editor=  図を PlantUML で返す
+//    POST /sequence-sync/preview {path|id, editor?, plantuml|file}         比較のみ
+//    POST /sequence-sync/trial   {path|id, editor?, plantuml|file, save?}  一時適用して照合し、必ず取り消す
+//    POST /sequence-sync/apply   {path|id, editor?, plantuml|file, save?}  確定する
+//    POST /sequence-sync/create  {path|id, plantuml|file}                  新しい図を作る
 //
 //  設定: %USERPROFILE%\.nd-mcp\config.ini（port= / exportDir=）
 //  ログ: %USERPROFILE%\.nd-mcp\server.log

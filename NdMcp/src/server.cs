@@ -441,6 +441,7 @@ public static class NdMcpServer
         var path = request.Url.AbsolutePath;
         var q = request.QueryString;
         if (path.StartsWith("/class-sync/", StringComparison.Ordinal)) return RouteClassSync(request, path, q);
+        if (path.StartsWith("/sequence-sync/", StringComparison.Ordinal)) return RouteSequenceSync(request, path, q);
         if (request.HttpMethod != "GET") throw new NdMcpHttpError(405, "GET のみ対応しています");
 
         if (path == "/ping")
@@ -523,6 +524,49 @@ public static class NdMcpServer
         return OnUiThread(work);
     }
 
+    // シーケンス図同期。読み出しは GET、比較・反映・作成は JSON 本文（path / id / editor / plantuml|file / save）の POST。
+    private static object RouteSequenceSync(HttpListenerRequest request, string path, NameValueCollection q)
+    {
+        Func<IApplication, object> work;
+        if (path == "/sequence-sync/diagrams" || path == "/sequence-sync/current")
+        {
+            if (request.HttpMethod != "GET") throw new NdMcpHttpError(405, path + " は GET のみ対応しています");
+            var modelPath = q["path"] ?? "";
+            var modelId = q["id"] ?? "";
+            if (path == "/sequence-sync/diagrams") { var limit = ParseInt(q["limit"], 200, 1, 5000); work = app => SequenceSyncApi.Diagrams(app, modelPath, modelId, limit); }
+            else { var editorId = q["editor"] ?? ""; work = app => SequenceSyncApi.Current(app, modelPath, modelId, editorId); }
+            return OnUiThread(work);
+        }
+        var mode = path.Substring("/sequence-sync/".Length);
+        if (mode != "preview" && mode != "trial" && mode != "apply" && mode != "create") throw new NdMcpHttpError(404, "不明なパス: " + path);
+        if (request.HttpMethod != "POST") throw new NdMcpHttpError(405, path + " は POST のみ対応しています");
+        var body = ReadBody(request);
+        ClassJsonNode json;
+        try { json = ClassJsonNode.Parse(body); }
+        catch (Exception e) { throw new NdMcpHttpError(400, "本文が JSON として読めません: " + e.Message); }
+        if (json == null || json.Properties == null) throw new NdMcpHttpError(400, "本文は JSON オブジェクトにしてください");
+        var bodyPath = ClassJsonNode.Value(json, "path") ?? "";
+        var bodyId = ClassJsonNode.Value(json, "id") ?? "";
+        var bodyEditor = ClassJsonNode.Value(json, "editor") ?? "";
+        var save = json["save"] != null && (json["save"].Raw == "true" || string.Equals(ClassJsonNode.Value(json, "save") ?? "", "true", StringComparison.OrdinalIgnoreCase));
+        var plantuml = ClassJsonNode.Value(json, "plantuml") ?? "";
+        if (plantuml.Length == 0)
+        {
+            var file = ClassJsonNode.Value(json, "file") ?? "";
+            if (file.Length == 0) throw new NdMcpHttpError(400, "plantuml（本文）か file（このPC上の .puml パス）を指定してください");
+            try
+            {
+                if (new FileInfo(file).Length > SequenceSyncApi.MaxPumlLength) throw new NdMcpHttpError(400, "file は 300KB 以下にしてください");
+                plantuml = File.ReadAllText(file, new UTF8Encoding(false, true));
+            }
+            catch (NdMcpHttpError) { throw; }
+            catch (Exception e) { throw new NdMcpHttpError(400, "file を読めません: " + e.Message); }
+        }
+        if (mode == "create") work = app => SequenceSyncApi.Create(app, bodyPath, bodyId, plantuml);
+        else work = app => SequenceSyncApi.Sync(app, bodyPath, bodyId, bodyEditor, plantuml, mode, save);
+        return OnUiThread(work);
+    }
+
     private static string ReadBody(HttpListenerRequest request)
     {
         if (!request.HasEntityBody) return "";
@@ -577,6 +621,11 @@ public static class NdMcpServer
                 "POST /class-sync/preview {path|id, editor?, plantuml|file}",
                 "POST /class-sync/trial {path|id, editor?, plantuml|file}",
                 "POST /class-sync/apply {path|id, editor?, plantuml|file}",
+                "GET /sequence-sync/diagrams?path=&id=&limit=", "GET /sequence-sync/current?path=&id=&editor=",
+                "POST /sequence-sync/preview {path|id, editor?, plantuml|file}",
+                "POST /sequence-sync/trial {path|id, editor?, plantuml|file, save?}",
+                "POST /sequence-sync/apply {path|id, editor?, plantuml|file, save?}",
+                "POST /sequence-sync/create {path|id, plantuml|file}",
             });
     }
 

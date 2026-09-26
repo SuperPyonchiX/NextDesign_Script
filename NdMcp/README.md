@@ -1,5 +1,22 @@
 # NdMcp — Next Design を MCP クライアントから読む
 
+## 0.4.0: シーケンス図の PlantUML 同期 API
+
+AI がシーケンス図を読み、編集し、新しく作れるようにした。同期の本体は PlantUmlTool/src/70〜74（リボンの「PlantUMLで更新」「PlantUMLから新規作成」と同じ処理）を直接ビルドする。ダイアログは出さない。
+
+| MCP ツール | HTTP | 内容 |
+|---|---|---|
+| `nd_sequence_diagrams(path, id, limit)` | `GET /sequence-sync/diagrams` | 指定モデル配下（省略時はプロジェクト全体）のシーケンス図の一覧（name / modelPath / modelId / editorId / 参加者数・メッセージ数） |
+| `nd_sequence_diagram_puml(path, id, editor)` | `GET /sequence-sync/current` | 図を PlantUML（PlantUmlTool の出力と同じ書式）で返す |
+| `nd_sequence_diagram_preview(plantuml, path, id, editor, file)` | `POST /sequence-sync/preview` | 編集した PlantUML と図を比較し、差分件数・行ごとの内訳・反映できない理由を返す。図は変えない |
+| `nd_sequence_diagram_apply(plantuml, path, id, editor, file, trial, save)` | `POST /sequence-sync/trial` / `apply` | 図を更新する。照合が一致したときだけ確定。`trial=True` は一時適用して必ず取り消す。`save=True` は未保存のプロジェクトを先に保存する |
+| `nd_sequence_diagram_create(plantuml, path, id, file)` | `POST /sequence-sync/create` | 新しいシーケンス図を作る。path/id は既存の図のモデル（その隣）か、図を置くモデル |
+
+- ref の参照先は、名前が一致する相互作用が 1 つのときだけ結び付ける（候補が複数なら参照先なしで差分に残る）
+- 未保存のまま更新した後の Ctrl+Z は、図を最後に保存した状態の図形に戻す（製品のエディタ取込の Undo の挙動。PlantUmlTool 3.3.3 の README）。apply の応答の `undo` にその旨を返す
+- 図を開いていない状態での更新・作成は実機未確認（クラス図は図を閉じたままの apply が成功している）
+- 実機未確認
+
 ## 0.3.0: DLL 方式に移行
 
 スクリプト（main.cs）から DLL（`NdMcp.dll`）に移した。機能は 0.2.1 と同じ。AgentReview と PlantUmlTool の共有部品は、転記せず正本のファイルを `NdMcp.csproj` が直接ビルドする。`Setup.ps1` はビルド済みの `publish\`（無ければ .NET SDK でその場でビルド）を配置し、スクリプト版の `main.cs` はバックアップしてから外す。実機での読み込みは未確認。

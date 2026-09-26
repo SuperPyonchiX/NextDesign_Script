@@ -1,5 +1,5 @@
 """stdio MCP サーバー。各ツールは NdMcp 拡張の HTTP API を 1 対 1 で呼び出す。
-モデル読み出しは読み取り専用。書き込みは nd_class_diagram_apply（と一時適用の trial）だけ。"""
+モデル読み出しは読み取り専用。書き込みは nd_class_diagram_apply・nd_sequence_diagram_apply / create（と一時適用の trial）だけ。"""
 from __future__ import annotations
 
 import json
@@ -17,6 +17,8 @@ mcp = MCPServer(
         "まず nd_project で概要を、nd_tree で階層を把握してから nd_model で詳細を読むとよい。"
         "クラス図は nd_class_diagram_puml で PlantUML として読み、編集した PlantUML を "
         "nd_class_diagram_preview（比較のみ）→ nd_class_diagram_apply（反映）の順で渡すと図とモデルが更新される。"
+        "シーケンス図は nd_sequence_diagrams で探し、nd_sequence_diagram_puml で PlantUML として読み、編集して "
+        "nd_sequence_diagram_preview → nd_sequence_diagram_apply で図を更新する。新しい図は nd_sequence_diagram_create で作る。"
         "Next Design 側でサーバーが開始されていないと接続に失敗する。"
     ),
 )
@@ -129,6 +131,76 @@ def nd_class_diagram_apply(plantuml: str, path: str = "", id: str = "", editor: 
     mode = "trial" if trial else "apply"
     return _post(f"/class-sync/{mode}", {"path": path, "id": id, "editor": editor, "plantuml": plantuml, "file": file},
                  timeout=600)
+
+
+# ---- シーケンス図の PlantUML 同期（PlantUmlTool の同期本体と同じ処理） ----
+
+
+@mcp.tool()
+def nd_sequence_diagrams(path: str = "", id: str = "", limit: int = 200) -> str:
+    """指定モデル配下（省略時はプロジェクト全体）のシーケンス図を一覧する。
+    各図の name / modelPath / modelId / editorId / lifelines / messages を返す。以降のツールには modelPath か modelId を渡す。"""
+    return _call("/sequence-sync/diagrams", {"path": path, "id": id, "limit": limit}, timeout=300)
+
+
+@mcp.tool()
+def nd_sequence_diagram_puml(path: str = "", id: str = "", editor: str = "") -> str:
+    """シーケンス図（path/id は図のモデル）を PlantUML テキストとして返す。これを編集して preview / apply に渡す。
+    書ける内容（PlantUmlTool の出力と同じ書式）:
+    - 参加者: participant / actor / boundary / control / entity / database / collections / queue "表示名" as 別名。途中で作る参加者は create participant
+    - メッセージ: 同期 A -> B : 本文 / 非同期 A ->> B / 返信 B --> A / 図外から [-> A / 図外へ A ->]
+    - 実行区間: 受信の直後に activate B、終わりに deactivate B。返信で終わるバーは返信の後に deactivate
+    - 破棄: 破棄メッセージ A -> B の直後に destroy B
+    - 複合フラグメント: alt / else / opt / loop / par / break / critical / group … end（条件は alt 条件 のように書く）
+    - Note: note over A / note left of A / note right of A（複数行は note … end note）
+    - ref: ref over A, B : 相互作用名（名前が一致する相互作用が 1 つなら参照先に結び付ける）
+    既存の図を更新するときは、nd_sequence_diagram_puml で得た本文を編集する。参加者の別名（as xxx）と
+    変更しない行はそのまま残すこと（別名と並びで既存の要素と対応付ける。書き換えると削除＋追加になり、
+    既存の要素へのトレースなどが失われる）。
+    """
+    return _call("/sequence-sync/current", {"path": path, "id": id, "editor": editor}, timeout=300)
+
+
+@mcp.tool()
+def nd_sequence_diagram_preview(plantuml: str, path: str = "", id: str = "", editor: str = "", file: str = "") -> str:
+    """編集した PlantUML を現在のシーケンス図と比較し、差分（changes 件数、details に行ごとの内訳）と、
+    反映できない理由（stopReasons）を返す。図は変更しない。apply の前に必ずこれで意図した差分だけが出ることを確かめる。
+    plantuml の代わりに file（Next Design が動く PC 上の .puml パス）でも渡せる。"""
+    return _post("/sequence-sync/preview", {"path": path, "id": id, "editor": editor, "plantuml": plantuml, "file": file}, timeout=600)
+
+
+@mcp.tool()
+def nd_sequence_diagram_apply(plantuml: str, path: str = "", id: str = "", editor: str = "", file: str = "",
+                              trial: bool = False, save: bool = False) -> str:
+    """編集した PlantUML でシーケンス図を更新する（参加者・メッセージ・実行区間・複合フラグメント・Note・ref・破棄の
+    追加削除と本文・種別・並びの変更）。照合が一致したときだけ確定し、一致しなければ元に戻す（ok=false）。
+    trial=True なら一時適用して照合したあと必ず取り消す。
+    save=True なら未保存のプロジェクトを先に保存する（Ctrl+Z で戻せるようにする）。既定は保存しない：
+    未保存のまま更新した後の Ctrl+Z は、図を最後に保存した状態の図形に戻し、保存後に追加した図形を消す。
+    メッセージ・フラグメント等を追加した更新は Undo で製品が停止する既知の不具合があるので、利用者に Ctrl+Z を勧めないこと。"""
+    mode = "trial" if trial else "apply"
+    return _post(f"/sequence-sync/{mode}", {"path": path, "id": id, "editor": editor, "plantuml": plantuml, "file": file,
+                                            "save": save}, timeout=600)
+
+
+@mcp.tool()
+def nd_sequence_diagram_create(plantuml: str, path: str = "", id: str = "", file: str = "") -> str:
+    """PlantUML から新しいシーケンス図を作る。path/id は既存のシーケンス図のモデル（その隣に作る）か、
+    シーケンス図を置くモデル（パッケージ等。置ける欄が 1 種類のとき）。図の名前は title 行。保存はしない。
+    作成後は返る modelPath / modelId で nd_sequence_diagram_puml 等を使える。
+    書ける内容（PlantUmlTool の出力と同じ書式）:
+    - 参加者: participant / actor / boundary / control / entity / database / collections / queue "表示名" as 別名。途中で作る参加者は create participant
+    - メッセージ: 同期 A -> B : 本文 / 非同期 A ->> B / 返信 B --> A / 図外から [-> A / 図外へ A ->]
+    - 実行区間: 受信の直後に activate B、終わりに deactivate B。返信で終わるバーは返信の後に deactivate
+    - 破棄: 破棄メッセージ A -> B の直後に destroy B
+    - 複合フラグメント: alt / else / opt / loop / par / break / critical / group … end（条件は alt 条件 のように書く）
+    - Note: note over A / note left of A / note right of A（複数行は note … end note）
+    - ref: ref over A, B : 相互作用名（名前が一致する相互作用が 1 つなら参照先に結び付ける）
+    既存の図を更新するときは、nd_sequence_diagram_puml で得た本文を編集する。参加者の別名（as xxx）と
+    変更しない行はそのまま残すこと（別名と並びで既存の要素と対応付ける。書き換えると削除＋追加になり、
+    既存の要素へのトレースなどが失われる）。
+    """
+    return _post("/sequence-sync/create", {"path": path, "id": id, "plantuml": plantuml, "file": file}, timeout=600)
 
 
 def main() -> None:

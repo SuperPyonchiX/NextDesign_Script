@@ -81,9 +81,12 @@ public static class SequenceDiagramCreator
     // With a sequence diagram open: beside it, of the same kind. Otherwise the open or selected
     // model: the embedded field whose element type has a sequence editor in the profile,
     // preferring the one the model's existing sequence diagrams already use.
-    static Place Resolve(IApplication app, IProject project, StringBuilder log)
+    // at: a model given by a caller (the MCP API) in place of what is open: a sequence diagram's
+    // model (the new one goes beside it) or the model to hold it.
+    static Place Resolve(IApplication app, IProject project, StringBuilder log, IModel at = null)
     {
-        var open = app.Workspace.CurrentEditor as ISequenceDiagram;
+        var open = at == null ? app.Workspace.CurrentEditor as ISequenceDiagram
+            : at.GetEditors().Cast<object>().OfType<ISequenceDiagram>().FirstOrDefault();
         if (open != null && open.Model != null)
         {
             var model = open.Model;
@@ -92,10 +95,10 @@ public static class SequenceDiagramCreator
             if (model.Owner == null || field == null) throw new InvalidOperationException("E102: 開いている図の所有先を取得できません。");
             return new Place { Owner = model.Owner, Field = field, Types = SequenceTypeSource.Of(open), Where = "開いている図と同じ「" + Name(model.Owner) + "」の下" };
         }
-        IModel parent = null;
-        var editor = app.Workspace.CurrentEditor;
-        try { if (editor != null) parent = editor.Model; } catch (Exception) { }
-        if (parent == null) { try { parent = app.Window.EditorPage.CurrentModel; } catch (Exception) { } }
+        IModel parent = at;
+        var editor = at == null ? app.Workspace.CurrentEditor : null;
+        try { if (parent == null && editor != null) parent = editor.Model; } catch (Exception) { }
+        if (parent == null && at == null) { try { parent = app.Window.EditorPage.CurrentModel; } catch (Exception) { } }
         if (parent == null || parent.Metaclass == null)
             throw new InvalidOperationException("E102: シーケンス図を追加するモデルを開くか選んでから実行してください。");
         var candidates = new List<Place>();
@@ -146,22 +149,39 @@ public static class SequenceDiagramCreator
         return schema;
     }
 
+    // What a creation made, for a caller that reports it (the MCP API).
+    public sealed class Created { public string Summary, ModelId, EditorId, Name, Where; }
+
     // Returns the summary to show, or null when the user cancelled.
     public static string Run(IApplication app, StringBuilder log)
     {
         var project = app.Workspace.CurrentProject;
         if (project == null) throw new InvalidOperationException("E101: プロジェクトを開いてください。");
         var place = Resolve(app, project, log);
-        if (!place.Owner.IsEditable || place.Owner.IsDeleted || place.Owner.IsProxy)
-            throw new InvalidOperationException("E102: 「" + Name(place.Owner) + "」は編集できません。");
-        log.AppendLine("place: " + place.Where + " " + place.Owner.ClassName + "." + place.Field.Name + " as " + place.Types.Interaction.FullName
-            + " editor=" + place.Types.Definition.Type + " " + place.Types.Definition.Id);
-
         string path = app.Window.UI.ShowOpenFileDialog("新しいシーケンス図にするPlantUML", "PlantUML (*.puml;*.plantuml)|*.puml;*.plantuml");
         if (string.IsNullOrEmpty(path)) return null;
         if (new FileInfo(path).Length > 300000) throw new InvalidOperationException("E120: 入力は300KB以下にしてください。");
         string text = File.ReadAllText(path, new UTF8Encoding(false, true));
         log.AppendLine("PlantUML file: " + path);
+        var made = Make(app, project, place, text, log, true);
+        return made == null ? null : made.Summary;
+    }
+
+    // Without dialogs: at is where (see Resolve), refs are linked only where one interaction fits.
+    public static Created Create(IApplication app, IModel at, string text, StringBuilder log)
+    {
+        var project = app.Workspace.CurrentProject;
+        if (project == null) throw new InvalidOperationException("E101: プロジェクトを開いてください。");
+        if (at == null) throw new InvalidOperationException("E102: 作成先のモデルを指定してください。");
+        return Make(app, project, Resolve(app, project, log, at), text, log, false);
+    }
+
+    static Created Make(IApplication app, IProject project, Place place, string text, StringBuilder log, bool interactive)
+    {
+        if (!place.Owner.IsEditable || place.Owner.IsDeleted || place.Owner.IsProxy)
+            throw new InvalidOperationException("E102: 「" + Name(place.Owner) + "」は編集できません。");
+        log.AppendLine("place: " + place.Where + " " + place.Owner.ClassName + "." + place.Field.Name + " as " + place.Types.Interaction.FullName
+            + " editor=" + place.Types.Definition.Type + " " + place.Types.Definition.Id);
         var plan = PumlPlan.Parse(text);
         SequenceDocument.Parse(text);
 
@@ -177,13 +197,13 @@ public static class SequenceDiagramCreator
         string schema = Schema(project, log);
         var profile = PumlRuntime.Profile(place.Types, sources, plan, project);
         if (profile.Relations.ContainsKey("RefersTo"))
-            SequenceSyncRuntime.ResolveReferences(app, project, place.Owner, plan.All().Where(n => n.Kind == "ref"), profile.References, log, true);
+            SequenceSyncRuntime.ResolveReferences(app, project, place.Owner, plan.All().Where(n => n.Kind == "ref"), profile.References, log, interactive);
         foreach (string row in profile.Resolved) log.AppendLine("type: " + row);
         var payload = PumlBuild.Build(plan, profile, place.Types.Definition.Id, schema, null);
         foreach (string id in payload.Ids)
             if (project.GetModelById(id) != null) throw new InvalidOperationException("E111: 生成IDが既存モデルと衝突しました。");
 
-        if (!app.Window.UI.ShowConfirmDialog(place.Where + "に新しいシーケンス図「" + payload.Name + "」を作ります。\n" + plan.Summary()
+        if (interactive && !app.Window.UI.ShowConfirmDialog(place.Where + "に新しいシーケンス図「" + payload.Name + "」を作ります。\n" + plan.Summary()
             + "\n\nプロジェクトは保存しません。作成の Undo は確かめていません。取り消すときは保存せずに開き直してください。\n\nOK: 作成する\nキャンセル: 中止する", SequenceCommands.Title))
             return null;
 
@@ -212,9 +232,12 @@ public static class SequenceDiagramCreator
         }
         int refs = plan.All().Count(n => n.Kind == "ref");
         int linked = profile.Relations.ContainsKey("RefersTo") ? profile.References.Values.Count(v => !string.IsNullOrEmpty(v)) : 0;
-        return "新しいシーケンス図「" + payload.Name + "」を作りました（" + place.Where + "）。\n" + plan.Summary()
+        var root = project.GetModelById(payload.Ids[0]);
+        var made = root == null ? null : root.GetEditors().Cast<object>().OfType<ISequenceDiagram>().FirstOrDefault();
+        return new Created { Name = payload.Name, Where = place.Where, ModelId = payload.Ids[0], EditorId = made == null ? null : made.Id,
+            Summary = "新しいシーケンス図「" + payload.Name + "」を作りました（" + place.Where + "）。\n" + plan.Summary()
             + (refs > 0 ? "\nref の参照先: " + linked + " / " + refs + " 件を結び付けました（名前が一致する相互作用がないものは参照先なし）。" : "")
-            + "\nプロジェクトは保存していません。";
+            + "\nプロジェクトは保存していません。" };
     }
 
     // The log names models and paths; it stays on this PC.

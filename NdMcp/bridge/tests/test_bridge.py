@@ -141,6 +141,21 @@ def test_tool_class_diagram_apply_requires_input():
     assert text.startswith("ERROR:") and "HTTP 400" in text
 
 
+def test_tool_sequence_diagram_list_puml_apply_create():
+    listed = json.loads(bridge.nd_sequence_diagrams(path="Sample"))
+    assert listed["diagrams"][0]["modelId"] == "M21"
+    puml = json.loads(bridge.nd_sequence_diagram_puml(id="M21"))
+    assert puml["plantuml"].startswith("@startuml")
+    edited = puml["plantuml"].replace("init()", "start()")
+    preview = json.loads(bridge.nd_sequence_diagram_preview(edited, id="M21"))
+    assert preview["changes"] == 1 and preview["mode"] == "preview"
+    applied = json.loads(bridge.nd_sequence_diagram_apply(edited, id="M21", save=True))
+    assert applied["committed"] is True and mock_nd.MockState.last_body["save"] is True
+    created = json.loads(bridge.nd_sequence_diagram_create("@startuml\ntitle 新しい図\nA -> B : x\n@enduml\n", path="Sample/機能"))
+    assert created["ok"] is True and created["modelId"] == "M99"
+    assert bridge.nd_sequence_diagram_puml(path="Sample/要求").startswith("ERROR:")
+
+
 # ---- stdio 経由（本物の MCP クライアントでブリッジを子プロセスとして起動） -------
 
 async def test_end_to_end_stdio(mock):
@@ -156,7 +171,8 @@ async def test_end_to_end_stdio(mock):
             names = sorted(t.name for t in tools.tools)
             assert names == ["nd_class_diagram_apply", "nd_class_diagram_editors", "nd_class_diagram_preview",
                              "nd_class_diagram_puml", "nd_export", "nd_markdown", "nd_model", "nd_ping",
-                             "nd_project", "nd_search", "nd_tree"]
+                             "nd_project", "nd_search", "nd_sequence_diagram_apply", "nd_sequence_diagram_create",
+                             "nd_sequence_diagram_preview", "nd_sequence_diagram_puml", "nd_sequence_diagrams", "nd_tree"]
 
             result = await session.call_tool("nd_search", {"query": "初期化"})
             body = json.loads(result.content[0].text)

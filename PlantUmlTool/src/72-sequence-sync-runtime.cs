@@ -435,9 +435,11 @@ public static class SequenceSyncRuntime
     public static bool Batch;
     public static ISequenceDiagram BatchDiagram;
     public static string BatchInput;
-    internal static int LastChanges=-1;
-    internal static bool LastCommitted;
-    internal static string LastReasons="";
+    public static int LastChanges=-1;
+    // The last run's comparison as JSON (current, desired, plan, preflight) and its diagnostics file.
+    public static string LastReport,LastReportFile;
+    public static bool LastCommitted;
+    public static string LastReasons="";
     static System.Diagnostics.Stopwatch clock;
     internal static void Lap(string stage)
     {
@@ -453,7 +455,7 @@ public static class SequenceSyncRuntime
         retain=retain||reconnectCommit;trial=trial||retain;prepare=prepare||trial;
         try
         {
-            LastChanges=-1;LastCommitted=false;LastReasons="";
+            LastChanges=-1;LastCommitted=false;LastReasons="";LastReport=null;LastReportFile=null;
             var diagram=Batch && BatchDiagram!=null?BatchDiagram:app.Workspace.CurrentEditor as ISequenceDiagram;
             if(diagram==null)throw new InvalidOperationException("S210: シーケンス図を開いてください。");
             string path=Batch && BatchInput!=null?BatchInput:app.Window.UI.ShowOpenFileDialog("図全体と比較するPlantUML","PlantUML (*.puml;*.plantuml)|*.puml;*.plantuml");
@@ -664,6 +666,7 @@ public static class SequenceSyncRuntime
             string stem=Path.Combine(directory,DateTime.Now.ToString("yyyyMMdd_HHmmss")+"_"+Guid.NewGuid().ToString("N").Substring(0,8));
             File.WriteAllText(stem+".txt",log.ToString(),new UTF8Encoding(false));
             if(report!=null)File.WriteAllText(stem+".json",report,new UTF8Encoding(false));
+            LastReport=report;LastReportFile=stem+".txt";
             if(screenshot==null || (Plain && LastChanges>0 && !LastCommitted))SequenceExperiment.Summary+="\n診断: "+stem+".txt";
         }
         catch(Exception ex) {log.AppendLine("診断の保存失敗: "+ex.Message);SequenceExperiment.Summary+=Plain?"\n診断ファイルを保存できませんでした。":"\n診断ファイルを保存できませんでした。診断表示で確認してください。";}

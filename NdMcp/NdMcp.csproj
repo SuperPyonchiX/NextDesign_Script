@@ -40,6 +40,12 @@
     <Compile Include="..\PlantUmlTool\src\61-class-snapshot.cs" />
     <Compile Include="..\PlantUmlTool\src\63-class-sync-runtime.cs" />
     <Compile Include="src\classsync.cs" />
+    <Compile Include="..\PlantUmlTool\src\70-sequence-sync.cs" />
+    <Compile Include="..\PlantUmlTool\src\71-sequence-generate.cs" />
+    <Compile Include="..\PlantUmlTool\src\72-sequence-sync-runtime.cs" />
+    <Compile Include="..\PlantUmlTool\src\73-sequence-create.cs" />
+    <Compile Include="..\PlantUmlTool\src\74-sequence-commands.cs" />
+    <Compile Include="src\sequencesync.cs" />
   </ItemGroup>
 
 </Project>
