@@ -421,7 +421,7 @@ public static class SequenceSyncRuntime
         log.AppendLine("反映の前にプロジェクトを保存しました（"+(SaveBeforeUpdate?"呼び出し元が許可":"利用者が承認")+"）。");
         return true;
     }
-    static bool Unsaved(IProject project)
+    internal static bool Unsaved(IProject project)
     {
         try {return project.HasUnsavedChanges() || (project.DesignModel!=null && project.DesignModel.IsDirty);}
         catch(Exception) {return false;}

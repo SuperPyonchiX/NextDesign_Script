@@ -17,10 +17,20 @@ public static class SequenceCommands
     public static void Apply(IApplication app)
     {
         SequenceExperiment.Title = Title;
+        // On an unsaved project the user chooses: saving first keeps Ctrl+Z working, updating
+        // without saving leaves Ctrl+Z putting the diagram's shapes back as last saved (the
+        // product's undo of an editor import). MCP callers set UpdateWithoutSaving themselves.
+        bool save = false;
+        var project = app.Workspace.CurrentProject;
+        if (project != null && app.Workspace.CurrentEditor is ISequenceDiagram && SequenceSyncRuntime.Unsaved(project))
+            save = app.Window.UI.ShowConfirmDialog("プロジェクトに未保存の変更があります。\n\n"
+                + "OK: 保存してから更新する（Ctrl+Z で更新を戻せます。作業中の他の変更も一緒に保存されます）\n"
+                + "キャンセル: 保存せずに更新する（Ctrl+Z で戻すと、図は最後に保存した状態の図形に戻り、保存後に追加した図形は消えます）", Title);
         SequenceSyncRuntime.Plain = true;
-        SequenceSyncRuntime.UpdateWithoutSaving = true;
+        SequenceSyncRuntime.SaveBeforeUpdate = save;
+        SequenceSyncRuntime.UpdateWithoutSaving = !save;
         try { SequenceSyncRuntime.Preview(app, true, true, true, true); }
-        finally { SequenceSyncRuntime.Plain = false; SequenceSyncRuntime.UpdateWithoutSaving = false; }
+        finally { SequenceSyncRuntime.Plain = false; SequenceSyncRuntime.UpdateWithoutSaving = false; SequenceSyncRuntime.SaveBeforeUpdate = false; }
     }
 
     // Ribbon entry: a new sequence diagram from the chosen PlantUML file.
