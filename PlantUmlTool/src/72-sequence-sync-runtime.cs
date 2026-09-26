@@ -397,6 +397,9 @@ public static class SequenceSyncRuntime
     // Set by the PlantUmlTool ribbon: the result reads as a product's, without the trial's
     // case names and checklists (those stay for the SequenceImportProbe dev extension).
     public static bool Plain;
+    // Set by the SequenceImportProbe only: rewrites a snapshot built from the SDK, to find which
+    // of its differences from the export keeps Ctrl+Z from bringing deleted elements back.
+    public static Func<string,IProject,IInteraction,ISequenceDiagram,StringBuilder,string> SnapshotOverlay;
     // Whether the last update took its snapshot from the SDK (unsaved project).
     internal static bool LastFromSdk;
     // Every update takes the snapshot from the SDK, saved or not: to test that path in the batch.
@@ -539,6 +542,7 @@ public static class SequenceSyncRuntime
                     {
                         exported=SequenceSnapshotBuilder.Build(project,root,diagram,SequenceSnapshotBuilder.Schema(project),log);
                         log.AppendLine("写し: SDK から組み立て（保存なし）");
+                        if(SnapshotOverlay!=null)exported=SnapshotOverlay(exported,project,root,diagram,log);
                     }
                     else try {SequenceEditorCapture.Read(project,root,diagram,log,delegate(string value){exported=value;});}
                     catch(Exception ex)

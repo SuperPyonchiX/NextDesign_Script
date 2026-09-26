@@ -686,3 +686,40 @@ public static class SequenceOmissionProbe
     }
 }
 
+
+// 未保存の反映が Ctrl+Z で戻らない原因の切り分け（開発用）
+//
+//   保存済みのプロジェクトで、SDK から組み立てた写しを使って反映する。選んだ部分
+//   （関連・モデル・エディタ）だけを書き出しの写しの内容に置き換えられるので、
+//   どの違いが Ctrl+Z を壊すかを 1 回の反映と 1 回の Ctrl+Z で確かめられる。
+public static class SequenceUndoProbe
+{
+    public static void Run(IApplication app)
+    {
+        var ui=app.Window.UI;const string title="Ctrl+Z 切り分け";
+        var project=app.Workspace.CurrentProject;
+        if(project==null || !(app.Workspace.CurrentEditor is ISequenceDiagram)){ui.ShowInformationDialog("シーケンス図を開いてから実行してください。",title);return;}
+        bool unsaved=false;
+        try{unsaved=project.HasUnsavedChanges() || (project.DesignModel!=null && project.DesignModel.IsDirty);}catch(Exception){}
+        if(unsaved){ui.ShowInformationDialog("保存してから実行してください（書き出しの写しと比べるため）。",title);return;}
+        var parts=new List<string>();
+        foreach(var part in new[]{"Relations","Entities","Editors"})
+        {
+            string label=part=="Relations"?"関連（Relations）":part=="Entities"?"モデル（Entities）":"エディタの図形（Editors）";
+            if(ui.ShowConfirmDialog("SDK から組み立てた写しのうち、"+label+"を書き出しの写しの内容に置き換えますか？\n\nOK: 置き換える\nキャンセル: SDK のまま",title))parts.Add(part);
+        }
+        SequenceSyncRuntime.SnapshotOverlay=(sdk,p,root,diagram,log)=>{
+            if(parts.Count==0){log.AppendLine("overlay: none (SDK のまま)");return sdk;}
+            string exported=null;
+            SequenceEditorCapture.Read(p,root,diagram,log,delegate(string value){exported=value;});
+            var mine=SequenceJson.Parse(sdk);var theirs=SequenceJson.Parse(exported);
+            foreach(var part in parts)if(theirs[part]!=null)mine.Properties[part]=theirs[part];
+            log.AppendLine("overlay: "+string.Join(",",parts)+" を書き出しの写しから");
+            return mine.ToJsonString();
+        };
+        SequenceSyncRuntime.ForceSdkSnapshot=true;
+        try{SequenceSyncRuntime.Preview(app,true,true,true,true);}
+        finally{SequenceSyncRuntime.ForceSdkSnapshot=false;SequenceSyncRuntime.SnapshotOverlay=null;}
+        ui.ShowInformationDialog("置き換えた部分: "+(parts.Count==0?"なし（SDK のまま）":string.Join(" / ",parts))+"\n\n反映が確定していたら、Ctrl+Z を 1 回だけ押し、図を開き直して消えた要素が戻るかを確かめてください。",title);
+    }
+}
