@@ -170,6 +170,19 @@
         var plan=Plan(normal,late);
         Require(plan.IsEmpty,"the late bar reads differently: "+plan.ToJson());
     }
+    // The late bar can go on to send: a reply back to the bar the call to itself left from.
+    static void LateSelfBarThatSends()
+    {
+        string late="@startuml\nparticipant C\nparticipant A\nparticipant B\nactivate C\nC -> A : start()\nactivate A\nA ->> B : spawn()\nactivate B\nB -> B : detect()\nA --> C : done()\ndeactivate A\nactivate B\nref over B : Handle\nB --> B : back\ndeactivate B\ndeactivate B\ndeactivate C\n@enduml";
+        var read=SequenceDocument.Parse(late);
+        var detect=read.Elements.First(e=>e.Kind=="message" && e.Text=="detect()");
+        var back=read.Elements.First(e=>e.Kind=="message" && e.Text=="back");
+        Require(detect.Links["receiveExecution"].SequenceEqual(back.Links["sendExecution"]),"the call to itself did not arrive on the late bar");
+        var normal=SequenceDocument.Parse(late.Replace("B -> B : detect()\nA --> C : done()\ndeactivate A\nactivate B\n","B -> B : detect()\nactivate B\nA --> C : done()\ndeactivate A\n"));
+        Ids(normal);
+        var plan=Plan(normal,read);
+        Require(plan.IsEmpty,"the late bar that sends reads differently: "+plan.ToJson());
+    }
     const string LateText="@startuml\nparticipant C\nparticipant A\nparticipant B\nactivate C\nC -> A : start()\nactivate A\nA ->> B : spawn()\nactivate B\nA -> A : notify()\nactivate A\ndeactivate A\nB -> B : detect()\nA --> C : done()\ndeactivate A\nactivate B\ndeactivate B\nref over B : Handle\ndeactivate B\ndeactivate C\n@enduml";
     // A frame belongs to the branch its top edge falls in, even when its box runs past the
     // branch below; a branch of a frame beside it at the same height does not claim it.
@@ -233,6 +246,7 @@
         FrameNesting();
         FoldedNames();
         LateSelfBar();
+        LateSelfBarThatSends();
         StructurePreflight();
         AddedExecutionPreflight();
         OmittedActivations();

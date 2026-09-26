@@ -182,6 +182,8 @@ public sealed class SequenceDocument
                     e.Links["participant"]=new[]{aliases[n.Left]};e.Attributes["endParent"]=parent;
                     e.Attributes["start"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     result.Elements.Add(e);justEnded.Remove(n.Left);
+                    // A bar that opens with a send has its activate right before that send.
+                    if(!(nodeIndex+1<orderedNodes.Length && SequenceNameDiff.IsMessage(orderedNodes[nodeIndex+1]) && orderedNodes[nodeIndex+1].Left==n.Left))e.Attributes["unopened"]="1";
                     if(!active.ContainsKey(n.Left))active[n.Left]=new Stack<SequenceElement>();
                     // A bar a reply has ended holds nothing more, so nothing nests in it.
                     if(active[n.Left].Count>0 && !closed(active[n.Left].Peek()))e.Links["outer"]=new[]{active[n.Left].Peek().Id};
@@ -356,13 +358,17 @@ public sealed class SequenceDocument
         // between pushes its activate/deactivate after that message, with nothing inside. Such an
         // empty bar is the one that call arrived on: the lane's last message before it is that
         // call to itself, and the lane has done nothing since.
+        // The bar need not be empty: it can go on to send (a reply back to the outer bar, say).
+        // It still received nothing, and its activate is not right before a send it opens with.
         {
             Func<SequenceElement,string,string[]> links=(e,key)=>{string[] v;return e.Links.TryGetValue(key,out v)?v:new string[0];};
             var messages=result.Elements.Where(e=>e.Kind=="message").OrderBy(e=>e.Line).ToList();
             foreach(var bar in result.Elements.Where(e=>e.Kind=="execution").OrderBy(e=>int.Parse(e.Attributes["start"],System.Globalization.CultureInfo.InvariantCulture)).ToList())
             {
                 string lane=links(bar,"participant").FirstOrDefault();
-                if(lane==null || messages.Any(m=>links(m,"sendExecution").Contains(bar.Id) || links(m,"receiveExecution").Contains(bar.Id)))continue;
+                if(lane==null || messages.Any(m=>links(m,"receiveExecution").Contains(bar.Id)))continue;
+                bool sends=messages.Any(m=>links(m,"sendExecution").Contains(bar.Id));
+                if(sends && !bar.Attributes.ContainsKey("unopened"))continue;
                 int start=int.Parse(bar.Attributes["start"],System.Globalization.CultureInfo.InvariantCulture);
                 var last=messages.LastOrDefault(m=>m.Line<start && (links(m,"sender").Contains(lane) || links(m,"receiver").Contains(lane)));
                 if(last==null || !links(last,"sender").Contains(lane))continue;
@@ -370,6 +376,7 @@ public sealed class SequenceDocument
                 if(sort=="reply")continue;
                 if(!links(last,"receiver").Contains(lane))
                 {
+                    if(sends)continue;
                     // The export also holds back the activate of a bar that opens with a send,
                     // when the lane has just deactivated another: it comes after that send. The
                     // empty bar is the one the send left from.

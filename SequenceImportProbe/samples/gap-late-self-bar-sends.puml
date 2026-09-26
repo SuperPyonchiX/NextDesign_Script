@@ -1,0 +1,19 @@
+@startuml
+participant C
+participant A
+participant B
+activate C
+C -> A : start()
+activate A
+A ->> B : spawn()
+activate B
+B -> B : detect()
+A --> C : done()
+deactivate A
+activate B
+ref over B : Handle
+B --> B : back
+deactivate B
+deactivate B
+deactivate C
+@enduml
