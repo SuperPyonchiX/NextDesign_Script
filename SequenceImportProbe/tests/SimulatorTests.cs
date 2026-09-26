@@ -482,6 +482,8 @@ public static class SequenceSimulator
                 end=Tuple.Create(Math.Max(point,reach)+20,false);
                 string lane=laneOf(id);
                 var destroy=destroyed.Where(d=>d.Lane==lane && d.Y>point).OrderBy(d=>d.Y).FirstOrDefault();
+                if(destroy!=null && wires.Values.Any(w=>D(w,"SourceY")>point && D(w,"SourceY")<destroy.Y
+                    && new[]{port("SendMessage",V(w,"ModelId")),port("ReceiveMessage",V(w,"ModelId"))}.Any(b=>b!=null && laneOf(b)==lane)))destroy=null;
                 if(destroy!=null && !uses.Any(o=>o.Key!=id && laneOf(o.Key)==lane && o.Value.Length>0 && o.Value[0].At>point && o.Value[0].At<destroy.Y))
                     end=Tuple.Create(destroy.Y,true);
             }

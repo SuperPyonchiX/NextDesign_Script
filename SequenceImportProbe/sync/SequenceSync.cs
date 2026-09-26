@@ -81,6 +81,10 @@ public sealed class SequenceDocument
                 result=Tuple.Create(point,extra);
                 string[] lane=link(bar,"participant");
                 var destroy=events.FirstOrDefault(n=>n.Kind=="destroy" && lane.Length==1 && link(n,"participant").Contains(lane[0]) && rank[n.Id]>rank[point.Id]);
+                // A message to or from the lane after the bar's last one (the destroy message on
+                // its own, for instance) means the bar ended before it, as the product draws it.
+                if(destroy!=null && events.Any(n=>n.Kind=="message" && rank[n.Id]>rank[point.Id] && rank[n.Id]<rank[destroy.Id]
+                        && (link(n,"sender").Contains(lane[0]) || link(n,"receiver").Contains(lane[0]))))destroy=null;
                 if(destroy!=null && !bars.Any(o=>o.Id!=bar.Id && link(o,"participant").SequenceEqual(lane) && uses[o.Id].Count>0
                         && rank[uses[o.Id][0].Id]>rank[point.Id] && rank[uses[o.Id][0].Id]<rank[destroy.Id]))
                     result=Tuple.Create(destroy,0);
@@ -1991,6 +1995,8 @@ public sealed class SequenceStructurePreparation
                     result=Tuple.Create(Math.Max(point,reach)+20,false);
                     string lane=Link(after[id],"participant").FirstOrDefault();
                     var destroy=destructions.Where(d=>d.Lane==lane && d.Y>point).OrderBy(d=>d.Y).FirstOrDefault();
+                    if(destroy!=null && plan.Expected.Elements.Any(m=>m.Kind=="message" && (Link(m,"sender").Contains(lane) || Link(m,"receiver").Contains(lane))
+                        && messageY(m.Id)>point && messageY(m.Id)<destroy.Y))destroy=null;
                     if(destroy!=null && !uses.Any(o=>o.Key!=id && Link(after[o.Key],"participant").FirstOrDefault()==lane && o.Value.Count>0 && o.Value[0].At>point && o.Value[0].At<destroy.Y))
                         result=Tuple.Create(destroy.Y,true);
                 }
