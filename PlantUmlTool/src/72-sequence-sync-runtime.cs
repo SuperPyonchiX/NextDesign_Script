@@ -777,10 +777,10 @@ public static class SequenceStructureTrial
         add("枠で囲んだメッセージ",prepared.MovedMessages.Length);
         return "図へ反映しました。"+(counts.Count>0?"\n"+string.Join(" / ",counts):"")
             +"\nプロジェクトは保存していません。"
-            +(prepared.AddedMessages.Length>0 || prepared.AddedFragments.Length>0
-                ?"\n注意: メッセージやフラグメントを追加した反映は Undo できません（Undo すると製品が停止します。製品側の不具合）。取り消すときは保存せずに開き直してください。"
-                :prepared.AddedExecutions.Length>0 || prepared.AddedParticipants.Length>0
-                ?"\n注意: 実行区間・参加者を追加した反映を Undo できるかは確かめていません。取り消すときは保存せずに開き直してください。":"");
+            // 3.2.3 on the device: Ctrl+Z after an update that only deleted left the diagram as it
+            // was, and the next Ctrl+Z (the user's own earlier edit) stopped the product. Until
+            // the update undoes as one step, every result says so.
+            +"\n注意: この反映は Ctrl+Z で戻せません。Ctrl+Z を続けると製品が停止することがあります。取り消すときは保存せずに開き直してください。";
     }
     public static string Run(IApplication app,IProject project,ISequenceDiagram diagram,SequenceStructurePreparation prepared,SyncPlan plan,string exported,string directory,StringBuilder log,bool retain=false,bool reconnectCommit=false)
     {
