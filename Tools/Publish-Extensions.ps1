@@ -7,9 +7,12 @@
     既定では PlantUmlTool / AgentReview / NdMcp / SequenceImportProbe を対象にする。
     1. dotnet publish で work\publish\<名前> に出力する
     2. validate_manifest.py（nextdesign-extension スキル）が見つかれば、出力を検査する
-    3. -Deploy を付けたときだけ、出力の中身を extensions\<名前> へコピーする
+    3. -Deploy を付けたときだけ、extensions\<名前> を出力と同じ中身にする
        - Next Design の起動中は配置しない（DLL は起動時にしか読み込まれず、実行中は差し替えられない）
-       - スクリプト版の main.cs が残っていれば、バックアップしてから外す
+       - 配置前の中身を work\deploy-backup\<名前>\<日時> へ丸ごと写してから、出力に無いファイルを消し、出力をコピーする
+         （旧版で消えたファイルやスクリプト版の main.cs を残さない。AgentReview のセッションは配置先の skills を
+           ジャンクションで参照するので、バックアップは配置先の外に置き、フォルダ自体は消さない）
+       - 元に戻すときは、Next Design を終了してバックアップの中身を配置先へ写し戻す
 
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1
@@ -47,7 +50,7 @@ if (!$canValidate) { Write-Warning "validate_manifest.py か python が見つか
 foreach ($extension in $Name) {
     $project = Join-Path $repo $extension
     if (!(Test-Path -LiteralPath (Join-Path $project "$extension.csproj") -PathType Leaf)) { throw "$extension.csproj がありません: $project" }
-    $publish = Join-Path $outputRoot $extension
+    $publish = [IO.Path]::GetFullPath((Join-Path $outputRoot $extension)).TrimEnd('\')
     if (Test-Path -LiteralPath $publish) { Remove-Item -LiteralPath $publish -Recurse -Force }
 
     Write-Host "== $extension : ビルド"
@@ -61,15 +64,40 @@ foreach ($extension in $Name) {
     }
 
     if ($Deploy) {
-        $target = Join-Path $ExtensionsRoot $extension
+        $target = [IO.Path]::GetFullPath((Join-Path $ExtensionsRoot $extension)).TrimEnd('\')
         if (!$PSCmdlet.ShouldProcess($target, "$extension を配置")) { continue }
         Write-Host "== $extension : 配置 -> $target"
         New-Item -ItemType Directory -Path $target -Force | Out-Null
-        $oldScript = Join-Path $target 'main.cs'
-        if (Test-Path -LiteralPath $oldScript -PathType Leaf) {
-            $backup = "$oldScript.script-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-            Move-Item -LiteralPath $oldScript -Destination $backup
-            Write-Host "   スクリプト版の main.cs を退避: $backup"
+        $existing = @(Get-ChildItem -LiteralPath $target -Recurse -Force)
+        if ($existing.Count -gt 0) {
+            $backup = Join-Path $repo "work\deploy-backup\$extension\$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+            New-Item -ItemType Directory -Path $backup -Force | Out-Null
+            Copy-Item -Path (Join-Path $target '*') -Destination $backup -Recurse -Force
+            Write-Host "   配置前の中身を退避: $backup"
+        }
+        # 出力に無いファイルを消す。フォルダはセッションのジャンクションが指しうるので、出力に無く空になったものだけ消す
+        $wanted = @{}
+        foreach ($file in Get-ChildItem -LiteralPath $publish -Recurse -File) {
+            $wanted[$file.FullName.Substring($publish.Length).TrimStart('\').ToLowerInvariant()] = $true
+        }
+        foreach ($file in Get-ChildItem -LiteralPath $target -Recurse -File -Force) {
+            $relative = $file.FullName.Substring($target.Length).TrimStart('\')
+            if (!$wanted.ContainsKey($relative.ToLowerInvariant())) {
+                Remove-Item -LiteralPath $file.FullName -Force
+                Write-Host "   削除: $relative"
+            }
+        }
+        $publishDirs = @{}
+        foreach ($dir in Get-ChildItem -LiteralPath $publish -Recurse -Directory) {
+            $publishDirs[$dir.FullName.Substring($publish.Length).TrimStart('\').ToLowerInvariant()] = $true
+        }
+        $dirs = @(Get-ChildItem -LiteralPath $target -Recurse -Directory -Force | Sort-Object { $_.FullName.Length } -Descending)
+        foreach ($dir in $dirs) {
+            $relative = $dir.FullName.Substring($target.Length).TrimStart('\')
+            if (!$publishDirs.ContainsKey($relative.ToLowerInvariant()) -and !(Get-ChildItem -LiteralPath $dir.FullName -Force)) {
+                Remove-Item -LiteralPath $dir.FullName -Force
+                Write-Host "   削除: $relative\"
+            }
         }
         Copy-Item -Path (Join-Path $publish '*') -Destination $target -Recurse -Force
     }

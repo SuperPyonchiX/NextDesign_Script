@@ -185,7 +185,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1
 
 `-ExecutionPolicy Bypass` は、スクリプトの実行が無効になっている PC（会社PCの既定）でも、この1回の実行に限ってポリシーを外す。PC の設定は変わらない。グループポリシーで実行ポリシーが固定されている場合（`Get-ExecutionPolicy -List` の MachinePolicy / UserPolicy に値がある）は効かないので、情シスに相談する。
 
-`-Deploy` は Next Design の起動中なら止まる。配置先にスクリプト版の `main.cs` が残っていれば、`main.cs.script-backup-<日時>` に退避してから外す。NdMcp を同僚の PC へ入れるときは、MCP の登録もする `NdMcp/Setup.ps1` を使う。
+`-Deploy` は Next Design の起動中なら止まる。配置先は出力と同じ中身にする。配置前の中身を `work\deploy-backup\<名前>\<日時>\` へ丸ごと写してから、出力に無いファイル（旧版で消えたファイル、スクリプト版の `main.cs` など）を消し、出力をコピーする。バックアップを配置先の外に置くのは、AgentReview のレビューセッションが配置先の `skills` をジャンクションで参照していて、中に置くとセッションから見えてしまうため。元に戻すときは、Next Design を終了してバックアップの中身を配置先へ写し戻す。NdMcp を同僚の PC へ入れるときは、MCP の登録もする `NdMcp/Setup.ps1` を使う。
 
 ### ソースの共有
 
