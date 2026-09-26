@@ -785,12 +785,13 @@ public static class SequenceStructureTrial
         add("枠で囲んだメッセージ",prepared.MovedMessages.Length);
         return "図へ反映しました。"+(counts.Count>0?"\n"+string.Join(" / ",counts):"")
             +"\nプロジェクトは保存していません。"
-            // On the device (3.2.3 / 3.2.5): an update of a saved project undoes with one Ctrl+Z (the
-            // diagram shows it once reopened). One made from the SDK snapshot (unsaved) does not
-            // bring deleted elements back, and the next Ctrl+Z stops the product. Adding messages
-            // or frames stops it on Undo either way (A15).
+            // On the device (3.2.3 / 3.2.5 / probe 0.13.6): Ctrl+Z of an editor import puts the
+            // diagram's shapes back as last saved. On a saved diagram that is the state before the
+            // update; on one with unsaved edits, shapes added since the last save are lost, even
+            // ones the update did not touch, and a further Ctrl+Z can stop the product. Adding
+            // messages or frames stops it on Undo either way (A15).
             +(SequenceSyncRuntime.LastFromSdk
-                ?"\n注意: 未保存のプロジェクトへの反映は Ctrl+Z で戻せません。Ctrl+Z を続けると製品が停止することがあります。取り消すときは保存せずに開き直してください。"
+                ?"\n注意: 未保存のプロジェクトへの反映を Ctrl+Z で戻すと、図は最後に保存した状態の図形に戻り、保存後に追加した Note・メッセージなどの図形は消えます。Ctrl+Z を続けると製品が停止することがあります。取り消すときは保存せずに開き直してください。"
                 :prepared.AddedMessages.Length>0 || prepared.AddedFragments.Length>0 || prepared.AddedNotes.Length>0
                 ?"\n注意: メッセージ・フラグメント・Note・ref を追加した反映は Ctrl+Z で戻せません（戻すと製品が停止します。製品側の不具合）。取り消すときは保存せずに開き直してください。"
                 :prepared.AddedExecutions.Length>0 || prepared.AddedParticipants.Length>0
