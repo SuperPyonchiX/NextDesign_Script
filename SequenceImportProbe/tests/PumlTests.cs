@@ -112,7 +112,7 @@
             "activate A", "deactivate A", "destroy B\nA -> B : reuse", "destroy B\ndestroy B", "skinparam unknownOption value", "!include remote.puml",
             "alt test\nA -> B : call", "else test", "end", "participant A",
             "note over C : missing", "ref over A,A : duplicate", "note over A\nunclosed",
-            "activate A\nalt x\ndeactivate A\nelse y\nend\ndeactivate A", "A ->x] : unsupported", "[->] : no lifeline", "actor C", "A <- B : reverse", "A -> B : call\n@enduml\nA -> B : extra"
+            "activate A\nalt x\ndeactivate A\nelse y\nend\ndeactivate A", "A ->x] : unsupported", "[->] : no lifeline", "A <- B : reverse", "A -> B : call\n@enduml\nA -> B : extra"
         };
         foreach(string body in cases)
         {

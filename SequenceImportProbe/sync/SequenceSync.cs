@@ -31,8 +31,8 @@ public sealed class SequenceDocument
         {
             var path=new HashSet<string>();var at=e;
             while(at!=null) { if(!path.Add(at.Id))throw new InvalidOperationException("S201: 所有構造が循環しています。");at=at.Parent==null?null:index[at.Parent]; }
-            if(e.Links.Values.SelectMany(v=>v).Any(id=>!index.ContainsKey(id)))
-                throw new InvalidOperationException("S201: 接続先が図に存在しません。");
+            foreach(var link in e.Links)foreach(var id in link.Value)
+                if(!index.ContainsKey(id))throw new InvalidOperationException("S201: 接続先が図に存在しません（"+e.Kind+" "+e.Id+" の "+link.Key+" → "+id+"）。");
         }
     }
     public SequenceDocument Copy() { return new SequenceDocument{HasTitle=HasTitle,Elements=Elements.Select(e=>e.Copy()).ToList()}; }
@@ -925,7 +925,7 @@ public sealed class SequenceRegion
         // the branch, or frames side by side would each claim the other.
         foreach(var fragment in fragments)foreach(var operand in operands)
             if(operand.Fragment!=fragment.Id && fragment.Y>=operand.Y-0.5 && fragment.Y<operand.Y+operand.Height-0.5
-                && fragment.X>=operand.X-0.5 && fragment.X+fragment.Width<=operand.X+operand.Width+0.5)
+                && fragment.X>=operand.X-0.5 && fragment.X<operand.X+operand.Width-0.5)
                 yield return new SequenceMembership{Child=fragment.Id,Parent=operand.Id,Evidence="diagram top edge within branch"};
         if(annotations==null)yield break;
         // A note or ref goes into the branch its top edge falls in, however far it sticks out
