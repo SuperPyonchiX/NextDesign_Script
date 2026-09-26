@@ -218,7 +218,8 @@ public sealed class SequenceDocument
                     item.Links["sender"]=n.Left=="["?new string[0]:new[]{aliases[n.Left]};
                     item.Links["receiver"]=n.Right=="]"?new string[0]:new[]{aliases[n.Right]};
                     // A receive the next line activates on gets that new bar instead; nothing reopens for it.
-                    bool activates=nodeIndex+1<orderedNodes.Length && orderedNodes[nodeIndex+1].Kind=="activate" && orderedNodes[nodeIndex+1].Left==n.Right;
+                    int nextAt=nodeIndex+1;while(nextAt<orderedNodes.Length && (orderedNodes[nextAt].Kind=="note" || orderedNodes[nextAt].Kind=="ref"))nextAt++;
+                    bool activates=nextAt<orderedNodes.Length && orderedNodes[nextAt].Kind=="activate" && orderedNodes[nextAt].Left==n.Right;
                     SequenceElement answered;
                     // Not when a bar the receiver called is still open on this lane: the reply leaves
                     // that one (a bar that opened and closed on the way is not what it answers).
@@ -329,7 +330,10 @@ public sealed class SequenceDocument
                         ending.Attributes["endParent"]=parent;
                         ending.Attributes["end"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     }
-                result.Elements.Add(item);visit(n.Children,item.Id);previousEvent=item;
+                result.Elements.Add(item);visit(n.Children,item.Id);
+                // A note or ref drawn between a message and the activate of the bar it opens keeps
+                // that message as the one the activate takes (the export writes them by height).
+                if(!((n.Kind=="note" || n.Kind=="ref") && previousEvent!=null && previousEvent.Kind=="message"))previousEvent=item;
                 // A lane that sends or receives inside a frame has moved on from a bar it ended
                 // before the frame, as the generator has it.
                 if(n.Kind=="fragment")

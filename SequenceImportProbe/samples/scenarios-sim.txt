@@ -22,3 +22,5 @@ else の中で外側のバーを閉じる図の名前変更 | gap-close-in-else.
 開いている呼ばれたバーからの返りの名前変更 | gap-reply-open-callee.puml | gap-reply-open-callee-renamed.puml
 空の図へ・枠の後の返り | gap-empty.puml | gap-reply-after-frame.puml
 枠の後の返りの名前変更 | gap-reply-after-frame.puml | gap-reply-after-frame-renamed.puml
+空の図へ・メッセージと activate の間の Note | gap-empty.puml | gap-note-before-activate.puml
+メッセージと activate の間の Note の名前変更 | gap-note-before-activate.puml | gap-note-before-activate-renamed.puml

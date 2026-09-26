@@ -1,0 +1,18 @@
+@startuml
+participant A
+participant B
+activate A
+A -> B : run()
+activate B
+B -> B : dispatched()
+note over A
+see below
+end note
+activate B
+ref over A, B : Handler
+B --> B : void
+deactivate B
+B --> A : done
+deactivate B
+deactivate A
+@enduml

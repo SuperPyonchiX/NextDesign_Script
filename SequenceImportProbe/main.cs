@@ -30,7 +30,7 @@ public void ShowSequenceDetails(ICommandContext context, ICommandParams paramete
 
 public static class SequenceExperiment
 {
-    public const string Title = "シーケンス生成実験 / 0.11.28";
+    public const string Title = "シーケンス生成実験 / 0.11.29";
     public static string Summary = "新しい図は「PlantUML取込」、既存の図は「差分を検証」→「PlantUMLを反映」を使ってください。";
     public static string Details = "まだ実行していません。";
     // Set by the scenario batch: the input to import, no dialogs, and the new diagram's id.
@@ -4609,7 +4609,8 @@ public class PumlBuild
                 // Another lane's deactivate between a message and its receiver's activate keeps the link.
                 if(pendingAlias==n.Left || pendingReply)pendingAlias=null; continue;
             }
-            pendingAlias=null;
+            // A note or ref between a message and its receiver's activate keeps the receive pending.
+            if(n.Kind!="note" && n.Kind!="ref")pendingAlias=null;
             if(n.Kind=="sync" || n.Kind=="async" || n.Kind=="reply")
             {
                 y+=18*(n.Text.Split('\n').Length-1);
@@ -4644,7 +4645,8 @@ public class PumlBuild
                 if(incoming)send=null; else if(claimed!=null)send=claimed; else if(!active.TryGetValue(n.Left,out send) || closed.Contains(send)){freshSend=!active.ContainsKey(n.Left) || send==null;active[n.Left]=send=Execution(n.Left,y-20);}
                 bool outgoing=n.Right=="]"; bool self=n.Left==n.Right; int targetY=y+(self?24:0);
                 string receive;
-                bool beginsActivation=index+1<items.Count && items[index+1].Kind=="activate" && items[index+1].Left==n.Right;
+                int nextAt=index+1;while(nextAt<items.Count && (items[nextAt].Kind=="note" || items[nextAt].Kind=="ref"))nextAt++;
+                bool beginsActivation=nextAt<items.Count && items[nextAt].Kind=="activate" && items[nextAt].Left==n.Right;
                 if(outgoing)
                 {
                     receive=Entity("MessageEnd",""); Owned("MessageEnds",receive);
@@ -5559,7 +5561,8 @@ public sealed class SequenceDocument
                     item.Links["sender"]=n.Left=="["?new string[0]:new[]{aliases[n.Left]};
                     item.Links["receiver"]=n.Right=="]"?new string[0]:new[]{aliases[n.Right]};
                     // A receive the next line activates on gets that new bar instead; nothing reopens for it.
-                    bool activates=nodeIndex+1<orderedNodes.Length && orderedNodes[nodeIndex+1].Kind=="activate" && orderedNodes[nodeIndex+1].Left==n.Right;
+                    int nextAt=nodeIndex+1;while(nextAt<orderedNodes.Length && (orderedNodes[nextAt].Kind=="note" || orderedNodes[nextAt].Kind=="ref"))nextAt++;
+                    bool activates=nextAt<orderedNodes.Length && orderedNodes[nextAt].Kind=="activate" && orderedNodes[nextAt].Left==n.Right;
                     SequenceElement answered;
                     // Not when a bar the receiver called is still open on this lane: the reply leaves
                     // that one (a bar that opened and closed on the way is not what it answers).
@@ -5670,7 +5673,10 @@ public sealed class SequenceDocument
                         ending.Attributes["endParent"]=parent;
                         ending.Attributes["end"]=n.Line.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     }
-                result.Elements.Add(item);visit(n.Children,item.Id);previousEvent=item;
+                result.Elements.Add(item);visit(n.Children,item.Id);
+                // A note or ref drawn between a message and the activate of the bar it opens keeps
+                // that message as the one the activate takes (the export writes them by height).
+                if(!((n.Kind=="note" || n.Kind=="ref") && previousEvent!=null && previousEvent.Kind=="message"))previousEvent=item;
                 // A lane that sends or receives inside a frame has moved on from a bar it ended
                 // before the frame, as the generator has it.
                 if(n.Kind=="fragment")
