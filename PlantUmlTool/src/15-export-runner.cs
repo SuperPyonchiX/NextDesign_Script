@@ -58,6 +58,7 @@ public class PumlExportFolders
     private readonly string _kindFolder;
     private readonly Dictionary<string, string> _taken = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     public readonly List<string> Warnings = new List<string>();
+    private readonly Dictionary<string, bool> _holds = new Dictionary<string, bool>(StringComparer.Ordinal);
 
     public PumlExportFolders(string kindFolder) { _kindFolder = Segment(kindFolder, "diagrams"); }
 
@@ -88,13 +89,20 @@ public class PumlExportFolders
             {
                 var cls = chain[i].Metaclass;
                 if (cls == null) continue;
-                try
+                // 型ごとに1回だけ欄を読む（図の数だけ祖先の欄を読み直すと一括出力が遅くなる）
+                var key = cls.Id + "\t" + diagramType;
+                bool holds;
+                if (!_holds.TryGetValue(key, out holds))
                 {
-                    if (cls.GetFields().Cast<IField>().Any(f => f != null && f.IsEmbedded && !f.IsReference && f.TypeClass != null
-                        && string.Equals(f.TypeClass.FullName, diagramType, StringComparison.Ordinal)))
-                        groupIndex = i;
+                    try
+                    {
+                        holds = cls.GetFields().Cast<IField>().Any(f => f != null && f.IsEmbedded && !f.IsReference && f.TypeClass != null
+                            && string.Equals(f.TypeClass.FullName, diagramType, StringComparison.Ordinal));
+                    }
+                    catch (Exception) { holds = false; }
+                    _holds[key] = holds;
                 }
-                catch (Exception) { }
+                if (holds) groupIndex = i;
             }
         if (groupIndex < 0)
         {
