@@ -191,7 +191,10 @@ public static class SequenceDiagramCreator
                 catch (Exception rollback) { log.AppendLine("ROLLBACK: " + rollback); }
             }
         }
+        int refs = plan.All().Count(n => n.Kind == "ref");
+        int linked = profile.Relations.ContainsKey("RefersTo") ? profile.References.Values.Count(v => !string.IsNullOrEmpty(v)) : 0;
         return "新しいシーケンス図「" + payload.Name + "」を作りました（" + place.Where + "）。\n" + plan.Summary()
+            + (refs > 0 ? "\nref の参照先: " + linked + " / " + refs + " 件を結び付けました（名前が一致する相互作用がないものは参照先なし）。" : "")
             + "\nプロジェクトは保存していません。";
     }
 
