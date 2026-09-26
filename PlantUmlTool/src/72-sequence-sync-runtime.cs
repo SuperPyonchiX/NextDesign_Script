@@ -517,7 +517,7 @@ public static class SequenceSyncRuntime
             // Checked after the comparison is logged, so the reasons reach the diagnostics.
             // Nothing differs: the diagram already is the input, which is not a failure.
             bool same=plan.Changes.Count==0;
-            if(retain && same)SequenceExperiment.Summary="図は入力と一致しています。反映する差分はありません。\n"+SequenceAudit.Summary(plan,current.Limitations.Count);
+            if(retain && same)SequenceExperiment.Summary="図は入力と一致しています。反映する差分はありません。"+(Plain?"":"\n"+SequenceAudit.Summary(plan,current.Limitations.Count));
             if(retain && !same && !preflight.CanCommit())
                 throw new InvalidOperationException("S231: 反映できない差分が含まれています。"
                     +(preflight.Reasons.Count>0?"\n"+string.Join("\n",preflight.Reasons.Distinct()):"\n構造更新の対象がありません。"));
@@ -658,7 +658,7 @@ public static class SequenceSyncRuntime
             if(report!=null)File.WriteAllText(stem+".json",report,new UTF8Encoding(false));
             if(screenshot==null || (Plain && LastChanges>0 && !LastCommitted))SequenceExperiment.Summary+="\n診断: "+stem+".txt";
         }
-        catch(Exception ex) {log.AppendLine("診断の保存失敗: "+ex.Message);SequenceExperiment.Summary+="\n診断ファイルを保存できませんでした。診断表示で確認してください。";}
+        catch(Exception ex) {log.AppendLine("診断の保存失敗: "+ex.Message);SequenceExperiment.Summary+=Plain?"\n診断ファイルを保存できませんでした。":"\n診断ファイルを保存できませんでした。診断表示で確認してください。";}
         SequenceExperiment.Details=screenshot??log.ToString();
         if(!Batch)SequenceExperiment.Show(app);
     }
