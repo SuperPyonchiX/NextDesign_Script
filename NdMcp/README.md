@@ -1,5 +1,15 @@
 # NdMcp — Next Design を MCP クライアントから読む
 
+## 0.6.1: 試行の二重実行と大きな応答をなくす
+
+- **trial を MCP から外した**: `nd_class_diagram_apply` / `nd_sequence_diagram_apply` の `trial` 引数を削除。apply 自体が「反映→照合→一致したときだけ確定、不一致なら取り消し」なので、試行は同じ処理の前半を 2 回やるだけだった。HTTP の `/class-sync/trial`・`/sequence-sync/trial` は開発用に残す
+- **preview は削除・改名のときだけ**: ツールの説明と MCP の instructions から「apply の前に必ず preview」を外した。クラス図の apply は削除を確認なしで実行し、シーケンス図は別名や並びを誤ると削除＋追加になるため、その編集のときだけ preview を使うよう案内する
+- **dry_run は求められたときだけ**: `nd_model_edit` は 1 件でも失敗すれば全部取り消すので、「dry_run で試してから本番」の案内をやめた。確定時の `models` は name / id / modelPath だけ返し、全フィールドの読み返し（リッチテキストの Markdown 変換を含む）は dry_run のときだけ行う
+- **details を絞る**: 同期 API の `details` は、trial / apply が成功したら返さない（全文は `reportFile`）。失敗時は先頭 4000 文字まで。シーケンス図の preview は 1〜2 枚目（行ごとの差分と反映できない理由）だけ返す
+- **シーケンス図の preview で接続の実測を取らない**: 診断ページ用に全メッセージの関連とフィールドを読んでいた処理を、NdMcp から呼ぶときは省く（`SequenceSyncRuntime.SkipConnections`。PlantUmlTool のリボン版は従来どおり）
+- **`/model` の children の重複をなくす**: 表の行（所有フィールドの子）は `fields[].children` にだけ出し、`children` にはそれ以外の子だけを出す
+- 実機未確認
+
 ## 0.6.0: モデル探索を軽くする
 
 Next Design の API 呼び出しを減らし、MCP の応答も小さくした。
@@ -49,7 +59,7 @@ AI がシーケンス図を読み、編集し、新しく作れるようにし�
 | `nd_sequence_diagrams(path, id, limit, count, shapes)` | `GET /sequence-sync/diagrams` | 指定モデル配下（省略時は設計モデル全体）のシーケンス図の一覧（name / modelPath / modelId / editorId。`shapes=True` で参加者数・メッセージ数）。0.6.0 の節を参照 |
 | `nd_sequence_diagram_puml(path, id, editor)` | `GET /sequence-sync/current` | 図を PlantUML（PlantUmlTool の出力と同じ書式）で返す |
 | `nd_sequence_diagram_preview(plantuml, path, id, editor, file)` | `POST /sequence-sync/preview` | 編集した PlantUML と図を比較し、差分件数・行ごとの内訳・反映できない理由を返す。図は変えない |
-| `nd_sequence_diagram_apply(plantuml, path, id, editor, file, trial, save)` | `POST /sequence-sync/trial` / `apply` | 図を更新する。照合が一致したときだけ確定。`trial=True` は一時適用して必ず取り消す。`save=True` は未保存のプロジェクトを先に保存する |
+| `nd_sequence_diagram_apply(plantuml, path, id, editor, file, save)` | `POST /sequence-sync/apply`（`/trial` は HTTP のみ） | 図を更新する。照合が一致したときだけ確定。`save=True` は未保存のプロジェクトを先に保存する |
 | `nd_sequence_diagram_create(plantuml, path, id, file)` | `POST /sequence-sync/create` | 新しいシーケンス図を作る。path/id は既存の図のモデル（その隣）か、図を置くモデル |
 
 - ref の参照先は、名前が一致する相互作用が 1 つのときだけ結び付ける（候補が複数なら参照先なしで差分に残る）
@@ -74,7 +84,7 @@ PlantUmlTool 2.2.0 のクラス図同期本体（`PlantUmlTool/src/60〜61`。Cl
 | `nd_class_diagram_editors(path, id)` | `GET /class-sync/editors` | モデルに紐づく図の一覧と、クラス図として同期できるか |
 | `nd_class_diagram_puml(path, id, editor)` | `GET /class-sync/current` | クラス図を PlantUML（PlantUmlTool のクラス図出力と同じ書式）で返す |
 | `nd_class_diagram_preview(plantuml, path, id, editor, file)` | `POST /class-sync/preview` | 編集した PlantUML と図を比較し、差分候補と停止理由を返す。図は変えない |
-| `nd_class_diagram_apply(plantuml, path, id, editor, file, trial)` | `POST /class-sync/trial` / `apply` | 反映する。`trial=True` は一時適用して照合し必ず取り消す |
+| `nd_class_diagram_apply(plantuml, path, id, editor, file)` | `POST /class-sync/apply`（`/trial` は HTTP のみ） | 反映する。照合が一致したときだけ確定 |
 
 - 対象の図は `path` / `id` のモデルが持つ図（`IModel.GetEditors()`）から、クラス図と判定できる最初の 1 件を選ぶ。複数あるときは `editor` に editorId を渡す。
 - POST の本文は JSON `{path|id, editor?, plantuml|file}`。`file` は Next Design が動く PC 上の .puml パス（300KB 以下）。

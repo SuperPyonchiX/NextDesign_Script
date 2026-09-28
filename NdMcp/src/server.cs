@@ -334,6 +334,28 @@ public class JsonObject : IDictionary
     }
 }
 
+// 同期 API の details（診断表示のページを \f で区切った文字列）を MCP の応答向けに絞る。
+//   trial / apply が成功したら返さない（summary と reportFile で足りる）。
+//   preview は先頭 pages ページだけ（0 なら全部）。失敗時は先頭 MaxFailureChars 文字まで（全文は reportFile）。
+public static class SyncDetails
+{
+    const int MaxFailureChars = 4000;
+
+    public static string Trim(string details, string mode, bool ok, int pages)
+    {
+        if (string.IsNullOrEmpty(details)) return details;
+        if (ok && mode != "preview") return null;
+        if (ok && pages > 0)
+        {
+            var parts = details.Split('\f');
+            if (parts.Length > pages) details = string.Join("\f", parts, 0, pages);
+        }
+        if (!ok && details.Length > MaxFailureChars)
+            details = details.Substring(0, MaxFailureChars) + "\n…（以下略。全文は reportFile）";
+        return details;
+    }
+}
+
 // ------------------------------------------------------------
 //  HTTP サーバー
 // ------------------------------------------------------------
@@ -346,7 +368,7 @@ public class NdMcpHttpError : Exception
 
 public static class NdMcpServer
 {
-    public const string Version = "0.6.0";
+    public const string Version = "0.6.1";
 
     public static int Port = 3560;
     public static string ExportDir;
@@ -710,8 +732,16 @@ public static class ModelApi
     {
         var m = Resolve(app, path, id);
         var result = Summary(m);
-        result.Set("fields", Fields(m));
-        result.Set("children", ChildrenOf(m).Select(c => (object)Summary(c)).ToList());
+        var fields = Fields(m);
+        result.Set("fields", fields);
+        // 表（所有フィールド）の行として fields に出した子は children に重ねて出さない。
+        var listed = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in fields.OfType<JsonObject>())
+        {
+            var rows = entry["children"] as List<object>;
+            if (rows != null) foreach (var row in rows.OfType<JsonObject>()) listed.Add(row["id"] as string ?? "");
+        }
+        result.Set("children", ChildrenOf(m).Where(c => !listed.Contains(c.Id)).Select(c => (object)Summary(c)).ToList());
         return result;
     }
 

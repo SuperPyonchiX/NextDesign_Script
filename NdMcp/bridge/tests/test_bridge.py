@@ -90,6 +90,12 @@ def test_tool_search_metaclass_and_limit():
     assert body["total"] == 2 and body["truncated"] is False
 
 
+def test_apply_tools_have_no_trial_parameter():
+    import inspect
+    for tool in (bridge.nd_class_diagram_apply, bridge.nd_sequence_diagram_apply):
+        assert "trial" not in inspect.signature(tool).parameters
+
+
 def test_tool_output_is_compact_json():
     assert "\n" not in bridge.nd_project() and ", " not in bridge.nd_project()
 
@@ -139,10 +145,9 @@ def test_tool_class_diagram_preview_and_apply():
     assert "currentPlantuml" not in preview and "includeCurrent" not in mock_nd.MockState.last_body
     preview = json.loads(bridge.nd_class_diagram_preview(edited, path="Sample/機能", include_current=True))
     assert preview["currentPlantuml"] == mock_nd.CLASS_PUML
-    trial = json.loads(bridge.nd_class_diagram_apply(edited, id="M2", trial=True))
-    assert trial["mode"] == "trial" and trial["applied"] is True and trial["committed"] is False
     assert mock_nd.MockState.applied == []
     applied = json.loads(bridge.nd_class_diagram_apply(edited, id="M2"))
+    assert mock_nd.MockState.last_route == "/class-sync/apply"
     assert applied["mode"] == "apply" and applied["committed"] is True and applied["reportFile"].endswith(".txt")
     assert mock_nd.MockState.applied == [edited]
 
@@ -166,6 +171,7 @@ def test_tool_sequence_diagram_list_puml_apply_create():
     assert preview["changes"] == 1 and preview["mode"] == "preview"
     applied = json.loads(bridge.nd_sequence_diagram_apply(edited, id="M21", save=True))
     assert applied["committed"] is True and mock_nd.MockState.last_body["save"] is True
+    assert mock_nd.MockState.last_route == "/sequence-sync/apply"
     created = json.loads(bridge.nd_sequence_diagram_create("@startuml\ntitle 新しい図\nA -> B : x\n@enduml\n", path="Sample/機能"))
     assert created["ok"] is True and created["modelId"] == "M99"
     assert bridge.nd_sequence_diagram_puml(path="Sample/要求").startswith("ERROR:")

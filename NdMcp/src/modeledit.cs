@@ -118,9 +118,11 @@ public static class ModelEditApi
             }
         }
         catch (Exception ex) { failure = ex.Message; }
-        // Read back before completing, so a dry run still shows what the edit made.
+        // Read back before completing, so a dry run still shows what the edit made. Only a dry run
+        // reads every field back (rich text is converted to Markdown): a committed edit lists the
+        // models it touched, and nd_model reads one when needed.
         var after = touched.Where(m => m != null && !m.IsDeleted).GroupBy(m => m.Id).Select(g => g.First())
-            .Select(m => (object)ModelApi.Summary(m).Set("fields", ModelApi.Fields(m))).ToList();
+            .Select(m => (object)(dryRun ? ModelApi.Summary(m).Set("fields", ModelApi.Fields(m)) : ModelApi.Summary(m))).ToList();
         bool committed = false;
         if (failure == null && !dryRun) { transaction.Commit(); committed = true; }
         else { try { transaction.Rollback(); } catch (Exception ex) { failure = (failure ?? "") + " / 取消に失敗: " + ex.Message; } }

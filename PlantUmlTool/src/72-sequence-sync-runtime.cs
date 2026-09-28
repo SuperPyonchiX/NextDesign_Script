@@ -440,6 +440,9 @@ public static class SequenceSyncRuntime
     public static string LastReport,LastReportFile;
     public static bool LastCommitted;
     public static string LastReasons="";
+    // Set by a caller that shows no diagnostics pages (the MCP bridge): the comparison skips the
+    // per-message relation dump, which reads every relation and field of the diagram.
+    public static bool SkipConnections;
     static System.Diagnostics.Stopwatch clock;
     internal static void Lap(string stage)
     {
@@ -512,7 +515,7 @@ public static class SequenceSyncRuntime
             foreach(var warning in current.Limitations)log.AppendLine("要照合: "+warning);
             screenshot=(trial?"適用前の比較結果（更新後の残差ではありません）\n":"現在の図と入力の比較結果\n")+SequenceAudit.Reasons(current.Document,desired,plan)+"\f"+preflight.Summary()+"\f"+current.BarTimeline();
             // Only the comparison shows it; applying already has enough pages.
-            if(!prepare)
+            if(!prepare && !SkipConnections)
             {
                 try {screenshot+="\f"+Connections(diagram);}
                 catch(Exception ex) {screenshot+="\f接続の実測: 取得できません: "+ex.Message;}

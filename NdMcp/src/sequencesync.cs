@@ -99,6 +99,7 @@ public static class SequenceSyncApi
             SequenceSyncRuntime.Batch = true; SequenceSyncRuntime.BatchDiagram = diagram; SequenceSyncRuntime.BatchInput = file;
             SequenceSyncRuntime.Plain = mode == "apply";
             SequenceSyncRuntime.SaveBeforeUpdate = save; SequenceSyncRuntime.UpdateWithoutSaving = !save;
+            SequenceSyncRuntime.SkipConnections = true;
             if (mode == "preview") SequenceSyncRuntime.Preview(app);
             else if (mode == "trial") SequenceSyncRuntime.Preview(app, true, true);
             else SequenceSyncRuntime.Preview(app, true, true, true, true);
@@ -107,6 +108,7 @@ public static class SequenceSyncApi
         {
             SequenceSyncRuntime.Batch = false; SequenceSyncRuntime.BatchDiagram = null; SequenceSyncRuntime.BatchInput = null;
             SequenceSyncRuntime.Plain = false; SequenceSyncRuntime.SaveBeforeUpdate = false; SequenceSyncRuntime.UpdateWithoutSaving = false;
+            SequenceSyncRuntime.SkipConnections = false;
             try { File.Delete(file); } catch (Exception) { }
         }
         int changes = SequenceSyncRuntime.LastChanges;
@@ -115,7 +117,8 @@ public static class SequenceSyncApi
         var result = Describe(diagram)
             .Set("mode", mode).Set("ok", ok).Set("changes", changes).Set("committed", committed)
             .Set("stopReasons", SequenceSyncRuntime.LastReasons ?? "")
-            .Set("summary", SequenceExperiment.Summary).Set("details", SequenceExperiment.Details)
+            // preview の診断表示は 1 枚目（行ごとの差分）と 2 枚目（反映できない理由）だけ返す。
+            .Set("summary", SequenceExperiment.Summary).Set("details", SyncDetails.Trim(SequenceExperiment.Details, mode, ok, 2))
             .Set("reportFile", SequenceSyncRuntime.LastReportFile);
         if (mode == "apply" && committed)
             result.Set("undo", unsaved && !save

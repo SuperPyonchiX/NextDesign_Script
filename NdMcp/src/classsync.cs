@@ -124,7 +124,7 @@ public static class ClassSyncApi
             .Set("modelPath", ModelApi.PathOf(model)).Set("modelId", model.Id).Set("editorId", editor.Id)
             .Set("changes", outcome.Changes).Set("limitations", outcome.Limitations).Set("stopReasons", outcome.StopReasons)
             .Set("applied", outcome.Applied).Set("committed", outcome.Committed)
-            .Set("summary", outcome.Summary).Set("details", outcome.Details)
+            .Set("summary", outcome.Summary).Set("details", SyncDetails.Trim(outcome.Details, mode, outcome.Succeeded, 0))
             .Set("error", outcome.ErrorMessage)
             .Set("reportFile", stem == null ? null : stem + ".txt");
         if (mode == "preview" && includeCurrent) result.Set("currentPlantuml", outcome.CurrentPuml);

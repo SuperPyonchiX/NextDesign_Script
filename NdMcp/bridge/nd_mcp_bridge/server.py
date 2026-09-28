@@ -1,5 +1,6 @@
 """stdio MCP サーバー。各ツールは NdMcp 拡張の HTTP API を 1 対 1 で呼び出す。
-モデル読み出しは読み取り専用。書き込みは nd_class_diagram_apply・nd_sequence_diagram_apply / create・nd_model_edit（と一時適用の trial / dry_run）だけ。"""
+モデル読み出しは読み取り専用。書き込みは nd_class_diagram_apply・nd_sequence_diagram_apply / create・nd_model_edit（と取り消し前提の dry_run）だけ。
+一時適用の /class-sync/trial・/sequence-sync/trial は HTTP にだけ残す（apply が同じ照合をしてから確定するので、MCP には出さない）。"""
 from __future__ import annotations
 
 import json
@@ -15,12 +16,14 @@ mcp = MCPServer(
         "Next Design で開いているプロジェクトのモデルを読み出す。"
         "モデルは path（モデルパス。例 'Project/要求/REQ-1'）または id で指定する。"
         "まず nd_project で概要を、nd_tree で階層を把握してから nd_model で詳細を読むとよい。"
-        "クラス図は nd_class_diagram_puml で PlantUML として読み、編集した PlantUML を "
-        "nd_class_diagram_preview（比較のみ）→ nd_class_diagram_apply（反映）の順で渡すと図とモデルが更新される。"
+        "クラス図は nd_class_diagram_puml で PlantUML として読み、編集した PlantUML を nd_class_diagram_apply に渡すと図とモデルが更新される。"
         "シーケンス図は nd_sequence_diagrams で探し、nd_sequence_diagram_puml で PlantUML として読み、編集して "
-        "nd_sequence_diagram_preview → nd_sequence_diagram_apply で図を更新する。新しい図は nd_sequence_diagram_create で作る。"
+        "nd_sequence_diagram_apply で図を更新する。新しい図は nd_sequence_diagram_create で作る。"
+        "apply は反映して照合し、一致したときだけ確定する（一致しなければ元に戻す）ので、事前の試行は要らない。"
+        "既存の要素を削除・改名する編集のときだけ、先に *_preview で差分を確かめる（削除は確認なしで実行され、改名の書き方を誤ると削除＋追加になって既存のトレースが消えるため）。"
         "UML 以外のモデル（フィールド値・リッチテキスト・表の行・参照）は nd_model_schema で書ける項目を確かめ、"
-        "nd_model_edit で編集する（dry_run=True で試してから本番）。"
+        "nd_model_edit で編集する（1 件でも失敗すれば全部取り消すので、そのまま本番で実行してよい）。"
+        "Next Design の処理は重いので、同じ内容を読み直したり、同じ編集を試行と本番の 2 回実行したりしない。"
         "Next Design 側でサーバーが開始されていないと接続に失敗する。"
     ),
 )
@@ -76,7 +79,8 @@ def nd_tree(path: str = "", id: str = "", depth: int = 2) -> str:
 @mcp.tool()
 def nd_model(path: str = "", id: str = "") -> str:
     """モデル 1 件の詳細（全フィールドの値と直下の子モデル）を返す。path か id のどちらかを指定する。
-    リッチテキストは Markdown に変換済み。参照フィールドは参照先の name / modelPath を返す。"""
+    リッチテキストは Markdown に変換済み。参照フィールドは参照先の name / modelPath を返す。
+    表の行（所有フィールドの子）は fields の children に出し、children にはそれ以外の子だけを出す。"""
     return _call("/model", {"path": path, "id": id})
 
 
@@ -123,21 +127,20 @@ def nd_class_diagram_puml(path: str = "", id: str = "", editor: str = "") -> str
 def nd_class_diagram_preview(plantuml: str, path: str = "", id: str = "", editor: str = "", file: str = "",
                              include_current: bool = False) -> str:
     """編集した PlantUML を現在のクラス図と比較し、差分候補（追加・削除・更新）と反映できない理由を返す。図は変更しない。
-    plantuml の代わりに file（Next Design が動く PC 上の .puml パス）でも渡せる。まずこれで意図した差分だけが出ることを確認する。
+    plantuml の代わりに file（Next Design が動く PC 上の .puml パス）でも渡せる。
+    クラス・属性・操作・関連を削除または改名する編集のときに、apply の前に使う（apply は削除を確認なしで実行する）。追加だけなら不要。
     include_current=True なら今の図の PlantUML（currentPlantuml）も返す。nd_class_diagram_puml で読んだ直後なら不要。"""
     return _post("/class-sync/preview", {"path": path, "id": id, "editor": editor, "plantuml": plantuml, "file": file,
                                          "includeCurrent": include_current or None}, timeout=300)
 
 
 @mcp.tool()
-def nd_class_diagram_apply(plantuml: str, path: str = "", id: str = "", editor: str = "", file: str = "",
-                           trial: bool = False) -> str:
+def nd_class_diagram_apply(plantuml: str, path: str = "", id: str = "", editor: str = "", file: str = "") -> str:
     """編集した PlantUML をクラス図とモデルに反映する（クラス・属性・操作・関連の追加削除、名前・可視性・型・引数・
-    戻り値・多重度・既定値の変更）。trial=True なら一時適用して照合したあと必ず取り消す（確定しない）。
-    確定後は Next Design 側で Undo できる。反映結果は ok / applied / committed / summary で返し、詳細は reportFile に残る。
-    関連の追加を含む確定には、プロジェクトが保存済みであることが必要。"""
-    mode = "trial" if trial else "apply"
-    return _post(f"/class-sync/{mode}", {"path": path, "id": id, "editor": editor, "plantuml": plantuml, "file": file},
+    戻り値・多重度・既定値の変更）。反映して照合し、一致したときだけ確定する（一致しなければ取り消す）。
+    確定後は Next Design 側で Undo できる。反映結果は ok / applied / committed / summary で返す。
+    details は失敗したときだけ付き、全文は reportFile に残る。関連の追加を含む確定には、プロジェクトが保存済みであることが必要。"""
+    return _post("/class-sync/apply", {"path": path, "id": id, "editor": editor, "plantuml": plantuml, "file": file},
                  timeout=600)
 
 
@@ -176,23 +179,23 @@ def nd_sequence_diagram_puml(path: str = "", id: str = "", editor: str = "") -> 
 @mcp.tool()
 def nd_sequence_diagram_preview(plantuml: str, path: str = "", id: str = "", editor: str = "", file: str = "") -> str:
     """編集した PlantUML を現在のシーケンス図と比較し、差分（changes 件数、details に行ごとの内訳）と、
-    反映できない理由（stopReasons）を返す。図は変更しない。apply の前に必ずこれで意図した差分だけが出ることを確かめる。
-    plantuml の代わりに file（Next Design が動く PC 上の .puml パス）でも渡せる。"""
+    反映できない理由（stopReasons）を返す。図は変更しない。
+    既存の要素を削除・改名・並べ替える編集のときに、apply の前に使う（別名や並びを誤ると削除＋追加になり、既存のトレースが消える）。
+    追加だけなら不要。plantuml の代わりに file（Next Design が動く PC 上の .puml パス）でも渡せる。"""
     return _post("/sequence-sync/preview", {"path": path, "id": id, "editor": editor, "plantuml": plantuml, "file": file}, timeout=600)
 
 
 @mcp.tool()
 def nd_sequence_diagram_apply(plantuml: str, path: str = "", id: str = "", editor: str = "", file: str = "",
-                              trial: bool = False, save: bool = False) -> str:
+                              save: bool = False) -> str:
     """編集した PlantUML でシーケンス図を更新する（参加者・メッセージ・実行区間・複合フラグメント・Note・ref・破棄の
     追加削除と本文・種別・並びの変更）。照合が一致したときだけ確定し、一致しなければ元に戻す（ok=false）。
-    trial=True なら一時適用して照合したあと必ず取り消す。
+    details は失敗したときだけ付き、全文は reportFile に残る。
     save=True なら未保存のプロジェクトを先に保存する（Ctrl+Z で戻せるようにする）。既定は保存しない：
     未保存のまま更新した後の Ctrl+Z は、図を最後に保存した状態の図形に戻し、保存後に追加した図形を消す。
     メッセージ・フラグメント等を追加した更新は Undo で製品が停止する既知の不具合があるので、利用者に Ctrl+Z を勧めないこと。"""
-    mode = "trial" if trial else "apply"
-    return _post(f"/sequence-sync/{mode}", {"path": path, "id": id, "editor": editor, "plantuml": plantuml, "file": file,
-                                            "save": save}, timeout=600)
+    return _post("/sequence-sync/apply", {"path": path, "id": id, "editor": editor, "plantuml": plantuml, "file": file,
+                                          "save": save}, timeout=600)
 
 
 @mcp.tool()
@@ -228,7 +231,9 @@ def nd_model_schema(path: str = "", id: str = "") -> str:
 @mcp.tool()
 def nd_model_edit(operations: list[dict], dry_run: bool = False) -> str:
     """モデルを編集する。operations の操作をまとめて 1 回で実行し、1 つでも失敗したら全部取り消す（failedIndex と error を返す）。
-    dry_run=True は実行して結果（models に編集後のフィールド）を返したあと必ず取り消す。確定した編集は Next Design の Ctrl+Z で 1 回で戻せる。保存はしない。
+    失敗しても途中までの変更は残らないので、通常は dry_run なしでそのまま実行する。確定した編集は Next Design の Ctrl+Z で 1 回で戻せる。保存はしない。
+    models には編集したモデルの name / id / modelPath を返す。
+    dry_run=True は、利用者が確定前に結果を見たいと言ったときだけ使う。実行して models に編集後のフィールド値を付けたあと、必ず取り消す。
 
     モデルの指定（target / parent / to / before / after）は {"path": モデルパス} / {"id": ID} / {"ref": 名前}。
     ref は同じ operations の中で先に add したモデルに "as" で付けた名前。
