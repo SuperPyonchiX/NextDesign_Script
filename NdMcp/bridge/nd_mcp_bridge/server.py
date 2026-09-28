@@ -36,7 +36,8 @@ def client() -> NdClient:
 
 
 def _dump(data: Any) -> str:
-    return json.dumps(data, ensure_ascii=False, indent=2)
+    # 整形しない（字下げと空白は読み手の LLM にとってトークンの無駄）
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 
 def _call(path: str, params: dict | None = None, timeout: float | None = None) -> str:
@@ -80,9 +81,11 @@ def nd_model(path: str = "", id: str = "") -> str:
 
 
 @mcp.tool()
-def nd_search(query: str, metaclass: str = "", limit: int = 50) -> str:
-    """モデル名の部分一致検索（大文字小文字を区別しない）。metaclass で短いクラス名による絞り込みができる。"""
-    return _call("/search", {"q": query, "metaclass": metaclass, "limit": limit})
+def nd_search(query: str, metaclass: str = "", limit: int = 50, count: bool = False) -> str:
+    """モデル名の部分一致検索（大文字小文字を区別しない）。metaclass で短いクラス名による絞り込みができる。
+    limit 件を超える一致が見つかった時点で探索をやめ、truncated=true を返す（このとき total は付かない）。
+    該当の総数が必要なときだけ count=True にする（全モデルを走査するので重い）。"""
+    return _call("/search", {"q": query, "metaclass": metaclass, "limit": limit, "count": "true" if count else ""})
 
 
 @mcp.tool()
@@ -117,10 +120,13 @@ def nd_class_diagram_puml(path: str = "", id: str = "", editor: str = "") -> str
 
 
 @mcp.tool()
-def nd_class_diagram_preview(plantuml: str, path: str = "", id: str = "", editor: str = "", file: str = "") -> str:
+def nd_class_diagram_preview(plantuml: str, path: str = "", id: str = "", editor: str = "", file: str = "",
+                             include_current: bool = False) -> str:
     """編集した PlantUML を現在のクラス図と比較し、差分候補（追加・削除・更新）と反映できない理由を返す。図は変更しない。
-    plantuml の代わりに file（Next Design が動く PC 上の .puml パス）でも渡せる。まずこれで意図した差分だけが出ることを確認する。"""
-    return _post("/class-sync/preview", {"path": path, "id": id, "editor": editor, "plantuml": plantuml, "file": file}, timeout=300)
+    plantuml の代わりに file（Next Design が動く PC 上の .puml パス）でも渡せる。まずこれで意図した差分だけが出ることを確認する。
+    include_current=True なら今の図の PlantUML（currentPlantuml）も返す。nd_class_diagram_puml で読んだ直後なら不要。"""
+    return _post("/class-sync/preview", {"path": path, "id": id, "editor": editor, "plantuml": plantuml, "file": file,
+                                         "includeCurrent": include_current or None}, timeout=300)
 
 
 @mcp.tool()
@@ -139,10 +145,14 @@ def nd_class_diagram_apply(plantuml: str, path: str = "", id: str = "", editor: 
 
 
 @mcp.tool()
-def nd_sequence_diagrams(path: str = "", id: str = "", limit: int = 200) -> str:
-    """指定モデル配下（省略時はプロジェクト全体）のシーケンス図を一覧する。
-    各図の name / modelPath / modelId / editorId / lifelines / messages を返す。以降のツールには modelPath か modelId を渡す。"""
-    return _call("/sequence-sync/diagrams", {"path": path, "id": id, "limit": limit}, timeout=300)
+def nd_sequence_diagrams(path: str = "", id: str = "", limit: int = 50, count: bool = False, shapes: bool = False) -> str:
+    """指定モデル配下（省略時は設計モデル全体）のシーケンス図をモデルツリー順に一覧する。
+    各図の name / modelPath / modelId / editorId を返す。以降のツールには modelPath か modelId を渡す。
+    探す範囲が分かっていれば path で絞ると速い。limit 件を超えた時点で探索をやめ truncated=true を返す（count は付かない）。
+    count=True で総数も返す（全体を走査するので重い）。shapes=True で参加者数・メッセージ数（lifelines / messages）も返す（図ごとに図形を読むので重い）。"""
+    return _call("/sequence-sync/diagrams", {"path": path, "id": id, "limit": limit,
+                                              "count": "true" if count else "", "shapes": "true" if shapes else ""},
+                 timeout=300)
 
 
 @mcp.tool()

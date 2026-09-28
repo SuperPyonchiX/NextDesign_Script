@@ -346,7 +346,7 @@ public class NdMcpHttpError : Exception
 
 public static class NdMcpServer
 {
-    public const string Version = "0.2.1";
+    public const string Version = "0.6.0";
 
     public static int Port = 3560;
     public static string ExportDir;
@@ -484,7 +484,7 @@ public static class NdMcpServer
             case "/tree": work = app => ModelApi.Tree(app, modelPath, modelId, ParseInt(q["depth"], 2, 0, 20)); break;
             case "/model": work = app => ModelApi.Model(app, modelPath, modelId); break;
             case "/model/schema": work = app => ModelEditApi.Schema(app, modelPath, modelId); break;
-            case "/search": work = app => ModelApi.Search(app, q["q"] ?? "", q["metaclass"] ?? "", ParseInt(q["limit"], 50, 1, 1000)); break;
+            case "/search": work = app => ModelApi.Search(app, q["q"] ?? "", q["metaclass"] ?? "", ParseInt(q["limit"], 50, 1, 1000), ParseBool(q["count"])); break;
             case "/markdown": work = app => ModelApi.Markdown(app, modelPath, modelId); break;
             case "/export": work = app => ModelApi.Export(app, modelPath, modelId, q["out"] ?? "", ExportDir); break;
             default: throw new NdMcpHttpError(404, "不明なパス: " + path);
@@ -530,7 +530,8 @@ public static class NdMcpServer
             catch (NdMcpHttpError) { throw; }
             catch (Exception e) { throw new NdMcpHttpError(400, "file を読めません: " + e.Message); }
         }
-        work = app => ClassSyncApi.Sync(app, bodyPath, bodyId, bodyEditor, plantuml, mode);
+        var includeCurrent = BodyBool(json, "includeCurrent");
+        work = app => ClassSyncApi.Sync(app, bodyPath, bodyId, bodyEditor, plantuml, mode, includeCurrent);
         return OnUiThread(work);
     }
 
@@ -543,7 +544,13 @@ public static class NdMcpServer
             if (request.HttpMethod != "GET") throw new NdMcpHttpError(405, path + " は GET のみ対応しています");
             var modelPath = q["path"] ?? "";
             var modelId = q["id"] ?? "";
-            if (path == "/sequence-sync/diagrams") { var limit = ParseInt(q["limit"], 200, 1, 5000); work = app => SequenceSyncApi.Diagrams(app, modelPath, modelId, limit); }
+            if (path == "/sequence-sync/diagrams")
+            {
+                var limit = ParseInt(q["limit"], 50, 1, 5000);
+                var count = ParseBool(q["count"]);
+                var shapes = ParseBool(q["shapes"]);
+                work = app => SequenceSyncApi.Diagrams(app, modelPath, modelId, limit, count, shapes);
+            }
             else { var editorId = q["editor"] ?? ""; work = app => SequenceSyncApi.Current(app, modelPath, modelId, editorId); }
             return OnUiThread(work);
         }
@@ -558,7 +565,7 @@ public static class NdMcpServer
         var bodyPath = ClassJsonNode.Value(json, "path") ?? "";
         var bodyId = ClassJsonNode.Value(json, "id") ?? "";
         var bodyEditor = ClassJsonNode.Value(json, "editor") ?? "";
-        var save = json["save"] != null && (json["save"].Raw == "true" || string.Equals(ClassJsonNode.Value(json, "save") ?? "", "true", StringComparison.OrdinalIgnoreCase));
+        var save = BodyBool(json, "save");
         var plantuml = ClassJsonNode.Value(json, "plantuml") ?? "";
         if (plantuml.Length == 0)
         {
@@ -617,6 +624,17 @@ public static class NdMcpServer
         return Math.Max(min, Math.Min(max, v));
     }
 
+    private static bool ParseBool(string s)
+    {
+        return s == "1" || string.Equals(s, "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // JSON 本文の真偽値。true リテラルと文字列 "true" の両方を受け付ける。
+    private static bool BodyBool(ClassJsonNode json, string key)
+    {
+        return json[key] != null && (json[key].Raw == "true" || string.Equals(ClassJsonNode.Value(json, key) ?? "", "true", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static object Usage()
     {
         return new JsonObject()
@@ -625,13 +643,13 @@ public static class NdMcpServer
             {
                 "GET /ping", "GET /thread", "GET /project",
                 "GET /tree?path=&id=&depth=2", "GET /model?path=&id=",
-                "GET /search?q=&metaclass=&limit=50", "GET /markdown?path=&id=",
+                "GET /search?q=&metaclass=&limit=50&count=false", "GET /markdown?path=&id=",
                 "GET /export?path=&id=&out=",
                 "GET /class-sync/editors?path=&id=", "GET /class-sync/current?path=&id=&editor=",
-                "POST /class-sync/preview {path|id, editor?, plantuml|file}",
+                "POST /class-sync/preview {path|id, editor?, plantuml|file, includeCurrent?}",
                 "POST /class-sync/trial {path|id, editor?, plantuml|file}",
                 "POST /class-sync/apply {path|id, editor?, plantuml|file}",
-                "GET /sequence-sync/diagrams?path=&id=&limit=", "GET /sequence-sync/current?path=&id=&editor=",
+                "GET /sequence-sync/diagrams?path=&id=&limit=50&count=false&shapes=false","GET /sequence-sync/current?path=&id=&editor=",
                 "POST /sequence-sync/preview {path|id, editor?, plantuml|file}",
                 "POST /sequence-sync/trial {path|id, editor?, plantuml|file, save?}",
                 "POST /sequence-sync/apply {path|id, editor?, plantuml|file, save?}",
@@ -697,14 +715,16 @@ public static class ModelApi
         return result;
     }
 
-    public static object Search(IApplication app, string query, string metaclass, int limit)
+    // limit 件を超える 1 件が見つかった時点で走査をやめる。総数は count=true のとき、
+    // または limit に届かず最後まで見たときだけ返す。
+    public static object Search(IApplication app, string query, string metaclass, int limit, bool count)
     {
         var project = RequireProject(app);
         var hits = new List<object>();
         var total = 0;
-        foreach (var m in AllModels(project))
+        foreach (var m in Walk(project))
         {
-            if (m.IsDeleted || m.IsProxy) continue;
+            if (!Live(m)) continue;
             if (query.Length > 0)
             {
                 var name = m.Name ?? "";
@@ -714,9 +734,12 @@ public static class ModelApi
                 && !string.Equals(ShortClassName(m), metaclass, StringComparison.OrdinalIgnoreCase)) continue;
             total++;
             if (hits.Count < limit) hits.Add(Summary(m));
+            else if (!count) break;
         }
-        return new JsonObject().Set("query", query).Set("metaclass", metaclass)
-            .Set("total", total).Set("returned", hits.Count).Set("models", hits);
+        var truncated = total > hits.Count;
+        var result = new JsonObject().Set("query", query).Set("metaclass", metaclass);
+        if (count || !truncated) result.Set("total", total);
+        return result.Set("returned", hits.Count).Set("truncated", truncated).Set("models", hits);
     }
 
     public static object Markdown(IApplication app, string path, string id)
@@ -774,7 +797,7 @@ public static class ModelApi
         return DiagramGroupRules.Load(rulesFile);
     }
 
-    private static IProject RequireProject(IApplication app)
+    public static IProject RequireProject(IApplication app)
     {
         if (app == null) throw new NdMcpHttpError(503, "IApplication が捕獲できていません（サーバーを開始し直してください）");
         var project = app.Workspace.CurrentProject;
@@ -790,22 +813,63 @@ public static class ModelApi
     {
         var project = RequireProject(app);
         if (string.IsNullOrEmpty(path) && string.IsNullOrEmpty(id)) return project;
-        foreach (var m in AllModels(project))
-        {
-            if (m.IsDeleted || m.IsProxy) continue;
-            if (!string.IsNullOrEmpty(id) && m.Id == id) return m;
-            if (!string.IsNullOrEmpty(path) && string.IsNullOrEmpty(id) && PathOf(m) == path) return m;
-        }
+        var found = !string.IsNullOrEmpty(id) ? FindById(project, id) : FindByPath(project, path);
+        if (found != null) return found;
         throw new NdMcpHttpError(404, "モデルが見つかりません: " + (string.IsNullOrEmpty(id) ? "path=" + path : "id=" + id));
     }
 
-    private static IEnumerable<IModel> AllModels(IProject project)
+    public static bool Live(IModel m) { return m != null && !m.IsDeleted && !m.IsProxy; }
+
+    // GetModelById は削除済みモデルも返すので、それは見つからなかった扱いにする。
+    private static IModel FindById(IProject project, string id)
     {
-        yield return project;
-        IEnumerable<IModel> all;
-        try { all = project.GetAllChildren().Cast<IModel>().ToList(); }
-        catch (Exception) { all = new List<IModel>(); }
-        foreach (var m in all) if (m != null) yield return m;
+        if (project.Id == id) return project;
+        IModel m = null;
+        try { m = project.GetModelById(id); }
+        catch (Exception) { }
+        return Live(m) ? m : null;
+    }
+
+    // 区切りごとに子を名前で下る。ModelPath の先頭にプロジェクト名が付く形と付かない形の両方を試し、
+    // 名前に '/' を含むなどで下れないときだけ全モデルを走査する。
+    private static IModel FindByPath(IProject project, string path)
+    {
+        if (PathOf(project) == path) return project;
+        var segments = path.Split('/');
+        for (int start = 0; start < 2 && start < segments.Length; start++)
+        {
+            if (start == 1 && segments[0] != (project.Name ?? "")) break;
+            var level = new List<IModel> { project };
+            for (int i = start; i < segments.Length && level.Count > 0; i++)
+            {
+                var name = segments[i];
+                level = level.SelectMany(p => RawChildren(p)).Where(c => c.Name == name).ToList();
+            }
+            var hit = level.FirstOrDefault(m => Live(m) && PathOf(m) == path);
+            if (hit != null) return hit;
+        }
+        return Walk(project).FirstOrDefault(m => Live(m) && PathOf(m) == path);
+    }
+
+    // 前順で 1 件ずつ返す。呼び出し側が途中でやめれば、残りのモデルの子は取得しない。
+    // 削除済み・プロキシも返す（子を下るため）。除くのは呼び出し側で Live を使う。
+    public static IEnumerable<IModel> Walk(IModel root)
+    {
+        var stack = new Stack<IModel>();
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            var m = stack.Pop();
+            yield return m;
+            var children = RawChildren(m);
+            for (int i = children.Count - 1; i >= 0; i--) stack.Push(children[i]);
+        }
+    }
+
+    private static List<IModel> RawChildren(IModel m)
+    {
+        try { return m.GetChildren().Cast<IModel>().Where(c => c != null).ToList(); }
+        catch (Exception) { return new List<IModel>(); }
     }
 
     private static List<IModel> ChildrenOf(IModel m)

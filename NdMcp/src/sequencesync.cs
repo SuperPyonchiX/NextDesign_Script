@@ -29,26 +29,46 @@ public static class SequenceSyncApi
         return found;
     }
 
-    static JsonObject Describe(IModel owner, ISequenceDiagram d)
+    // shapes … 参加者数・メッセージ数を数える（図の図形を読むので一覧では既定で省く）。
+    static JsonObject Describe(ISequenceDiagram d, bool shapes = true)
     {
         var model = d.Model;
-        return new JsonObject()
+        var result = new JsonObject()
             .Set("name", model != null ? model.Name : "")
             .Set("modelPath", model != null ? ModelApi.PathOf(model) : "").Set("modelId", model != null ? model.Id : "")
-            .Set("editorId", d.Id).Set("viewDefinition", d.ViewDefinitionName ?? "")
-            .Set("lifelines", d.Lifelines.Count()).Set("messages", d.Messages.Count());
+            .Set("editorId", d.Id).Set("viewDefinition", d.ViewDefinitionName ?? "");
+        if (shapes) result.Set("lifelines", d.Lifelines.Count()).Set("messages", d.Messages.Count());
+        return result;
     }
 
-    // GET /sequence-sync/diagrams: 指定モデル配下（省略時はプロジェクト全体）のシーケンス図の一覧。
-    public static object Diagrams(IApplication app, string path, string id, int limit)
+    // GET /sequence-sync/diagrams: 指定モデル配下（省略時は設計モデル全体）のシーケンス図の一覧（ツリー順）。
+    //   同期できるのは相互作用の図だけなので（SequenceSyncRuntime は diagram.Model を IInteraction として読む）、
+    //   ほかのモデルでは GetEditors を呼ばない。limit 件を超える 1 件が見つかった時点で走査をやめ、
+    //   総数（count）は count=true のとき、または limit に届かず最後まで見たときだけ返す。
+    public static object Diagrams(IApplication app, string path, string id, int limit, bool count, bool shapes)
     {
-        IModel root = string.IsNullOrEmpty(path) && string.IsNullOrEmpty(id) ? app.Workspace.CurrentProject.DesignModel : ModelApi.ResolveModel(app, path, id);
-        int skipped = 0;
-        var entries = ExportRunner.Collect(root, false, ref skipped);
-        return new JsonObject()
-            .Set("root", ModelApi.PathOf(root)).Set("count", entries.Count)
-            .Set("diagrams", entries.Take(limit).Select(e => (object)Describe(e.Owner, e.Diagram)).ToList())
-            .Set("truncated", entries.Count > limit);
+        IModel root = string.IsNullOrEmpty(path) && string.IsNullOrEmpty(id) ? ModelApi.RequireProject(app).DesignModel : ModelApi.ResolveModel(app, path, id);
+        if (root == null) throw new NdMcpHttpError(409, "設計モデルがありません");
+        var found = new List<ISequenceDiagram>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        int total = 0;
+        foreach (var model in ModelApi.Walk(root))
+        {
+            if (!(model is IInteraction) || !ModelApi.Live(model)) continue;
+            foreach (var d in SequenceEditors(model))
+            {
+                if (!seen.Add(d.Id)) continue;
+                total++;
+                if (found.Count < limit) found.Add(d);
+            }
+            if (total > limit && !count) break;
+        }
+        var truncated = total > found.Count;
+        var result = new JsonObject().Set("root", ModelApi.PathOf(root));
+        if (count || !truncated) result.Set("count", total);
+        return result
+            .Set("diagrams", found.Select(d => (object)Describe(d, shapes)).ToList())
+            .Set("truncated", truncated);
     }
 
     // GET /sequence-sync/current: 図を PlantUML（PlantUmlTool の出力と同じ書式）で返す。
@@ -57,7 +77,7 @@ public static class SequenceSyncApi
         IModel model;
         var diagram = RequireDiagram(app, path, id, editorId, out model);
         var uml = new SequencePlantUmlExporter(diagram, new PlantUmlOptions()).Export();
-        return Describe(model, diagram).Set("plantuml", uml);
+        return Describe(diagram).Set("plantuml", uml);
     }
 
     // POST /sequence-sync/{preview|trial|apply}
@@ -92,7 +112,7 @@ public static class SequenceSyncApi
         int changes = SequenceSyncRuntime.LastChanges;
         bool committed = SequenceSyncRuntime.LastCommitted;
         bool ok = changes >= 0 && (mode != "apply" || committed || changes == 0);
-        var result = Describe(model, diagram)
+        var result = Describe(diagram)
             .Set("mode", mode).Set("ok", ok).Set("changes", changes).Set("committed", committed)
             .Set("stopReasons", SequenceSyncRuntime.LastReasons ?? "")
             .Set("summary", SequenceExperiment.Summary).Set("details", SequenceExperiment.Details)

@@ -153,8 +153,12 @@ class Handler(BaseHTTPRequestHandler):
             hits = [_summary(n) for n in _walk(TREE)
                     if query in n["name"].lower() and (not meta or n["metaclass"] == meta)]
             limit = int(q.get("limit", 50))
-            return 200, {"query": q.get("q", ""), "metaclass": meta, "total": len(hits),
-                         "returned": min(len(hits), limit), "models": hits[:limit]}
+            truncated = len(hits) > limit
+            body = {"query": q.get("q", ""), "metaclass": meta}
+            if q.get("count") == "true" or not truncated:
+                body["total"] = len(hits)
+            body.update(returned=min(len(hits), limit), truncated=truncated, models=hits[:limit])
+            return 200, body
         if path == "/markdown":
             return 200, {"modelPath": root["modelPath"], "modelCount": len(_walk(root)), "warnings": [],
                          "markdown": f"# {root['name']}\n\n(mock)\n"}
@@ -206,7 +210,7 @@ class Handler(BaseHTTPRequestHandler):
                 "applied": mode != "preview" and changes > 0, "committed": mode == "apply" and changes > 0,
                 "summary": "差分候補なし。図は変更していません。" if changes == 0 else "PlantUMLの反映\n適用と照合: 一致",
                 "details": "(mock)", "error": None, "reportFile": r"C:\Users\x\AppData\Local\NextDesign.ClassSync\reports\mock.txt"}
-        if mode == "preview":
+        if mode == "preview" and payload.get("includeCurrent") is True:
             body["currentPlantuml"] = CLASS_PUML
         return 200, body
 
@@ -220,7 +224,10 @@ class Handler(BaseHTTPRequestHandler):
             if payload is not None:
                 return 405, {"error": path + " は GET のみ対応しています"}
             if path == "/sequence-sync/diagrams":
-                return 200, {"root": q.get("path") or "Sample", "count": 1, "diagrams": [diagram], "truncated": False}
+                listed = dict(diagram)
+                if q.get("shapes") != "true":
+                    del listed["lifelines"], listed["messages"]
+                return 200, {"root": q.get("path") or "Sample", "count": 1, "diagrams": [listed], "truncated": False}
             root = _find(q.get("path", ""), q.get("id", ""))
             if root is None:
                 raise KeyError(q.get("path") or q.get("id"))

@@ -108,7 +108,8 @@ public static class ClassSyncApi
 
     // POST /class-sync/{preview|trial|apply}: PlantUML と図を比較し、mode に応じて反映する。
     //   preview … 比較のみ。trial … 一時適用して照合し、必ず取り消す。apply … 確定する。
-    public static object Sync(IApplication app, string path, string id, string editorId, string plantuml, string mode)
+    //   includeCurrent … preview に今の図の PlantUML も付ける（呼ぶ側が /class-sync/current で持っていれば不要）。
+    public static object Sync(IApplication app, string path, string id, string editorId, string plantuml, string mode, bool includeCurrent)
     {
         if (plantuml == null || plantuml.Trim().Length == 0) throw new NdMcpHttpError(400, "plantuml が空です");
         if (plantuml.Length > MaxPumlLength) throw new NdMcpHttpError(400, "plantuml は 300KB 以下にしてください");
@@ -126,7 +127,7 @@ public static class ClassSyncApi
             .Set("summary", outcome.Summary).Set("details", outcome.Details)
             .Set("error", outcome.ErrorMessage)
             .Set("reportFile", stem == null ? null : stem + ".txt");
-        if (mode == "preview") result.Set("currentPlantuml", outcome.CurrentPuml);
+        if (mode == "preview" && includeCurrent) result.Set("currentPlantuml", outcome.CurrentPuml);
         return result;
     }
 }

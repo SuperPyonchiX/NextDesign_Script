@@ -82,7 +82,16 @@ def test_tool_model_fields():
 
 def test_tool_search_metaclass_and_limit():
     body = json.loads(bridge.nd_search("REQ", metaclass="Requirement", limit=1))
-    assert body["total"] == 2 and body["returned"] == 1
+    assert "total" not in body and body["returned"] == 1 and body["truncated"] is True
+    assert "count" not in mock_nd.MockState.last_query
+    body = json.loads(bridge.nd_search("REQ", metaclass="Requirement", limit=1, count=True))
+    assert body["total"] == 2 and body["returned"] == 1 and mock_nd.MockState.last_query["count"] == "true"
+    body = json.loads(bridge.nd_search("REQ", limit=5))
+    assert body["total"] == 2 and body["truncated"] is False
+
+
+def test_tool_output_is_compact_json():
+    assert "\n" not in bridge.nd_project() and ", " not in bridge.nd_project()
 
 
 def test_tool_markdown_and_export():
@@ -127,6 +136,8 @@ def test_tool_class_diagram_preview_and_apply():
     edited = mock_nd.CLASS_PUML.replace("start()", "stop()")
     preview = json.loads(bridge.nd_class_diagram_preview(edited, path="Sample/機能"))
     assert preview["mode"] == "preview" and preview["changes"] == 1 and preview["committed"] is False
+    assert "currentPlantuml" not in preview and "includeCurrent" not in mock_nd.MockState.last_body
+    preview = json.loads(bridge.nd_class_diagram_preview(edited, path="Sample/機能", include_current=True))
     assert preview["currentPlantuml"] == mock_nd.CLASS_PUML
     trial = json.loads(bridge.nd_class_diagram_apply(edited, id="M2", trial=True))
     assert trial["mode"] == "trial" and trial["applied"] is True and trial["committed"] is False
@@ -143,7 +154,11 @@ def test_tool_class_diagram_apply_requires_input():
 
 def test_tool_sequence_diagram_list_puml_apply_create():
     listed = json.loads(bridge.nd_sequence_diagrams(path="Sample"))
-    assert listed["diagrams"][0]["modelId"] == "M21"
+    assert listed["diagrams"][0]["modelId"] == "M21" and "lifelines" not in listed["diagrams"][0]
+    assert mock_nd.MockState.last_query == {"path": "Sample", "limit": "50"}
+    listed = json.loads(bridge.nd_sequence_diagrams(path="Sample", count=True, shapes=True))
+    assert listed["diagrams"][0]["lifelines"] == 2
+    assert mock_nd.MockState.last_query == {"path": "Sample", "limit": "50", "count": "true", "shapes": "true"}
     puml = json.loads(bridge.nd_sequence_diagram_puml(id="M21"))
     assert puml["plantuml"].startswith("@startuml")
     edited = puml["plantuml"].replace("init()", "start()")

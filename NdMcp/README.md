@@ -1,5 +1,16 @@
 # NdMcp — Next Design を MCP クライアントから読む
 
+## 0.6.0: モデル探索を軽くする
+
+Next Design の API 呼び出しを減らし、MCP の応答も小さくした。
+
+- **モデルの指定の解決**（全 API 共通）: `id` は `GetModelById` で引く（削除済み・プロキシは見つからない扱い）。`path` は区切りごとに子を名前で下り、下れないとき（名前に `/` を含む等）だけ全モデルを走査する。これまではどちらも毎回全モデルを走査していた。`/model/edit` は操作ごとに解決するので、操作数が多いほど効く
+- **`/search`**: limit 件を超える一致が見つかった時点で探索をやめる。`total` は `count=true` のとき、または limit に届かなかったときだけ返し、代わりに `truncated` を返す
+- **`/sequence-sync/diagrams`**: 相互作用のモデルだけ `GetEditors` を呼び、limit 件を超えた時点で探索をやめる。並びはモデルパス順からツリー順に変わる。`count` は `/search` と同じ扱い。参加者数・メッセージ数は `shapes=true` のときだけ返す。limit の既定は 200 から 50 にした
+- **`/class-sync/preview`**: `currentPlantuml` は本文に `includeCurrent: true` があるときだけ返す（MCP では `include_current=True`）
+- **ブリッジ**: ツールの応答 JSON を整形せずに返す（字下げ・空白を省く）
+- モデルの全走査は `GetAllChildren` をやめ、`GetChildren` を前順でたどる方式にした（途中でやめられるように）。実機未確認
+
 ## 0.5.2: schema に表の列を出す
 
 `/model/schema`（と「書ける項目を出力」）で、所有フィールドの `addableClasses` ごとに、その行の列（`fields`：名前・型・種類・列挙の候補）も返す。既存の行の書き換えや行の追加で、行のモデルを別に調べなくてよい。
@@ -35,7 +46,7 @@ AI がシーケンス図を読み、編集し、新しく作れるようにし�
 
 | MCP ツール | HTTP | 内容 |
 |---|---|---|
-| `nd_sequence_diagrams(path, id, limit)` | `GET /sequence-sync/diagrams` | 指定モデル配下（省略時はプロジェクト全体）のシーケンス図の一覧（name / modelPath / modelId / editorId / 参加者数・メッセージ数） |
+| `nd_sequence_diagrams(path, id, limit, count, shapes)` | `GET /sequence-sync/diagrams` | 指定モデル配下（省略時は設計モデル全体）のシーケンス図の一覧（name / modelPath / modelId / editorId。`shapes=True` で参加者数・メッセージ数）。0.6.0 の節を参照 |
 | `nd_sequence_diagram_puml(path, id, editor)` | `GET /sequence-sync/current` | 図を PlantUML（PlantUmlTool の出力と同じ書式）で返す |
 | `nd_sequence_diagram_preview(plantuml, path, id, editor, file)` | `POST /sequence-sync/preview` | 編集した PlantUML と図を比較し、差分件数・行ごとの内訳・反映できない理由を返す。図は変えない |
 | `nd_sequence_diagram_apply(plantuml, path, id, editor, file, trial, save)` | `POST /sequence-sync/trial` / `apply` | 図を更新する。照合が一致したときだけ確定。`trial=True` は一時適用して必ず取り消す。`save=True` は未保存のプロジェクトを先に保存する |
@@ -67,7 +78,7 @@ PlantUmlTool 2.2.0 のクラス図同期本体（`PlantUmlTool/src/60〜61`。Cl
 
 - 対象の図は `path` / `id` のモデルが持つ図（`IModel.GetEditors()`）から、クラス図と判定できる最初の 1 件を選ぶ。複数あるときは `editor` に editorId を渡す。
 - POST の本文は JSON `{path|id, editor?, plantuml|file}`。`file` は Next Design が動く PC 上の .puml パス（300KB 以下）。
-- 応答は `ok` / `changes` / `stopReasons` / `applied` / `committed` / `summary` / `details` と、診断ファイル `reportFile`（`%LOCALAPPDATA%\NextDesign.ClassSync\reports\`、リボン版と同じ場所）。`preview` には `currentPlantuml` も付く。
+- 応答は `ok` / `changes` / `stopReasons` / `applied` / `committed` / `summary` / `details` と、診断ファイル `reportFile`（`%LOCALAPPDATA%\NextDesign.ClassSync\reports\`、リボン版と同じ場所）。`preview` は `includeCurrent: true` のとき `currentPlantuml` も付く（0.6.0 から）。
 - 扱える差分・停止条件・関連の追加に保存済みプロジェクトが要る点は [docs/class-sync-history.md](../docs/class-sync-history.md) と同じ。確認ダイアログは出さず自動で「はい」にする（クラス削除などの確認はエージェント側が preview の結果で行う）。
 - **実機確認（2026-09-22）**: 実プロジェクトのクラス図（893 行）で `editors` → `current` → 無編集 preview 0 件 → 属性改名の preview / trial / apply（図をメインエディタで閉じた状態）まで成功。同じ状態でクラス追加（属性・操作付き）と関連追加の確定も成功し、図を開くと箱と線が見える。確定後の Ctrl+Z ではモデルは戻るが、線を見せるために再反映した図形が空の箱として残る（図を切り替えて再表示すると消える。Ctrl+Y でも正常に戻る）。元に戻すときは Undo ではなく、元の PlantUML を `apply` し直す方が確実。
 
@@ -151,7 +162,7 @@ Next Design でプロジェクトを開き「サーバー開始」を押して�
 | `nd_project` | プロジェクト名・パス・直下モデル |
 | `nd_tree(path, id, depth)` | 階層。`depth` 0〜20（既定 2） |
 | `nd_model(path, id)` | 1 モデルの全フィールド値と子。リッチテキストは Markdown 化、参照は参照先の name/modelPath |
-| `nd_search(query, metaclass, limit)` | 名前の部分一致検索（大小無視）。`metaclass` は短いクラス名で絞り込み |
+| `nd_search(query, metaclass, limit, count)` | 名前の部分一致検索（大小無視）。`metaclass` は短いクラス名で絞り込み。limit 超過で打ち切り、総数は `count=True` のときだけ |
 | `nd_markdown(path, id)` | 配下を design.md 相当の Markdown で返す（図なし） |
 | `nd_export(path, id, out)` | design.md / _index.md / diagrams/*.puml をファイル出力し、出力先と件数を返す |
 | `nd_class_diagram_editors` / `nd_class_diagram_puml` / `nd_class_diagram_preview` / `nd_class_diagram_apply` | クラス図の PlantUML 同期（先頭の 0.2.0 の節を参照） |
