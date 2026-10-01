@@ -147,8 +147,8 @@ public partial class AgentReviewExtension
         {
             var attachment = Path.Combine(Path.GetDirectoryName(project.Path), "Attachment");
             if (Directory.Exists(attachment)) {
-                if (session.Mode == "change") ChangeDialog.Work("現在版の添付資料を固定しています", token => ReviewSnapshot.CopyTree(attachment, Path.Combine(session.DesignDir(), "Attachment"), inventory, "design/Attachment", token));
-                else ReviewSnapshot.CopyTree(attachment, Path.Combine(session.DesignDir(), "Attachment"), inventory, "design/Attachment");
+                var records = AttachmentLink.Link(attachment, Path.Combine(session.DesignDir(), "Attachment"), inventory, "design/Attachment");
+                if (session.Mode == "change") exporter.Comparison.AddRange(records);
             }
             else inventory.Append("\nAttachment: フォルダなし。\n");
         }
@@ -200,12 +200,15 @@ public partial class AgentReviewExtension
             app.Output.WriteLine("AgentReview", "[1/4] 現在版を固定しています: " + session.Folder);
             var after = ExportChangeTarget(app, config, target, session.DesignDir());
             WriteReviewInputs(app, config, current, target, session, inputs, upperModels, after);
-            ChangeDiff.Attachments(Path.Combine(session.DesignDir(), "Attachment"), after.Comparison);
             ChangeDiff.SaveIndex(session.DesignDir(), after.Comparison);
             var baseline = Path.Combine(session.Folder, "baseline"); var bundle = Path.Combine(baseline, "project");
             session.Stage = "過去版の取得"; session.Save();
             app.Output.WriteLine("AgentReview", "[2/4] 過去コミットを取得しています: " + commit);
-            ChangeDialog.Work("過去版を取得しています", token => git.Extract(commit, bundle, token));
+            // 現在版と同じ blob の添付資料は書き出さない（大容量の別紙を二重に持たない）。
+            var sameAttachments = new HashSet<string>(after.Comparison.Where(r => r.Kind == "attachment" && r.Content.StartsWith("Git blob: ", StringComparison.Ordinal))
+                .Select(r => r.Content.Substring(10).Split('\n')[0]), StringComparer.Ordinal);
+            ChangeDialog.Work("過去版を取得しています", token => git.Extract(commit, bundle, token,
+                (name, blob) => sameAttachments.Contains(blob) && name.Split('/').Any(x => x.Equals("Attachment", StringComparison.OrdinalIgnoreCase))));
             copiedProject = Path.Combine(bundle, relativeProject.Replace('/', Path.DirectorySeparatorChar));
             if (!File.Exists(copiedProject)) {
                 var candidates = Directory.GetFiles(bundle, "*", SearchOption.AllDirectories)
@@ -214,6 +217,8 @@ public partial class AgentReviewExtension
                 int selected = ChangeDialog.Choose("過去版のプロジェクトを選択", candidates.Select(f => f.Substring(bundle.Length + 1)).ToList());
                 if (selected < 0) throw new OperationCanceledException(); copiedProject = candidates[selected];
             }
+            var pastAttachment = (Path.GetDirectoryName(copiedProject.Substring(bundle.Length + 1)) ?? "").Replace('\\', '/');
+            pastAttachment = (pastAttachment.Length == 0 ? "" : pastAttachment + "/") + "Attachment";
             copiedProject = ReviewSnapshot.ResolvePath(copiedProject);
             session.Stage = "過去版の読込・対象選択"; session.Save();
             historical = app.Workspace.OpenProject(copiedProject, false, false);
@@ -242,14 +247,21 @@ public partial class AgentReviewExtension
             if (oldTarget != null) {
                 session.BaselineTargetId = oldTarget.Id;
                 before = ExportChangeTarget(app, config, oldTarget, oldDesign).Comparison;
-                var attachment = Path.Combine(Path.GetDirectoryName(copiedProject), "Attachment");
-                if (Directory.Exists(attachment)) ChangeDialog.Work("過去版の添付資料を固定しています", token => ReviewSnapshot.CopyTree(attachment, Path.Combine(oldDesign, "Attachment"), new StringBuilder(), "baseline/design/Attachment", token));
-                ChangeDiff.Attachments(Path.Combine(oldDesign, "Attachment"), before);
+                var pastRecords = AttachmentLink.FromCommit(git, commit, pastAttachment);
+                if (pastRecords.Count > 0) {
+                    // 展開済みの過去版は拡張が作った複製なので、コピーせずジャンクションで見せる。
+                    var attachment = Path.Combine(Path.GetDirectoryName(copiedProject), "Attachment"); Directory.CreateDirectory(attachment);
+                    string error;
+                    if (!FsLink.TryCreateJunction(Path.Combine(oldDesign, "Attachment"), attachment, out error))
+                        throw new IOException("過去版の添付資料へのジャンクションを作成できませんでした。\n" + error);
+                }
+                before.AddRange(pastRecords);
             } else File.WriteAllText(Path.Combine(oldDesign, "design.md"), "# 過去版\nユーザーが、過去版にはない新規成果物として指定しました。\n", new UTF8Encoding(false));
             ChangeDiff.SaveIndex(oldDesign, before);
             session.Save();
             File.AppendAllText(Path.Combine(session.Folder, "inputs.md"), "\n## 変化点比較\n\n- 比較元コミット: " + commit
                 + "\n- リポジトリ: " + ReviewSnapshot.Cell(git.Root) + "\n- 取得したプロジェクト: " + ReviewSnapshot.Cell(copiedProject.Substring(bundle.Length + 1))
+                + "\n- 過去版の添付資料: `baseline/design/Attachment` には現在版と blob が異なるファイルだけを置く。同じ blob のファイルは `design/Attachment` を参照する。"
                 + "\n- 現在版対象ID: " + ReviewSnapshot.Cell(target.Id)
                 + "\n- 過去版対象ID: " + ReviewSnapshot.Cell(session.BaselineTargetId) + "\n- 対応方法: " + session.TargetMapping
                 + "\n- 過去版対象: " + (oldTarget == null ? "新規成果物" : ReviewSnapshot.Cell(oldTarget.ModelPath))

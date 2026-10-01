@@ -134,7 +134,7 @@ public static partial class ReviewSnapshot
             return Path.GetFullPath(result);
         }
     }
-    private static string ResolveDestination(string path)
+    internal static string ResolveDestination(string path)
     {
         var existing = Path.GetFullPath(path); var tail = new Stack<string>();
         while (!File.Exists(existing) && !Directory.Exists(existing)) {
@@ -150,7 +150,7 @@ public static partial class ReviewSnapshot
         foreach (var part in tail) resolved = Path.Combine(resolved, part);
         return resolved;
     }
-    private static bool Within(string path, string root)
+    internal static bool Within(string path, string root)
     {
         var prefix = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         return string.Equals(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), prefix, StringComparison.OrdinalIgnoreCase)
@@ -227,6 +227,117 @@ public static partial class ReviewSnapshot
         foreach (var file in new[] { "AGENTS.md", "CLAUDE.md" })
             File.AppendAllText(Path.Combine(sessionFolder, file), text, new UTF8Encoding(false));
     }
+}
+
+// 大容量の別紙はコピーせず原本へのジャンクションにする。固定しない代わりに、開始時点の版（Git の blob とローカル変更）を記録する。
+public static class AttachmentLink
+{
+    private const string Note = "\n資料の内容は別途確認。版の一致は意味的な妥当性を保証しない。";
+    public static List<ChangeRecord> Link(string source, string link, StringBuilder inventory, string relative)
+    {
+        var target = ReviewSnapshot.ResolvePath(source);
+        if (!Directory.Exists(target)) throw new DirectoryNotFoundException("添付資料フォルダが見つかりません: " + source);
+        var destination = ReviewSnapshot.ResolveDestination(link);
+        if (ReviewSnapshot.Within(destination, target) || ReviewSnapshot.Within(target, destination))
+            throw new IOException("添付資料とリンク先が重なっています（リンク解決後）: " + source);
+        Directory.CreateDirectory(Path.GetDirectoryName(destination));
+        string error;
+        if (!FsLink.TryCreateJunction(destination, target, out error))
+            throw new IOException("添付資料へのジャンクションを作成できませんでした。\nリンク元: " + destination + "\nリンク先: " + target + "\n" + error);
+        var files = new List<KeyValuePair<string, FileInfo>>();
+        Collect(target, "", files, new HashSet<string>(StringComparer.OrdinalIgnoreCase), 0);
+        var state = GitState.Read(target);
+        inventory.Append("\n## 参照した添付資料（ジャンクション）\n\n")
+            .Append("- リンク: `").Append(ReviewSnapshot.Cell(relative)).Append("` → ").Append(ReviewSnapshot.Cell(target)).Append('\n')
+            .Append("- 固定コピーではない。原本の後日変更はセッションからも見える。開始時点の版を下表に残す。\n");
+        if (state == null) inventory.Append("- Git: 管理外。版の記録はサイズと更新日時のみ。\n");
+        else inventory.Append("- Git: ").Append(ReviewSnapshot.Cell(state.Root)).Append(" / HEAD: ").Append(state.Head ?? "なし（コミット前）").Append('\n')
+            .Append("- ローカル変更・未追跡: ").Append(files.Count(f => state.Local(f.Key) != null)).Append(" 件（HEAD との差分。blob ID では再現できない）\n");
+        inventory.Append("\n| ファイル | サイズ | 更新日時 | 版 |\n|---|---|---|---|\n");
+        var records = new List<ChangeRecord>();
+        foreach (var file in files) {
+            var stamp = "サイズ: " + file.Value.Length + " バイト\n更新日時: " + file.Value.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss");
+            string version, content;
+            if (state == null) { version = "Git 管理外"; content = "Git 管理外\n" + stamp; }
+            else if (state.Local(file.Key) != null) { version = state.Local(file.Key); content = version + "\n" + stamp; }
+            else if (state.Blob(file.Key) != null) { version = "HEAD と一致 blob " + state.Blob(file.Key); content = "Git blob: " + state.Blob(file.Key); }
+            else { version = "Git の状態を確認できず"; content = version + "\n" + stamp; }
+            inventory.Append("| ").Append(ReviewSnapshot.Cell(file.Key)).Append(" | ").Append(file.Value.Length)
+                .Append(" | ").Append(file.Value.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")).Append(" | ").Append(ReviewSnapshot.Cell(version)).Append(" |\n");
+            records.Add(Record(file.Key, content));
+        }
+        return records;
+    }
+    // 過去コミットの添付資料。ファイルを読まず、ツリーの blob ID だけで比較する。
+    public static List<ChangeRecord> FromCommit(GitChange git, string commit, string folder, System.Threading.CancellationToken? cancel = null)
+    {
+        var records = new List<ChangeRecord>(); var prefix = folder.TrimEnd('/') + "/";
+        foreach (var entry in GitState.Tree(git.Root, commit, folder, cancel))
+            records.Add(Record(entry.Key.Substring(prefix.Length), "Git blob: " + entry.Value));
+        return records;
+    }
+    private static ChangeRecord Record(string relative, string content)
+    {
+        return new ChangeRecord { Key = "attachment:" + relative, Name = relative, Kind = "attachment", Path = relative,
+            File = "Attachment/" + relative, Content = content + Note };
+    }
+    private static void Collect(string directory, string relative, List<KeyValuePair<string, FileInfo>> files, HashSet<string> ancestors, int depth)
+    {
+        var real = ReviewSnapshot.ResolvePath(directory);
+        if (depth > 256 || !ancestors.Add(real)) throw new IOException("添付資料フォルダのリンクが循環、または階層が深すぎます: " + directory);
+        try {
+            foreach (var file in Directory.GetFiles(directory).OrderBy(p => p, StringComparer.Ordinal))
+                files.Add(new KeyValuePair<string, FileInfo>(relative + Path.GetFileName(file), new FileInfo(file)));
+            foreach (var dir in Directory.GetDirectories(directory).OrderBy(p => p, StringComparer.Ordinal)) {
+                var name = Path.GetFileName(dir); if (string.Equals(name, ".git", StringComparison.OrdinalIgnoreCase)) continue;
+                Collect(dir, relative + name + "/", files, ancestors, depth + 1);
+            }
+        } finally { ancestors.Remove(real); }
+    }
+}
+
+// 添付資料フォルダの Git 上の版。差分のないファイルは Git の stat キャッシュで判定され、中身を読まない。
+public sealed class GitState
+{
+    public string Root, Head;
+    private string prefix;
+    private readonly Dictionary<string, string> blobs = new Dictionary<string, string>(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> local = new Dictionary<string, string>(StringComparer.Ordinal);
+    public string Blob(string relative) { string id; return blobs.TryGetValue(prefix + relative, out id) ? id : null; }
+    public string Local(string relative) { string kind; return local.TryGetValue(prefix + relative, out kind) ? kind : null; }
+    public static GitState Read(string folder)
+    {
+        GitChange git;
+        try { git = new GitChange(folder); } catch (IOException) { return null; }
+        var root = Path.GetFullPath(git.Root);
+        if (!ReviewSnapshot.Within(folder, root)) return null;
+        var state = new GitState { Root = root };
+        var rel = folder.Length > root.TrimEnd('\\').Length ? folder.Substring(root.TrimEnd('\\').Length + 1).Replace('\\', '/') : "";
+        state.prefix = rel.Length == 0 ? "" : rel + "/";
+        try { state.Head = git.Resolve("HEAD"); } catch (IOException) { }
+        if (state.Head != null) {
+            foreach (var entry in Tree(git.Root, state.Head, rel, null)) state.blobs[entry.Key] = entry.Value;
+            foreach (var path in Names(git.Root, new[] { "diff", "--name-only", "-z", "--no-renames", state.Head, "--", Spec(rel) })) state.local[path] = "ローカル変更（HEAD と不一致）";
+        }
+        foreach (var path in Names(git.Root, new[] { "ls-files", "--others", "-z", "--", Spec(rel) }))
+            if (!state.local.ContainsKey(path)) state.local[path] = "未追跡（Git 管理外のファイル）";
+        return state;
+    }
+    // repo 相対パス → blob ID
+    public static IEnumerable<KeyValuePair<string, string>> Tree(string root, string commit, string folder, System.Threading.CancellationToken? cancel)
+    {
+        foreach (var row in Encoding.UTF8.GetString(GitChange.Run(root, new[] { "ls-tree", "-rz", "--full-tree", commit, "--", Spec(folder) }, cancel)).Split('\0')) {
+            if (row.Length == 0) continue;
+            var tab = row.IndexOf('\t'); if (tab < 0) throw new IOException("Gitツリーの形式が不正です。");
+            var meta = row.Substring(0, tab).Split(' ');
+            if (meta.Length == 3 && meta[1] == "blob") yield return new KeyValuePair<string, string>(row.Substring(tab + 1), meta[2]);
+        }
+    }
+    private static IEnumerable<string> Names(string root, string[] args)
+    {
+        return Encoding.UTF8.GetString(GitChange.Run(root, args, null)).Split('\0').Where(x => x.Length > 0);
+    }
+    private static string Spec(string folder) { return ":(top,literal)" + (folder.Length == 0 ? "." : folder); }
 }
 
 public static class ReviewInputPicker
@@ -697,18 +808,6 @@ public static class ChangeDiff
         }
         Directory.CreateDirectory(dir); doc.Save(System.IO.Path.Combine(dir, "comparison.xml"));
     }
-    public static void Attachments(string dir, List<ChangeRecord> records)
-    {
-        if (!Directory.Exists(dir)) return;
-        foreach (var file in Directory.GetFiles(dir, "*", SearchOption.AllDirectories).OrderBy(f => f, StringComparer.Ordinal)) {
-            string hash;
-            using (var stream = File.OpenRead(file)) using (var sha = System.Security.Cryptography.SHA256.Create())
-                hash = BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "");
-            var relative = file.Substring(dir.TrimEnd('\\').Length + 1).Replace('\\', '/');
-            records.Add(new ChangeRecord { Key = "attachment:" + relative, Name = relative, Kind = "attachment", Path = relative,
-                File = "Attachment/" + relative, Content = "SHA-256: " + hash + "\n資料の内容は別途確認。ハッシュ一致は意味的な妥当性を保証しない。" });
-        }
-    }
     public static int Build(string folder, List<ChangeRecord> before, List<ChangeRecord> after, System.Threading.CancellationToken? cancellation = null)
     {
         var cancel = cancellation ?? System.Threading.CancellationToken.None; cancel.ThrowIfCancellationRequested();
@@ -749,6 +848,11 @@ public sealed class GitChange
     }
     public static byte[] Run(string directory, string[] args, System.Threading.CancellationToken? cancellation)
     {
+        using (var output = new MemoryStream()) { Run(directory, args, cancellation, output); return output.ToArray(); }
+    }
+    // 大きな blob をメモリに載せずに書き出せるよう、標準出力を任意のストリームへ流す。
+    public static void Run(string directory, string[] args, System.Threading.CancellationToken? cancellation, Stream output)
+    {
         var token = cancellation ?? System.Threading.CancellationToken.None;
         token.ThrowIfCancellationRequested();
         var info = new ProcessStartInfo { FileName = "git.exe", WorkingDirectory = directory, UseShellExecute = false, CreateNoWindow = true,
@@ -757,7 +861,7 @@ public sealed class GitChange
         foreach (var key in info.EnvironmentVariables.Keys.Cast<string>().Where(k => k.StartsWith("GIT_", StringComparison.OrdinalIgnoreCase)).ToList()) info.EnvironmentVariables.Remove(key);
         info.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
         info.EnvironmentVariables["GIT_NO_LAZY_FETCH"] = "1";
-        using (var p = Process.Start(info)) using (var output = new MemoryStream()) {
+        using (var p = Process.Start(info)) {
             if (p == null) throw new IOException("Gitを起動できません。");
             var stdout = System.Threading.Tasks.Task.Factory.StartNew(() => p.StandardOutput.BaseStream.CopyTo(output));
             var stderr = System.Threading.Tasks.Task.Factory.StartNew(() => p.StandardError.ReadToEnd());
@@ -770,7 +874,6 @@ public sealed class GitChange
             }
             System.Threading.Tasks.Task.WaitAll(stdout, stderr); token.ThrowIfCancellationRequested();
             if (p.ExitCode != 0) throw new IOException("Git処理に失敗しました: " + stderr.Result);
-            return output.ToArray();
         }
     }
     public string Text(params string[] args) { return Encoding.UTF8.GetString(Run(Root, args, null)); }
@@ -779,7 +882,8 @@ public sealed class GitChange
         if (!Regex.IsMatch(id, "^[0-9a-f]{40}([0-9a-f]{24})?$")) throw new IOException("コミットIDを解決できません。");
         return id;
     }
-    public void Extract(string commit, string destination, System.Threading.CancellationToken cancel)
+    // skip(リポジトリ相対パス, blob ID) が true のファイルは書き出さない（現在版と同一の添付資料など）。
+    public void Extract(string commit, string destination, System.Threading.CancellationToken cancel, Func<string, string, bool> skip = null)
     {
         if (Directory.Exists(destination)) throw new IOException("過去版の展開先が既にあります。");
         var rows = Encoding.UTF8.GetString(Run(Root, new[] { "ls-tree", "-rz", "--full-tree", commit }, cancel)).Split('\0').Where(x => x.Length > 0).ToArray();
@@ -798,16 +902,20 @@ public sealed class GitChange
                 throw new IOException("Windowsで展開できないパスです: " + name);
             var path = System.IO.Path.GetFullPath(System.IO.Path.Combine(destination, name.Replace('/', '\\')));
             if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !paths.Add(path)) throw new IOException("展開先が重複または範囲外です: " + name);
+            if (skip != null && skip(name, meta[2])) continue;
             entries.Add(new[] { meta[2], path });
         }
         Directory.CreateDirectory(destination);
         foreach (var entry in entries) {
             cancel.ThrowIfCancellationRequested();
-            var data = Run(Root, new[] { "cat-file", "blob", entry[0] }, cancel);
-            if (Encoding.UTF8.GetString(data, 0, Math.Min(data.Length, 128)).StartsWith("version https://git-lfs.github.com/spec/v1"))
-                throw new IOException("Git LFSの実体取得は初版では未対応です: " + entry[1]);
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(entry[1]));
-            using (var stream = new FileStream(entry[1], FileMode.CreateNew)) stream.Write(data, 0, data.Length);
+            var head = new byte[128]; int length;
+            using (var stream = new FileStream(entry[1], FileMode.CreateNew, FileAccess.ReadWrite)) {
+                Run(Root, new[] { "cat-file", "blob", entry[0] }, cancel, stream);
+                stream.Position = 0; length = stream.Read(head, 0, head.Length);
+            }
+            if (Encoding.UTF8.GetString(head, 0, length).StartsWith("version https://git-lfs.github.com/spec/v1"))
+                throw new IOException("Git LFSの実体取得は初版では未対応です: " + entry[1]);
         }
     }
 }

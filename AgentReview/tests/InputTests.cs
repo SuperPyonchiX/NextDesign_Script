@@ -132,9 +132,10 @@ public static class InputTests
         Check(File.Exists(Path.Combine(session.Folder, "upstream/files/001/requirement.md")), "Copy external upper document");
         Check(File.ReadAllText(Path.Combine(session.Folder, "inputs.md")).Contains("SHA-256"), "Input inventory");
         Check(File.ReadAllText(Path.Combine(session.Folder, "AGENTS.md")).Contains("review/coverage.md"), "Coverage contract");
-        File.WriteAllText(Path.Combine(attachment, "table.csv"), "later");
-        Check(File.ReadAllText(Path.Combine(session.DesignDir(), "Attachment/table.csv")) == "original", "Attachment frozen");
-        Check((File.GetAttributes(Path.Combine(session.DesignDir(), "Attachment")) & FileAttributes.ReparsePoint) == 0, "No source junction");
+        Check((File.GetAttributes(Path.Combine(session.DesignDir(), "Attachment")) & FileAttributes.ReparsePoint) != 0, "Attachment is a junction");
+        Check(string.Equals(ReviewSnapshot.ResolvePath(Path.Combine(session.DesignDir(), "Attachment")), ReviewSnapshot.ResolvePath(attachment), StringComparison.OrdinalIgnoreCase), "Junction targets original Attachment");
+        var listed = File.ReadAllText(Path.Combine(session.Folder, "inputs.md"));
+        Check(listed.Contains("参照した添付資料（ジャンクション）") && listed.Contains("| table.csv | 8 |"), "Attachment state recorded");
         File.WriteAllText(Path.Combine(session.ReviewDir(), "coverage.md"), "coverage");
         Check(ReviewResultViewer.ResultFiles(session.Folder).Single().EndsWith("coverage.md"), "Coverage-only result opens");
         var launches = TerminalLauncher.Launches;
@@ -158,8 +159,11 @@ public static class InputTests
         new SessionInfo { Folder = incomplete, State = "failed" }.Save();
         Check(SessionLocator.FindLatest(workspace).Folder != incomplete, "Failed session is not resumable");
         var lastReady = SessionLocator.FindLatest(workspace).Folder;
-        using (File.Open(Path.Combine(attachment, "table.csv"), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
-            command.StartAgentReview(context, new ICommandParams());
+        var cycle = Path.Combine(attachment, "cycle");
+        Check(FsLink.TryCreateJunction(cycle, attachment), "Create cyclic attachment link");
+        try { command.StartAgentReview(context, new ICommandParams()); }
+        finally { Directory.Delete(cycle); }
+        Check(File.Exists(Path.Combine(attachment, "table.csv")), "Removing the cyclic link keeps the original");
         Check(TerminalLauncher.Launches == launches + 1, "Snapshot failure prevents AI launch");
         Check(SessionLocator.FindLatest(workspace).Folder == lastReady, "Partial export is not selected for resume");
         Check(Directory.GetDirectories(workspace).Select(SessionInfo.LoadFrom).Any(s => s != null && s.State == "failed" && s.Folder != incomplete),

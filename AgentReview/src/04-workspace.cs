@@ -59,7 +59,8 @@ public static class WorkspaceBuilder
         sb.Append("- `design/Attachment/` : 設計の別紙（Excel 等。存在する場合）。design.md に無い情報の参照先として活用すること").Append(nl).Append(nl);
         sb.Append("design.md にはシーケンス図・状態遷移図の中身は含まれない。挙動は参照先の .puml を読むこと。").Append(nl).Append(nl);
         sb.Append("**`design/` 配下のファイルを変更・削除してはならない。** 入力の原本である。").Append(nl);
-        sb.Append("`design/Attachment/` はレビュー開始時に固定コピーした資料です。").Append(nl);
+        sb.Append("`design/Attachment/` は原本の Attachment フォルダへのジャンクションです。書き込み・削除は原本に及ぶため、特に禁止する。").Append(nl);
+        sb.Append("開始時点の版（Git の blob とローカル変更）は `inputs.md` に記録してある。").Append(nl);
         sb.Append("固定した入力を変更するとレビューの再現性が失われる。読み取りのみとすること。").Append(nl).Append(nl);
 
         sb.Append("## 出力（このフォルダ規約に従うこと）").Append(nl).Append(nl);

@@ -109,12 +109,25 @@ public static class ChangeTests
         command.StartChangeReview(context, new ICommandParams());
         Check(TerminalLauncher.Launches == launches && context.App.Window.UI.Messages.Last().Contains("出力警告"), "Actual export failure still blocks review");
         target.Editors.Clear();
-        var binary = Path.Combine(temp, "attachment-fixture"); Directory.CreateDirectory(binary);
-        File.WriteAllBytes(Path.Combine(binary, "table.bin"), new byte[] { 0, 255, 1 });
-        var firstFiles = new List<ChangeRecord>(); ChangeDiff.Attachments(binary, firstFiles);
-        File.WriteAllBytes(Path.Combine(binary, "table.bin"), new byte[] { 0, 255, 2 });
-        var nextFiles = new List<ChangeRecord>(); ChangeDiff.Attachments(binary, nextFiles);
-        Check(ChangeDiff.Build(Path.Combine(temp, "attachment-diff"), firstFiles, nextFiles) == 1, "Binary attachment changes detected");
+        var attachRepo = Path.Combine(temp, "attachment-repo"); var binary = Path.Combine(attachRepo, "Attachment"); Directory.CreateDirectory(binary);
+        Run(attachRepo, "init"); Run(attachRepo, "config", "user.name", "Fixture"); Run(attachRepo, "config", "user.email", "fixture@example.invalid");
+        foreach (var name in new[] { "same.bin", "edit.bin", "removed.bin" }) File.WriteAllBytes(Path.Combine(binary, name), new byte[] { 0, 255, (byte)name[0] });
+        Run(attachRepo, "add", "."); Run(attachRepo, "commit", "-m", "attachments");
+        var attachGit = new GitChange(attachRepo); var attachCommit = attachGit.Resolve("HEAD");
+        File.WriteAllBytes(Path.Combine(binary, "edit.bin"), new byte[] { 0, 255, 2 }); File.Delete(Path.Combine(binary, "removed.bin"));
+        File.WriteAllBytes(Path.Combine(binary, "new.bin"), new byte[] { 1 });
+        var attachInventory = new StringBuilder(); var linkedAttachment = Path.Combine(temp, "attachment-session", "Attachment");
+        var nextFiles = AttachmentLink.Link(binary, linkedAttachment, attachInventory, "design/Attachment");
+        var firstFiles = AttachmentLink.FromCommit(attachGit, attachCommit, "Attachment");
+        Check((File.GetAttributes(linkedAttachment) & FileAttributes.ReparsePoint) != 0 && File.Exists(Path.Combine(linkedAttachment, "same.bin")), "Attachment linked, not copied");
+        Check(attachInventory.ToString().Contains(attachCommit) && attachInventory.ToString().Contains("ローカル変更") && attachInventory.ToString().Contains("未追跡"), "HEAD and local changes recorded");
+        Check(ChangeDiff.Build(Path.Combine(temp, "attachment-diff"), firstFiles, nextFiles) == 3, "Attachment edit/remove/add detected by blob");
+        var sameBlobs = new HashSet<string>(nextFiles.Where(r => r.Content.StartsWith("Git blob: ")).Select(r => r.Content.Substring(10).Split('\n')[0]));
+        Check(sameBlobs.Count == 1, "Only the unchanged attachment keeps its blob");
+        var partial = Path.Combine(temp, "attachment-extract");
+        attachGit.Extract(attachCommit, partial, System.Threading.CancellationToken.None, (name, blob) => sameBlobs.Contains(blob));
+        Check(!File.Exists(Path.Combine(partial, "Attachment", "same.bin")) && File.ReadAllBytes(Path.Combine(partial, "Attachment", "edit.bin"))[2] == (byte)'e', "Unchanged attachment not extracted");
+        Directory.Delete(linkedAttachment); Check(File.Exists(Path.Combine(binary, "same.bin")), "Removing the link keeps the original");
         foreach (var kind in new[] { "sequence", "class", "state" }) {
             Check(ChangeDiff.Build(Path.Combine(temp, "diagram-diff-" + kind),
                 new List<ChangeRecord> { new ChangeRecord { Key = "diagram:a", Kind = kind, Content = "@startuml\nA -> B\n@enduml" } },

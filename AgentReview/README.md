@@ -1,5 +1,7 @@
 ﻿# AgentReview — Claude Code / Codex による設計レビュー支援
 
+0.15.0 では、Attachment を固定コピーせず原本へのジャンクションにした（1GB を超える別紙で開始が重かったため）。固定しない代わりに、開始時点の HEAD と各ファイルの版（HEAD と一致なら blob ID、ローカル変更・未追跡ならサイズと更新日時）を `inputs.md` に残す。変化点レビューの添付資料比較も SHA-256 の全読みをやめ、Git の blob ID と `git diff` で判定する。過去版の取得では現在版と同じ blob の添付資料を書き出さず、blob はメモリに載せずにファイルへ流す。実機は未確認。
+
 0.14.0 では、スクリプト（main.cs）から DLL（`AgentReview.dll`）に移した。機能は 0.13.3 と同じ。`src/00-agentreview.cs` は Part ごとのファイル（`src/01-common.cs`〜`07-handlers.cs`）に分け、NdMcp と共有する部品を `src/08-shared.cs` に切り出した。PlantUML 出力は `PlantUmlTool/src` を `AgentReview.csproj` が直接ビルドする（転記と `tools/build_main.py` はやめた）。`skills/` は csproj が出力へコピーする。ビルドと配置は [DLL 形式エクステンションの開発環境](../docs/dll-extension-setup.md)。実機での読み込みは未確認。
 
 0.13.3 では、PlantUML 出力部（シーケンス図・クラス図・状態遷移図）を `PlantUmlTool/src` からの転記に切り替え、`main.cs` を `tools/build_main.py` の生成物にした（この拡張固有のコードは `src/00-agentreview.cs`）。クラス図の .puml は PlantUmlTool 2.2.0 と同じ書式になり、操作の戻り値 `: T` と属性の多重度 `[a..b]` が出る。出力の修正は PlantUmlTool 側で行い、`python AgentReview/tools/build_main.py` で再生成する（`--check` で差分検査、`python PlantUmlTool/tests/compile_sdk.py --sdk-root work/sequence-api-research --main AgentReview/main.cs` でコンパイル検査）。Next Design での再出力は実機確認待ち。
@@ -8,7 +10,7 @@
 
 ## 0.13.1 の実装状況
 
-「レビュー開始」で、設計自体の工程別観点と上位要求との整合をまとめて確認する。設定された上位モデル・外部資料とAttachmentを固定コピーし、要求の反映を `review/coverage.md` に記録する。上位文書が未指定なら、その整合は未確認として結果に残す。操作と実機確認は [VERIFY.md](VERIFY.md) を参照。
+「レビュー開始」で、設計自体の工程別観点と上位要求との整合をまとめて確認する。設定された上位モデル・外部資料を固定コピーし、Attachment はジャンクションで参照して、要求の反映を `review/coverage.md` に記録する。上位文書が未指定なら、その整合は未確認として結果に残す。操作と実機確認は [VERIFY.md](VERIFY.md) を参照。
 
 | 機能 | 状態 |
 |---|---|
@@ -31,9 +33,9 @@
 
 | 保存先 | 内容 |
 |---|---|
-| `design/` | 現在版の本文・図・添付資料・比較索引 |
+| `design/` | 現在版の本文・図・比較索引。`Attachment` は原本へのジャンクション |
 | `baseline/project/` | 確定コミットから取得した一式 |
-| `baseline/design/` | 対応する過去版成果物の出力 |
+| `baseline/design/` | 対応する過去版成果物の出力。`Attachment` は `baseline/project/` 内へのジャンクションで、現在版と blob が異なるファイルだけを置く |
 | `upstream/` | 現在版の上位文書の固定コピー |
 | `diff/changes.md` と前後ファイル | 機械生成の変更一覧・根拠 |
 | `review/changes.md` | AIによる変更概要・影響範囲、または差分なしの報告 |
@@ -61,7 +63,7 @@ Git処理・資料コピー・差分生成には進捗画面とキャンセル�
 
 セッション内の `inputs.md` に入力の出典、取得日時、対象モデルID、資料のSHA-256、出力警告が残る。上位モデルは `upstream/models/`、外部資料は `upstream/files/` に格納する。モデルは未保存の編集を含む現在の値、外部資料はディスク上の値を取得する。外部資料の未保存の編集は先に保存しておく。
 
-リンク／ジャンクション経由の資料や Attachment は、親フォルダを含めて実体パスを解決し、通常のファイルとして固定コピーする。リンク自体は複製しない。リンク解決後にコピー元とコピー先が重なる場合、リンクが循環する場合、コピー先を参照する場合、実体を読み取れない場合は停止する。コピーに失敗した場合はAIを起動せず、生成途中のセッションを再開対象から除外する。Excel・Word・PDFの内容読解はエージェント側の環境に依存し、読めなかった範囲は判断不能として残す。
+リンク／ジャンクション経由の上位資料は、親フォルダを含めて実体パスを解決し、通常のファイルとして固定コピーする。リンク自体は複製しない。リンク解決後にコピー元とコピー先が重なる場合、リンクが循環する場合、コピー先を参照する場合、実体を読み取れない場合は停止する。コピーに失敗した場合はAIを起動せず、生成途中のセッションを再開対象から除外する。Excel・Word・PDFの内容読解はエージェント側の環境に依存し、読めなかった範囲は判断不能として残す。
 
 Next Design V3.x のスクリプト拡張。設計情報をエクスポートし、ターミナル上の
 Claude Code / Codex エージェントと対話しながら設計レビューと修正提案の生成を行う。
@@ -100,7 +102,9 @@ Claude Code / Codex エージェントと対話しながら設計レビューと
 4. 指摘は `review\review.md`、修正提案は `review\proposal.md` に出力される。リボンの **結果を開く** でセッション全体を VS Code の新しいウィンドウに開き、存在する結果ファイルを Markdown プレビューで表示する
 5. 対話を中断した後は **ターミナル再開** で続きから再開できる
 
-プロジェクトファイルと同じディレクトリに `Attachment` フォルダがあれば、その中身（Excel 等の別紙）を `design\Attachment` に固定コピーする。原本の後日変更はセッションに反映されない。コピーに失敗した場合はレビュー開始を止める。
+プロジェクトファイルと同じディレクトリに `Attachment` フォルダがあれば、`design\Attachment` を実体パスへのジャンクションとして作る（コピーしない）。原本の後日変更はセッションからも見えるため、開始時点の版を `inputs.md` に記録する。Git 管理下なら HEAD と blob ID・ローカル変更、管理外ならサイズと更新日時だけを残す。ジャンクションの作成に失敗した場合、または Attachment 内のリンクが循環している場合はレビュー開始を止める。
+
+セッションフォルダはエクスプローラーで削除すればリンクだけが消える。PowerShell 5.1 の `Remove-Item -Recurse` はリンク先の中身まで消すことがあるため使わない。
 
 図（シーケンス図・クラス図・状態遷移図）は自動で `design\diagrams\<種別>\<グループ以下の階層>\*.puml`（種別フォルダ: クラス図／シーケンス図／状態遷移図。該当する図がある種別のみ作成）に出力され、design.md の該当箇所から参照される（一覧は `design\_index.md`）。シーケンス図・状態遷移図の構成要素（メッセージ・状態など）はテキストには出力せず .puml に委ねる。出力エンジンは PlantUmlTool からの転記（修正は PlantUmlTool 側で検証してから反映すること）。
 
@@ -166,8 +170,8 @@ state=Example.Design.StateGroup
 │   │   ├── クラス図\       グループ名\子階層\図名_class.puml
 │   │   ├── シーケンス図\   グループ名\子階層\図名_seq.puml
 │   │   └── 状態遷移図\     グループ名\子階層\図名_state.puml
-│   └── Attachment\         → プロジェクトファイルと同じ場所の Attachment の固定コピー
-│                             （Excel 等の別紙。存在する場合のみ。失敗時はコピー）
+│   └── Attachment\         → プロジェクトファイルと同じ場所の Attachment へのジャンクション
+│                             （Excel 等の別紙。存在する場合のみ。変更禁止）
 ├── review\                 エージェントの出力（review.md / proposal.md / proposed\）
 ├── agentreview-results.code-workspace  「結果を開く」で生成する VS Code ワークスペース
 └── session.ini             セッション情報（拡張が管理）
