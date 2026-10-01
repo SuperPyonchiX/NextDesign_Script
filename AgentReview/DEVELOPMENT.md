@@ -1,0 +1,97 @@
+# AgentReview 開発メモ
+
+利用者向けの説明は [README.md](README.md)、実機での確認手順は [VERIFY.md](VERIFY.md) にある。ここには変更履歴、内部の仕組み、ビルドとテストの方法をまとめる。
+
+## ビルドと配置
+
+- DLL 方式のエクステンション。`AgentReview.csproj` が `src/00-extension.cs`〜`08-shared.cs` と `PlantUmlTool/src` の PlantUML 出力部を直接ビルドする。`skills/` は csproj が出力へコピーする。
+- ビルドと検査: `powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1 -Name AgentReview`（出力は `work/publish/AgentReview`）。`-Deploy` を付けると配置先を更新する。Next Design の起動中は配置できない。
+- 開発環境の準備は [DLL 形式エクステンションの開発環境](../docs/dll-extension-setup.md)。
+- manifest の単体検査: `python <skills>/nextdesign-extension/scripts/validate_manifest.py AgentReview --nd-version 3`
+- DLL を差し替えたら Next Design の再起動が必要。
+
+## テスト
+
+- `python AgentReview/tests/run_export_tests.py`。Windows の .NET Framework C# コンパイラで、csproj と同じ順に連結したソース（`Tools/csproj_sources.py`）を模擬 SDK と組み合わせて実行する。
+- 設定・図の階層・名前の衝突・リンク・書き込み失敗・入力選択・変化点レビュー（実 Git）・ジャンクション・Windows Forms の画面操作を検証する。結果表示は、生成したワークスペースの JSON と、引数記録用の代替 `Code.exe` で確かめる。
+- 選択画面は合成 3161 モデルでの所要時間を `PERF:` 行に出す（判定はしない）。
+- 3拡張共通のシーケンス図出力の回帰テスト: `python Tools/Test-SequenceExport.py`
+- Next Design SDK と PlantUML 生成エンジンは代替実装なので、実機での確認は別に必要。
+
+## 内部の仕組み
+
+### 役割分担
+
+- 拡張は設計情報の出力、指示書の生成、ターミナルでのエージェント起動、結果の表示までを受け持つ。
+- 対話はターミナル上の claude / codex に任せる。V3.x の拡張 UI では対話画面を作れないため。
+- Next Design のモデルへの書き戻しは行わない。修正はファイルでの提案まで。
+
+### 選択画面
+
+- C# から Windows Forms で表示する。PowerShell・外部 UI プロセス・スクリプトファイルは使わない（0.12.0 から）。
+- モデル情報を XML のスナップショットにしてから画面専用の STA スレッドへ渡す。画面側から Next Design のモデルには触れない。
+- 選択内容は `%USERPROFILE%\.nd-agent-review\projects\<プロジェクトパスのハッシュ>\review-selection.xml` に工程ごとに保存する。旧 `review-inputs.ini` の上位文書指定は初回の候補として読む。
+- 画面の表示・入力検証・保存で失敗したら、例外を `%USERPROFILE%\.nd-agent-review\diagnostics\picker-*.txt` に残す。開くたびに所要時間を `picker-timing.log` に1行追記する。
+
+### 上位文書と Attachment
+
+- 上位モデルは `upstream/models/` に出力し、外部資料は `upstream/files/` に固定コピーする。リンクやジャンクション経由の資料は実体を解決してコピーし、循環・自己参照・読み取り不可なら止める。
+- Attachment はコピーせず原本へのジャンクションにする（0.15.0 から）。開始時点の HEAD と各ファイルの版（HEAD と一致なら blob ID、ローカル変更・未追跡ならサイズと更新日時）を `inputs.md` に残す。
+- 変化点レビューの添付比較は Git の blob ID と `git diff` で判定する。過去版の取得では現在版と同じ blob の添付を書き出さない。
+
+### 図の出力階層
+
+- 祖先モデルの所有フィールドに、出力する図と同じメタクラス完全名の型が宣言されているかを調べ、該当する最上位の祖先（図グループ）から出力する。参照フィールドは使わない。図名・モデル名・プロファイル固有の型名はコードに埋め込まない（0.8.1 から）。
+- 「図の階層ルール」の対応表（`sequence=` / `class=` / `state=`、複数はセミコロン区切り、大文字小文字を区別）があれば自動判別より優先する。読み込み失敗・不正値・該当なしは警告して自動判別に戻る。会社固有の対応表は Git 管理外の `.local/nd-knowledge/` に置く。
+- グループを判別できない図は、図の直接の親だけをフォルダにする。親も取れなければ種別フォルダの直下に置く。
+- 出力名が衝突したらモデル ID またはエディタ ID 由来のハッシュを付ける。禁止文字は置換し、Windows の予約名には接頭辞を付ける。元のモデルパスは `_index.md` に残る。
+- 図を書き込めなければ警告し、その図へのリンクを本文・索引に載せない。旧ファイルは自動削除しない。
+- 出力エンジンは PlantUmlTool と共通。修正は PlantUmlTool 側で行う。
+
+### 図のスキップと停止条件
+
+- 対応できるノードやライフラインを取得できない図は、空の図と断定せず `unverified-diagrams.md` に未確認として記録し、レビューは止めない（0.13.1 から）。図の取得例外・書き込み失敗など、その他の出力警告では止める。
+- 比較索引にも未確認の図の ID を残す。出力できていた図が未確認になった場合は内容変更として扱う。両版とも未確認なら変更の有無は判断できないので、その旨を結果に明記する。
+
+### 変化点レビュー
+
+- ローカルにあるコミットだけを使い、fetch・checkout はしない。過去版は Git オブジェクトから取り出すので、作業ツリーの変更や `export-ignore` の影響を受けない。
+- 展開対象に LFS ポインタ・サブモジュール・シンボリックリンク・Windows で展開できない名前があれば止める。
+- Git 処理・資料コピー・差分生成は進捗画面からキャンセルできる。Next Design SDK の出力中は進行ログだけを出し、強制中断はしない。失敗したセッションはターミナル再開の対象にせず、途中のファイルは診断用に残す。
+- NdMcp には依存しない。
+
+### design-review スキル
+
+- 原本は `skills/design-review/`。各セッションの `.agents/skills` と `.claude/skills` は配置先の `skills` をジャンクションで参照する。
+- 開始時に `SKILL.md` と工程別観点表の存在を確かめ、足りなければ止める。ジャンクションの作成に失敗した場合も止め、コピーには切り替えない。
+- 旧コピー方式（`%USERPROFILE%\.nd-agent-review\skills`）からの移行は、その旧フォルダを手で消すだけ。旧カスタマイズの移行やセッションの変換はしない。
+
+### 設定ファイル
+
+`%USERPROFILE%\.nd-agent-review\config.ini`（key=value）。ボタンを押すたびに読み直す。
+
+| キー | 意味 |
+|---|---|
+| `agent` | `codex`（既定）/ `claude`。未指定・空・不正値は Codex |
+| `workspaceRoot` | レビュー保存先 |
+| `terminal` | `auto`（Windows Terminal があれば使う）/ `wt` / `cmd` |
+| `claude.command` / `codex.command` | CLI のコマンド名 |
+| `claude.args` / `codex.args` | 対話起動時の追加引数（例: `--permission-mode acceptEdits`） |
+| `initialPrompt` | 起動時に自動で送る最初のメッセージ。空なら送らない |
+| `diagramGroups.rulesFile` | 図の階層ルールの対応表（絶対パス）。未設定なら自動判別 |
+| `vscode.executable` | `Code.exe` の絶対パス。未設定なら既定のインストール先と PATH から探す |
+| `perspectives` | 追加のレビュー観点（カンマ区切り。指示書に埋め込む） |
+
+## 変更履歴
+
+- **0.16.0**: 選択画面を軽くした。WinForms を直接使い（以前はリフレクション経由）、ツリーは1回だけ作って以降はチェック状態だけを直す。子ノードは展開時に作り、検索は入力が 250ms 止まってから絞り込む（一致が 500 件を超えたら全展開しない）。上位モデルは `GetModelById` で引く。合成 3161 モデルで表示 218→32ms、工程切替2回 535→2ms、検索6回 843→75ms。実機未確認。
+- **0.15.0**: Attachment を固定コピーからジャンクションに変更（1GB を超える別紙で開始が重かったため）。版の記録と添付比較を Git blob ID ベースにした。実機未確認。
+- **0.14.0**: スクリプト（main.cs）から DLL に移行。機能は 0.13.3 と同じ。ソースを Part ごとのファイルに分け、NdMcp と共有する部品を `src/08-shared.cs` に切り出した。`tools/build_main.py` は廃止。
+- **0.13.3**: PlantUML 出力部を PlantUmlTool から取り込む形にした。クラス図に操作の戻り値 `: T` と属性の多重度 `[a..b]` が出る。
+- **0.13.2**: シーケンス図で、破棄の後に余分な `activate` / `deactivate` が出る不具合を修正。
+- **0.13.1**: レビュー開始で、工程別の観点と上位要求との整合をまとめて確認するようにした。取得できない図を未確認として記録し、レビューを続けるようにした。
+- **0.12.5**: 過去版出力の検証を、選択した成果物と同じ ID のモデル配下だけに限定。
+- **0.12.4**: 過去版検証の出力先を `historical-probe-<識別子>/` に整理。
+- **0.12.0**: 選択画面を PowerShell から C# の Windows Forms に置き換えた。
+- **0.9.0**: 「結果を開く」を VS Code の Markdown プレビューに変更。
+- **0.8.1**: 図の出力階層を所有フィールドから自動判別するようにした。

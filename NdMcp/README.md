@@ -1,205 +1,138 @@
-# NdMcp — Next Design を MCP クライアントから読む
+# NdMcp（Next Design を AI から使う）
 
-## 0.6.1: 試行の二重実行と大きな応答をなくす
+Next Design で開いているプロジェクトを、Codex や Claude Code などの AI（MCP クライアント）から読み書きできるようにする拡張機能です。AI に「この要求の設計を説明して」「改訂履歴に1行足して」「このシーケンス図にメッセージを追加して」と頼めるようになります。
 
-- **trial を MCP から外した**: `nd_class_diagram_apply` / `nd_sequence_diagram_apply` の `trial` 引数を削除。apply 自体が「反映→照合→一致したときだけ確定、不一致なら取り消し」なので、試行は同じ処理の前半を 2 回やるだけだった。HTTP の `/class-sync/trial`・`/sequence-sync/trial` は開発用に残す
-- **preview は削除・改名のときだけ**: ツールの説明と MCP の instructions から「apply の前に必ず preview」を外した。クラス図の apply は削除を確認なしで実行し、シーケンス図は別名や並びを誤ると削除＋追加になるため、その編集のときだけ preview を使うよう案内する
-- **dry_run は求められたときだけ**: `nd_model_edit` は 1 件でも失敗すれば全部取り消すので、「dry_run で試してから本番」の案内をやめた。確定時の `models` は name / id / modelPath だけ返し、全フィールドの読み返し（リッチテキストの Markdown 変換を含む）は dry_run のときだけ行う
-- **details を絞る**: 同期 API の `details` は、trial / apply が成功したら返さない（全文は `reportFile`）。失敗時は先頭 4000 文字まで。シーケンス図の preview は 1〜2 枚目（行ごとの差分と反映できない理由）だけ返す
-- **シーケンス図の preview で接続の実測を取らない**: 診断ページ用に全メッセージの関連とフィールドを読んでいた処理を、NdMcp から呼ぶときは省く（`SequenceSyncRuntime.SkipConnections`。PlantUmlTool のリボン版は従来どおり）
-- **`/model` の children の重複をなくす**: 表の行（所有フィールドの子）は `fields[].children` にだけ出し、`children` にはそれ以外の子だけを出す
-- 実機未確認
+できること:
 
-## 0.6.0: モデル探索を軽くする
+- モデルの階層・内容・検索結果を読む
+- 設計書（Markdown）と図（PlantUML）をファイルに書き出す
+- クラス図・シーケンス図を PlantUML で読み、編集して図に反映する。シーケンス図は新しく作ることもできる
+- 図以外のモデル（フィールドの値・リッチテキスト・表の行・参照）を編集する
 
-Next Design の API 呼び出しを減らし、MCP の応答も小さくした。
+AI は保存をしません。変更を残すかどうかは、Next Design 上で確認してから利用者が保存してください。
 
-- **モデルの指定の解決**（全 API 共通）: `id` は `GetModelById` で引く（削除済み・プロキシは見つからない扱い）。`path` は区切りごとに子を名前で下り、下れないとき（名前に `/` を含む等）だけ全モデルを走査する。これまではどちらも毎回全モデルを走査していた。`/model/edit` は操作ごとに解決するので、操作数が多いほど効く
-- **`/search`**: limit 件を超える一致が見つかった時点で探索をやめる。`total` は `count=true` のとき、または limit に届かなかったときだけ返し、代わりに `truncated` を返す
-- **`/sequence-sync/diagrams`**: 相互作用のモデルだけ `GetEditors` を呼び、limit 件を超えた時点で探索をやめる。並びはモデルパス順からツリー順に変わる。`count` は `/search` と同じ扱い。参加者数・メッセージ数は `shapes=true` のときだけ返す。limit の既定は 200 から 50 にした
-- **`/class-sync/preview`**: `currentPlantuml` は本文に `includeCurrent: true` があるときだけ返す（MCP では `include_current=True`）
-- **ブリッジ**: ツールの応答 JSON を整形せずに返す（字下げ・空白を省く）
-- モデルの全走査は `GetAllChildren` をやめ、`GetChildren` を前順でたどる方式にした（途中でやめられるように）。実機未確認
+## 必要なもの
 
-## 0.5.2: schema に表の列を出す
+- Windows と Next Design V3.x
+- Codex CLI または Claude Code CLI（インストールしてログイン済みであること）
+- 初回のセットアップ時はインターネット接続（Python などを自動でダウンロードします）
 
-`/model/schema`（と「書ける項目を出力」）で、所有フィールドの `addableClasses` ごとに、その行の列（`fields`：名前・型・種類・列挙の候補）も返す。既存の行の書き換えや行の追加で、行のモデルを別に調べなくてよい。
+Python や uv を事前に入れておく必要はありません。
 
-## 0.5.1: モデル編集の確認ボタン
+## セットアップ
 
-MCP サーバー（HTTP・Python）を使えない PC でもモデル編集 API を試せるよう、リボンに「編集の確認」グループを足した。
-- 書ける項目を出力: モデルナビゲータで選んだモデルの `/model` と `/model/schema` の内容を JSON に書き、表（所有フィールド）があれば最後の行の値を写した「行を 1 つ足す」編集 JSON のひな形（dryRun: true）も作る
-- 編集 JSON を実行: 選んだ JSON を `/model/edit` と同じ処理（ModelEditApi.Edit）で実行し、結果を JSON に書く。dryRun が true でなければ確認してから確定する
-- 出力先は `%USERPROFILE%\.nd-mcp\edit-check\`
-- 実機（2026-09-26）: 改訂履歴一覧で「書ける項目を出力」→ ひな形で dryRun → 本番（行の追加・リッチテキスト）が成功
-
-## 0.5.0: UML 以外のモデル編集 API
-
-AI がフィールドの値・リッチテキスト・表の行（所有フィールドの子モデル）・参照を編集できるようにした（`src/modeledit.cs`）。
-
-| MCP ツール | HTTP | 内容 |
-|---|---|---|
-| `nd_model_schema(path, id)` | `GET /model/schema` | 書き込めるフィールド（kind: value / richtext / embedded / reference）、列挙の候補、表の行として追加できるクラス、参照先の型、編集可否 |
-| `nd_model_edit(operations, dry_run)` | `POST /model/edit` | 操作をまとめて 1 トランザクションで実行。1 つでも失敗したら全部取り消し。`dry_run` は実行して結果を返したあと必ず取り消す |
-
-操作は `set`（値）・`set_richtext`（Markdown または HTML）・`add`（子モデル＝表の行。位置は before / after / index。`as` で名前を付けて後の操作から `{"ref": 名前}` で指せる）・`delete`・`move`・`relate` / `unrelate`。
-
-- SDK のモデル操作（SetField / SetRichTextField / AddNewModel(At) / MoveTo / Relate / UnRelate / Delete）だけを使い、エディタの取込は使わない。確定した編集は保存していなくても Ctrl+Z で 1 回で戻せる見込み（未確認）
-- リッチテキストは Markdown を HTML にして、テキスト値と一緒に設定する（`MarkdownHtml`。見出し・段落・箇条書き（入れ子）・番号付き・表・引用・コード・太字・斜体・リンク）
-- target / parent の path と id が両方空なのは受け付けない（プロジェクト自体を指さないため）
-- 複数値のスカラーフィールドへの配列の設定は未対応
-- 実機未確認
-
-## 0.4.0: シーケンス図の PlantUML 同期 API
-
-AI がシーケンス図を読み、編集し、新しく作れるようにした。同期の本体は PlantUmlTool/src/70〜74（リボンの「PlantUMLで更新」「PlantUMLから新規作成」と同じ処理）を直接ビルドする。ダイアログは出さない。
-
-| MCP ツール | HTTP | 内容 |
-|---|---|---|
-| `nd_sequence_diagrams(path, id, limit, count, shapes)` | `GET /sequence-sync/diagrams` | 指定モデル配下（省略時は設計モデル全体）のシーケンス図の一覧（name / modelPath / modelId / editorId。`shapes=True` で参加者数・メッセージ数）。0.6.0 の節を参照 |
-| `nd_sequence_diagram_puml(path, id, editor)` | `GET /sequence-sync/current` | 図を PlantUML（PlantUmlTool の出力と同じ書式）で返す |
-| `nd_sequence_diagram_preview(plantuml, path, id, editor, file)` | `POST /sequence-sync/preview` | 編集した PlantUML と図を比較し、差分件数・行ごとの内訳・反映できない理由を返す。図は変えない |
-| `nd_sequence_diagram_apply(plantuml, path, id, editor, file, save)` | `POST /sequence-sync/apply`（`/trial` は HTTP のみ） | 図を更新する。照合が一致したときだけ確定。`save=True` は未保存のプロジェクトを先に保存する |
-| `nd_sequence_diagram_create(plantuml, path, id, file)` | `POST /sequence-sync/create` | 新しいシーケンス図を作る。path/id は既存の図のモデル（その隣）か、図を置くモデル |
-
-- ref の参照先は、名前が一致する相互作用が 1 つのときだけ結び付ける（候補が複数なら参照先なしで差分に残る）
-- 未保存のまま更新した後の Ctrl+Z は、図を最後に保存した状態の図形に戻す（製品のエディタ取込の Undo の挙動。PlantUmlTool 3.3.3 の README）。apply の応答の `undo` にその旨を返す
-- 図を開いていない状態での更新・作成は実機未確認（クラス図は図を閉じたままの apply が成功している）
-- 実機未確認
-
-## 0.3.0: DLL 方式に移行
-
-スクリプト（main.cs）から DLL（`NdMcp.dll`）に移した。機能は 0.2.1 と同じ。AgentReview と PlantUmlTool の共有部品は、転記せず正本のファイルを `NdMcp.csproj` が直接ビルドする。`Setup.ps1` はビルド済みの `publish\`（無ければ .NET SDK でその場でビルド）を配置し、スクリプト版の `main.cs` はバックアップしてから外す。実機での読み込みは未確認。
-
-## 0.2.1: PlantUML 出力を PlantUmlTool/src から転記
-
-`/export` の .puml と `/class-sync/current` が同じ出力コードになるよう、シーケンス図・クラス図・状態遷移図の出力部を AgentReview 経由ではなく `PlantUmlTool/src` から直接転記するようにした。AgentReview からは Part 0 / 4（共通ヘルパ・Markdown 出力）だけを転記する。クラス図の .puml は PlantUmlTool 2.2.0 の書式（戻り値・多重度付き）になる。実機は未確認（`/export` で以前と同じフォルダ構成が出ること）。
-
-## 0.2.0: クラス図の PlantUML 同期 API
-
-PlantUmlTool 2.2.0 のクラス図同期本体（`PlantUmlTool/src/60〜61`。ClassImportProbe 0.7.2 として実機確認したもの）を `main.cs` に転記し、MCP ツール 4 つと HTTP エンドポイント 5 つを足した。読み出し API はこれまでどおり読み取り専用で、書き込むのは `/class-sync/trial` と `/class-sync/apply` だけ。
-
-| ツール | HTTP | 内容 |
-|---|---|---|
-| `nd_class_diagram_editors(path, id)` | `GET /class-sync/editors` | モデルに紐づく図の一覧と、クラス図として同期できるか |
-| `nd_class_diagram_puml(path, id, editor)` | `GET /class-sync/current` | クラス図を PlantUML（PlantUmlTool のクラス図出力と同じ書式）で返す |
-| `nd_class_diagram_preview(plantuml, path, id, editor, file)` | `POST /class-sync/preview` | 編集した PlantUML と図を比較し、差分候補と停止理由を返す。図は変えない |
-| `nd_class_diagram_apply(plantuml, path, id, editor, file)` | `POST /class-sync/apply`（`/trial` は HTTP のみ） | 反映する。照合が一致したときだけ確定 |
-
-- 対象の図は `path` / `id` のモデルが持つ図（`IModel.GetEditors()`）から、クラス図と判定できる最初の 1 件を選ぶ。複数あるときは `editor` に editorId を渡す。
-- POST の本文は JSON `{path|id, editor?, plantuml|file}`。`file` は Next Design が動く PC 上の .puml パス（300KB 以下）。
-- 応答は `ok` / `changes` / `stopReasons` / `applied` / `committed` / `summary` / `details` と、診断ファイル `reportFile`（`%LOCALAPPDATA%\NextDesign.ClassSync\reports\`、リボン版と同じ場所）。`preview` は `includeCurrent: true` のとき `currentPlantuml` も付く（0.6.0 から）。
-- 扱える差分・停止条件・関連の追加に保存済みプロジェクトが要る点は [docs/class-sync-history.md](../docs/class-sync-history.md) と同じ。確認ダイアログは出さず自動で「はい」にする（クラス削除などの確認はエージェント側が preview の結果で行う）。
-- **実機確認（2026-09-22）**: 実プロジェクトのクラス図（893 行）で `editors` → `current` → 無編集 preview 0 件 → 属性改名の preview / trial / apply（図をメインエディタで閉じた状態）まで成功。同じ状態でクラス追加（属性・操作付き）と関連追加の確定も成功し、図を開くと箱と線が見える。確定後の Ctrl+Z ではモデルは戻るが、線を見せるために再反映した図形が空の箱として残る（図を切り替えて再表示すると消える。Ctrl+Y でも正常に戻る）。元に戻すときは Undo ではなく、元の PlantUML を `apply` し直す方が確実。
-
-実機手順:
-
-1. `NdMcp` フォルダを配置し直して Next Design を再起動、プロジェクト（コピー）を開き「サーバー開始」。
-2. `curl "http://127.0.0.1:3560/class-sync/editors?path=<クラス図を持つモデルのパス>"` で `classDiagram: true` の editorId が出る。
-3. `curl "http://127.0.0.1:3560/class-sync/current?path=..."` の `plantuml` を .puml に保存し、属性名を 1 つ変える。
-4. `curl -X POST http://127.0.0.1:3560/class-sync/preview -H "Content-Type: application/json" -d "{\"path\":\"...\",\"file\":\"C:\\\\work\\\\edit.puml\"}"` で `changes: 1`、`stopReasons: 0`。
-5. 同じ本文で `/class-sync/trial` → `applied: true`, `committed: false`、図が元のまま。`/class-sync/apply` → `committed: true`、図とモデルが変わり Ctrl+Z で戻る。
-6. Claude Code から `nd_class_diagram_puml` → 編集 → `nd_class_diagram_preview` → `nd_class_diagram_apply` の順で同じ結果になる。
-
-## 0.1.2
-
-0.1.2 では、シーケンス図の破棄後に余分な `activate` / `deactivate` を出力する不具合を修正。破棄メッセージと破棄点の両方に適用する。3拡張の共通回帰テストは `python Tools/Test-SequenceExport.py`。Next Designでの再出力・描画は実機確認待ち。 共通出力処理の再生成に必要な依存コードも生成対象へ追加し、図の未確認一覧出力を同期した。
-
-Next Design（V3.x）で開いているプロジェクトのモデルを、Codex・Claude Code などの MCP クライアントから読み出す仕組み。読み取り専用。
-
-```
-Codex / Claude Code ── stdio (MCP) ── Python ブリッジ (bridge/) ── HTTP GET / JSON ── DLL 拡張 (NdMcp.dll) ── Next Design API
-                                                            127.0.0.1:3560
-```
-
-- **C# 側（Next Design 内）**: リボンの「サーバー開始」で `HttpListener` を起動し、`/project` `/tree` `/model` `/search` `/markdown` `/export` を JSON で返す。UI スレッドへ戻した後、内部コマンド `NdMcp.Command.ExecuteRequest` を実行する。そのハンドラ内で `EditorAccessMode.GetInactiveValue` を設定し、モデル・未表示の図を取得する。
-- **Python 側（ブリッジ）**: 公式 `mcp` SDK（2.x）の stdio サーバー。MCP ツール 1 つが HTTP エンドポイント 1 つに対応する。
-
-**状態：0.1.1 の主要機能を実機確認済み。** Codex から MCP 経由の `nd_ping`・`nd_project` が成功。HTTP API による情報取得と design.md・シーケンス図・状態遷移図の出力もユーザー確認済み。Claude Code の実機接続は未確認。停止・再開や長時間運用の確認状況は [VERIFY.md](VERIFY.md) を参照する。
-
-## 最短セットアップ
-
-Next Design と使用する AI クライアントを導入・ログイン済みの Windows PC で、両方を終了し、このリポジトリのフォルダーから実行する。
+手順は [SETUP.md](SETUP.md) にあります。Next Design と AI クライアントを終了してから、配布フォルダーで次の1行を実行するのが基本です。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\NdMcp\Setup.ps1 -Client Codex
 ```
 
-Claude Code は `-Client Claude`、両方なら `-Client Both` を指定する。uv・Python・依存ライブラリの準備、拡張配置、MCP 登録を自動実行する。既存の同名登録は更新し、設定ファイルはバックアップする。配布フォルダー内の `NdMcp/bridge` を使い続けるため、セットアップ後も削除しない。
+Claude Code なら `-Client Claude`、両方なら `-Client Both` にします。セットアップ後も配布フォルダー内の `NdMcp\bridge` を使い続けるので、フォルダーを消したり動かしたりしないでください。
 
-完了後は Next Design を起動してプロジェクトを開き、「NdMcp → サーバー開始」を押す。AI クライアントを起動し、`nd_ping` と `nd_project` の実行を依頼する。
+## 毎回の使い方
 
-初めて使う場合は **[環境構築手順書（SETUP.md）](SETUP.md)** を参照する。
+1. Next Design でプロジェクトを開きます。
+2. リボンの「NdMcp」タブで「サーバー開始」を押します。
+3. Codex または Claude Code を起動して、やりたいことを日本語で頼みます。
 
-## ファイル構成
+サーバーは Next Design を起動するたびに手動で開始します。開始していないと、AI には「サーバー開始を押してください」という案内が返ります。
 
-| パス | 役割 |
-|---|---|
-| `manifest.json` | 拡張定義（lifecycle=project、リボン「NdMcp」タブ） |
-| `NdMcp.csproj` | ビルドするソースの一覧（記載順）。AgentReview / PlantUmlTool の共有部品は正本を直接指す |
-| `src/extension.cs` | ファイルヘッダとエントリ `NdMcpExtension`（IExtension） |
-| `src/server.cs` | HTTP サーバー本体・ハンドラ（`NdMcpExtension` の partial）・JSON 化・モデル読み出し API |
-| `src/classsync.cs` | クラス図同期 API の窓口（`ClassSyncApi`）と、同期本体が参照する `ClassExperiment` の代替 |
-| `bridge/` | Python ブリッジ（`uv` プロジェクト）。`nd_mcp_bridge/` 本体、`tests/` モック ND とテスト |
-| `Setup.ps1` | Windows 用セットアップ |
-| `resources/` | リボンの開始・停止・状態確認・設定アイコン（16px / 32px） |
-| `tools/build_icons.ps1` | アイコンの再生成（Windows / System.Drawing） |
-| `SETUP.md` | 環境構築・更新手順 |
-| `VERIFY.md` | 実機検証手順 |
+頼み方の例:
 
-Markdown 出力部は `AgentReview/src` の 01 / 05 / 08（共通ヘルパ・Markdown 出力・`DesignArtifactWriter` などの共有部品）を、PlantUML 出力部とクラス図同期部は `PlantUmlTool/src`（shims/metamap, 10, 15, 40, 50, 60, 61, 63）を `NdMcp.csproj` が直接ビルドする。Markdown 出力の修正は AgentReview 側、PlantUML 出力と同期の修正は PlantUmlTool 側で行い、NdMcp をビルドし直す（`powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1 -Name NdMcp`）。
+- 「プロジェクトの構成を教えて」
+- 「`要求/REQ-1` の内容を説明して」
+- 「○○モジュールの設計書と図を出力して」
+- 「改訂履歴一覧に、今日の日付で1行追加して」
+- 「このクラス図に属性を追加して」
 
-`/export` は AgentReview と同じ図グループ判定・保存階層・索引生成を使う。対応表を設定する場合も、AgentReview の `%USERPROFILE%\.nd-agent-review\config.ini` にある `diagramGroups.rulesFile` を参照する。未設定なら共通の自動判別を使う。図が0件でも `_index.md` を更新する。
+## リボンのボタン
 
-## 設定と運用
+| グループ | ボタン | 内容 |
+|---|---|---|
+| MCP サーバー | サーバー開始 | AI からの接続を受け付け始める（`http://127.0.0.1:3560/`） |
+| | サーバー停止 | 受け付けを止める |
+| | 状態確認 | 稼働状態と直近の受信ログを出力ウィンドウに表示する |
+| 設定 | 設定を開く | 設定ファイル（ポート・出力先）をメモ帳で開く |
+| 編集の確認 | 書ける項目を出力 | 選んでいるモデルの値と書ける項目、行を1つ足す編集 JSON のひな形を書き出す。AI がなくても使える |
+| | 編集 JSON を実行 | 選んだ編集 JSON を、AI からの編集と同じ処理で実行する |
 
-| ボタン | 動作 |
-|---|---|
-| サーバー開始 | `http://127.0.0.1:3560/` で受付開始（既定値） |
-| サーバー停止 | 受付停止 |
-| 状態確認 | 稼働状態・受信数・直近ログを出力ウィンドウに表示 |
-| 設定を開く | `%USERPROFILE%\.nd-mcp\config.ini` を作成して開く（既存ファイルは維持） |
+設定ファイルは `%USERPROFILE%\.nd-mcp\config.ini` です。変更したらサーバーを停止して開始し直してください。通常は変える必要はありません。ログは `%USERPROFILE%\.nd-mcp\server.log` に残ります。
 
-設定変更後はサーバーを停止して再開する。ログは `%USERPROFILE%\.nd-mcp\server.log` に保存される。初回の配置、更新、取り消しは [SETUP.md](SETUP.md) を参照する。
+「編集の確認」の出力先は `%USERPROFILE%\.nd-mcp\edit-check\` です。AI クライアントが使えない PC でも、モデル編集を試せます。
 
-## 使い方
+## AI が使うツール
 
-Next Design でプロジェクトを開き「サーバー開始」を押してから、Codex または Claude Code で話しかける。
+AI は次のツールを自分で選んで使います。利用者がツール名を覚える必要はありませんが、うまく動かないときに「`nd_tree` で階層を見てから」のように指示すると確実です。
+
+モデルは `path`（Next Design のモデルパス。例 `Project/要求/REQ-1`）か `id`（モデル ID）で指定します。どちらか一方で構いません。
+
+### 読む
 
 | ツール | 内容 |
 |---|---|
-| `nd_ping` | サーバー疎通（モデルに触らない） |
-| `nd_project` | プロジェクト名・パス・直下モデル |
-| `nd_tree(path, id, depth)` | 階層。`depth` 0〜20（既定 2） |
-| `nd_model(path, id)` | 1 モデルの全フィールド値と子。リッチテキストは Markdown 化、参照は参照先の name/modelPath |
-| `nd_search(query, metaclass, limit, count)` | 名前の部分一致検索（大小無視）。`metaclass` は短いクラス名で絞り込み。limit 超過で打ち切り、総数は `count=True` のときだけ |
-| `nd_markdown(path, id)` | 配下を design.md 相当の Markdown で返す（図なし） |
-| `nd_export(path, id, out)` | design.md / _index.md / diagrams/*.puml をファイル出力し、出力先と件数を返す |
-| `nd_class_diagram_editors` / `nd_class_diagram_puml` / `nd_class_diagram_preview` / `nd_class_diagram_apply` | クラス図の PlantUML 同期（先頭の 0.2.0 の節を参照） |
+| `nd_ping` | 接続の確認（モデルには触らない） |
+| `nd_project` | 開いているプロジェクトの名前・パス・直下のモデル |
+| `nd_tree(path, id, depth)` | モデルの階層。`depth` は 0〜20（既定 2） |
+| `nd_model(path, id)` | モデル1件の全フィールドと子。リッチテキストは Markdown で返す |
+| `nd_search(query, metaclass, limit, count)` | モデル名の部分一致検索。`metaclass` でクラス名を絞り込める。既定で 50 件まで |
+| `nd_markdown(path, id)` | 指定したモデル配下を設計書形式の Markdown で返す（図は含まない） |
+| `nd_export(path, id, out)` | 設計書 `design.md`・図の一覧 `_index.md`・図 `diagrams/*.puml` をファイルに書き出す。`out` を省略すると `%USERPROFILE%\.nd-mcp\export` の下に作る |
 
-`path` は Next Design の ModelPath（例 `Project/要求/REQ-1`）、`id` はモデル ID。どちらか一方でよい。
+### クラス図
 
-サーバーが起動していないと、各ツールは「サーバー開始を押してください」という案内文を返す（例外にはしない）。
+| ツール | 内容 |
+|---|---|
+| `nd_class_diagram_editors(path, id)` | モデルが持つ図の一覧と、クラス図として扱えるか |
+| `nd_class_diagram_puml(path, id, editor)` | クラス図を PlantUML で返す |
+| `nd_class_diagram_preview(plantuml, …)` | 編集した PlantUML と今の図の差分を返す。図は変えない |
+| `nd_class_diagram_apply(plantuml, …)` | 編集した PlantUML を図とモデルに反映する |
 
-## 開発
+### シーケンス図
 
-```
-cd NdMcp/bridge
-uv run pytest                 # モック ND に対するテスト + stdio 経由の end-to-end
-uv run python tests/mock_nd.py   # モック ND を 3560 で単体起動（ブリッジの手動確認用）
-```
+| ツール | 内容 |
+|---|---|
+| `nd_sequence_diagrams(path, id, limit)` | シーケンス図の一覧 |
+| `nd_sequence_diagram_puml(path, id, editor)` | シーケンス図を PlantUML で返す |
+| `nd_sequence_diagram_preview(plantuml, …)` | 編集した PlantUML と今の図の差分を返す。図は変えない |
+| `nd_sequence_diagram_apply(plantuml, …, save)` | 編集した PlantUML で図を更新する |
+| `nd_sequence_diagram_create(plantuml, path, id)` | PlantUML から新しいシーケンス図を作る |
 
-C# 側を直したら `powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1 -Name NdMcp` でビルドと検査を行い、`-Deploy` を付けて配置する。内部コマンドがリボンから参照されていないという警告は想定どおり。
+### 図以外のモデルを編集する
 
-コマンド境界での設定・例外伝播は `python NdMcp/tests/run_command_tests.py`、共通出力処理は `python AgentReview/tests/run_export_tests.py` で検証する（Windows の .NET Framework C# コンパイラと模擬 SDK を使用）。実機確認の代わりにはならない。
+| ツール | 内容 |
+|---|---|
+| `nd_model_schema(path, id)` | 書き込めるフィールドと、追加できる表の行の種類 |
+| `nd_model_edit(operations, dry_run)` | 値の設定・リッチテキスト・表の行の追加/削除/移動・参照の設定をまとめて実行する |
 
-セットアップの配置・バックアップ・引数の受け渡し・失敗時の停止は `python NdMcp/tests/test_setup.py` で検証する。Windows PowerShell と模擬 CLI を使い、実際のユーザー設定は変更しない。新規PCでのダウンロードから接続までの確認は別途必要となる。
+PlantUML は、PlantUmlTool で出力するものと同じ書式です。
 
-## 既知の制約
+## 編集するときの注意
 
-- **サーバー起動は手動**（リボンボタン）。Next Design 起動時に自動で立ち上げる仕組みは無い（lifecycle=project の拡張は、ハンドラが初めて呼ばれるまでスクリプトが実行されないため）。
-- モデル読み出しは読み取り専用。書き込むのは `/class-sync/trial`（取り消す）と `/class-sync/apply` だけで、いずれも 1 つのトランザクション内で行い、確定後は Next Design 側で Undo できる。
-- リクエスト処理中は Next Design の UI スレッドを占有する。大きなサブツリーの `nd_markdown` / `nd_export` は UI が一時的に固まる。
-- 127.0.0.1 のみで待ち受ける。認証は無い（同一 PC の他プロセスからは誰でも読める）。
-- 同時リクエストは UI スレッドへ直列化されるため、並列には処理されない。
-- 長時間の受付継続、プロジェクトを閉じた後・Next Design 終了時の挙動は実機確認が必要。診断用の `direct=1` は廃止し、指定すると HTTP 400 を返す。
+- 図への反映は、反映した結果を照合し、一致したときだけ確定します。一致しなければ元に戻ります。
+- 図で要素を削除・改名する編集は、AI に先に差分（preview）を見せてもらってください。クラス図の削除は確認なしで実行されます。シーケンス図は別名や並びを書き換えると「削除して追加」になり、既存の要素へのトレースが消えます。
+- `nd_model_edit` は、1件でも失敗すると全部取り消します。途中までの変更は残りません。確定した編集は Ctrl+Z 1回で戻せます。
+- クラス図で関連を追加する反映には、プロジェクトを保存済みであることが必要です。
+- クラス図の反映を Ctrl+Z で戻すと、モデルは戻りますが、図に空の箱が残ることがあります（図を切り替えて表示し直すと消えます）。元に戻したいときは、元の PlantUML を反映し直すのが確実です。
+- シーケンス図を未保存のまま更新すると、その後の Ctrl+Z は「最後に保存した状態の図形」に戻します。保存後に足した図形も消えます。また、メッセージやフラグメントを追加した更新を Ctrl+Z すると Next Design が止まる既知の不具合があります。シーケンス図を AI に編集させる前に保存し、戻すときは Ctrl+Z ではなく元の PlantUML を反映し直してください。
+- シーケンス図など、図の中でしか編集できないモデルを `nd_model_edit` で変えようとすると Next Design が拒否します。
+
+## 制約
+
+- AI からの処理中は Next Design の画面が操作できません。大きな範囲の `nd_markdown` や `nd_export` では、しばらく固まることがあります。対象のモデルを絞ってください。
+- 複数の依頼は1件ずつ順番に処理します。
+- 同じ PC からの接続だけを受け付けます。認証はないので、同じ PC で動く他のプログラムからも読めます。
+
+## 困ったとき
+
+| 症状 | 対処 |
+|---|---|
+| AI が「サーバーに接続できません」と言う | 同じ PC の Next Design でプロジェクトを開き、「サーバー開始」を押す |
+| AI に `nextdesign` のツールが見えない | AI クライアントを再起動する。それでも見えなければ [SETUP.md](SETUP.md) のトラブルシューティングを見る |
+| 応答が返ってこない | Next Design に確認ダイアログが出ていないか見る。範囲の大きい取得は対象を絞る |
+| サーバー開始でポートが使われていると出る | 別の Next Design がサーバーを開始していないか確認し、1つにそろえる |
+| 「NdMcp」タブが出ない | Next Design を再起動してプロジェクトを開く |
+| 状況が分からない | 「状態確認」を押し、出力ウィンドウの内容と `%USERPROFILE%\.nd-mcp\server.log` を担当者に送る |
+
+更新・取り外しの方法も [SETUP.md](SETUP.md) にあります。
+
+開発・保守向けの情報（仕組み、HTTP API、ビルド、テスト、変更履歴）は [DEVELOPMENT.md](DEVELOPMENT.md) にあります。
