@@ -212,8 +212,9 @@ public static class DiagramPaths
 
     public static string Label(string text)
     {
+        // < はプレビューで HTML のタグとみなされて消えるのでエスケープする
         return (text ?? "").Replace("\\", "\\\\").Replace("[", "\\[").Replace("]", "\\]")
-            .Replace("|", "\\|").Replace("\r", " ").Replace("\n", " ");
+            .Replace("|", "\\|").Replace("<", "\\<").Replace("\r", " ").Replace("\n", " ");
     }
 }
 
@@ -659,8 +660,9 @@ public class MarkdownExporter
                     foreach (var line in lines)
                         sb.Append("  ").Append(line).Append(nl);
                     // 表のセルでは改行を <br> で表す（GitHub 流の表の書き方。VS Code のプレビューも改行して表示する）
+                    // （ここでは改行のまま持ち、表に書くときに <br> にする）
                     var kept = lines.Select(l => l.Trim()).Where(l => l.Length > 0).ToArray();
-                    var joined = string.Join("<br>", kept);
+                    var joined = string.Join("\n", kept);
                     if (cells != null && kept.Length <= CellMaxLines && joined.Length <= CellMaxChars * 2)
                         cells.Add(new KeyValuePair<string, string>(label, joined));
                     else cells = null;
@@ -731,11 +733,11 @@ public class MarkdownExporter
         }
         // メタクラスは短縮名を見出しに付記するだけに留める。モデルパスの代わりに ID を
         // HTML コメントで埋め込む（表示には出ない。パスは paths.tsv で引く）
-        sb.Append(new string('#', level)).Append(' ').Append(heading);
+        sb.Append(new string('#', level)).Append(' ').Append(Angle(heading));
         if (node.ClassName.Length > 0) sb.Append("（").Append(node.ClassName).Append("）");
         sb.Append(nl).Append("<!-- id: ").Append(node.ShortId).Append(" -->").Append(nl).Append(nl);
         // 項目を親の表に出したモデルは、ここでは子のためだけに見出しを出す（ページの先頭では項目も書く）
-        if (!node.InTable || depth == 0) sb.Append(node.Fields);
+        if (!node.InTable || depth == 0) sb.Append(Angle(node.Fields));
         if (node.DiagramRefs.Count > 0)
         {
             foreach (var line in node.DiagramRefs) sb.Append(line).Append(nl);
@@ -805,7 +807,14 @@ public class MarkdownExporter
 
     private static string Cell(string text)
     {
-        return (text ?? "").Replace("\\", "\\\\").Replace("|", "\\|").Trim();
+        return Angle((text ?? "").Replace("\\", "\\\\").Replace("|", "\\|").Trim()).Replace("\n", "<br>");
+    }
+
+    // 型名の `<T>` などが Markdown のプレビューで HTML のタグとみなされて消えないよう、< を \< にする。
+    // リッチテキストの変換が意図して出す <br> は残す。差分用のテキストには使わない（表示用だけ）。
+    public static string Angle(string text)
+    {
+        return Regex.Replace(text ?? "", "<(?!br>)", "\\<");
     }
 
     private string Breadcrumb(MarkdownModelNode page, string fromFile)

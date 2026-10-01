@@ -181,7 +181,7 @@ public static class ExportTests
         Valued("s-st1-m", "DID", st1, "Example.StructureMember", "Type", "uint16_t");
         var st2 = Valued("s-st2", "SIDFilterType", config, "Example.StructureType", "Scope", "Global");
         Valued("s-st2-m", "SID", st2, "Example.StructureMember", "Type", "uint8_t");
-        var holder = Valued("s-holder", "Holder", config, "Example.Unit", "Description", "保持");
+        var holder = Valued("s-holder", "Holder<T>", config, "Example.Unit", "Description", "保持", "Note", "a < b\nvector<int>");
         var holderOp = Valued("s-holder-op", "Get", holder, "Example.Method", "Description", "取得");
         Valued("s-holder-arg", "key", holderOp, "Example.Argument", "Type", "int");
         var smallDir = Path.Combine(temp, "layout-small");
@@ -202,10 +202,13 @@ public static class ExportTests
         Check(body.Contains("| data | UDSData | In | m") && !body.Contains("data（Argument）"), "A single leaf becomes a one-row table");
         Check(body.Contains("## Engine（Unit）") && body.Contains("- Description: エンジン"), "A single model with children stays a heading");
         Check(body.Contains("| MAX_A | 1000 | m") && body.Contains("| MAX_B | 5000 | m"), "Constants get their own table in a mixed section");
-        Check(body.Contains("| g_list | std::array<X> | m") && !body.Contains("g_list（Variable）"), "A single variable becomes a one-row table");
+        Check(body.Contains("| g_list | std::array\\<X> | m") && !body.Contains("g_list（Variable）"), "A single variable becomes a one-row table");
+        Check(!Regex.IsMatch(body, @"(?<!\\)<(?!br>|!--)"), "Every < outside comments and <br> is escaped for the preview");
+        Check(exporter.Comparison.Single(r => r.Key == "model:s-v1").Content.Contains("- Type: std::array<X>"), "Comparison keeps the raw value");
         Check(body.Contains("| RoeDIDType | Global | m") && body.Contains("RoeDIDType（StructureType）") && body.Contains("| DID | uint16_t | m"),
             "Structures with only leaf members are table rows followed by member tables");
-        Check(body.Contains("Holder（Unit）") && body.Contains("- Description: 保持"), "A class with nested members stays a heading");
+        Check(body.Contains("## Holder\\<T>（Unit）") && body.Contains("- Description: 保持"), "A class with nested members stays a heading");
+        Check(body.Contains("  a \\< b") && body.Contains("  vector\\<int>"), "Block values escape < too");
         Check(exporter.Comparison.Single(r => r.Key == "model:s-k1").Content.Contains("- InitialValue: 1000"), "Comparison unchanged for tabled constants");
         Check(!body.Contains("modelpath:") && body.Contains("<!-- id: m"), "Short id replaces model path comments");
         Check(!body.Contains("\n\n\n"), "No consecutive blank lines");
