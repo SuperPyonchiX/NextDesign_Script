@@ -202,11 +202,12 @@ public static class DiagramPaths
         }
     }
 
+    // Markdown のリンク先。日本語・空白・括弧を読めるまま書けるよう <> で囲む（CommonMark）。
+    // # はページ内リンク、% は符号化済みの文字として解釈されるので、この2文字だけ符号化する。
+    // < > 改行はファイル名に使えない（SafeFileName で置換済み）。
     public static string Link(string relativePath)
     {
-        // .NET Framework の URI 設定によっては括弧が残るため、Markdown 用に明示処理する。
-        return string.Join("/", relativePath.Split('/').Select(s => Uri.EscapeDataString(s)
-            .Replace("(", "%28").Replace(")", "%29").Replace("'", "%27").Replace("*", "%2A").Replace("!", "%21")).ToArray());
+        return "<" + relativePath.Replace("%", "%25").Replace("#", "%23") + ">";
     }
 
     public static string Label(string text)
@@ -1043,7 +1044,7 @@ public class MarkdownExporter
         return token;
     }
 
-    // 図を書き出し、仮参照 → 出力フォルダ基準のリンクの対応を返す。書けなかった図は含めない。
+    // 図を書き出し、仮参照 → 出力フォルダ基準の相対パスの対応を返す。書けなかった図は含めない。
     private Dictionary<string, string> WriteDiagramFiles()
     {
         var links = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -1057,12 +1058,11 @@ public class MarkdownExporter
                 var path = Path.Combine(_diagramDir, relative.Replace('/', Path.DirectorySeparatorChar));
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
                 File.WriteAllText(path, diagram.Uml, new UTF8Encoding(false));
-                var link = DiagramPaths.Link(relative);
-                links[diagram.Token] = link;
+                links[diagram.Token] = relative;
                 DiagramFiles.Add(relative);
                 for (var i = 0; i < IndexRows.Count; i++)
                     IndexRows[i] = IndexRows[i].Replace(diagram.Token + "_LABEL", DiagramPaths.Label(relative))
-                        .Replace(diagram.Token, link);
+                        .Replace(diagram.Token, DiagramPaths.Link(relative));
                 DiagramCount++;
             }
             catch (Exception ex)
@@ -1081,7 +1081,7 @@ public class MarkdownExporter
         {
             if (body.IndexOf(diagram.Token, StringComparison.Ordinal) < 0) continue;
             string link;
-            if (links.TryGetValue(diagram.Token, out link)) body = body.Replace(diagram.Token, prefix + link);
+            if (links.TryGetValue(diagram.Token, out link)) body = body.Replace(diagram.Token, DiagramPaths.Link(prefix + link));
             else body = Regex.Replace(body, @"(?m)^- 図: [^\r\n]*" + diagram.Token + @"[^\r\n]*(?:\r?\n|$)", "");
         }
         return body;

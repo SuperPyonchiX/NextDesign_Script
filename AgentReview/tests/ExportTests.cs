@@ -135,7 +135,7 @@ public static class ExportTests
     private static string[] Links(string text)
     {
         var references = string.Join("\n", text.Split('\n').Where(l => l.StartsWith("- 図:") || l.StartsWith("| ")).ToArray());
-        return Regex.Matches(references, @"(?<!\\)\]\((diagrams/[^)]+)\)").Cast<Match>().Select(m => Uri.UnescapeDataString(m.Groups[1].Value)).ToArray();
+        return Regex.Matches(references, @"(?<!\\)\]\(<(diagrams/[^>]+)>\)").Cast<Match>().Select(m => Uri.UnescapeDataString(m.Groups[1].Value)).ToArray();
     }
     private static void Exists(string dir, string path) { Check(File.Exists(Path.Combine(dir, path)), "Missing " + path); }
     private static void OwnsDiagram(IModel group, IModel diagram)
@@ -200,7 +200,7 @@ public static class ExportTests
         var app = new IApplication();
         var written = DesignArtifactWriter.Write(app, "test", new MarkdownExporter(new MarkdownExportOptions(), bigDir), big, bigDir);
         var design = File.ReadAllText(Path.Combine(bigDir, "design.md"));
-        Check(design.Contains("## ページ一覧") && design.Contains("](model/"), "Large output has a page list");
+        Check(design.Contains("## ページ一覧") && design.Contains("](<model/クラス設計.md>)"), "Large output has a page list");
         Check(written.Contains("model/クラス設計.md") && written.Contains("model/クラス設計/Class1.md"), "Pages follow model hierarchy with sibling folders");
         var classPages = written.Where(f => f.StartsWith("model/クラス設計/") && f.EndsWith(".md")).ToList();
         Check(classPages.Count == 41 && classPages.Count(f => f.StartsWith("model/クラス設計/Class0_")) == 2, "Same-name siblings get hashed names");
@@ -218,8 +218,9 @@ public static class ExportTests
             File.WriteAllText(Path.Combine(dump, "group.md"), File.ReadAllText(Path.Combine(bigDir, "model/クラス設計.md")));
             File.WriteAllText(Path.Combine(dump, "class1.md"), classPage);
         }
-        Check(classPage.StartsWith("<!-- modelpath: ") && classPage.Contains("[Big](../../design.md)") && classPage.Contains("[クラス設計](../%E3%82%AF"), "Breadcrumb links to ancestors");
-        Check(File.ReadAllText(Path.Combine(bigDir, "model/クラス設計.md")).Contains("](%E3%82%AF%E3%83%A9%E3%82%B9%E8%A8%AD%E8%A8%88/Class1.md)"), "Child page links are relative to the page");
+        Check(classPage.StartsWith("<!-- modelpath: ") && classPage.Contains("[Big](<../../design.md>)") && classPage.Contains("[クラス設計](<../クラス設計.md>)"), "Breadcrumb links to ancestors");
+        Check(File.ReadAllText(Path.Combine(bigDir, "model/クラス設計.md")).Contains("](<クラス設計/Class1.md>)"), "Child page links are relative to the page");
+        Check(DiagramPaths.Link("a b/(x)#1%.md") == "<a b/(x)%231%25.md>", "Links keep Japanese, spaces and parentheses, encoding only # and %");
         Check(MarkdownExporter.Relative("model/a/b.md", "model/c.md") == "../c.md" && MarkdownExporter.Relative("design.md", "model/x.md") == "model/x.md", "Relative link helper");
         Check(classPage.Contains("# Class1（Unit）") && classPage.Contains("| attr0 | uint32_t |"), "Page restarts headings and keeps tables");
         Check(design.Contains("](diagrams/") || design.Contains("- 図:"), "Root page keeps diagram link");

@@ -285,7 +285,7 @@ public class ExportRunner
                     var fileName = fileNames[entry.Diagram.Id];
                     var saved = PumlExportFolders.Save(folder, layout == null ? null : layout.Relative(entry.Diagram.Model), fileName, uml);
                     indexRows.Add("| " + (i + 1) + " | " + entry.OwnerPath + " | " + entry.Name
-                                  + " | [" + saved + "](" + string.Join("/", saved.Split('/').Select(Uri.EscapeDataString).ToArray()) + ") |");
+                                  + " | [" + saved + "](<" + saved.Replace("%", "%25").Replace("#", "%23") + ">) |");
                 }
                 else
                 {
