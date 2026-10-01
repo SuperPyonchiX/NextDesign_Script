@@ -234,6 +234,7 @@ public class MarkdownModelNode
     public readonly List<MarkdownSection> Sections = new List<MarkdownSection>();
     public MarkdownModelNode Parent;
     public bool IsPage;
+    public bool InTable;                                    // 自身の項目は親の区画の表の1行に出す
     public DiagramPathNode Place;                           // ページの割り当て先（IsPage のときだけ）
     public string File = "";                               // 掲載先のファイル（出力フォルダからの相対）
     public int SubtreeChars, SubtreeLines, SubtreeModels;
@@ -244,7 +245,13 @@ public class MarkdownSection
 {
     public string Label;                                   // 所有フィールド名（システム名・安全網は null）
     public readonly List<MarkdownModelNode> Items = new List<MarkdownModelNode>();
-    public List<string> Columns;                           // 表にする区画だけ。null なら見出しで出す
+    public readonly List<MarkdownTable> Tables = new List<MarkdownTable>();   // 型ごとの表（区画の先頭に出す）
+}
+
+public class MarkdownTable
+{
+    public readonly List<string> Columns = new List<string>();
+    public readonly List<MarkdownModelNode> Rows = new List<MarkdownModelNode>();
 }
 
 // 出力するファイル1件。Path は出力フォルダからの相対（/ 区切り）。
@@ -537,21 +544,28 @@ public class MarkdownExporter
         }
     }
 
-    // 区画の子がすべて「子も図も持たず、項目がすべて1行の短い値」で、型が揃っていれば表にする。
+    // 区画の子のうち「図を持たず、項目がすべて1行の短い値」のものを、型（メタクラスの短縮名）ごとに表にする。
+    // 子を持つモデルは、子がすべて葉のもの（引数を持つ操作など）だけ表の行にし、子は表の後に見出しを付けて出す。
+    // 中身の多いモデル（クラスなど）や、表にできない子（複数行の説明など）は従来の見出しで出す。
     // 型名・項目名では判定しない（プロファイル非依存）。
     private static void DecideTable(MarkdownSection section)
     {
-        if (section.Items.Count < 2) return;
-        var cls = section.Items[0].ClassName;
-        var columns = new List<string>();
-        foreach (var item in section.Items)
+        var candidates = section.Items.Where(i => i.Cells != null && i.DiagramRefs.Count == 0
+            && i.Sections.All(s => s.Items.All(c => !c.HasChildren && c.DiagramRefs.Count == 0))).ToList();
+        foreach (var group in candidates.GroupBy(i => i.ClassName))
         {
-            if (item.Cells == null || item.HasChildren || item.DiagramRefs.Count > 0 || item.ClassName != cls) return;
-            foreach (var cell in item.Cells)
-                if (!columns.Contains(cell.Key)) columns.Add(cell.Key);
+            var rows = group.ToList();
+            // 1件だけなら、子を持たないもの（引数1つ・定数1つなど）だけ表にする。子を持つ1件は見出しの方が読みやすい
+            if (rows.Count == 1 && rows[0].HasChildren) continue;
+            var table = new MarkdownTable();
+            foreach (var item in rows)
+                foreach (var cell in item.Cells)
+                    if (!table.Columns.Contains(cell.Key)) table.Columns.Add(cell.Key);
+            if (table.Columns.Count > TableMaxColumns) continue;
+            table.Rows.AddRange(rows);
+            section.Tables.Add(table);
+            foreach (var item in rows) item.InTable = true;
         }
-        if (columns.Count > TableMaxColumns) return;
-        section.Columns = columns;
     }
 
     // ---- 項目 ----
@@ -695,7 +709,8 @@ public class MarkdownExporter
 
     // trail: 見出しレベルが上限に達した祖先（上限レベルのモデル）からの名前の連なり。上限未満の深さでは null
     // fromFile: 書き込み先のページ（出力フォルダからの相対）。子ページへのリンクはここからの相対パスにする
-    private void RenderNode(StringBuilder sb, MarkdownModelNode node, int depth, List<string> trail, string fromFile)
+    // ownOnly: 子の見出しを出さず、このモデル自身の部分（表を含む）だけを書く（分量の見積もり用）
+    private void RenderNode(StringBuilder sb, MarkdownModelNode node, int depth, List<string> trail, string fromFile, bool ownOnly = false)
     {
         var nl = _options.NewLine;
         var level = Math.Min(depth + 1, _options.MaxHeadingLevel);
@@ -713,7 +728,8 @@ public class MarkdownExporter
         sb.Append(new string('#', level)).Append(' ').Append(heading);
         if (node.ClassName.Length > 0) sb.Append("（").Append(node.ClassName).Append("）");
         sb.Append(nl).Append("<!-- id: ").Append(node.ShortId).Append(" -->").Append(nl).Append(nl);
-        sb.Append(node.Fields);
+        // 項目を親の表に出したモデルは、ここでは子のためだけに見出しを出す（ページの先頭では項目も書く）
+        if (!node.InTable || depth == 0) sb.Append(node.Fields);
         if (node.DiagramRefs.Count > 0)
         {
             foreach (var line in node.DiagramRefs) sb.Append(line).Append(nl);
@@ -722,10 +738,12 @@ public class MarkdownExporter
         foreach (var section in node.Sections)
         {
             if (section.Label != null) sb.Append("**").Append(section.Label).Append("**").Append(nl).Append(nl);
-            if (section.Columns != null) { RenderTable(sb, section); continue; }
+            foreach (var table in section.Tables) RenderTable(sb, table);
+            if (ownOnly) continue;
             var links = new List<MarkdownModelNode>();
             foreach (var item in section.Items)
             {
+                if (item.InTable && !item.HasChildren) continue;
                 if (item.IsPage) { links.Add(item); continue; }
                 FlushLinks(sb, links, fromFile);
                 RenderNode(sb, item, depth + 1, myTrail, fromFile);
@@ -757,18 +775,18 @@ public class MarkdownExporter
         return up + string.Join("/", target.Skip(common).ToArray());
     }
 
-    private void RenderTable(StringBuilder sb, MarkdownSection section)
+    private void RenderTable(StringBuilder sb, MarkdownTable table)
     {
         var nl = _options.NewLine;
         sb.Append("| 名前 | ");
-        foreach (var column in section.Columns) sb.Append(Cell(column)).Append(" | ");
+        foreach (var column in table.Columns) sb.Append(Cell(column)).Append(" | ");
         sb.Append("ID |").Append(nl).Append("|---|");
-        foreach (var column in section.Columns) sb.Append("---|");
+        foreach (var column in table.Columns) sb.Append("---|");
         sb.Append("---|").Append(nl);
-        foreach (var item in section.Items)
+        foreach (var item in table.Rows)
         {
             sb.Append("| ").Append(Cell(item.Name)).Append(" | ");
-            foreach (var column in section.Columns)
+            foreach (var column in table.Columns)
             {
                 var value = "";
                 foreach (var cell in item.Cells) if (cell.Key == column) { value = cell.Value; break; }
@@ -810,23 +828,15 @@ public class MarkdownExporter
     private void Measure(MarkdownModelNode node)
     {
         var own = new StringBuilder();
-        var copy = new MarkdownModelNode { ModelId = node.ModelId, ShortId = node.ShortId, Name = node.Name, ClassName = node.ClassName, Fields = node.Fields };
-        copy.DiagramRefs.AddRange(node.DiagramRefs);
-        foreach (var section in node.Sections)
-        {
-            var empty = new MarkdownSection { Label = section.Label, Columns = section.Columns };
-            if (section.Columns != null) empty.Items.AddRange(section.Items);
-            copy.Sections.Add(empty);
-        }
-        RenderNode(own, copy, 0, null, "");
+        RenderNode(own, node, 0, null, "", true);
         node.SubtreeChars = own.Length;
         node.SubtreeLines = own.ToString().Count(c => c == '\n');
         node.SubtreeModels = 1;
         foreach (var section in node.Sections)
         {
-            if (section.Columns != null) { node.SubtreeModels += section.Items.Count; continue; }
             foreach (var item in section.Items)
             {
+                if (item.InTable && !item.HasChildren) { node.SubtreeModels++; continue; }
                 Measure(item);
                 node.SubtreeChars += item.SubtreeChars;
                 node.SubtreeLines += item.SubtreeLines;
@@ -835,14 +845,13 @@ public class MarkdownExporter
         }
     }
 
-    // 収まらないページは、子を持つ子モデルを（表の区画を除いて）すべてページにする。
+    // 収まらないページは、子を持つ子モデルをすべてページにする（表の行になったものも、子があれば対象）。
     // 兄弟で扱いを揃えて、どこにファイルがあるかを予測しやすくする。
     private static void Split(MarkdownModelNode page)
     {
         var promoted = new List<MarkdownModelNode>();
         foreach (var section in page.Sections)
         {
-            if (section.Columns != null) continue;
             foreach (var item in section.Items)
                 if (item.HasChildren) { item.IsPage = true; promoted.Add(item); }
         }

@@ -166,6 +166,23 @@ public static class ExportTests
         var other = Valued("s-class2", "Controller", small, "Example.Unit");
         Valued("s-op", "Start", other, "Example.Method", "Description", "1行目\n2行目");
         Valued("s-op2", "Stop", other, "Example.Method", "Description", "停止");
+        var run = Valued("s-op3", "Run", other, "Example.Method", "Description", "実行", "Signature", "Run(int, char)");
+        Valued("s-arg1", "count", run, "Example.Argument", "Type", "int", "Direction", "In");
+        Valued("s-arg2", "mode", run, "Example.Argument", "Type", "char", "Direction", "In");
+        var send = Valued("s-op4", "Send", other, "Example.Method", "Description", "送信");
+        Valued("s-arg3", "data", send, "Example.Argument", "Type", "UDSData", "Direction", "In");
+        // 型の混ざった区画: 定数・変数・構造体は型ごとの表、中身の多いクラスは見出しのまま
+        var config = Valued("s-config", "config", small, "Example.Component");
+        Valued("s-k1", "MAX_A", config, "Example.Constant", "InitialValue", "1000");
+        Valued("s-k2", "MAX_B", config, "Example.Constant", "InitialValue", "5000");
+        Valued("s-v1", "g_list", config, "Example.Variable", "Type", "std::array<X>");
+        var st1 = Valued("s-st1", "RoeDIDType", config, "Example.StructureType", "Scope", "Global");
+        Valued("s-st1-m", "DID", st1, "Example.StructureMember", "Type", "uint16_t");
+        var st2 = Valued("s-st2", "SIDFilterType", config, "Example.StructureType", "Scope", "Global");
+        Valued("s-st2-m", "SID", st2, "Example.StructureMember", "Type", "uint8_t");
+        var holder = Valued("s-holder", "Holder", config, "Example.Unit", "Description", "保持");
+        var holderOp = Valued("s-holder-op", "Get", holder, "Example.Method", "Description", "取得");
+        Valued("s-holder-arg", "key", holderOp, "Example.Argument", "Type", "int");
         var smallDir = Path.Combine(temp, "layout-small");
         var exporter = new MarkdownExporter(new MarkdownExportOptions(), smallDir);
         var pages = exporter.ExportPages(small, smallDir);
@@ -174,6 +191,19 @@ public static class ExportTests
         Check(body.Contains("| 名前 | Type | Visibility | Default | ID |"), "Leaf siblings become one table with union columns");
         Check(body.Contains("| mode\\|x | Mode |  | IDLE | m"), "Table cells escape pipes and leave missing values empty");
         Check(body.Contains("Start（Method）") && body.Contains("  2行目"), "Multi-line model stays a block");
+        Check(body.Contains("| 名前 | Description | Signature | ID |") && body.Contains("| Stop | 停止 |  | m") && body.Contains("| Run | 実行 | Run(int, char) | m"),
+            "Mixed section tables the single-line siblings, including ones with children");
+        var runBlock = body.Substring(body.IndexOf("Run（Method）", StringComparison.Ordinal));
+        Check(!runBlock.Contains("- Description: 実行") && runBlock.Contains("| count | int | In | m"), "Tabled model with children shows only its children below the table");
+        Check(!body.Contains("- Description: 停止"), "Tabled leaf is not repeated as a block");
+        Check(body.Contains("| data | UDSData | In | m") && !body.Contains("data（Argument）"), "A single leaf becomes a one-row table");
+        Check(body.Contains("## Engine（Unit）") && body.Contains("- Description: エンジン"), "A single model with children stays a heading");
+        Check(body.Contains("| MAX_A | 1000 | m") && body.Contains("| MAX_B | 5000 | m"), "Constants get their own table in a mixed section");
+        Check(body.Contains("| g_list | std::array<X> | m") && !body.Contains("g_list（Variable）"), "A single variable becomes a one-row table");
+        Check(body.Contains("| RoeDIDType | Global | m") && body.Contains("RoeDIDType（StructureType）") && body.Contains("| DID | uint16_t | m"),
+            "Structures with only leaf members are table rows followed by member tables");
+        Check(body.Contains("Holder（Unit）") && body.Contains("- Description: 保持"), "A class with nested members stays a heading");
+        Check(exporter.Comparison.Single(r => r.Key == "model:s-k1").Content.Contains("- InitialValue: 1000"), "Comparison unchanged for tabled constants");
         Check(!body.Contains("modelpath:") && body.Contains("<!-- id: m"), "Short id replaces model path comments");
         Check(!body.Contains("\n\n\n"), "No consecutive blank lines");
         var comparison = exporter.Comparison.Single(r => r.Key == "model:s-a1").Content;
