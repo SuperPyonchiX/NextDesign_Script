@@ -75,8 +75,8 @@ AI は次のツールを自分で選んで使います。利用者がツール�
 | `nd_tree(path, id, depth)` | モデルの階層。`depth` は 0〜20（既定 2） |
 | `nd_model(path, id)` | モデル1件の全フィールドと子。リッチテキストは Markdown で返す |
 | `nd_search(query, metaclass, limit, count)` | モデル名の部分一致検索。`metaclass` でクラス名を絞り込める。既定で 50 件まで |
-| `nd_markdown(path, id)` | 指定したモデル配下を設計書形式の Markdown で返す（図は含まない） |
-| `nd_export(path, id, out)` | 設計書 `design.md`・図の一覧 `_index.md`・図 `diagrams/*.puml` をファイルに書き出す。`out` を省略すると `%USERPROFILE%\.nd-mcp\export` の下に作る |
+| `nd_markdown(path, id)` | 指定したモデル配下を設計書形式の Markdown で返す（図は含まない）。モデルは短い ID で示し、ID → モデルパスの対応も一緒に返す |
+| `nd_export(path, id, out)` | 設計書 `design.md`・ID とモデルパスの対応 `paths.tsv`・図の一覧 `_index.md`・図 `diagrams/*.puml` をファイルに書き出す。分量が多いと `design.md` は目次になり、本文は `model/` 配下にモデル階層のファイルで分かれる。`out` を省略すると `%USERPROFILE%\.nd-mcp\export` の下に作る |
 
 ### クラス図
 

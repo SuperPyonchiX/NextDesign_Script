@@ -14,6 +14,10 @@
 //        （表の行モデルがどの表に属すかの文脈を保つため）
 //      - Name / $・___ 始まりのシステムフィールド / 空値は出さない
 //      - フィールド値はフェンスで囲まず箇条書き + インデント継続で出す
+//      - 子も図も持たず値が1行で短い子モデルの区画は、1モデル1行の表にする
+//      - モデルパスの代わりに短い ID を出し、ID → モデルパスは paths.tsv に書く
+//      - ファイル出力は、1ファイルの目安（PageMaxChars / PageMaxLines）を超えると
+//        model/ 配下にモデル階層のフォルダで分ける（ExportPages）
 // ============================================================
 
 public class MarkdownExportOptions
@@ -219,11 +223,49 @@ public class PendingDiagram
     public DiagramPathNode Node;
 }
 
+// 収集したモデル1件分。本文の組み立て（1文字列・ページ分割）はこの木から行う。
+public class MarkdownModelNode
+{
+    // 取得の途中で失敗しても本文を組み立てられるよう、空でない初期値を持たせる
+    public string ModelId = "", ShortId = "", Name = "(取得失敗)", ClassName = "", Path = "", Fields = "";
+    public List<KeyValuePair<string, string>> Cells;      // 表の1行にできる項目（できなければ null）
+    public readonly List<string> DiagramRefs = new List<string>();
+    public readonly List<MarkdownSection> Sections = new List<MarkdownSection>();
+    public MarkdownModelNode Parent;
+    public bool IsPage;
+    public DiagramPathNode Place;                           // ページの割り当て先（IsPage のときだけ）
+    public string File = "";                               // 掲載先のファイル（出力フォルダからの相対）
+    public int SubtreeChars, SubtreeLines, SubtreeModels;
+    public bool HasChildren { get { return Sections.Any(s => s.Items.Count > 0); } }
+}
+
+public class MarkdownSection
+{
+    public string Label;                                   // 所有フィールド名（システム名・安全網は null）
+    public readonly List<MarkdownModelNode> Items = new List<MarkdownModelNode>();
+    public List<string> Columns;                           // 表にする区画だけ。null なら見出しで出す
+}
+
+// 出力するファイル1件。Path は出力フォルダからの相対（/ 区切り）。
+public class MarkdownPage
+{
+    public string Path, Content;
+    public MarkdownModelNode Model;
+}
+
 public class MarkdownExporter
 {
+    // 1ファイルの目安。AI エージェントが1回で読める量（Claude Code の Read は既定 2,000 行・約 25,000 トークン）
+    public const int PageMaxChars = 20000, PageMaxLines = 1000;
+    // 表の1セルに入れる値の上限。超える区画は表にしない
+    private const int CellMaxChars = 200, TableMaxColumns = 16;
+    // 出力フォルダからの絶対パスの上限（Windows の MAX_PATH 260 に余裕を取る）
+    public const int PathBudget = 240;
+    public const string PageFolder = "model";
+
     private readonly MarkdownExportOptions _options;
     private readonly HashSet<string> _visited = new HashSet<string>(StringComparer.Ordinal);
-    private StringBuilder _sb;
+    private readonly Dictionary<string, string> _shortIds = new Dictionary<string, string>(StringComparer.Ordinal);
 
     // 図の .puml 出力（null なら図は出力しない）
     private readonly string _diagramDir;
@@ -243,6 +285,8 @@ public class MarkdownExporter
     public List<ChangeRecord> Comparison = new List<ChangeRecord>();
     public readonly List<string> SkippedDiagrams = new List<string>();
     public List<string> IndexRows = new List<string>();   // _index.md 用「| 図名 | 種別 | ファイル | モデルパス |」
+    public readonly List<string> DiagramFiles = new List<string>();   // 今回書いた図（出力フォルダからの相対）
+    public readonly List<MarkdownModelNode> Models = new List<MarkdownModelNode>();   // 収集順
 
     public MarkdownExporter(MarkdownExportOptions options, string diagramDir, DiagramGroupRules groupRules = null)
     {
@@ -274,28 +318,76 @@ public class MarkdownExporter
             if (!o.LinkMap.ContainsKey(pair.Key)) o.LinkMap[pair.Key] = pair.Value;
     }
 
+    // 1文字列で返す（NdMcp の /markdown・テスト用）。ページに分けず、図へのリンクは出力フォルダ基準。
     public string Export(IModel root)
     {
-        var nl = _options.NewLine;
-        _sb = new StringBuilder();
+        var tree = Collect(root);
+        var links = WriteDiagramFiles();
+        var body = new StringBuilder();
+        if (tree != null) RenderNode(body, tree, 0, null, "");
+        return Preamble(root, null) + ApplyLinks(body.ToString(), links, "");
+    }
+
+    // ファイル出力用。全体が目安に収まれば design.md 1枚、超えればモデル階層のフォルダに分ける。
+    // 図の .puml はこの中で書く。Markdown の書き込みは呼び出し側（DesignArtifactWriter）。
+    public List<MarkdownPage> ExportPages(IModel root, string outDir)
+    {
+        var tree = Collect(root);
+        var links = WriteDiagramFiles();
+        var pages = new List<MarkdownPage>();
+        if (tree == null)
+        {
+            pages.Add(new MarkdownPage { Path = "design.md", Content = Preamble(root, null) });
+            return pages;
+        }
+        Measure(tree);
+        tree.IsPage = true;
+        if (!Fits(tree.SubtreeChars, tree.SubtreeLines)) Split(tree);
+        PlacePages(tree, outDir);
+        AssignFiles(tree, "design.md");
+        foreach (var page in PagesOf(tree))
+        {
+            var body = new StringBuilder();
+            var file = page == tree ? "design.md" : page.Place.RelativePath() + ".md";
+            var depth = file.Count(c => c == '/');
+            var prefix = string.Concat(Enumerable.Repeat("../", depth).ToArray());
+            if (page != tree) body.Append(Breadcrumb(page, file));
+            RenderNode(body, page, 0, null, file);
+            var head = page == tree ? Preamble(root, tree) : "";
+            pages.Add(new MarkdownPage { Path = file, Model = page, Content = head + ApplyLinks(body.ToString(), links, prefix) });
+        }
+        return pages;
+    }
+
+    private void Reset()
+    {
         _visited.Clear();
+        _shortIds.Clear();
         _seenEditors.Clear();
         _seenDiagramWarnings.Clear();
         _pending.Clear();
         IndexRows.Clear();
         Comparison.Clear();
         SkippedDiagrams.Clear();
+        DiagramFiles.Clear();
+        Models.Clear();
         DiagramCount = 0;
         SkippedModelCount = 0;
         _pathRoot = new DiagramPathNode { Id = "diagrams", Assigned = "diagrams" };
         ModelCount = 0;
         Warnings.Clear();
         if (_diagramDir != null) Warnings.AddRange(_groupRules.Warnings);
+    }
 
-        // 件数をプリアンブルに載せるため、本文を先に組み立てる
-        WriteModel(root, 0, null);
-        var body = WriteDiagramFiles(_sb.ToString());
+    private MarkdownModelNode Collect(IModel root)
+    {
+        Reset();
+        return CollectModel(root, null);
+    }
 
+    private string Preamble(IModel root, MarkdownModelNode tree)
+    {
+        var nl = _options.NewLine;
         var head = new StringBuilder();
         head.Append("<!-- Next Design 設計情報エクスポート (AgentReview) -->").Append(nl);
         head.Append(nl);
@@ -303,82 +395,529 @@ public class MarkdownExporter
         head.Append("- モデル数: ").Append(ModelCount).Append(nl);
         if (_options.EmitTimestamp)
             head.Append("- 出力日時: ").Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")).Append(nl);
+        head.Append("- モデルの ID: 見出し直下の `<!-- id: … -->` と表の ID 列。ID から Next Design のモデルパスを引く対応表は `paths.tsv`").Append(nl);
+        var pages = tree == null ? new List<MarkdownModelNode>() : PagesOf(tree).Where(p => p != tree).ToList();
+        if (pages.Count > 0)
+        {
+            head.Append("- 構成: 分量が多いため、モデル階層に沿って `").Append(PageFolder).Append("/` 配下の ")
+                .Append(pages.Count).Append(" ファイルに分けて出力（下の「ページ一覧」）").Append(nl);
+            head.Append(nl).Append("## ページ一覧").Append(nl).Append(nl);
+            foreach (var page in pages)
+            {
+                var level = 0;
+                for (var p = page.Parent; p != null && p != tree; p = p.Parent) if (p.IsPage) level++;
+                head.Append(new string(' ', level * 2)).Append("- [").Append(DiagramPaths.Label(Title(page))).Append("](")
+                    .Append(DiagramPaths.Link(page.Place.RelativePath() + ".md")).Append(") — ID ").Append(page.ShortId)
+                    .Append(" / モデル ").Append(page.SubtreeModels).Append(nl);
+            }
+            head.Append(nl).Append("---").Append(nl);
+        }
         head.Append(nl);
-
-        return head.ToString() + body;
+        return head.ToString();
     }
 
-    // trail: 見出しレベルが上限に達した祖先（上限レベルのモデル）からの名前の連なり。
-    //        上限未満の深さでは null
-    private void WriteModel(IModel m, int depth, List<string> trail)
-    {
-        if (m == null || m.IsDeleted || m.IsProxy) return;
-        if (!_visited.Add(m.Id)) return;   // 再訪ガード（循環・重複列挙の保険）
+    // ---- 収集 ----
 
+    private MarkdownModelNode CollectModel(IModel m, MarkdownModelNode parent)
+    {
+        if (m == null || m.IsDeleted || m.IsProxy) return null;
+        if (!_visited.Add(m.Id)) return null;   // 再訪ガード（循環・重複列挙の保険）
+
+        var node = new MarkdownModelNode { ModelId = m.Id, Parent = parent };
         try
         {
             ModelCount++;
-            var nl = _options.NewLine;
-            var level = Math.Min(depth + 1, _options.MaxHeadingLevel);
-            var name = AgentText.Normalize(m.Name);
-            if (name.Length == 0) name = "(無名)";
+            node.ShortId = ShortId(m.Id);
+            node.Name = AgentText.Normalize(m.Name);
+            if (node.Name.Length == 0) node.Name = "(無名)";
+            node.ClassName = ShortClassName(m);
+            node.Path = PathOf(m);
+            Models.Add(node);
 
-            // 上限を超えた深さは、上限レベルの祖先からの相対パスを見出しにして階層を保つ
-            var capped = depth + 1 >= _options.MaxHeadingLevel;
-            List<string> myTrail = null;
-            var heading = name;
-            if (capped)
-            {
-                myTrail = trail != null ? new List<string>(trail) : new List<string>();
-                myTrail.Add(name);
-                heading = string.Join(" / ", myTrail.ToArray());
-            }
-
-            // メタクラスは短縮名を見出しに付記するだけに留める
-            // （完全修飾名とパスの引用ブロックはノイズが大きく実機で不評だった）
-            // モデルパスは HTML コメントで埋め込む。レンダリング表示には出ないため
-            // ノイズにならず、レビューエージェントが指摘の対象参照
-            // （Next Design のモデルパス）として引用できる
-            _sb.Append(new string('#', level)).Append(' ').Append(heading);
-            var shortCls = ShortClassName(m);
-            if (shortCls.Length > 0) _sb.Append("（").Append(shortCls).Append("）");
-            _sb.Append(nl);
-            _sb.Append("<!-- modelpath: ").Append(PathOf(m)).Append(" -->").Append(nl);
-            _sb.Append(nl);
-
-            var fieldStart = _sb.Length;
-            WriteFields(m);
+            List<KeyValuePair<string, string>> cells;
+            node.Fields = BuildFields(m, out cells);
+            node.Cells = cells;
+            // 差分（変化点レビュー）は表示形式に依らず、従来どおりの項目テキストで比べる
             Comparison.Add(new ChangeRecord { Key = "model:" + m.Id, Parent = m.Owner == null ? "" : m.Owner.Id,
-                Name = m.Name, Kind = m.Metaclass == null ? "" : m.Metaclass.FullName, Path = PathOf(m),
-                Content = _sb.ToString(fieldStart, _sb.Length - fieldStart) });
+                Name = m.Name, Kind = m.Metaclass == null ? "" : m.Metaclass.FullName, Path = node.Path,
+                Content = node.Fields });
 
             // 図は .puml に出力して参照行を書く。シーケンス図・状態遷移図を持つ
             // モデルの配下は図の構成要素（メッセージ・実行仕様・状態など）なので、
             // テキストには出さず .puml 参照に委ねる
-            var isBehaviorDiagram = WriteDiagrams(m);
-            if (isBehaviorDiagram)
+            if (CollectDiagrams(m, node))
             {
                 SkippedModelCount += CountSubtree(m);
-                return;
+                return node;
             }
 
-            WriteChildren(m, depth, myTrail);
+            CollectChildren(m, node);
         }
         catch (Exception ex)
         {
             // 1 モデルの失敗で全体を落とさない
             Warnings.Add(PathOf(m) + " : " + ex.Message);
         }
+        return node;
     }
 
-    // モデルが持つ図を .puml に出力し、参照行を書く。
+    // モデルIDから導く短いID。出力のたびに変わらないよう連番にしない。衝突したら桁を伸ばす。
+    private string ShortId(string modelId)
+    {
+        var hash = DiagramPaths.Hash("model:" + modelId);
+        for (var length = 8; ; length += 4)
+        {
+            var candidate = "m" + hash.Substring(0, Math.Min(length, hash.Length));
+            string owner;
+            if (!_shortIds.TryGetValue(candidate, out owner)) { _shortIds[candidate] = modelId; return candidate; }
+            if (owner == modelId || length >= hash.Length) return candidate;
+        }
+    }
+
+    // 子モデルの収集。所有フィールド単位で列挙し、フィールド名の小見出しで
+    // 表・区画の文脈を保つ（GetChildren は全所有フィールドを平坦化して返し、
+    // どのフィールドに属すかが失われるため）
+    private void CollectChildren(IModel m, MarkdownModelNode node)
+    {
+        var cls = m.Metaclass;
+        if (cls != null)
+        {
+            List<IField> fields;
+            try { fields = cls.GetFields().Cast<IField>().ToList(); }
+            catch (Exception) { fields = new List<IField>(); }
+
+            foreach (var f in fields)
+            {
+                try
+                {
+                    if (f == null || !f.IsEmbedded || f.TypeClass == null) continue;
+
+                    var children = new List<IModel>();
+                    foreach (var v in m.GetFieldValues(f.Name))
+                    {
+                        var child = v as IModel;
+                        if (child == null || child.IsDeleted || child.IsProxy) continue;
+                        if (_visited.Contains(child.Id)) continue;
+                        children.Add(child);
+                    }
+                    if (children.Count == 0) continue;
+
+                    // システム・匿名フィールドは名前を出さず配下だけ出力する
+                    var section = new MarkdownSection { Label = AgentText.IsSystemName(f.Name) ? null : f.Name };
+                    foreach (var child in children)
+                    {
+                        var item = CollectModel(child, node);
+                        if (item != null) section.Items.Add(item);
+                    }
+                    if (section.Items.Count > 0) { DecideTable(section); node.Sections.Add(section); }
+                }
+                catch (Exception ex)
+                {
+                    Warnings.Add(PathOf(m) + " / " + f.Name + " : 子モデルの列挙に失敗 : " + ex.Message);
+                }
+            }
+        }
+
+        // 安全網: フィールド列挙から漏れた所有子を GetChildren で拾う
+        try
+        {
+            var rest = new MarkdownSection();
+            foreach (var child in m.GetChildren().Cast<IModel>().ToList())
+            {
+                if (child == null || _visited.Contains(child.Id)) continue;
+                var item = CollectModel(child, node);
+                if (item != null) rest.Items.Add(item);
+            }
+            if (rest.Items.Count > 0) { DecideTable(rest); node.Sections.Add(rest); }
+        }
+        catch (Exception ex)
+        {
+            Warnings.Add(PathOf(m) + " : 子モデルの取得に失敗 : " + ex.Message);
+        }
+    }
+
+    // 区画の子がすべて「子も図も持たず、項目がすべて1行の短い値」で、型が揃っていれば表にする。
+    // 型名・項目名では判定しない（プロファイル非依存）。
+    private static void DecideTable(MarkdownSection section)
+    {
+        if (section.Items.Count < 2) return;
+        var cls = section.Items[0].ClassName;
+        var columns = new List<string>();
+        foreach (var item in section.Items)
+        {
+            if (item.Cells == null || item.HasChildren || item.DiagramRefs.Count > 0 || item.ClassName != cls) return;
+            foreach (var cell in item.Cells)
+                if (!columns.Contains(cell.Key)) columns.Add(cell.Key);
+        }
+        if (columns.Count > TableMaxColumns) return;
+        section.Columns = columns;
+    }
+
+    // ---- 項目 ----
+
+    // 項目を従来形式のテキストで返す（本文のブロック表示と差分の両方に使う）。
+    // cells: 全項目が1行の短い値なら表の1行分、そうでなければ null。
+    private string BuildFields(IModel m, out List<KeyValuePair<string, string>> cells)
+    {
+        cells = new List<KeyValuePair<string, string>>();
+        var cls = m.Metaclass;
+        if (cls == null) return "";
+
+        var nl = _options.NewLine;
+        List<IField> fields;
+        try { fields = cls.GetFields().Cast<IField>().ToList(); }
+        catch (Exception ex)
+        {
+            Warnings.Add(PathOf(m) + " : フィールド一覧の取得に失敗 : " + ex.Message);
+            cells = null;
+            return "";
+        }
+
+        var sb = new StringBuilder();
+        var lastRich = false;
+        foreach (var f in fields)
+        {
+            try
+            {
+                if (f == null || IsSystemField(f)) continue;
+
+                // ドキュメントエディタの本文はリッチテキスト型フィールドに
+                // 格納されており GetFieldString では取得できない
+                if (f.Type == "RichText")
+                {
+                    var text = RichText(m, f);
+                    if (text == null) continue;
+                    if (sb.Length > 0 && !lastRich) sb.Append(nl);
+                    sb.Append("**").Append(f.Name).Append("**:").Append(nl).Append(nl);
+                    sb.Append(text).Append(nl).Append(nl);
+                    lastRich = true;
+                    if (cells != null && text.IndexOf('\n') < 0 && text.Length <= CellMaxChars)
+                        cells.Add(new KeyValuePair<string, string>(f.Name, text));
+                    else cells = null;
+                    continue;
+                }
+
+                // 所有（クラス型）は子セクションで出す（二重化回避）。
+                // String 等のプリミティブにも IsEmbedded が立つプロファイルがあるため
+                // クラス型（TypeClass あり）に限定してスキップする
+                if (f.IsEmbedded && f.TypeClass != null) continue;
+
+                string label, value;
+                if (f.IsReference)
+                {
+                    var names = new List<string>();
+                    foreach (var v in m.GetFieldValues(f.Name))
+                    {
+                        var target = v as IModel;
+                        if (target == null) continue;
+                        var refName = AgentText.Normalize(target.Name);
+                        names.Add(refName.Length > 0 ? refName : "(無名)");
+                    }
+                    if (names.Count == 0) continue;
+                    label = f.Name + " (参照)";
+                    value = string.Join(", ", names.ToArray());
+                }
+                else
+                {
+                    value = null;
+                    try { value = m.GetFieldString(f.Name); }
+                    catch (Exception) { }
+                    // 多値プリミティブ等で GetFieldString が空になるフィールドの保険
+                    if (string.IsNullOrEmpty(value) || value.Trim().Length == 0)
+                        value = JoinScalarValues(m, f.Name);
+                    if (string.IsNullOrEmpty(value) || value.Trim().Length == 0) continue;
+                    label = f.Name;
+                }
+
+                var lines = value.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+                if (lines.Length == 1)
+                {
+                    sb.Append("- ").Append(label).Append(": ").Append(lines[0]).Append(nl);
+                    if (cells != null && lines[0].Length <= CellMaxChars) cells.Add(new KeyValuePair<string, string>(label, lines[0]));
+                    else cells = null;
+                }
+                else
+                {
+                    // 複数行はインデント継続で崩さず出す
+                    sb.Append("- ").Append(label).Append(":").Append(nl);
+                    foreach (var line in lines)
+                        sb.Append("  ").Append(line).Append(nl);
+                    cells = null;
+                }
+                lastRich = false;
+            }
+            catch (Exception ex)
+            {
+                Warnings.Add(PathOf(m) + " / " + f.Name + " : " + ex.Message);
+            }
+        }
+        if (sb.Length > 0 && !lastRich) sb.Append(nl);
+        return sb.ToString();
+    }
+
+    // リッチテキストは html で取得して Markdown 化する。失敗時は text にフォールバック
+    private string RichText(IModel m, IField f)
+    {
+        string text = null;
+        try
+        {
+            var html = m.GetRichTextField(f.Name, "html");
+            if (!string.IsNullOrEmpty(html)) text = HtmlToMarkdown.Convert(html);
+        }
+        catch (Exception ex)
+        {
+            Warnings.Add(PathOf(m) + " / " + f.Name + " : リッチテキストの変換に失敗 : " + ex.Message);
+        }
+        if (string.IsNullOrEmpty(text) || text.Trim().Length == 0)
+        {
+            try { text = m.GetRichTextField(f.Name, "text"); }
+            catch (Exception) { }
+        }
+        // RichText として取得できない環境・フィールドの保険（文字列取得に落とす）
+        if (string.IsNullOrEmpty(text) || text.Trim().Length == 0)
+        {
+            try { text = m.GetFieldString(f.Name); }
+            catch (Exception) { }
+        }
+        if (string.IsNullOrEmpty(text) || text.Trim().Length == 0)
+            text = JoinScalarValues(m, f.Name);
+        if (string.IsNullOrEmpty(text) || text.Trim().Length == 0) return null;
+        return text.Replace("\r\n", "\n").Replace("\r", "\n").Trim('\n').Replace("\n", _options.NewLine);
+    }
+
+    // ---- 本文の組み立て ----
+
+    private static string Title(MarkdownModelNode node)
+    {
+        return node.Name + (node.ClassName.Length > 0 ? "（" + node.ClassName + "）" : "");
+    }
+
+    // trail: 見出しレベルが上限に達した祖先（上限レベルのモデル）からの名前の連なり。上限未満の深さでは null
+    // fromFile: 書き込み先のページ（出力フォルダからの相対）。子ページへのリンクはここからの相対パスにする
+    private void RenderNode(StringBuilder sb, MarkdownModelNode node, int depth, List<string> trail, string fromFile)
+    {
+        var nl = _options.NewLine;
+        var level = Math.Min(depth + 1, _options.MaxHeadingLevel);
+        // 上限を超えた深さは、上限レベルの祖先からの相対パスを見出しにして階層を保つ
+        List<string> myTrail = null;
+        var heading = node.Name;
+        if (depth + 1 >= _options.MaxHeadingLevel)
+        {
+            myTrail = trail != null ? new List<string>(trail) : new List<string>();
+            myTrail.Add(node.Name);
+            heading = string.Join(" / ", myTrail.ToArray());
+        }
+        // メタクラスは短縮名を見出しに付記するだけに留める。モデルパスの代わりに ID を
+        // HTML コメントで埋め込む（表示には出ない。パスは paths.tsv で引く）
+        sb.Append(new string('#', level)).Append(' ').Append(heading);
+        if (node.ClassName.Length > 0) sb.Append("（").Append(node.ClassName).Append("）");
+        sb.Append(nl).Append("<!-- id: ").Append(node.ShortId).Append(" -->").Append(nl).Append(nl);
+        sb.Append(node.Fields);
+        if (node.DiagramRefs.Count > 0)
+        {
+            foreach (var line in node.DiagramRefs) sb.Append(line).Append(nl);
+            sb.Append(nl);
+        }
+        foreach (var section in node.Sections)
+        {
+            if (section.Label != null) sb.Append("**").Append(section.Label).Append("**").Append(nl).Append(nl);
+            if (section.Columns != null) { RenderTable(sb, section); continue; }
+            var links = new List<MarkdownModelNode>();
+            foreach (var item in section.Items)
+            {
+                if (item.IsPage) { links.Add(item); continue; }
+                FlushLinks(sb, links, fromFile);
+                RenderNode(sb, item, depth + 1, myTrail, fromFile);
+            }
+            FlushLinks(sb, links, fromFile);
+        }
+    }
+
+    private void FlushLinks(StringBuilder sb, List<MarkdownModelNode> links, string fromFile)
+    {
+        if (links.Count == 0) return;
+        var nl = _options.NewLine;
+        foreach (var page in links)
+            sb.Append("- [").Append(DiagramPaths.Label(Title(page))).Append("](")
+              .Append(DiagramPaths.Link(Relative(fromFile, page.Place.RelativePath() + ".md"))).Append(") — ID ")
+              .Append(page.ShortId).Append(" / モデル ").Append(page.SubtreeModels).Append(nl);
+        sb.Append(nl);
+        links.Clear();
+    }
+
+    // 出力フォルダ基準の2つのパス（/ 区切り）から、from のファイルの位置を起点にした to への相対パスを作る
+    public static string Relative(string fromFile, string to)
+    {
+        var from = fromFile.Split('/');
+        var target = to.Split('/');
+        var common = 0;
+        while (common < from.Length - 1 && common < target.Length - 1 && from[common] == target[common]) common++;
+        var up = string.Concat(Enumerable.Repeat("../", from.Length - 1 - common).ToArray());
+        return up + string.Join("/", target.Skip(common).ToArray());
+    }
+
+    private void RenderTable(StringBuilder sb, MarkdownSection section)
+    {
+        var nl = _options.NewLine;
+        sb.Append("| 名前 | ");
+        foreach (var column in section.Columns) sb.Append(Cell(column)).Append(" | ");
+        sb.Append("ID |").Append(nl).Append("|---|");
+        foreach (var column in section.Columns) sb.Append("---|");
+        sb.Append("---|").Append(nl);
+        foreach (var item in section.Items)
+        {
+            sb.Append("| ").Append(Cell(item.Name)).Append(" | ");
+            foreach (var column in section.Columns)
+            {
+                var value = "";
+                foreach (var cell in item.Cells) if (cell.Key == column) { value = cell.Value; break; }
+                sb.Append(Cell(value)).Append(" | ");
+            }
+            sb.Append(item.ShortId).Append(" |").Append(nl);
+        }
+        sb.Append(nl);
+    }
+
+    private static string Cell(string text)
+    {
+        return (text ?? "").Replace("\\", "\\\\").Replace("|", "\\|").Trim();
+    }
+
+    private string Breadcrumb(MarkdownModelNode page, string fromFile)
+    {
+        var nl = _options.NewLine;
+        var chain = new List<MarkdownModelNode>();
+        for (var p = page.Parent; p != null; p = p.Parent) if (p.IsPage) chain.Insert(0, p);
+        var sb = new StringBuilder();
+        sb.Append("<!-- modelpath: ").Append(page.Path).Append(" -->").Append(nl);
+        sb.Append("上位: ");
+        for (var i = 0; i < chain.Count; i++)
+        {
+            if (i > 0) sb.Append(" / ");
+            var target = chain[i].Parent == null ? "design.md" : chain[i].Place.RelativePath() + ".md";
+            sb.Append("[").Append(DiagramPaths.Label(chain[i].Name)).Append("](").Append(DiagramPaths.Link(Relative(fromFile, target))).Append(")");
+        }
+        sb.Append(nl).Append(nl);
+        return sb.ToString();
+    }
+
+    // ---- ページ分割 ----
+
+    private static bool Fits(int chars, int lines) { return chars <= PageMaxChars && lines <= PageMaxLines; }
+
+    // 部分木をそのまま1ファイルに書いた場合の分量（見出しは最深として概算）
+    private void Measure(MarkdownModelNode node)
+    {
+        var own = new StringBuilder();
+        var copy = new MarkdownModelNode { ModelId = node.ModelId, ShortId = node.ShortId, Name = node.Name, ClassName = node.ClassName, Fields = node.Fields };
+        copy.DiagramRefs.AddRange(node.DiagramRefs);
+        foreach (var section in node.Sections)
+        {
+            var empty = new MarkdownSection { Label = section.Label, Columns = section.Columns };
+            if (section.Columns != null) empty.Items.AddRange(section.Items);
+            copy.Sections.Add(empty);
+        }
+        RenderNode(own, copy, 0, null, "");
+        node.SubtreeChars = own.Length;
+        node.SubtreeLines = own.ToString().Count(c => c == '\n');
+        node.SubtreeModels = 1;
+        foreach (var section in node.Sections)
+        {
+            if (section.Columns != null) { node.SubtreeModels += section.Items.Count; continue; }
+            foreach (var item in section.Items)
+            {
+                Measure(item);
+                node.SubtreeChars += item.SubtreeChars;
+                node.SubtreeLines += item.SubtreeLines;
+                node.SubtreeModels += item.SubtreeModels;
+            }
+        }
+    }
+
+    // 収まらないページは、子を持つ子モデルを（表の区画を除いて）すべてページにする。
+    // 兄弟で扱いを揃えて、どこにファイルがあるかを予測しやすくする。
+    private static void Split(MarkdownModelNode page)
+    {
+        var promoted = new List<MarkdownModelNode>();
+        foreach (var section in page.Sections)
+        {
+            if (section.Columns != null) continue;
+            foreach (var item in section.Items)
+                if (item.HasChildren) { item.IsPage = true; promoted.Add(item); }
+        }
+        foreach (var child in promoted)
+            if (!Fits(child.SubtreeChars, child.SubtreeLines)) Split(child);
+    }
+
+    private static IEnumerable<MarkdownModelNode> PagesOf(MarkdownModelNode node)
+    {
+        if (node.IsPage) yield return node;
+        foreach (var section in node.Sections)
+            foreach (var item in section.Items)
+                foreach (var page in PagesOf(item)) yield return page;
+    }
+
+    // ページの保存先を割り当てる。`<名前>.md` と、子ページがあれば同名フォルダ `<名前>/`。
+    // 名前は図と同じ規則で正規化し、衝突時とパス長の都合で短縮した時だけモデルID由来のハッシュを付ける。
+    private void PlacePages(MarkdownModelNode root, string outDir)
+    {
+        var top = new DiagramPathNode { Id = "pages", Assigned = PageFolder };
+        var pages = PagesOf(root).Where(p => p != root).ToList();
+        var shortened = new HashSet<MarkdownModelNode>();
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            top.Children.Clear();
+            foreach (var page in pages)
+            {
+                MarkdownModelNode parentPage = page.Parent;
+                while (parentPage != null && !parentPage.IsPage) parentPage = parentPage.Parent;
+                var parentPlace = parentPage == null || parentPage == root ? top : parentPage.Place;
+                var name = PageSegment(page.Name);
+                if (shortened.Contains(page)) name = name.Substring(0, Math.Min(12, name.Length)) + "~" + DiagramPaths.Hash("page:" + page.ModelId).Substring(0, 8);
+                page.Place = new DiagramPathNode { Id = page.ModelId, Name = name, Suffix = "", Parent = parentPlace };
+                parentPlace.Children.Add(page.Place);
+            }
+            DiagramPaths.Allocate(top);
+            if (string.IsNullOrEmpty(outDir)) return;
+            var tooLong = pages.Where(p => Path.GetFullPath(outDir).Length + 1 + p.Place.RelativePath().Length + 3 > PathBudget).ToList();
+            if (tooLong.Count == 0) return;
+            // 長すぎるページは祖先も含めて名前を短縮する
+            foreach (var page in tooLong)
+                for (var p = page; p != null && p != root; p = p.Parent)
+                    if (p.IsPage) shortened.Add(p);
+        }
+        // 短縮しても収まらないページは親に含める
+        foreach (var page in pages.Where(p => Path.GetFullPath(outDir).Length + 1 + p.Place.RelativePath().Length + 3 > PathBudget))
+        {
+            page.IsPage = false;
+            Warnings.Add(page.Path + " : 保存先のパスが長すぎるため、上位のページに含めて出力しました。");
+        }
+    }
+
+    private static string PageSegment(string name)
+    {
+        var segment = DiagramPaths.Segment(name);
+        // `X.md` の名前のモデルが、兄弟 `X` のページファイルと衝突しないようにする
+        return segment.EndsWith(".md", StringComparison.OrdinalIgnoreCase) ? segment + "_" : segment;
+    }
+
+    private static void AssignFiles(MarkdownModelNode node, string file)
+    {
+        if (node.IsPage && node.Parent != null) file = node.Place.RelativePath() + ".md";
+        node.File = file;
+        foreach (var section in node.Sections)
+            foreach (var item in section.Items) AssignFiles(item, file);
+    }
+
+    // ---- 図 ----
+
+    // モデルが持つ図を .puml に出力し、参照行を記録する。
     // 戻り値: シーケンス図または状態遷移図を持っていたか（＝子モデルへの再帰を打ち切るか）
-    private bool WriteDiagrams(IModel m)
+    private bool CollectDiagrams(IModel m, MarkdownModelNode node)
     {
         if (_diagramDir == null) return false;
-        var nl = _options.NewLine;
         var skipChildren = false;
-        var refs = new List<string>();
+        var refs = node.DiagramRefs;
 
         try
         {
@@ -455,12 +994,6 @@ public class MarkdownExporter
         {
             Warnings.Add(PathOf(m) + " : エディタ一覧の取得に失敗 : " + ex.Message);
         }
-
-        if (refs.Count > 0)
-        {
-            foreach (var line in refs) _sb.Append(line).Append(nl);
-            _sb.Append(nl);
-        }
         return skipChildren;
     }
 
@@ -488,8 +1021,10 @@ public class MarkdownExporter
         return token;
     }
 
-    private string WriteDiagramFiles(string body)
+    // 図を書き出し、仮参照 → 出力フォルダ基準のリンクの対応を返す。書けなかった図は含めない。
+    private Dictionary<string, string> WriteDiagramFiles()
     {
+        var links = new Dictionary<string, string>(StringComparer.Ordinal);
         DiagramPaths.Allocate(_pathRoot);
         foreach (var diagram in _pending)
         {
@@ -501,7 +1036,8 @@ public class MarkdownExporter
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
                 File.WriteAllText(path, diagram.Uml, new UTF8Encoding(false));
                 var link = DiagramPaths.Link(relative);
-                body = body.Replace(diagram.Token, link);
+                links[diagram.Token] = link;
+                DiagramFiles.Add(relative);
                 for (var i = 0; i < IndexRows.Count; i++)
                     IndexRows[i] = IndexRows[i].Replace(diagram.Token + "_LABEL", DiagramPaths.Label(relative))
                         .Replace(diagram.Token, link);
@@ -510,9 +1046,21 @@ public class MarkdownExporter
             catch (Exception ex)
             {
                 Warnings.Add("図「" + diagram.Name + "」: " + diagram.Node.RelativePath() + " の書込みに失敗: " + ex.Message);
-                body = Regex.Replace(body, @"(?m)^- 図: [^\r\n]*" + diagram.Token + @"[^\r\n]*(?:\r?\n|$)", "");
                 IndexRows.RemoveAll(row => row.Contains(diagram.Token));
             }
+        }
+        return links;
+    }
+
+    // 本文の仮参照をリンクに置き換える。prefix はページの位置から出力フォルダへ戻る `../` の連なり。
+    private string ApplyLinks(string body, Dictionary<string, string> links, string prefix)
+    {
+        foreach (var diagram in _pending)
+        {
+            if (body.IndexOf(diagram.Token, StringComparison.Ordinal) < 0) continue;
+            string link;
+            if (links.TryGetValue(diagram.Token, out link)) body = body.Replace(diagram.Token, prefix + link);
+            else body = Regex.Replace(body, @"(?m)^- 図: [^\r\n]*" + diagram.Token + @"[^\r\n]*(?:\r?\n|$)", "");
         }
         return body;
     }
@@ -540,181 +1088,6 @@ public class MarkdownExporter
     {
         try { return m.GetAllChildren().Cast<IModel>().Count(); }
         catch (Exception) { return 0; }
-    }
-
-    // 子モデルの出力。所有フィールド単位で列挙し、フィールド名の小見出しで
-    // 表・区画の文脈を保つ（GetChildren は全所有フィールドを平坦化して返し、
-    // どのフィールドに属すかが失われるため）
-    private void WriteChildren(IModel m, int depth, List<string> myTrail)
-    {
-        var nl = _options.NewLine;
-        var cls = m.Metaclass;
-        if (cls != null)
-        {
-            List<IField> fields;
-            try { fields = cls.GetFields().Cast<IField>().ToList(); }
-            catch (Exception) { fields = new List<IField>(); }
-
-            foreach (var f in fields)
-            {
-                try
-                {
-                    if (f == null || !f.IsEmbedded || f.TypeClass == null) continue;
-
-                    var children = new List<IModel>();
-                    foreach (var v in m.GetFieldValues(f.Name))
-                    {
-                        var child = v as IModel;
-                        if (child == null || child.IsDeleted || child.IsProxy) continue;
-                        if (_visited.Contains(child.Id)) continue;
-                        children.Add(child);
-                    }
-                    if (children.Count == 0) continue;
-
-                    // システム・匿名フィールドは名前を出さず配下だけ出力する
-                    if (!AgentText.IsSystemName(f.Name))
-                        _sb.Append("**").Append(f.Name).Append("**").Append(nl).Append(nl);
-
-                    foreach (var child in children)
-                        WriteModel(child, depth + 1, myTrail);
-                }
-                catch (Exception ex)
-                {
-                    Warnings.Add(PathOf(m) + " / " + f.Name + " : 子モデルの列挙に失敗 : " + ex.Message);
-                }
-            }
-        }
-
-        // 安全網: フィールド列挙から漏れた所有子を GetChildren で拾う
-        try
-        {
-            foreach (var child in m.GetChildren().Cast<IModel>().ToList())
-            {
-                if (child == null || _visited.Contains(child.Id)) continue;
-                WriteModel(child, depth + 1, myTrail);
-            }
-        }
-        catch (Exception ex)
-        {
-            Warnings.Add(PathOf(m) + " : 子モデルの取得に失敗 : " + ex.Message);
-        }
-    }
-
-    private void WriteFields(IModel m)
-    {
-        var cls = m.Metaclass;
-        if (cls == null) return;
-
-        var nl = _options.NewLine;
-        List<IField> fields;
-        try { fields = cls.GetFields().Cast<IField>().ToList(); }
-        catch (Exception ex)
-        {
-            Warnings.Add(PathOf(m) + " : フィールド一覧の取得に失敗 : " + ex.Message);
-            return;
-        }
-
-        var wrote = false;
-        foreach (var f in fields)
-        {
-            try
-            {
-                if (f == null || IsSystemField(f)) continue;
-
-                // ドキュメントエディタの本文はリッチテキスト型フィールドに
-                // 格納されており GetFieldString では取得できない
-                if (f.Type == "RichText")
-                {
-                    if (WriteRichTextField(m, f)) wrote = true;
-                    continue;
-                }
-
-                // 所有（クラス型）は子セクションで出す（二重化回避）。
-                // String 等のプリミティブにも IsEmbedded が立つプロファイルがあるため
-                // クラス型（TypeClass あり）に限定してスキップする
-                if (f.IsEmbedded && f.TypeClass != null) continue;
-
-                if (f.IsReference)
-                {
-                    var names = new List<string>();
-                    foreach (var v in m.GetFieldValues(f.Name))
-                    {
-                        var target = v as IModel;
-                        if (target == null) continue;
-                        var refName = AgentText.Normalize(target.Name);
-                        names.Add(refName.Length > 0 ? refName : "(無名)");
-                    }
-                    if (names.Count == 0) continue;
-                    _sb.Append("- ").Append(f.Name).Append(" (参照): ")
-                       .Append(string.Join(", ", names.ToArray())).Append(nl);
-                    wrote = true;
-                }
-                else
-                {
-                    string value = null;
-                    try { value = m.GetFieldString(f.Name); }
-                    catch (Exception) { }
-                    // 多値プリミティブ等で GetFieldString が空になるフィールドの保険
-                    if (string.IsNullOrEmpty(value) || value.Trim().Length == 0)
-                        value = JoinScalarValues(m, f.Name);
-                    if (string.IsNullOrEmpty(value) || value.Trim().Length == 0) continue;
-
-                    var lines = value.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
-                    if (lines.Length == 1)
-                    {
-                        _sb.Append("- ").Append(f.Name).Append(": ").Append(lines[0]).Append(nl);
-                    }
-                    else
-                    {
-                        // 複数行はインデント継続で崩さず出す
-                        _sb.Append("- ").Append(f.Name).Append(":").Append(nl);
-                        foreach (var line in lines)
-                            _sb.Append("  ").Append(line).Append(nl);
-                    }
-                    wrote = true;
-                }
-            }
-            catch (Exception ex)
-            {
-                Warnings.Add(PathOf(m) + " / " + f.Name + " : " + ex.Message);
-            }
-        }
-        if (wrote) _sb.Append(nl);
-    }
-
-    // リッチテキストは html で取得して Markdown 化する。失敗時は text にフォールバック
-    private bool WriteRichTextField(IModel m, IField f)
-    {
-        var nl = _options.NewLine;
-        string text = null;
-        try
-        {
-            var html = m.GetRichTextField(f.Name, "html");
-            if (!string.IsNullOrEmpty(html)) text = HtmlToMarkdown.Convert(html);
-        }
-        catch (Exception ex)
-        {
-            Warnings.Add(PathOf(m) + " / " + f.Name + " : リッチテキストの変換に失敗 : " + ex.Message);
-        }
-        if (string.IsNullOrEmpty(text) || text.Trim().Length == 0)
-        {
-            try { text = m.GetRichTextField(f.Name, "text"); }
-            catch (Exception) { }
-        }
-        // RichText として取得できない環境・フィールドの保険（文字列取得に落とす）
-        if (string.IsNullOrEmpty(text) || text.Trim().Length == 0)
-        {
-            try { text = m.GetFieldString(f.Name); }
-            catch (Exception) { }
-        }
-        if (string.IsNullOrEmpty(text) || text.Trim().Length == 0)
-            text = JoinScalarValues(m, f.Name);
-        if (string.IsNullOrEmpty(text) || text.Trim().Length == 0) return false;
-
-        _sb.Append("**").Append(f.Name).Append("**:").Append(nl).Append(nl);
-        _sb.Append(text.Replace("\r\n", "\n").Replace("\r", "\n").Trim('\n')).Append(nl);
-        _sb.Append(nl);
-        return true;
     }
 
     // GetFieldValues を列挙し、モデル以外のスカラー値を ToString で連結する
@@ -756,7 +1129,7 @@ public class MarkdownExporter
         return AgentText.IsSystemName(name);
     }
 
-    private static string PathOf(IModel m)
+    public static string PathOf(IModel m)
     {
         if (m == null) return "";
         string path = null;

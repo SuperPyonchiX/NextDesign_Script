@@ -161,12 +161,13 @@ class Handler(BaseHTTPRequestHandler):
             return 200, body
         if path == "/markdown":
             return 200, {"modelPath": root["modelPath"], "modelCount": len(_walk(root)), "warnings": [],
-                         "markdown": f"# {root['name']}\n\n(mock)\n"}
+                         "markdown": f"# {root['name']}\n\n(mock)\n",
+                         "paths": [{"id": "m00000001", "modelId": root["id"], "modelPath": root["modelPath"]}]}
         if path == "/export":
             out = q.get("out") or r"C:\Users\x\.nd-mcp\export\20260902_000000_" + root["name"]
             return 200, {"modelPath": root["modelPath"], "dir": out, "modelCount": len(_walk(root)),
                          "diagramCount": 1, "skippedModelCount": 0, "warnings": [],
-                         "files": [out + r"\design.md", out + r"\_index.md"]}
+                         "files": [out + r"\design.md", out + r"\paths.tsv", out + r"\_index.md"]}
         return 404, {"error": f"不明なパス: {path}"}
 
     # C# 側 ClassSyncApi の応答形式を模す。M2（機能パッケージ）だけがクラス図 E2 を持つ。

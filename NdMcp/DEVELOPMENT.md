@@ -105,6 +105,7 @@ Codex / Claude Code ── stdio (MCP) ── Python ブリッジ (bridge/) ─�
 
 ## 変更履歴
 
+- **0.7.0**: AgentReview 0.17.0 と共有するエクスポータの変更に追従。`/markdown` の本文はモデルを短い ID で示し、応答の `paths` に ID → モデルパスを返す。`/export` は大きいと `model/` 配下にページを分け、`paths.tsv` も書く。応答の `files` はディスクの走査ではなく今回書いたファイルだけにした。実機未確認。
 - **0.6.1**: MCP の apply から `trial` 引数を外した（apply 自体が反映→照合→不一致なら取り消しなので、試行は二重実行だった）。preview は削除・改名のときだけ使うよう案内を変更。`nd_model_edit` の dry_run は求められたときだけにした。同期 API の `details` を失敗時だけに絞った。`/model` の `children` から表の行を外した。
 - **0.6.0**: モデルの指定の解決を `GetModelById` と名前での下降に変え、全走査をやめた。`/search` と `/sequence-sync/diagrams` を limit 超過で打ち切るようにした。`/class-sync/preview` の `currentPlantuml` を任意にした。ブリッジの応答 JSON を整形しないようにした。
 - **0.5.2**: `/model/schema` に表の列を出すようにした。

@@ -777,10 +777,14 @@ public static class ModelApi
         var root = Resolve(app, path, id);
         var exporter = new MarkdownExporter(new MarkdownExportOptions(), null);
         var markdown = exporter.Export(root);
+        // 本文のモデルは短い ID で示す。ID → モデルパスの対応を一緒に返す（ファイル出力の paths.tsv と同じ内容）
+        var paths = exporter.Models.Select(m => (object)new JsonObject()
+            .Set("id", m.ShortId).Set("modelId", m.ModelId).Set("modelPath", m.Path)).ToList();
         return new JsonObject()
             .Set("modelPath", PathOf(root)).Set("modelCount", exporter.ModelCount)
             .Set("warnings", exporter.Warnings.Cast<object>().ToList())
-            .Set("markdown", markdown);
+            .Set("markdown", markdown)
+            .Set("paths", paths);
     }
 
     // design.md + diagrams\<種別>\*.puml + _index.md を書き出す（AgentReview の WriteDesignArtifacts 相当）
@@ -797,14 +801,9 @@ public static class ModelApi
 
         // AgentReview と同じ対応表・エクスポータ・ファイル出力メソッドを使う。
         var exporter = new MarkdownExporter(new MarkdownExportOptions(), outDir, LoadDiagramGroupRules());
-        DesignArtifactWriter.Write(app, "NdMcp", exporter, root, outDir);
-        var files = new List<object>();
-        files.Add(Path.Combine(outDir, "design.md"));
-        files.Add(Path.Combine(outDir, "_index.md"));
-        var diagramsDir = Path.Combine(outDir, "diagrams");
-        if (Directory.Exists(diagramsDir))
-            foreach (var f in Directory.GetFiles(diagramsDir, "*.puml", SearchOption.AllDirectories))
-                files.Add(f);
+        // 今回書いたファイルだけを返す（フォルダに残っている旧出力は含めない）
+        var files = DesignArtifactWriter.Write(app, "NdMcp", exporter, root, outDir)
+            .Select(f => (object)Path.Combine(outDir, f.Replace('/', Path.DirectorySeparatorChar))).ToList();
 
         return new JsonObject()
             .Set("modelPath", PathOf(root)).Set("dir", outDir)

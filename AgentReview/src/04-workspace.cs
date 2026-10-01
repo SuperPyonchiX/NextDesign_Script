@@ -53,7 +53,9 @@ public static class WorkspaceBuilder
         sb.Append("プロジェクト「").Append(rootName).Append("」からエクスポートされた設計レビュー用ワークスペースです。").Append(nl).Append(nl);
 
         sb.Append("## 入力（読み取り専用）").Append(nl).Append(nl);
-        sb.Append("- `design/design.md` : Next Design からエクスポートした設計情報（モデル階層・フィールド・ドキュメント本文）").Append(nl);
+        sb.Append("- `design/design.md` : Next Design からエクスポートした設計情報（モデル階層・フィールド・ドキュメント本文）の入口。").Append(nl);
+        sb.Append("  分量が多い場合は目次になり、本文は `design/model/` 配下にモデル階層のファイル（ページ）として分かれる。冒頭の「ページ一覧」が全ページ").Append(nl);
+        sb.Append("- `design/paths.tsv` : 本文の短い ID（`<!-- id: … -->` と表の ID 列）→ Next Design のモデルパスと掲載ページの対応表").Append(nl);
         sb.Append("- `design/diagrams/<種別>/**/*.puml` : 図の PlantUML（種別フォルダ: クラス図 / シーケンス図 / 状態遷移図。design.md の該当箇所に参照行がある）").Append(nl);
         sb.Append("- `design/_index.md` : 図一覧（図名・種別・ファイル・モデルパスの対応表）").Append(nl);
         sb.Append("- `design/Attachment/` : 設計の別紙（Excel 等。存在する場合）。design.md に無い情報の参照先として活用すること").Append(nl).Append(nl);
@@ -71,9 +73,9 @@ public static class WorkspaceBuilder
         sb.Append("修正後の図は入力の design/diagrams/ 以下の相対パスを保って review/proposed/ 以下に置く。").Append(nl);
         sb.Append("入力の図は _index.md または design.md の参照から選び、旧出力の残存ファイルを無差別に読まない。").Append(nl).Append(nl);
         sb.Append("指摘・提案の対象参照は Next Design のモデルパスと内容で示すこと。モデルパスは").Append(nl);
-        sb.Append("design.md の各見出し直下の `<!-- modelpath: ... -->` コメントに記載がある").Append(nl);
-        sb.Append("（図の指摘は `_index.md` のモデルパス＋図名）。ユーザーは Next Design 上でしか").Append(nl);
-        sb.Append("指摘個所を辿れないため、design.md 等の変換後ファイルの行番号で参照を書いてはならない。").Append(nl).Append(nl);
+        sb.Append("対象の短い ID（見出し直下の `<!-- id: ... -->` または表の ID 列）で `design/paths.tsv` を検索して引き、").Append(nl);
+        sb.Append("見出しの文字列から組み立てない（図の指摘は `_index.md` のモデルパス＋図名）。ユーザーは Next Design 上でしか").Append(nl);
+        sb.Append("指摘個所を辿れないため、design.md 等の変換後ファイルの名前や行番号で参照を書いてはならない。").Append(nl).Append(nl);
         sb.Append("Next Design のモデルを直接編集することはできない。提案は必ず上記ファイルに書く。").Append(nl);
         sb.Append("修正提案はユーザーが Next Design 上で手作業で反映できる粒度（対象モデルパス・").Append(nl);
         sb.Append("フィールド名・変更前後の値）まで具体化すること。").Append(nl).Append(nl);

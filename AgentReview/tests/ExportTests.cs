@@ -25,7 +25,8 @@ public class IModel
     public IEnumerable<IModel> GetAllChildren() { return Children.SelectMany(c => new[] { c }.Concat(c.GetAllChildren())); }
     public IEnumerable<Editor> GetEditors() { return Editors; }
     public IEnumerable<object> GetFieldValues(string field) { return new object[0]; }
-    public string GetFieldString(string field) { return ""; }
+    public Dictionary<string, string> Values = new Dictionary<string, string>();
+    public string GetFieldString(string field) { string value; return Values.TryGetValue(field, out value) ? value : ""; }
     public string GetRichTextField(string field, string format) { return ""; }
 }
 public interface IRepresentation { IModel Model { get; } }
@@ -142,6 +143,104 @@ public static class ExportTests
         group.Metaclass.Fields.Add(new IField { Name = "OwnedViews", IsEmbedded = true,
             TypeClass = new Meta { FullName = diagram.Metaclass.FullName } });
     }
+    // 項目を持つモデル（項目名は fake のメタクラスへ追加する）
+    private static IModel Valued(string id, string name, IModel parent, string type, params string[] pairs)
+    {
+        var model = Model(id, name, parent, type);
+        for (var i = 0; i + 1 < pairs.Length; i += 2)
+        {
+            model.Metaclass.Fields.Add(new IField { Name = pairs[i], Type = "String" });
+            model.Values[pairs[i]] = pairs[i + 1];
+        }
+        return model;
+    }
+
+    // 表形式・ページ分割・paths.tsv・再出力時の整理
+    private static void LayoutTests(string temp)
+    {
+        // 小さい出力: 葉の属性は表、複数行の説明を持つ操作は見出しのまま、design.md 1枚
+        var small = Model("s-root", "Small", null, "Example.Document");
+        var cls = Valued("s-class", "Engine", small, "Example.Unit", "Description", "エンジン");
+        Valued("s-a1", "speed", cls, "Example.Property", "Type", "int", "Visibility", "Private");
+        Valued("s-a2", "mode|x", cls, "Example.Property", "Type", "Mode", "Default", "IDLE");
+        var other = Valued("s-class2", "Controller", small, "Example.Unit");
+        Valued("s-op", "Start", other, "Example.Method", "Description", "1行目\n2行目");
+        Valued("s-op2", "Stop", other, "Example.Method", "Description", "停止");
+        var smallDir = Path.Combine(temp, "layout-small");
+        var exporter = new MarkdownExporter(new MarkdownExportOptions(), smallDir);
+        var pages = exporter.ExportPages(small, smallDir);
+        Check(pages.Count == 1 && pages[0].Path == "design.md", "Small output stays one file");
+        var body = pages[0].Content;
+        Check(body.Contains("| 名前 | Type | Visibility | Default | ID |"), "Leaf siblings become one table with union columns");
+        Check(body.Contains("| mode\\|x | Mode |  | IDLE | m"), "Table cells escape pipes and leave missing values empty");
+        Check(body.Contains("Start（Method）") && body.Contains("  2行目"), "Multi-line model stays a block");
+        Check(!body.Contains("modelpath:") && body.Contains("<!-- id: m"), "Short id replaces model path comments");
+        Check(!body.Contains("\n\n\n"), "No consecutive blank lines");
+        var comparison = exporter.Comparison.Single(r => r.Key == "model:s-a1").Content;
+        Check(comparison.Contains("- Type: int") && comparison.Contains("- Visibility: Private"), "Comparison keeps block text for tabled models");
+        Check(exporter.Models.Select(m => m.ShortId).Distinct().Count() == exporter.Models.Count, "Short ids are unique");
+        var again = new MarkdownExporter(new MarkdownExportOptions(), smallDir);
+        again.ExportPages(small, smallDir);
+        Check(again.Models.Select(m => m.ShortId).SequenceEqual(exporter.Models.Select(m => m.ShortId)), "Short ids are stable");
+
+        // 大きい出力: クラスごとのページに分かれ、子ページを持つモデルは同名フォルダ
+        var big = Model("b-root", "Big", null, "Example.Document");
+        var group = Model("b-group", "クラス設計", big, "Example.ClassGroup");
+        var seq = Diagram("b-seq", "Flow", big, "sequence");
+        for (var c = 0; c < 40; c++)
+        {
+            var unit = Valued("b-c" + c, "Class" + c, group, "Example.Unit", "Description", "クラス " + c);
+            for (var a = 0; a < 30; a++)
+                Valued("b-c" + c + "-a" + a, "attr" + a, unit, "Example.Property", "Type", "uint32_t", "Visibility", "Private", "Description", new string('x', 40));
+        }
+        var dup = Valued("b-dup", "Class0", group, "Example.Unit", "Description", "同名");
+        Valued("b-dup-a", "x", dup, "Example.Property", "Type", "int");
+        Valued("b-dup-b", "y", dup, "Example.Property", "Type", "int");
+        var bigDir = Path.Combine(temp, "layout-big");
+        var app = new IApplication();
+        var written = DesignArtifactWriter.Write(app, "test", new MarkdownExporter(new MarkdownExportOptions(), bigDir), big, bigDir);
+        var design = File.ReadAllText(Path.Combine(bigDir, "design.md"));
+        Check(design.Contains("## ページ一覧") && design.Contains("](model/"), "Large output has a page list");
+        Check(written.Contains("model/クラス設計.md") && written.Contains("model/クラス設計/Class1.md"), "Pages follow model hierarchy with sibling folders");
+        var classPages = written.Where(f => f.StartsWith("model/クラス設計/") && f.EndsWith(".md")).ToList();
+        Check(classPages.Count == 41 && classPages.Count(f => f.StartsWith("model/クラス設計/Class0_")) == 2, "Same-name siblings get hashed names");
+        foreach (var file in written.Where(f => f.EndsWith(".md")))
+        {
+            var text = File.ReadAllText(Path.Combine(bigDir, file));
+            Check(text.Length <= MarkdownExporter.PageMaxChars + 2000 || file == "design.md", "Page stays near the size target: " + file);
+        }
+        var classPage = File.ReadAllText(Path.Combine(bigDir, "model/クラス設計/Class1.md"));
+        var dump = Environment.GetEnvironmentVariable("AGENTREVIEW_LAYOUT_DUMP");
+        if (!string.IsNullOrEmpty(dump))
+        {
+            Directory.CreateDirectory(dump);
+            File.WriteAllText(Path.Combine(dump, "design.md"), design);
+            File.WriteAllText(Path.Combine(dump, "group.md"), File.ReadAllText(Path.Combine(bigDir, "model/クラス設計.md")));
+            File.WriteAllText(Path.Combine(dump, "class1.md"), classPage);
+        }
+        Check(classPage.StartsWith("<!-- modelpath: ") && classPage.Contains("[Big](../../design.md)") && classPage.Contains("[クラス設計](../%E3%82%AF"), "Breadcrumb links to ancestors");
+        Check(File.ReadAllText(Path.Combine(bigDir, "model/クラス設計.md")).Contains("](%E3%82%AF%E3%83%A9%E3%82%B9%E8%A8%AD%E8%A8%88/Class1.md)"), "Child page links are relative to the page");
+        Check(MarkdownExporter.Relative("model/a/b.md", "model/c.md") == "../c.md" && MarkdownExporter.Relative("design.md", "model/x.md") == "model/x.md", "Relative link helper");
+        Check(classPage.Contains("# Class1（Unit）") && classPage.Contains("| attr0 | uint32_t |"), "Page restarts headings and keeps tables");
+        Check(design.Contains("](diagrams/") || design.Contains("- 図:"), "Root page keeps diagram link");
+        var paths = File.ReadAllLines(Path.Combine(bigDir, "paths.tsv"));
+        Check(paths[0] == "id\tmodelId\tmodelPath\tfile" && paths.Length == 1 + 2 + 40 * 31 + 3 + 1, "paths.tsv lists every model");
+        Check(paths.Any(l => l.Contains("\tb-c1-a0\t") && l.EndsWith("\tmodel/クラス設計/Class1.md")), "paths.tsv records the page of tabled models");
+        Check(File.Exists(Path.Combine(bigDir, DesignArtifactWriter.ManifestFile)), "Manifest written");
+
+        // 再出力: なくなったページは消し、手で編集したページは残す
+        group.Children.RemoveAll(m => m.Id == "b-c2" || m.Id == "b-c3");
+        File.AppendAllText(Path.Combine(bigDir, "model/クラス設計/Class3.md"), "\n手で追記\n");
+        DesignArtifactWriter.Write(app, "test", new MarkdownExporter(new MarkdownExportOptions(), bigDir), big, bigDir);
+        Check(!File.Exists(Path.Combine(bigDir, "model/クラス設計/Class2.md")), "Stale generated page removed");
+        Check(File.Exists(Path.Combine(bigDir, "model/クラス設計/Class3.md")), "Edited stale page kept");
+
+        // 小さくなったら model/ を片付けて 1 枚に戻る
+        group.Children.RemoveAll(m => m.Id != "b-c1");
+        DesignArtifactWriter.Write(app, "test", new MarkdownExporter(new MarkdownExportOptions(), bigDir), big, bigDir);
+        Check(!File.Exists(Path.Combine(bigDir, "model/クラス設計.md")) && !File.ReadAllText(Path.Combine(bigDir, "design.md")).Contains("ページ一覧"), "Shrunk output returns to one file");
+    }
+
     public static void Main(string[] args)
     {
         try { Run(args); }
@@ -312,6 +411,8 @@ public static class ExportTests
         Check(!File.ReadAllText(Path.Combine(artifactsDir, "_index.md")).Contains(".puml"), "Zero diagrams replaces stale index");
         Check(!File.ReadAllText(Path.Combine(artifactsDir, "design.md")).Contains("- 図:"), "Zero diagrams replaces old body");
         Check(File.Exists(Path.Combine(artifactsDir, "diagrams/シーケンス図/Communication/[日本語](x)#%_seq.puml")), "Existing files are not deleted");
+
+        LayoutTests(temp);
 
         Console.WriteLine("PASS: " + _checks + " export assertions (fake SDK; real runtime still requires verification).");
         ViewerTests.Run(temp);

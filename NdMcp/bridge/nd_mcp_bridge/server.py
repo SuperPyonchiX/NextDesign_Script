@@ -94,14 +94,16 @@ def nd_search(query: str, metaclass: str = "", limit: int = 50, count: bool = Fa
 
 @mcp.tool()
 def nd_markdown(path: str = "", id: str = "") -> str:
-    """指定モデル配下を設計書形式の Markdown（design.md 相当）にして返す。図は含まない。
+    """指定モデル配下を設計書形式の Markdown（design.md 相当、1つの文字列）にして返す。図は含まない。
+    各モデルは見出し直下の <!-- id: … --> と表の ID 列の短い ID で示す。ID → モデルパスは応答の paths にある。
     大きなサブツリーでは応答が長くなるので、まず nd_tree で範囲を確認すること。"""
     return _call("/markdown", {"path": path, "id": id}, timeout=600)
 
 
 @mcp.tool()
 def nd_export(path: str = "", id: str = "", out: str = "") -> str:
-    """指定モデル配下を design.md / _index.md / diagrams/*.puml としてファイルに書き出し、出力先と件数を返す。
+    """指定モデル配下を design.md / _index.md / paths.tsv / diagrams/*.puml としてファイルに書き出し、出力先と件数と
+    今回書いたファイル（files）を返す。分量が多いと design.md は目次になり、本文は model/ 配下のモデル階層のファイルに分かれる。
     out を省略すると設定の ExportDir 配下にタイムスタンプ付きのディレクトリを作る。"""
     return _call("/export", {"path": path, "id": id, "out": out}, timeout=600)
 
