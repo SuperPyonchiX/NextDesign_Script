@@ -454,3 +454,33 @@ public class ExportRunner
     }
 }
 
+// ------------------------------------------------------------
+//  新規作成の入力ファイル（複数選択）
+// ------------------------------------------------------------
+public static class PumlFiles
+{
+    public const string Filter = "PlantUML (*.puml;*.plantuml)|*.puml;*.plantuml";
+
+    // The SDK's ShowOpenFileDialog returns one path; the WPF dialog of the product's own runtime
+    // takes several. Empty when cancelled. Sorted so a batch runs in a predictable order.
+    public static string[] Pick(string title)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog { Title = title, Filter = Filter, Multiselect = true, CheckFileExists = true };
+        if (dialog.ShowDialog() != true || dialog.FileNames == null) return new string[0];
+        return dialog.FileNames.Where(f => !string.IsNullOrEmpty(f)).OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    // code: the error prefix of the caller (C120 for class, E120 for sequence diagrams).
+    public static string Read(string path, string code)
+    {
+        if (new FileInfo(path).Length > 300000) throw new InvalidOperationException(code + ": 入力は300KB以下にしてください。");
+        return File.ReadAllText(path, new UTF8Encoding(false, true));
+    }
+
+    public static string List(IEnumerable<string> paths, int max)
+    {
+        var names = paths.Select(Path.GetFileName).ToList();
+        string shown = string.Join("\n", names.Take(max).Select(n => "  " + n));
+        return names.Count > max ? shown + "\n  ほか " + (names.Count - max) + " 件" : shown;
+    }
+}

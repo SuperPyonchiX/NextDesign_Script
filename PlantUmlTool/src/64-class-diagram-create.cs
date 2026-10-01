@@ -14,17 +14,19 @@
 
 public static class ClassDiagramCreator
 {
-    // Ribbon entry: find where the diagram goes, pick the file, create, show the result.
+    // Ribbon entry: find where the diagrams go, pick the files, create, show the result.
     public static void Create(IApplication app)
     {
         var editor=app.Workspace.CurrentEditor;
         IModel owner;IField field;IClass diagramClass;string where;
         try { where=ResolveGroup(app,editor,out owner,out field,out diagramClass); }
         catch(Exception ex) { ClassExperiment.Summary=ex.Message;ClassExperiment.Details=ex.ToString();ClassExperiment.Show(app);return; }
-        string path=app.Window.UI.ShowOpenFileDialog("新しいクラス図にするPlantUML","PlantUML (*.puml;*.plantuml)|*.puml;*.plantuml");
-        if(string.IsNullOrEmpty(path))return;
+        string[] paths=PumlFiles.Pick("新しいクラス図にするPlantUML（複数選択できます）");
+        if(paths.Length==0)return;
+        if(paths.Length>1) { CreateMany(app,owner,field,diagramClass,where,paths);return; }
+        string path=paths[0];
         string pumlText;
-        try { if(new FileInfo(path).Length>300000)throw new InvalidOperationException("C120: 入力は300KB以下にしてください。");pumlText=File.ReadAllText(path,new UTF8Encoding(false,true)); }
+        try { pumlText=PumlFiles.Read(path,"C120"); }
         catch(Exception ex) { ClassExperiment.Summary=ex.Message;ClassExperiment.Details=ex.ToString();ClassExperiment.Show(app);return; }
         var outcome=Run(app,owner,field,diagramClass,where,pumlText,path,Path.GetFileNameWithoutExtension(path),message=>app.Window.UI.ShowConfirmDialog(message,ClassExperiment.Title));
         ClassExperiment.Summary=outcome.Summary;
@@ -33,6 +35,53 @@ public static class ClassDiagramCreator
         ClassExperiment.Details=outcome.Details;
         ClassExperiment.Show(app);
     }
+
+    // Several files: one confirmation, no per-file questions, one result. The where was resolved
+    // once before the files were picked (each new diagram is opened, so the current editor moves).
+    // Run needs a saved project with nothing unsaved and saves on the way, so the project is
+    // saved after each file; a failed file is removed by Run and that removal is saved too.
+    static void CreateMany(IApplication app,IModel owner,IField field,IClass diagramClass,string where,string[] paths)
+    {
+        var project=app.Workspace.CurrentProject;
+        if(project==null || string.IsNullOrEmpty(project.Path) || project.HasUnsavedChanges())
+        {
+            ClassExperiment.Summary="C310: 未保存の変更があります。1件ごとにプロジェクトを保存するので、先に保存してから実行してください。";
+            ClassExperiment.Details=ClassExperiment.Summary;ClassExperiment.Show(app);return;
+        }
+        if(!app.Window.UI.ShowConfirmDialog("クラス図を "+paths.Length+" 件、"+where+"に新しく作ります。\n"+PumlFiles.List(paths,20)
+            +"\n\nファイルごとの作成確認と反映内容の確認はしません。"
+            +"\n1件作るごとにプロジェクトを保存します。作れなかったファイルは作った図とクラスを削除し、その状態を保存して次へ進みます。"
+            +"\n\nOK: 作成する\nキャンセル: 中止する",ClassExperiment.Title))return;
+        var lines=new List<string>();var details=new StringBuilder();
+        int done=0;string stop=null;
+        for(int i=0;i<paths.Length;i++)
+        {
+            string path=paths[i],file=Path.GetFileName(path);
+            if(stop!=null) { lines.Add("－ "+file+": 未実行");continue; }
+            string pumlText;
+            try { pumlText=PumlFiles.Read(path,"C120"); }
+            catch(Exception ex) { lines.Add("× "+file+": "+ex.Message);continue; }
+            var outcome=Run(app,owner,field,diagramClass,where,pumlText,path,Path.GetFileNameWithoutExtension(path),message=>true);
+            string stem=ClassExperiment.SaveReport("create",outcome.Log,outcome.ReportJson,outcome.CurrentPuml);
+            details.Append("==== ").Append(path).AppendLine(" ====").AppendLine(outcome.Summary);
+            if(stem!=null)details.AppendLine("診断: "+stem+".txt");
+            details.AppendLine();
+            if(outcome.Committed) { done++;lines.Add("○ "+file+" → "+First(outcome.Summary)); }
+            else lines.Add("× "+file+": "+First(outcome.ErrorMessage??outcome.Summary));
+            if(!project.HasUnsavedChanges())continue;
+            if(LastRemoveFailed) { stop="作れなかった図を削除できなかったため、保存せずに中断しました。不要な図を手動で削除してから保存してください。";continue; }
+            bool saved=false;
+            try { saved=app.Workspace.SaveProject(project,false); } catch(Exception ex) { details.AppendLine("save: "+ex.Message); }
+            if(!saved || project.HasUnsavedChanges())stop="プロジェクトを保存できなかったため中断しました。";
+        }
+        ClassExperiment.Summary="クラス図を "+done+" / "+paths.Length+" 件作りました（"+where+"）。\n"+string.Join("\n",lines)
+            +(stop!=null?"\n\n"+stop:"\n\nプロジェクトは保存済みです。")
+            +"\n診断の保存先: "+Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"NextDesign.ClassSync","reports");
+        ClassExperiment.Details=ClassExperiment.Summary+"\f"+details;
+        ClassExperiment.Show(app);
+    }
+
+    static string First(string text) { return (text??"").Split('\n')[0].Trim(); }
 
     static string Name(IModel m) { return m==null?"":ClassText.Inline(ClassText.Normalize(m.Name)); }
     static List<IModel> Children(IModel m)
@@ -166,7 +215,7 @@ public static class ClassDiagramCreator
 
     public static ClassSyncRuntime.Outcome Run(IApplication app,IModel owner,IField field,IClass diagramClass,string where,string pumlText,string sourceLabel,string fallbackTitle,Func<string,bool> confirm)
     {
-        var log=new StringBuilder();var outcome=new ClassSyncRuntime.Outcome();
+        var log=new StringBuilder();var outcome=new ClassSyncRuntime.Outcome();LastRemoveFailed=false;
         IModel diagramModel=null;var placed=new List<Placed>();bool saved=false;
         try
         {
@@ -436,6 +485,9 @@ public static class ClassDiagramCreator
         }
     }
 
+    // Set by Remove when the cleanup did not go through; a batch then stops without saving.
+    static bool LastRemoveFailed;
+
     // Undo what the creator made when the sync did not go through. The saved file still holds
     // the diagram until the project is saved again.
     static string Remove(IProject project,IModel diagramModel,List<Placed> placed,StringBuilder log)
@@ -454,6 +506,7 @@ public static class ClassDiagramCreator
         catch(Exception ex)
         {
             try { transaction.Rollback(); } catch(Exception) { }
+            LastRemoveFailed=true;
             log.AppendLine("removal failed: "+ex);
             return "作成した図「"+Name(diagramModel)+"」を削除できませんでした。不要なら手動で削除してください。";
         }

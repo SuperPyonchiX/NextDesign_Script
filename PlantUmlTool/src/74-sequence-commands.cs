@@ -33,7 +33,7 @@ public static class SequenceCommands
         finally { SequenceSyncRuntime.Plain = false; SequenceSyncRuntime.UpdateWithoutSaving = false; SequenceSyncRuntime.SaveBeforeUpdate = false; }
     }
 
-    // Ribbon entry: a new sequence diagram from the chosen PlantUML file.
+    // Ribbon entry: new sequence diagrams from the chosen PlantUML files (one or several).
     public static void Create(IApplication app)
     {
         SequenceExperiment.Title = Title;
@@ -150,7 +150,7 @@ public static class SequenceDiagramCreator
     }
 
     // What a creation made, for a caller that reports it (the MCP API).
-    public sealed class Created { public string Summary, ModelId, EditorId, Name, Where; }
+    public sealed class Created { public string Summary, ModelId, EditorId, Name, Where, Brief; public int Refs; }
 
     // Returns the summary to show, or null when the user cancelled.
     public static string Run(IApplication app, StringBuilder log)
@@ -158,13 +158,48 @@ public static class SequenceDiagramCreator
         var project = app.Workspace.CurrentProject;
         if (project == null) throw new InvalidOperationException("E101: プロジェクトを開いてください。");
         var place = Resolve(app, project, log);
-        string path = app.Window.UI.ShowOpenFileDialog("新しいシーケンス図にするPlantUML", "PlantUML (*.puml;*.plantuml)|*.puml;*.plantuml");
-        if (string.IsNullOrEmpty(path)) return null;
-        if (new FileInfo(path).Length > 300000) throw new InvalidOperationException("E120: 入力は300KB以下にしてください。");
-        string text = File.ReadAllText(path, new UTF8Encoding(false, true));
-        log.AppendLine("PlantUML file: " + path);
-        var made = Make(app, project, place, text, log, true);
-        return made == null ? null : made.Summary;
+        string[] paths = PumlFiles.Pick("新しいシーケンス図にするPlantUML（複数選択できます）");
+        if (paths.Length == 0) return null;
+        if (paths.Length == 1)
+        {
+            string text = PumlFiles.Read(paths[0], "E120");
+            log.AppendLine("PlantUML file: " + paths[0]);
+            var made = Make(app, project, place, text, log, true, true);
+            return made == null ? null : made.Summary;
+        }
+        return RunMany(app, project, place, paths, log);
+    }
+
+    // Several files: one confirmation, each file in its own transaction (a failure rolls back
+    // that file only and the rest go on), one result. Refs with several candidates still ask.
+    static string RunMany(IApplication app, IProject project, Place place, string[] paths, StringBuilder log)
+    {
+        if (!app.Window.UI.ShowConfirmDialog(place.Where + "に新しいシーケンス図を " + paths.Length + " 件作ります。\n" + PumlFiles.List(paths, 20)
+            + "\n\nファイルごとの確認はしません。作れなかったファイルはそのファイルの分だけ取り消して次へ進みます。"
+            + "\nref の参照先の候補が複数あるときは、従来どおり1件ずつ確認します。"
+            + "\nプロジェクトは保存しません。取り消すときは保存せずに開き直してください。\n\nOK: 作成する\nキャンセル: 中止する", SequenceCommands.Title))
+            return null;
+        var lines = new List<string>();
+        int done = 0, refs = 0;
+        foreach (string path in paths)
+        {
+            log.AppendLine().AppendLine("==== " + path + " ====");
+            try
+            {
+                var made = Make(app, project, place, PumlFiles.Read(path, "E120"), log, false, true);
+                done++; refs += made.Refs;
+                lines.Add("○ " + Path.GetFileName(path) + " → " + made.Brief);
+            }
+            catch (Exception ex)
+            {
+                log.AppendLine(ex.ToString());
+                lines.Add("× " + Path.GetFileName(path) + ": " + ex.Message.Split('\n')[0]);
+            }
+        }
+        return "シーケンス図を " + done + " / " + paths.Length + " 件作りました（" + place.Where + "）。\n"
+            + string.Join("\n", lines)
+            + (refs > 0 ? "\n\nref の参照先は作成時点にある相互作用から選びます。同じ一括作成で後から作った図には結び付けていません。" : "")
+            + "\nプロジェクトは保存していません。";
     }
 
     // Without dialogs: at is where (see Resolve), refs are linked only where one interaction fits.
@@ -173,10 +208,11 @@ public static class SequenceDiagramCreator
         var project = app.Workspace.CurrentProject;
         if (project == null) throw new InvalidOperationException("E101: プロジェクトを開いてください。");
         if (at == null) throw new InvalidOperationException("E102: 作成先のモデルを指定してください。");
-        return Make(app, project, Resolve(app, project, log, at), text, log, false);
+        return Make(app, project, Resolve(app, project, log, at), text, log, false, false);
     }
 
-    static Created Make(IApplication app, IProject project, Place place, string text, StringBuilder log, bool interactive)
+    // confirm: ask before creating. askRefs: a ref with several candidate interactions asks which.
+    static Created Make(IApplication app, IProject project, Place place, string text, StringBuilder log, bool confirm, bool askRefs)
     {
         if (!place.Owner.IsEditable || place.Owner.IsDeleted || place.Owner.IsProxy)
             throw new InvalidOperationException("E102: 「" + Name(place.Owner) + "」は編集できません。");
@@ -197,13 +233,13 @@ public static class SequenceDiagramCreator
         string schema = Schema(project, log);
         var profile = PumlRuntime.Profile(place.Types, sources, plan, project);
         if (profile.Relations.ContainsKey("RefersTo"))
-            SequenceSyncRuntime.ResolveReferences(app, project, place.Owner, plan.All().Where(n => n.Kind == "ref"), profile.References, log, interactive);
+            SequenceSyncRuntime.ResolveReferences(app, project, place.Owner, plan.All().Where(n => n.Kind == "ref"), profile.References, log, askRefs);
         foreach (string row in profile.Resolved) log.AppendLine("type: " + row);
         var payload = PumlBuild.Build(plan, profile, place.Types.Definition.Id, schema, null);
         foreach (string id in payload.Ids)
             if (project.GetModelById(id) != null) throw new InvalidOperationException("E111: 生成IDが既存モデルと衝突しました。");
 
-        if (interactive && !app.Window.UI.ShowConfirmDialog(place.Where + "に新しいシーケンス図「" + payload.Name + "」を作ります。\n" + plan.Summary()
+        if (confirm && !app.Window.UI.ShowConfirmDialog(place.Where + "に新しいシーケンス図「" + payload.Name + "」を作ります。\n" + plan.Summary()
             + "\n\nプロジェクトは保存しません。作成の Undo は確かめていません。取り消すときは保存せずに開き直してください。\n\nOK: 作成する\nキャンセル: 中止する", SequenceCommands.Title))
             return null;
 
@@ -234,7 +270,8 @@ public static class SequenceDiagramCreator
         int linked = profile.Relations.ContainsKey("RefersTo") ? profile.References.Values.Count(v => !string.IsNullOrEmpty(v)) : 0;
         var root = project.GetModelById(payload.Ids[0]);
         var made = root == null ? null : root.GetEditors().Cast<object>().OfType<ISequenceDiagram>().FirstOrDefault();
-        return new Created { Name = payload.Name, Where = place.Where, ModelId = payload.Ids[0], EditorId = made == null ? null : made.Id,
+        return new Created { Name = payload.Name, Where = place.Where, ModelId = payload.Ids[0], EditorId = made == null ? null : made.Id, Refs = refs,
+            Brief = "「" + payload.Name + "」" + (refs > 0 ? "（ref の参照先 " + linked + " / " + refs + " 件）" : ""),
             Summary = "新しいシーケンス図「" + payload.Name + "」を作りました（" + place.Where + "）。\n" + plan.Summary()
             + (refs > 0 ? "\nref の参照先: " + linked + " / " + refs + " 件を結び付けました（名前が一致する相互作用がないものは参照先なし）。" : "")
             + "\nプロジェクトは保存していません。" };
