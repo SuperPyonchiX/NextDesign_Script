@@ -859,39 +859,61 @@ public class MarkdownExporter
 
     // ページの保存先を割り当てる。`<名前>.md` と、子ページがあれば同名フォルダ `<名前>/`。
     // 名前は図と同じ規則で正規化し、衝突時とパス長の都合で短縮した時だけモデルID由来のハッシュを付ける。
+    // 短縮は、上限を超えたページの経路（祖先を含む）で一番長い名前から1つずつ行い、収まったら止める。
+    // 祖先を短縮すると配下の全ページの名前が変わるので、必要な分だけにとどめる。
     private void PlacePages(MarkdownModelNode root, string outDir)
     {
         var top = new DiagramPathNode { Id = "pages", Assigned = PageFolder };
         var pages = PagesOf(root).Where(p => p != root).ToList();
         var shortened = new HashSet<MarkdownModelNode>();
-        for (var attempt = 0; attempt < 3; attempt++)
+        var baseLength = string.IsNullOrEmpty(outDir) ? 0 : Path.GetFullPath(outDir).Length + 1;
+        Func<MarkdownModelNode, bool> tooLong = p => baseLength + p.Place.RelativePath().Length + 3 > PathBudget;
+        while (true)
         {
             top.Children.Clear();
             foreach (var page in pages)
             {
-                MarkdownModelNode parentPage = page.Parent;
-                while (parentPage != null && !parentPage.IsPage) parentPage = parentPage.Parent;
-                var parentPlace = parentPage == null || parentPage == root ? top : parentPage.Place;
+                var parentPlace = ParentPage(page, root) == null ? top : ParentPage(page, root).Place;
                 var name = PageSegment(page.Name);
-                if (shortened.Contains(page)) name = name.Substring(0, Math.Min(12, name.Length)) + "~" + DiagramPaths.Hash("page:" + page.ModelId).Substring(0, 8);
+                if (shortened.Contains(page)) name = name.Substring(0, ShortenedKeep) + "~" + DiagramPaths.Hash("page:" + page.ModelId).Substring(0, 8);
                 page.Place = new DiagramPathNode { Id = page.ModelId, Name = name, Suffix = "", Parent = parentPlace };
                 parentPlace.Children.Add(page.Place);
             }
             DiagramPaths.Allocate(top);
-            if (string.IsNullOrEmpty(outDir)) return;
-            var tooLong = pages.Where(p => Path.GetFullPath(outDir).Length + 1 + p.Place.RelativePath().Length + 3 > PathBudget).ToList();
-            if (tooLong.Count == 0) return;
-            // 長すぎるページは祖先も含めて名前を短縮する
-            foreach (var page in tooLong)
-                for (var p = page; p != null && p != root; p = p.Parent)
-                    if (p.IsPage) shortened.Add(p);
+            if (baseLength == 0) return;
+            var thisPass = new HashSet<MarkdownModelNode>();
+            foreach (var page in pages.Where(tooLong).OrderByDescending(p => p.Place.RelativePath().Length).ToList())
+            {
+                // この経路で、まだ短縮しておらず、短縮すれば縮む名前のうち一番長いもの。
+                // 同じ回で経路上の名前を短縮済みなら、縮んだ長さで判定し直すまで待つ。
+                MarkdownModelNode longest = null;
+                var waiting = false;
+                for (var p = page; p != null; p = ParentPage(p, root))
+                {
+                    if (thisPass.Contains(p)) { waiting = true; break; }
+                    if (!shortened.Contains(p) && PageSegment(p.Name).Length > ShortenedKeep + 9
+                        && (longest == null || PageSegment(p.Name).Length > PageSegment(longest.Name).Length)) longest = p;
+                }
+                if (!waiting && longest != null && shortened.Add(longest)) thisPass.Add(longest);
+            }
+            if (thisPass.Count == 0) break;
         }
-        // 短縮しても収まらないページは親に含める
-        foreach (var page in pages.Where(p => Path.GetFullPath(outDir).Length + 1 + p.Place.RelativePath().Length + 3 > PathBudget))
+        // 短縮しても収まらないページは上位のページに含める
+        foreach (var page in pages.Where(tooLong))
         {
             page.IsPage = false;
             Warnings.Add(page.Path + " : 保存先のパスが長すぎるため、上位のページに含めて出力しました。");
         }
+    }
+
+    private const int ShortenedKeep = 12;   // 短縮後に残す名前の文字数（このあと ~ とハッシュ8桁）
+
+    // ページの親ページ（起点のページなら null）
+    private static MarkdownModelNode ParentPage(MarkdownModelNode page, MarkdownModelNode root)
+    {
+        var parent = page.Parent;
+        while (parent != null && !parent.IsPage) parent = parent.Parent;
+        return parent == null || parent == root ? null : parent;
     }
 
     private static string PageSegment(string name)

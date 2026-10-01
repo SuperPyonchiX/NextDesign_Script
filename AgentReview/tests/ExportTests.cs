@@ -228,6 +228,25 @@ public static class ExportTests
         Check(paths.Any(l => l.Contains("\tb-c1-a0\t") && l.EndsWith("\tmodel/クラス設計/Class1.md")), "paths.tsv records the page of tabled models");
         Check(File.Exists(Path.Combine(bigDir, DesignArtifactWriter.ManifestFile)), "Manifest written");
 
+        // パス長: 経路で一番長い名前だけを短縮し、短い名前（実装モデル等）には手を付けない
+        var deep = Model("d-root", "Deep", null, "Example.Document");
+        var level = Model("d-impl", "実装モデル", deep, "Example.Implementation");
+        var longName = new string('長', 70);
+        for (var i = 0; i < 3; i++) level = Model("d-l" + i, longName + i, level, "Example.Group");
+        for (var c = 0; c < 40; c++)
+        {
+            var unit = Valued("d-c" + c, "Class" + c, level, "Example.Unit", "Description", "クラス");
+            for (var a = 0; a < 30; a++)
+                Valued("d-c" + c + "-a" + a, "attr" + a, unit, "Example.Property", "Type", "uint32_t", "Description", new string('x', 40));
+        }
+        var deepDir = Path.Combine(temp, "layout-long");
+        var deepFiles = DesignArtifactWriter.Write(app, "test", new MarkdownExporter(new MarkdownExportOptions(), deepDir), deep, deepDir)
+            .Where(f => f.StartsWith("model/")).ToList();
+        Check(deepFiles.Count > 40 && deepFiles.All(f => Path.GetFullPath(deepDir).Length + 1 + f.Length <= MarkdownExporter.PathBudget), "Pages fit the path budget");
+        Check(deepFiles.All(f => f.StartsWith("model/実装モデル/") || f == "model/実装モデル.md"), "Short names are never shortened");
+        var segments = deepFiles.SelectMany(f => f.Split('/')).Select(s => s.EndsWith(".md") ? s.Substring(0, s.Length - 3) : s).Distinct().ToList();
+        Check(segments.Count(s => s.Contains("~")) == 1 && segments.Any(s => s == longName + "1" || s.StartsWith(longName + "1.")), "Only the needed long name is shortened");
+
         // 再出力: なくなったページは消し、手で編集したページは残す
         group.Children.RemoveAll(m => m.Id == "b-c2" || m.Id == "b-c3");
         File.AppendAllText(Path.Combine(bigDir, "model/クラス設計/Class3.md"), "\n手で追記\n");
