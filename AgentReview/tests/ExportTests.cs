@@ -155,9 +155,58 @@ public static class ExportTests
         return model;
     }
 
+    // 実データに近い構成の見本。AGENTREVIEW_SAMPLE_DUMP を指定したときだけ、そのフォルダへ出力する（目視確認用）。
+    private static void RealisticSample(string temp)
+    {
+        var dump = Environment.GetEnvironmentVariable("AGENTREVIEW_SAMPLE_DUMP");
+        if (string.IsNullOrEmpty(dump)) return;
+        var root = Model("r", "ソフトウェア詳細設計書 Sample", null, "Example.SoftwareDetailedDesignDocument");
+        var intro = Model("r-intro", "はじめに", root, "Example.Section");
+        intro.Metaclass.Fields.Add(new IField { Name = "Body", Type = "RichText" });
+        intro.Values["Body"] = "本書は詳細設計を示す。\n\n| 用語 | 意味 |\n|---|---|\n| OBC | 車載機 |";
+        var history = Model("r-hist", "改訂履歴一覧", root, "Example.RevisionHistory");
+        for (var i = 0; i < 3; i++)
+            Valued("r-hist" + i, "1.0." + i, history, "Example.Revision", "Date", "2026-0" + (i + 1) + "-01", "Description", "初版\n誤記修正", "Author", "設計者");
+        var impl = Model("r-impl", "実装モデル", root, "Example.ImplementationModel");
+        var stat = Model("r-static", "静的構造（実装モデル）", impl, "Example.StaticStructure_Impl");
+        var classes = Model("r-classes", "クラス設計", stat, "Example.ClassDiagramGroup_Impl");
+        var domain = Valued("r-domain", "OnBoardClientApp", classes, "Example.Domain_Impl", "Description", "アプリ");
+        for (var c = 0; c < 25; c++)
+        {
+            var pkg = Valued("r-pkg" + c, "domain_" + c, domain, "Example.Package_Impl");
+            var comp = Valued("r-comp" + c, "コンポーネント" + c, pkg, "Example.Component_Impl", "Description", "機能" + c, "ASIL", "Unknown");
+            var unit = Valued("r-unit" + c, "Manager" + c, comp, "Example.Unit_Impl", "Description", "管理クラス", "Visibility", "Public", "IsFinal", "False");
+            Valued("r-unit" + c + "-a1", "m_entity", unit, "Example.Property", "LowerBound", "0", "UpperBound", "1", "Visibility", "Private", "Type (参照)", "std::unique_ptr<ara::phm::SupervisedEntity<Checkpoints>>", "Default", "\"App/RootSwComponent/RPort_PhmSupervisedEntity\"");
+            Valued("r-unit" + c + "-a2", "m_mode", unit, "Example.Property", "Visibility", "Private", "Type (参照)", "Mode", "Description", "モード\n※ 起動時は IDLE");
+            Valued("r-unit" + c + "-m1", "~Manager" + c, unit, "Example.Method", "Description", "デストラクタ", "Signature", "~Manager" + c + "()");
+            Valued("r-unit" + c + "-m2", "PreInit", unit, "Example.Method", "Description", "アプリがAPIを使用可能になる前に必要なインスタンスを生成する\nUDSProviderとEcuLayerMngのインスタンスを生成する");
+            var set = Valued("r-unit" + c + "-m3", "SetAppPriority", unit, "Example.Method", "Description", "優先度設定", "Signature", "SetAppPriority(std::string, OBCPriority, OBCPriorityOption)");
+            Valued("r-unit" + c + "-m3-p1", "appName", set, "Example.Argument", "Description", "アプリ名 文字数(1-30)", "Type (参照)", "std::string", "Direction", "In");
+            Valued("r-unit" + c + "-m3-p2", "priority", set, "Example.Argument", "Type (参照)", "OBCPriority", "Direction", "In");
+            var send = Valued("r-unit" + c + "-m4", "Send", unit, "Example.Method", "Description", "UDSのデータを送信する", "Signature", "Send(std::shared_ptr<UDSData> const&)");
+            Valued("r-unit" + c + "-m4-p1", "udsData", send, "Example.Argument", "Type (参照)", "std::shared_ptr<UDSData>", "TypeModifier", "const&", "Direction", "In");
+            Valued("r-comp" + c + "-k1", "DEFAULT_P2CLIENT", comp, "Example.Constant", "Description", "P2Client", "Scope", "Global", "InitialValue", "1000");
+            Valued("r-comp" + c + "-k2", "DEFAULT_SRC_PORT", comp, "Example.Constant", "Description", "ソースポート\n※ 0指定して、動的ポートの設定", "Scope", "Global", "InitialValue", "0");
+            Valued("r-comp" + c + "-v1", "g_SIDFilterList", comp, "Example.Variable", "Description", "SIDフィルタリスト", "Type (参照)", "std::array<SIDFilterType>");
+            var st = Valued("r-comp" + c + "-s1", "RoeDIDType", comp, "Example.StructureType", "Scope", "Global");
+            Valued("r-comp" + c + "-s1-m1", "DID", st, "Example.StructureMember", "Type (参照)", "uint16_t");
+            Valued("r-comp" + c + "-s1-m2", "RecordSize", st, "Example.StructureMember", "Type (参照)", "uint16_t");
+        }
+        var dyn = Model("r-dyn", "動的振る舞い（実装モデル）", impl, "Example.DynamicBehavior_Impl");
+        var seqGroup = Model("r-seqg", "API", dyn, "Example.SequenceDiagramGroup_Impl");
+        var seq = Diagram("r-seq", "起動", seqGroup, "sequence"); OwnsDiagram(seqGroup, seq);
+        var stateGroup = Model("r-stg", "状態遷移設計", dyn, "Example.StateTransitionGroup_Impl");
+        var machine = Valued("r-sm", "状態遷移表(OBCドメイン)", stateGroup, "Example.StateMachine", "Description", "OBCドメインの状態遷移表を記述する");
+        machine.Metaclass.Fields.Add(new IField { Name = "補足", Type = "RichText" });
+        machine.Values["補足"] = "状態遷移表は、以下のExcelを参照。\n\\Attachment\\状態遷移表_OBC.xlsx\n↳「状態遷移表(OBC)」シート";
+        var exporter = new MarkdownExporter(new MarkdownExportOptions(), dump);
+        DesignArtifactWriter.Write(new IApplication(), "sample", exporter, root, dump);
+    }
+
     // 表形式・ページ分割・paths.tsv・再出力時の整理
     private static void LayoutTests(string temp)
     {
+        RealisticSample(temp);
         // 小さい出力: 葉の属性は表、複数行の説明を持つ操作は見出しのまま、design.md 1枚
         var small = Model("s-root", "Small", null, "Example.Document");
         var cls = Valued("s-class", "Engine", small, "Example.Unit", "Description", "エンジン");
@@ -184,6 +233,10 @@ public static class ExportTests
         var holder = Valued("s-holder", "Holder<T>", config, "Example.Unit", "Description", "保持", "Note", "a < b\nvector<int>");
         var holderOp = Valued("s-holder-op", "Get", holder, "Example.Method", "Description", "取得");
         Valued("s-holder-arg", "key", holderOp, "Example.Argument", "Type", "int");
+        var box1 = Model("s-box1", "BoxA", config, "Example.Folder");
+        Valued("s-box1-x", "x1", box1, "Example.Item", "Value", "1");
+        var box2 = Model("s-box2", "BoxB", config, "Example.Folder");
+        Valued("s-box2-x", "x2", box2, "Example.Item", "Value", "2");
         var smallDir = Path.Combine(temp, "layout-small");
         var exporter = new MarkdownExporter(new MarkdownExportOptions(), smallDir);
         var pages = exporter.ExportPages(small, smallDir);
@@ -208,7 +261,10 @@ public static class ExportTests
         Check(body.Contains("| RoeDIDType | Global | m") && body.Contains("RoeDIDType（StructureType）") && body.Contains("| DID | uint16_t | m"),
             "Structures with only leaf members are table rows followed by member tables");
         Check(body.Contains("## Holder\\<T>（Unit）") && body.Contains("- Description: 保持"), "A class with nested members stays a heading");
-        Check(body.Contains("  a \\< b") && body.Contains("  vector\\<int>"), "Block values escape < too");
+        Check(body.Contains("  a \\< b  \n") && body.Contains("  vector\\<int>"), "Block values escape < and keep line breaks in the preview");
+        Check(body.Contains("- Description: 保持\n") && !body.Contains("保持  "), "No hard break before the next bullet");
+        Check(body.Contains("*Constant*\n\n| 名前 | InitialValue |") && body.Contains("*Variable*"), "Tables of different types are captioned");
+        Check(body.Contains("BoxA（Folder）") && body.Contains("BoxB（Folder）") && !body.Contains("| BoxA |"), "Containers without fields are not table rows");
         Check(exporter.Comparison.Single(r => r.Key == "model:s-k1").Content.Contains("- InitialValue: 1000"), "Comparison unchanged for tabled constants");
         Check(!body.Contains("modelpath:") && body.Contains("<!-- id: m"), "Short id replaces model path comments");
         Check(!body.Contains("\n\n\n"), "No consecutive blank lines");
@@ -259,11 +315,27 @@ public static class ExportTests
         Check(DiagramPaths.Link("a b/(x)#1%.md") == "<a b/(x)%231%25.md>", "Links keep Japanese, spaces and parentheses, encoding only # and %");
         Check(MarkdownExporter.Relative("model/a/b.md", "model/c.md") == "../c.md" && MarkdownExporter.Relative("design.md", "model/x.md") == "model/x.md", "Relative link helper");
         Check(classPage.Contains("# Class1（Unit）") && classPage.Contains("| attr0 | uint32_t |"), "Page restarts headings and keeps tables");
+        Check(classPage.Contains("| Class1 | クラス 1 | md") && !classPage.Contains("- Description: クラス 1"), "A page whose model is a table row shows its fields as a one-row table");
         Check(design.Contains("](diagrams/") || design.Contains("- 図:"), "Root page keeps diagram link");
         var paths = File.ReadAllLines(Path.Combine(bigDir, "paths.tsv"));
         Check(paths[0] == "id\tmodelId\tmodelPath\tfile" && paths.Length == 1 + 2 + 40 * 31 + 3 + 1, "paths.tsv lists every model");
         Check(paths.Any(l => l.Contains("\tb-c1-a0\t") && l.EndsWith("\tmodel/クラス設計/Class1.md")), "paths.tsv records the page of tabled models");
         Check(File.Exists(Path.Combine(bigDir, DesignArtifactWriter.ManifestFile)), "Manifest written");
+
+        // 大きなクラスでも、表の行になった操作（引数を持つ）は別ファイルに分けない
+        var fat = Model("f-root", "Fat", null, "Example.Document");
+        var fatGroup = Model("f-group", "Group", fat, "Example.ClassGroup");
+        var fatClass = Valued("f-class", "Huge", fatGroup, "Example.Unit", "Description", "大きいクラス");
+        var fatAttr = Valued("f-attr", "member", fatClass, "Example.Property", "Type", "int");
+        for (var o = 0; o < 80; o++)
+        {
+            var op = Valued("f-op" + o, "Op" + o, fatClass, "Example.Method", "Description", new string('d', 60), "Signature", "Op" + o + "(int, int, int)");
+            for (var p = 0; p < 3; p++) Valued("f-op" + o + "-p" + p, "arg" + p, op, "Example.Argument", "Type", "int", "Description", new string('p', 40));
+        }
+        var fatDir = Path.Combine(temp, "layout-fat");
+        var fatFiles = DesignArtifactWriter.Write(app, "test", new MarkdownExporter(new MarkdownExportOptions(), fatDir), fat, fatDir)
+            .Where(f => f.StartsWith("model/")).ToList();
+        Check(fatFiles.Contains("model/Group/Huge.md") && !fatFiles.Any(f => f.Contains("/Huge/")), "Tabled operations are not split into their own files");
 
         // パス長: 経路で一番長い名前だけを短縮し、短い名前（実装モデル等）には手を付けない
         var deep = Model("d-root", "Deep", null, "Example.Document");

@@ -552,7 +552,9 @@ public class MarkdownExporter
     // 型名・項目名では判定しない（プロファイル非依存）。
     private static void DecideTable(MarkdownSection section)
     {
+        // 子を持つモデルは、自身の項目があるときだけ（項目のない入れ物を名前と ID だけの表にしない）
         var candidates = section.Items.Where(i => i.Cells != null && i.DiagramRefs.Count == 0
+            && (!i.HasChildren || i.Cells.Count > 0)
             && i.Sections.All(s => s.Items.All(c => !c.HasChildren && c.DiagramRefs.Count == 0))).ToList();
         foreach (var group in candidates.GroupBy(i => i.ClassName))
         {
@@ -736,8 +738,16 @@ public class MarkdownExporter
         sb.Append(new string('#', level)).Append(' ').Append(Angle(heading));
         if (node.ClassName.Length > 0) sb.Append("（").Append(node.ClassName).Append("）");
         sb.Append(nl).Append("<!-- id: ").Append(node.ShortId).Append(" -->").Append(nl).Append(nl);
-        // 項目を親の表に出したモデルは、ここでは子のためだけに見出しを出す（ページの先頭では項目も書く）
-        if (!node.InTable || depth == 0) sb.Append(Angle(node.Fields));
+        // 項目を親の表に出したモデルは、ここでは子のためだけに見出しを出す。
+        // ページの先頭になった場合は、親の表と同じ形の1行の表で項目を書く
+        if (!node.InTable) sb.Append(Display(node.Fields));
+        else if (depth == 0)
+        {
+            var own = new MarkdownTable();
+            own.Columns.AddRange(node.Cells.Select(c => c.Key));
+            own.Rows.Add(node);
+            RenderTable(sb, own);
+        }
         if (node.DiagramRefs.Count > 0)
         {
             foreach (var line in node.DiagramRefs) sb.Append(line).Append(nl);
@@ -746,7 +756,13 @@ public class MarkdownExporter
         foreach (var section in node.Sections)
         {
             if (section.Label != null) sb.Append("**").Append(section.Label).Append("**").Append(nl).Append(nl);
-            foreach (var table in section.Tables) RenderTable(sb, table);
+            // 型の違う表が並ぶ（または表以外の子と混ざる）ときは、何の表かを型名で示す
+            var caption = section.Tables.Count > 1 || section.Items.Any(i => !i.InTable);
+            foreach (var table in section.Tables)
+            {
+                if (caption) sb.Append("*").Append(table.Rows[0].ClassName.Length > 0 ? Angle(table.Rows[0].ClassName) : "型なし").Append("*").Append(nl).Append(nl);
+                RenderTable(sb, table);
+            }
             if (ownOnly) continue;
             var links = new List<MarkdownModelNode>();
             foreach (var item in section.Items)
@@ -810,6 +826,21 @@ public class MarkdownExporter
         return Angle((text ?? "").Replace("\\", "\\\\").Replace("|", "\\|").Trim()).Replace("\n", "<br>");
     }
 
+    // 項目のテキストを表示用にする。< のエスケープに加え、続く行がある行の末尾に空白2つ（Markdown の改行）を付ける。
+    // 付けないと、複数行の値やリッチテキストの段落の改行がプレビューで1行につながる。空白は生のテキストでは見えない。
+    private string Display(string fields)
+    {
+        var nl = _options.NewLine;
+        var lines = fields.Split(new[] { nl }, StringSplitOptions.None);
+        // 次の行が箇条書き・表の行なら、もともと別の行として表示されるので付けない
+        for (var i = 0; i + 1 < lines.Length; i++)
+        {
+            var next = lines[i + 1].TrimStart();
+            if (lines[i].Trim().Length > 0 && next.Length > 0 && !next.StartsWith("- ") && !next.StartsWith("|")) lines[i] += "  ";
+        }
+        return Angle(string.Join(nl, lines));
+    }
+
     // 型名の `<T>` などが Markdown のプレビューで HTML のタグとみなされて消えないよう、< を \< にする。
     // リッチテキストの変換が意図して出す <br> は残す。差分用のテキストには使わない（表示用だけ）。
     public static string Angle(string text)
@@ -860,15 +891,25 @@ public class MarkdownExporter
         }
     }
 
-    // 収まらないページは、子を持つ子モデルをすべてページにする（表の行になったものも、子があれば対象）。
-    // 兄弟で扱いを揃えて、どこにファイルがあるかを予測しやすくする。
+    // 収まらないページは、子を持つ子モデルをすべてページにする。兄弟で扱いを揃えて、
+    // どこにファイルがあるかを予測しやすくする。
+    // 表の1行になったモデル（引数を持つ操作・メンバーだけの構造体・属性だけのクラス）は、同じ表の行の
+    // どれかの配下が RowPageMinChars 以上あるときだけ、その表の子を持つ行をそろってページにする。
+    // 引数が数個の操作などを分けても、項目は表に残るので親はほとんど小さくならず、細かいファイルが増えるだけのため。
+    private const int RowPageMinChars = PageMaxChars / 10;
     private static void Split(MarkdownModelNode page)
     {
         var promoted = new List<MarkdownModelNode>();
         foreach (var section in page.Sections)
         {
             foreach (var item in section.Items)
-                if (item.HasChildren) { item.IsPage = true; promoted.Add(item); }
+                if (item.HasChildren && !item.InTable) { item.IsPage = true; promoted.Add(item); }
+            foreach (var table in section.Tables)
+            {
+                var rows = table.Rows.Where(r => r.HasChildren).ToList();
+                if (rows.Count == 0 || rows.Max(r => r.SubtreeChars) < RowPageMinChars) continue;
+                foreach (var row in rows) { row.IsPage = true; promoted.Add(row); }
+            }
         }
         foreach (var child in promoted)
             if (!Fits(child.SubtreeChars, child.SubtreeLines)) Split(child);
