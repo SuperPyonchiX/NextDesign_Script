@@ -165,6 +165,7 @@ public static class ExportTests
         Valued("s-a2", "mode|x", cls, "Example.Property", "Type", "Mode", "Default", "IDLE");
         var other = Valued("s-class2", "Controller", small, "Example.Unit");
         Valued("s-op", "Start", other, "Example.Method", "Description", "1行目\n2行目");
+        Valued("s-op-long", "Long", other, "Example.Method", "Description", string.Join("\n", Enumerable.Range(1, 12).Select(n => "行" + n).ToArray()));
         Valued("s-op2", "Stop", other, "Example.Method", "Description", "停止");
         var run = Valued("s-op3", "Run", other, "Example.Method", "Description", "実行", "Signature", "Run(int, char)");
         Valued("s-arg1", "count", run, "Example.Argument", "Type", "int", "Direction", "In");
@@ -190,7 +191,9 @@ public static class ExportTests
         var body = pages[0].Content;
         Check(body.Contains("| 名前 | Type | Visibility | Default | ID |"), "Leaf siblings become one table with union columns");
         Check(body.Contains("| mode\\|x | Mode |  | IDLE | m"), "Table cells escape pipes and leave missing values empty");
-        Check(body.Contains("Start（Method）") && body.Contains("  2行目"), "Multi-line model stays a block");
+        Check(body.Contains("| Start | 1行目<br>2行目 |") && !body.Contains("Start（Method）"), "Short multi-line values go into a cell with <br>");
+        Check(body.Contains("Long（Method）") && body.Contains("  行12"), "Long multi-line model stays a block");
+        Check(exporter.Comparison.Single(r => r.Key == "model:s-op").Content.Contains("  2行目"), "Comparison keeps the multi-line block text");
         Check(body.Contains("| 名前 | Description | Signature | ID |") && body.Contains("| Stop | 停止 |  | m") && body.Contains("| Run | 実行 | Run(int, char) | m"),
             "Mixed section tables the single-line siblings, including ones with children");
         var runBlock = body.Substring(body.IndexOf("Run（Method）", StringComparison.Ordinal));

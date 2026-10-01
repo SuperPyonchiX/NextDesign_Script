@@ -265,8 +265,9 @@ public class MarkdownExporter
 {
     // 1ファイルの目安。AI エージェントが1回で読める量（Claude Code の Read は既定 2,000 行・約 25,000 トークン）
     public const int PageMaxChars = 20000, PageMaxLines = 1000;
-    // 表の1セルに入れる値の上限。超える区画は表にしない
-    private const int CellMaxChars = 200, TableMaxColumns = 16;
+    // 表の1セルに入れる値の上限。超える値を持つモデルは表にせず見出しで出す
+    // 複数行の値（リッチテキストを除く）は CellMaxLines 行・CellMaxChars の2倍までなら <br> でつないでセルに入れる
+    private const int CellMaxChars = 200, CellMaxLines = 10, TableMaxColumns = 16;
     // 出力フォルダからの絶対パスの上限（Windows の MAX_PATH 260 に余裕を取る）
     public const int PathBudget = 240;
     public const string PageFolder = "model";
@@ -657,7 +658,12 @@ public class MarkdownExporter
                     sb.Append("- ").Append(label).Append(":").Append(nl);
                     foreach (var line in lines)
                         sb.Append("  ").Append(line).Append(nl);
-                    cells = null;
+                    // 表のセルでは改行を <br> で表す（GitHub 流の表の書き方。VS Code のプレビューも改行して表示する）
+                    var kept = lines.Select(l => l.Trim()).Where(l => l.Length > 0).ToArray();
+                    var joined = string.Join("<br>", kept);
+                    if (cells != null && kept.Length <= CellMaxLines && joined.Length <= CellMaxChars * 2)
+                        cells.Add(new KeyValuePair<string, string>(label, joined));
+                    else cells = null;
                 }
                 lastRich = false;
             }
