@@ -1,5 +1,10 @@
 ﻿// Command boundaries use a fake SDK; the filesystem and generated inputs are real.
-public class IProject : IModel { public string Path; }
+public class IProject : IModel
+{
+    public string Path;
+    // 実機と同じく削除済みも返す。未知の ID は null。
+    public IModel GetModelById(string id) { return GetAllChildren().FirstOrDefault(m => m.Id == id); }
+}
 public enum EditorAccessMode { GetInactiveValue }
 public class TestContextOption { public EditorAccessMode EditorAccessMode; }
 public class TestExtensionInfo { public string ExtensionPath = "test-extension"; }

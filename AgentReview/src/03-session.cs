@@ -433,13 +433,15 @@ public static class ReviewInputPicker
     }
     public static List<IModel> ResolveModels(IProject project, ReviewInputs inputs)
     {
-        var all = new[] { (IModel)project }.Concat(project.GetAllChildren()).ToList();
+        // 全モデルを走査せず ID で引く。GetModelById は削除済みも返すので、それは見つからない扱いにする。
         var selected = new List<IModel>();
         foreach (var id in inputs.ModelIds) {
-            var matches = all.Where(m => m.Id == id).ToList();
-            if (matches.Count != 1 || matches[0].IsDeleted || matches[0].IsProxy)
-                throw new InvalidDataException("上位モデルが削除済み・未ロード、または一意ではありません: " + id);
-            selected.Add(matches[0]);
+            IModel model = null;
+            if (project.Id == id) model = project;
+            else try { model = project.GetModelById(id); } catch (Exception) { model = null; }
+            if (model == null || model.IsDeleted || model.IsProxy)
+                throw new InvalidDataException("上位モデルが削除済み・未ロード、または見つかりません: " + id);
+            selected.Add(model);
         }
         // 選択された親から既に出力される子は二重出力しない。
         return selected.Where(model => {
@@ -466,13 +468,27 @@ public static class ReviewInputPicker
             if (File.Exists(path)) File.Replace(temporary, path, null, true); else File.Move(temporary, path);
         } finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
+    // 選択画面の重さを実機で確かめるため、所要時間を1行ずつ残す。失敗しても選択は止めない。
+    private static void LogTiming(int models, long requestMs, long shownMs, long resolveMs)
+    {
+        try {
+            var folder = Path.Combine(AgentConfig.ConfigDir(), "diagnostics");
+            Directory.CreateDirectory(folder);
+            File.AppendAllText(Path.Combine(folder, "picker-timing.log"), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+                + "\tmodels=" + models + "\trequest=" + requestMs + "ms\tdialogShown=" + shownMs + "ms\tresolve=" + resolveMs + "ms\r\n",
+                new UTF8Encoding(false));
+        } catch (Exception) { /* 計測ログは補助情報 */ }
+    }
     public static ReviewInputs Show(IProject project, IModel target)
     {
         try {
+            var watch = Stopwatch.StartNew();
             var snapshot = Request(project, target);
+            var requestMs = watch.ElapsedMilliseconds;
             var document = ReviewNativeDialog.Show(snapshot);
-            if (document == null) return null;
-            var result = Result(document, project);
+            watch.Restart();
+            var result = document == null ? null : Result(document, project);
+            LogTiming(snapshot.SelectNodes("/request/choices/model").Count, requestMs, ReviewNativeDialog.LastShownMilliseconds, watch.ElapsedMilliseconds);
             if (result != null) SaveSelection(project.Path, document);
             return result;
         } catch (Exception ex) {
@@ -490,21 +506,42 @@ public static class ReviewInputPicker
     }
 }
 
-// Framework controls are late-bound so the ND script does not require Forms compiler references.
 // Only the XML snapshot crosses to the STA UI thread; no Next Design objects are accessed there.
+// The tree is built once. Phase changes and selection edits only update check marks, and search rebuilds after typing pauses.
+// Get/Set/Call remain for the other late-bound dialogs and the tests.
 public sealed class ReviewNativeDialog : IDisposable
 {
-    private readonly System.Reflection.Assembly forms = System.Reflection.Assembly.Load("System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089");
-    private readonly System.Reflection.Assembly drawing = System.Reflection.Assembly.Load("System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a");
+    private const System.Windows.Forms.AnchorStyles TopLeft = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left;
+    private const System.Windows.Forms.AnchorStyles TopWide = TopLeft | System.Windows.Forms.AnchorStyles.Right;
+    private const System.Windows.Forms.AnchorStyles BottomLeft = System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Left;
+    private const System.Windows.Forms.AnchorStyles BottomRight = System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Right;
+    private const int ExpandAllLimit = 500;
     private readonly System.Xml.XmlDocument request;
     private readonly Dictionary<string, System.Xml.XmlElement> catalog = new Dictionary<string, System.Xml.XmlElement>();
+    private readonly Dictionary<string, List<string>> children = new Dictionary<string, List<string>>();
+    private readonly List<string> roots = new List<string>();
     private readonly Dictionary<string, HashSet<string>> models = new Dictionary<string, HashSet<string>>();
     private readonly Dictionary<string, HashSet<string>> files = new Dictionary<string, HashSet<string>>();
-    private readonly object font;
+    private readonly System.Drawing.Font font;
+    private readonly System.Windows.Forms.Timer searchTimer = new System.Windows.Forms.Timer();
+    private readonly Stopwatch opening = Stopwatch.StartNew();
+    private readonly System.Windows.Forms.TreeNode[] fullTree;
+    private readonly Dictionary<string, System.Windows.Forms.TreeNode> fullNodes = new Dictionary<string, System.Windows.Forms.TreeNode>();
+    private Dictionary<string, System.Windows.Forms.TreeNode> shown;
+    private HashSet<string> shownInclude;
+    private string appliedSearch = "";
     private string phase = "";
     private bool busy;
-    public readonly object Form, Combo, SearchBox, Tree, Selection, AcceptButton, NoneButton, Hint;
+    public readonly System.Windows.Forms.Form Form;
+    public readonly System.Windows.Forms.ComboBox Combo;
+    public readonly System.Windows.Forms.TextBox SearchBox;
+    public readonly System.Windows.Forms.TreeView Tree;
+    public readonly System.Windows.Forms.ListView Selection;
+    public readonly System.Windows.Forms.Button AcceptButton, NoneButton;
+    public readonly System.Windows.Forms.Label Hint;
     public System.Xml.XmlDocument Result;
+    public long ShownMilliseconds = -1;
+    public static long LastShownMilliseconds = -1;
     public static object Get(object target, string property) { return target.GetType().GetProperty(property).GetValue(target, null); }
     public static void Set(object target, string property, object value) {
         var info = target.GetType().GetProperty(property);
@@ -515,18 +552,23 @@ public sealed class ReviewNativeDialog : IDisposable
         return target.GetType().InvokeMember(method, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance
             | System.Reflection.BindingFlags.InvokeMethod, null, target, args);
     }
-    private object New(string type) { return Activator.CreateInstance(forms.GetType("System.Windows.Forms." + type, true)); }
-    private object Shape(string type, params object[] args) { return Activator.CreateInstance(drawing.GetType("System.Drawing." + type, true), args); }
-    private object Control(string type, string text, int x, int y, int width, int height, string anchor) {
-        var control = New(type);
-        Set(control, "Text", text); Set(control, "Left", x); Set(control, "Top", y);
-        Set(control, "Width", width); Set(control, "Height", height); Set(control, "Anchor", anchor);
-        Call(Get(Form, "Controls"), "Add", control); return control;
+    private T Control<T>(T control, string text, int x, int y, int width, int height, System.Windows.Forms.AnchorStyles anchor) where T : System.Windows.Forms.Control {
+        control.Text = text; control.SetBounds(x, y, width, height); control.Anchor = anchor;
+        Form.Controls.Add(control); return control;
     }
-    private static void On(object control, string name, EventHandler handler) { control.GetType().GetEvent(name).AddEventHandler(control, handler); }
     public ReviewNativeDialog(System.Xml.XmlDocument snapshot) {
         request = snapshot;
         foreach (System.Xml.XmlElement node in request.SelectNodes("/request/choices/model")) catalog.Add(node.GetAttribute("id"), node);
+        foreach (var pair in catalog) {
+            var parent = pair.Value.GetAttribute("parent");
+            if (!catalog.ContainsKey(parent)) { roots.Add(pair.Key); continue; }
+            List<string> list;
+            if (!children.TryGetValue(parent, out list)) children.Add(parent, list = new List<string>());
+            list.Add(pair.Key);
+        }
+        Comparison<string> byPath = (a, b) => string.Compare(catalog[a].GetAttribute("path"), catalog[b].GetAttribute("path"), StringComparison.CurrentCulture);
+        roots.Sort(byPath);
+        foreach (var list in children.Values) list.Sort(byPath);
         foreach (var key in ReviewInputPicker.Phases) {
             models[key] = new HashSet<string>(); files[key] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (System.Xml.XmlElement stored in request.SelectNodes("/request/settings/phase")) {
@@ -535,121 +577,173 @@ public sealed class ReviewNativeDialog : IDisposable
                 foreach (System.Xml.XmlNode node in stored.SelectNodes("file")) files[key].Add(node.InnerText);
             }
         }
-        Form = New("Form"); font = Shape("Font", "Yu Gothic UI", 10f);
-        Set(Form, "Font", font); Set(Form, "Text", "レビュー工程・上位文書の選択");
-        Set(Form, "ClientSize", Shape("Size", 1060, 700)); Set(Form, "MinimumSize", Shape("Size", 1080, 740));
-        Set(Form, "StartPosition", "CenterScreen"); Set(Form, "AutoScaleMode", "Dpi");
-        Set(Form, "MinimizeBox", false); Set(Form, "TopMost", true);
-        var target = Control("TextBox", "レビュー対象: " + request.SelectSingleNode("/request/target").InnerText, 16, 12, 1028, 46, "Top, Left, Right");
-        Set(target, "Multiline", true); Set(target, "ReadOnly", true); Set(target, "ScrollBars", "Vertical");
-        Control("Label", "対象工程", 16, 70, 94, 28, "Top, Left");
-        Combo = Control("ComboBox", "", 116, 66, 240, 32, "Top, Left"); Set(Combo, "DropDownStyle", "DropDownList");
-        foreach (var key in ReviewInputPicker.Phases) Call(Get(Combo, "Items"), "Add", ReviewInputPicker.PhaseLabel(key));
-        Hint = Control("Label", "対象工程を選択してください。", 16, 105, 1028, 58, "Top, Left, Right");
-        Control("Label", "モデル名・パスで検索 / 選択したモデルは配下も出力", 16, 167, 510, 28, "Top, Left");
-        SearchBox = Control("TextBox", "", 16, 198, 504, 30, "Top, Left");
-        Tree = Control("TreeView", "", 16, 234, 504, 402, "Top, Bottom, Left");
-        Set(Tree, "CheckBoxes", true); Set(Tree, "ShowNodeToolTips", true); Set(Tree, "HideSelection", false);
-        Control("Label", "選択済みの上位文書（フルパス）", 536, 167, 508, 28, "Top, Left, Right");
-        Selection = Control("ListView", "", 536, 198, 508, 396, "Top, Bottom, Left, Right");
-        Set(Selection, "View", "Details"); Set(Selection, "FullRowSelect", true); Set(Selection, "MultiSelect", true);
-        Call(Get(Selection, "Columns"), "Add", "モデル・資料", 900);
-        var add = Control("Button", "資料ファイルを追加", 536, 602, 210, 34, "Bottom, Left");
-        var remove = Control("Button", "選択を解除", 758, 602, 130, 34, "Bottom, Left");
-        AcceptButton = Control("Button", "レビュー開始", 574, 652, 145, 36, "Bottom, Right");
-        NoneButton = Control("Button", "今回は上位文書なし", 730, 652, 184, 36, "Bottom, Right");
-        var cancel = Control("Button", "キャンセル", 926, 652, 118, 36, "Bottom, Right");
-        Set(cancel, "DialogResult", "Cancel"); Set(Form, "CancelButton", cancel);
-        On(Combo, "SelectedIndexChanged", delegate {
-            int index = (int)Get(Combo, "SelectedIndex");
+        // 根から辿れないモデルは所有関係が循環している。
+        int reachable = 0; var pending = new Stack<string>(roots);
+        while (pending.Count > 0) {
+            List<string> list; reachable++;
+            if (children.TryGetValue(pending.Pop(), out list)) foreach (var child in list) pending.Push(child);
+        }
+        if (reachable != catalog.Count) throw new InvalidDataException("モデルの所有関係が循環しています。");
+        fullTree = Build(roots, null, fullNodes, true);
+        Form = new System.Windows.Forms.Form(); font = new System.Drawing.Font("Yu Gothic UI", 10f);
+        Form.Font = font; Form.Text = "レビュー工程・上位文書の選択";
+        Form.ClientSize = new System.Drawing.Size(1060, 700); Form.MinimumSize = new System.Drawing.Size(1080, 740);
+        Form.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen; Form.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Dpi;
+        Form.MinimizeBox = false; Form.TopMost = true;
+        Form.Shown += delegate { ShownMilliseconds = opening.ElapsedMilliseconds; };
+        var target = Control(new System.Windows.Forms.TextBox(), "レビュー対象: " + request.SelectSingleNode("/request/target").InnerText, 16, 12, 1028, 46, TopWide);
+        target.Multiline = true; target.ReadOnly = true; target.ScrollBars = System.Windows.Forms.ScrollBars.Vertical;
+        Control(new System.Windows.Forms.Label(), "対象工程", 16, 70, 94, 28, TopLeft);
+        Combo = Control(new System.Windows.Forms.ComboBox(), "", 116, 66, 240, 32, TopLeft); Combo.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
+        foreach (var key in ReviewInputPicker.Phases) Combo.Items.Add(ReviewInputPicker.PhaseLabel(key));
+        Hint = Control(new System.Windows.Forms.Label(), "対象工程を選択してください。", 16, 105, 1028, 58, TopWide);
+        Control(new System.Windows.Forms.Label(), "モデル名・パスで検索 / 選択したモデルは配下も出力", 16, 167, 510, 28, TopLeft);
+        SearchBox = Control(new System.Windows.Forms.TextBox(), "", 16, 198, 504, 30, TopLeft);
+        Tree = Control(new System.Windows.Forms.TreeView(), "", 16, 234, 504, 402, TopLeft | System.Windows.Forms.AnchorStyles.Bottom);
+        Tree.CheckBoxes = true; Tree.ShowNodeToolTips = true; Tree.HideSelection = false;
+        Control(new System.Windows.Forms.Label(), "選択済みの上位文書（フルパス）", 536, 167, 508, 28, TopWide);
+        Selection = Control(new System.Windows.Forms.ListView(), "", 536, 198, 508, 396, TopWide | System.Windows.Forms.AnchorStyles.Bottom);
+        Selection.View = System.Windows.Forms.View.Details; Selection.FullRowSelect = true; Selection.MultiSelect = true;
+        Selection.Columns.Add("モデル・資料", 900);
+        var add = Control(new System.Windows.Forms.Button(), "資料ファイルを追加", 536, 602, 210, 34, BottomLeft);
+        var remove = Control(new System.Windows.Forms.Button(), "選択を解除", 758, 602, 130, 34, BottomLeft);
+        AcceptButton = Control(new System.Windows.Forms.Button(), "レビュー開始", 574, 652, 145, 36, BottomRight);
+        NoneButton = Control(new System.Windows.Forms.Button(), "今回は上位文書なし", 730, 652, 184, 36, BottomRight);
+        var cancel = Control(new System.Windows.Forms.Button(), "キャンセル", 926, 652, 118, 36, BottomRight);
+        cancel.DialogResult = System.Windows.Forms.DialogResult.Cancel; Form.CancelButton = cancel;
+        ShowTree(fullTree, fullNodes, null, false);
+        Tree.BeforeExpand += delegate(object sender, System.Windows.Forms.TreeViewCancelEventArgs args) { Materialize(args.Node); };
+        Combo.SelectedIndexChanged += delegate {
+            int index = Combo.SelectedIndex;
             phase = index < 0 ? "" : ReviewInputPicker.Phases[index];
             var labels = new[] { "上位要求・関連資料", "要件分析書", "アーキ設計" };
-            Set(Hint, "Text", index < 0 ? "対象工程を選択してください。" : labels[index] + "のモデル・資料を選択してください。\r\n工程はレビューに引き継ぎます。上位文書なしでは上位整合は未確認になります。");
-            Set(add, "Enabled", index >= 0); RefreshTree(); RefreshSelection();
-        });
-        On(SearchBox, "TextChanged", delegate { RefreshTree(); });
-        var checkEvent = Tree.GetType().GetEvent("AfterCheck");
-        checkEvent.AddEventHandler(Tree, Delegate.CreateDelegate(checkEvent.EventHandlerType, this, GetType().GetMethod("TreeChecked")));
-        On(remove, "Click", delegate {
+            Hint.Text = index < 0 ? "対象工程を選択してください。" : labels[index] + "のモデル・資料を選択してください。\r\n工程はレビューに引き継ぎます。上位文書なしでは上位整合は未確認になります。";
+            add.Enabled = index >= 0; SyncChecks(); RefreshSelection();
+        };
+        // 1文字ごとに作り直さず、入力が止まってから絞り込む。
+        searchTimer.Interval = 250;
+        searchTimer.Tick += delegate { ApplySearch(); };
+        SearchBox.TextChanged += delegate { searchTimer.Stop(); searchTimer.Start(); };
+        Tree.AfterCheck += TreeChecked;
+        remove.Click += delegate {
             if (phase.Length == 0) return;
             var values = new List<string>();
-            foreach (var item in (System.Collections.IEnumerable)Get(Selection, "SelectedItems")) values.Add((string)Get(item, "Tag"));
+            foreach (System.Windows.Forms.ListViewItem item in Selection.SelectedItems) values.Add((string)item.Tag);
             foreach (var value in values) { if (value.StartsWith("m:")) models[phase].Remove(value.Substring(2)); else files[phase].Remove(value.Substring(2)); }
-            RefreshTree(); RefreshSelection();
-        });
-        On(add, "Click", delegate {
+            SyncChecks(); RefreshSelection();
+        };
+        add.Click += delegate {
             if (phase.Length == 0) return;
-            var dialog = New("OpenFileDialog");
-            try {
-                Set(dialog, "Multiselect", true); Set(dialog, "Title", "上位資料を選択");
-                if (Call(dialog, "ShowDialog", Form).ToString() == "OK") {
-                    foreach (var path in (string[])Get(dialog, "FileNames")) files[phase].Add(path);
+            using (var dialog = new System.Windows.Forms.OpenFileDialog()) {
+                dialog.Multiselect = true; dialog.Title = "上位資料を選択";
+                if (dialog.ShowDialog(Form) == System.Windows.Forms.DialogResult.OK) {
+                    foreach (var path in dialog.FileNames) files[phase].Add(path);
                     RefreshSelection();
                 }
-            } finally { ((IDisposable)dialog).Dispose(); }
-        });
-        On(AcceptButton, "Click", delegate { Accept(false); }); On(NoneButton, "Click", delegate { Accept(true); });
-        Set(add, "Enabled", false);
+            }
+        };
+        AcceptButton.Click += delegate { Accept(false); }; NoneButton.Click += delegate { Accept(true); };
+        add.Enabled = false;
         var settings = (System.Xml.XmlElement)request.SelectSingleNode("/request/settings");
         var previous = settings == null ? "" : settings.GetAttribute("lastPhase");
-        Set(Combo, "SelectedIndex", Array.IndexOf(ReviewInputPicker.Phases, previous));
-        RefreshTree(); RefreshSelection();
+        Combo.SelectedIndex = Array.IndexOf(ReviewInputPicker.Phases, previous);
+        RefreshSelection();
     }
-    public void TreeChecked(object sender, EventArgs args) {
-        if (busy || phase.Length == 0) return;
-        var node = Get(args, "Node"); var id = (string)Get(node, "Tag");
-        if ((bool)Get(node, "Checked") && catalog[id].GetAttribute("available") != "true") {
-            busy = true; try { Set(node, "Checked", false); } finally { busy = false; }
+    private bool IsChecked(string id) { return phase.Length > 0 && models[phase].Contains(id); }
+    // include が null なら全件。表示中の TreeView は畳まれた子も含めて全ノードを登録するので、
+    // lazy なら子の代わりに仮ノードを置き、展開されたときに作る（Materialize）。
+    private System.Windows.Forms.TreeNode[] Build(List<string> ids, HashSet<string> include, Dictionary<string, System.Windows.Forms.TreeNode> map, bool lazy) {
+        var result = new List<System.Windows.Forms.TreeNode>();
+        foreach (var id in ids) {
+            if (include != null && !include.Contains(id)) continue;
+            var model = catalog[id];
+            var node = new System.Windows.Forms.TreeNode((model.GetAttribute("available") == "true" ? "" : "[未ロード] ") + model.GetAttribute("name"));
+            node.Tag = id; node.ToolTipText = model.GetAttribute("path"); node.Checked = IsChecked(id);
+            List<string> list;
+            if (children.TryGetValue(id, out list) && (include == null || list.Any(include.Contains))) {
+                if (lazy) node.Nodes.Add(new System.Windows.Forms.TreeNode("…"));
+                else node.Nodes.AddRange(Build(list, include, map, false));
+            }
+            map[id] = node; result.Add(node);
         }
-        if ((bool)Get(node, "Checked")) models[phase].Add(id); else models[phase].Remove(id);
+        return result.ToArray();
+    }
+    // 仮ノード（Tag なし）1件だけを持つノードの子を作る。
+    private void Materialize(System.Windows.Forms.TreeNode node) {
+        if (node.Nodes.Count != 1 || node.Nodes[0].Tag != null) return;
+        var nodes = Build(children[(string)node.Tag], shownInclude, shown, true);
+        Tree.BeginUpdate();
+        try { node.Nodes.Clear(); node.Nodes.AddRange(nodes); } finally { Tree.EndUpdate(); }
+    }
+    private void ShowTree(System.Windows.Forms.TreeNode[] nodes, Dictionary<string, System.Windows.Forms.TreeNode> map, HashSet<string> include, bool expandAll) {
+        busy = true; Tree.BeginUpdate();
+        try {
+            Tree.Nodes.Clear();
+            // 外した間のチェック変更は、TreeView に戻す前に反映する。
+            shown = map; shownInclude = include; SyncChecks(); busy = true;
+            Tree.Nodes.AddRange(nodes);
+            if (expandAll) Tree.ExpandAll();
+            else foreach (System.Windows.Forms.TreeNode node in Tree.Nodes) { Materialize(node); node.Expand(); }
+        } finally { Tree.EndUpdate(); busy = false; }
+    }
+    // 表示中のノードのうち、選択状態と食い違うものだけを直す。
+    private void SyncChecks() {
+        busy = true;
+        try {
+            foreach (var pair in shown) {
+                bool wanted = IsChecked(pair.Key);
+                if (pair.Value.Checked != wanted) pair.Value.Checked = wanted;
+            }
+        } finally { busy = false; }
+    }
+    public void ApplySearch() {
+        searchTimer.Stop();
+        var search = SearchBox.Text;
+        if (search == appliedSearch) return;
+        appliedSearch = search;
+        if (search.Length == 0) { ShowTree(fullTree, fullNodes, null, false); return; }
+        var visible = new HashSet<string>();
+        foreach (var pair in catalog) {
+            if (pair.Value.GetAttribute("path").IndexOf(search, StringComparison.OrdinalIgnoreCase) < 0
+                && pair.Value.GetAttribute("name").IndexOf(search, StringComparison.OrdinalIgnoreCase) < 0) continue;
+            // 祖先まで表示する。既に表示済みのモデルの祖先は追加済み。
+            for (var id = pair.Key; catalog.ContainsKey(id) && visible.Add(id); id = catalog[id].GetAttribute("parent")) { }
+        }
+        var map = new Dictionary<string, System.Windows.Forms.TreeNode>();
+        // 1〜2文字の検索で数千件を全展開すると重いので、多いときは最上位だけ開き、残りは展開時に作る。
+        bool few = visible.Count <= ExpandAllLimit;
+        ShowTree(Build(roots, visible, map, !few), map, visible, few);
+    }
+    public void TreeChecked(object sender, System.Windows.Forms.TreeViewEventArgs args) {
+        if (busy || phase.Length == 0) return;
+        var node = args.Node; var id = (string)node.Tag;
+        if (id == null) return;
+        if (node.Checked && catalog[id].GetAttribute("available") != "true") {
+            busy = true; try { node.Checked = false; } finally { busy = false; }
+        }
+        if (node.Checked) models[phase].Add(id); else models[phase].Remove(id);
         RefreshSelection();
     }
     public void RefreshSelection() {
-        Call(Get(Selection, "Items"), "Clear"); bool valid = true; int count = 0;
+        bool valid = true; var items = new List<System.Windows.Forms.ListViewItem>();
         if (phase.Length > 0) {
             foreach (var id in models[phase].OrderBy(x => x)) {
                 System.Xml.XmlElement model; bool exists = catalog.TryGetValue(id, out model);
                 bool available = exists && model.GetAttribute("available") == "true";
                 var label = (available ? "" : "[削除済み・未ロード] ") + (exists ? model.GetAttribute("path") : id);
-                AddItem(label, "m:" + id); valid &= available; count++;
+                items.Add(Item(label, "m:" + id)); valid &= available;
             }
             foreach (var path in files[phase].OrderBy(x => x)) {
-                bool exists = File.Exists(path); AddItem((exists ? "" : "[資料なし] ") + path, "f:" + path); valid &= exists; count++;
+                bool exists = File.Exists(path); items.Add(Item((exists ? "" : "[資料なし] ") + path, "f:" + path)); valid &= exists;
             }
         }
-        Set(AcceptButton, "Enabled", phase.Length > 0 && valid && count > 0);
-        Set(NoneButton, "Enabled", phase.Length > 0); Set(Tree, "Enabled", phase.Length > 0);
+        Selection.BeginUpdate();
+        try { Selection.Items.Clear(); Selection.Items.AddRange(items.ToArray()); } finally { Selection.EndUpdate(); }
+        AcceptButton.Enabled = phase.Length > 0 && valid && items.Count > 0;
+        NoneButton.Enabled = phase.Length > 0; Tree.Enabled = phase.Length > 0;
     }
-    private void AddItem(string label, string tag) {
-        var item = New("ListViewItem"); Set(item, "Text", label); Set(item, "Tag", tag); Call(Get(Selection, "Items"), "Add", item);
-    }
-    public void RefreshTree() {
-        busy = true; Call(Tree, "BeginUpdate");
-        try {
-            Call(Get(Tree, "Nodes"), "Clear"); var visible = new HashSet<string>(); var nodes = new Dictionary<string, object>();
-            var search = (string)Get(SearchBox, "Text");
-            foreach (var pair in catalog) {
-                if (search.Length > 0 && pair.Value.GetAttribute("path").IndexOf(search, StringComparison.OrdinalIgnoreCase) < 0
-                    && pair.Value.GetAttribute("name").IndexOf(search, StringComparison.OrdinalIgnoreCase) < 0) continue;
-                var id = pair.Key; var seen = new HashSet<string>();
-                while (id.Length > 0 && catalog.ContainsKey(id)) {
-                    if (!seen.Add(id)) throw new InvalidDataException("モデルの所有関係が循環しています。");
-                    visible.Add(id); id = catalog[id].GetAttribute("parent");
-                }
-            }
-            foreach (var id in visible) {
-                var node = New("TreeNode"); var model = catalog[id];
-                Set(node, "Text", (model.GetAttribute("available") == "true" ? "" : "[未ロード] ") + model.GetAttribute("name"));
-                Set(node, "Tag", id); Set(node, "ToolTipText", model.GetAttribute("path"));
-                Set(node, "Checked", phase.Length > 0 && models[phase].Contains(id)); nodes[id] = node;
-            }
-            foreach (var id in visible.OrderBy(x => catalog[x].GetAttribute("path"))) {
-                var parent = catalog[id].GetAttribute("parent");
-                Call(Get(nodes.ContainsKey(parent) ? nodes[parent] : Tree, "Nodes"), "Add", nodes[id]);
-            }
-            if (search.Length > 0) Call(Tree, "ExpandAll");
-            else foreach (var node in (System.Collections.IEnumerable)Get(Tree, "Nodes")) Call(node, "Expand");
-        } finally { Call(Tree, "EndUpdate"); busy = false; }
+    private static System.Windows.Forms.ListViewItem Item(string label, string tag) {
+        var item = new System.Windows.Forms.ListViewItem(label); item.Tag = tag; return item;
     }
     private void WriteChoices(System.Xml.XmlElement target, string key) {
         foreach (var id in models[key].OrderBy(x => x)) AddXml(target, "model", id);
@@ -660,7 +754,7 @@ public sealed class ReviewNativeDialog : IDisposable
     }
     public void Accept(bool none) {
         RefreshSelection();
-        if (phase.Length == 0 || (!none && !(bool)Get(AcceptButton, "Enabled"))) return;
+        if (phase.Length == 0 || (!none && !AcceptButton.Enabled)) return;
         var doc = new System.Xml.XmlDocument(); var root = doc.CreateElement("result"); doc.AppendChild(root);
         root.SetAttribute("action", none ? "none" : "accept"); root.SetAttribute("phase", phase);
         var selection = AddXml(root, "selection", ""); if (!none) WriteChoices(selection, phase);
@@ -671,19 +765,23 @@ public sealed class ReviewNativeDialog : IDisposable
                     if (original.GetAttribute("key") == key) settings.AppendChild(doc.ImportNode(original, true));
             } else { var saved = AddXml(settings, "phase", ""); saved.SetAttribute("key", key); WriteChoices(saved, key); }
         }
-        Result = doc; Set(Form, "DialogResult", "OK"); Call(Form, "Close");
+        Result = doc; Form.DialogResult = System.Windows.Forms.DialogResult.OK; Form.Close();
     }
     public static System.Xml.XmlDocument Show(System.Xml.XmlDocument snapshot) {
-        System.Xml.XmlDocument result = null; Exception error = null;
+        System.Xml.XmlDocument result = null; Exception error = null; LastShownMilliseconds = -1;
         var thread = new System.Threading.Thread(delegate() {
-            try { using (var dialog = new ReviewNativeDialog(snapshot)) { Call(dialog.Form, "ShowDialog"); result = dialog.Result; } }
+            try {
+                using (var dialog = new ReviewNativeDialog(snapshot)) {
+                    dialog.Form.ShowDialog(); result = dialog.Result; LastShownMilliseconds = dialog.ShownMilliseconds;
+                }
+            }
             catch (Exception ex) { error = ex; }
         });
         thread.SetApartmentState(System.Threading.ApartmentState.STA); thread.Start(); thread.Join();
         if (error != null) throw new InvalidOperationException("拡張内の選択画面を表示できませんでした。", error);
         return result;
     }
-    public void Dispose() { ((IDisposable)Form).Dispose(); ((IDisposable)font).Dispose(); }
+    public void Dispose() { searchTimer.Dispose(); Form.Dispose(); font.Dispose(); }
 }
 
 

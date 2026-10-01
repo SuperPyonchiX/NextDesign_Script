@@ -1,5 +1,7 @@
 ﻿# AgentReview — Claude Code / Codex による設計レビュー支援
 
+0.16.0 では、レビュー開始時の「工程・上位文書の選択」画面を軽くした。これまでは工程の切替・選択解除・検索の1文字ごとに全モデル分のツリーを作り直し、操作もすべてリフレクション経由だった。DLL 化で不要になったので WinForms を直接使い、ツリーは1回だけ作って以降はチェック状態だけを直す。子ノードは展開したときに作り、検索は入力が 250ms 止まってから絞り込む（一致が 500 件を超えるときは全展開しない）。選んだ上位モデルは全モデルを走査せず `GetModelById` で引く。合成 3161 モデルのテストでは、表示 218→32ms、工程切替2回 535→2ms、検索6回 843→75ms。開くたびに `%USERPROFILE%\.nd-agent-review\diagnostics\picker-timing.log` へモデル数と所要時間（ND からの読み出し・画面表示・選択の解決）を1行残す。実機は未確認。
+
 0.15.0 では、Attachment を固定コピーせず原本へのジャンクションにした（1GB を超える別紙で開始が重かったため）。固定しない代わりに、開始時点の HEAD と各ファイルの版（HEAD と一致なら blob ID、ローカル変更・未追跡ならサイズと更新日時）を `inputs.md` に残す。変化点レビューの添付資料比較も SHA-256 の全読みをやめ、Git の blob ID と `git diff` で判定する。過去版の取得では現在版と同じ blob の添付資料を書き出さず、blob はメモリに載せずにファイルへ流す。実機は未確認。
 
 0.14.0 では、スクリプト（main.cs）から DLL（`AgentReview.dll`）に移した。機能は 0.13.3 と同じ。`src/00-agentreview.cs` は Part ごとのファイル（`src/01-common.cs`〜`07-handlers.cs`）に分け、NdMcp と共有する部品を `src/08-shared.cs` に切り出した。PlantUML 出力は `PlantUmlTool/src` を `AgentReview.csproj` が直接ビルドする（転記と `tools/build_main.py` はやめた）。`skills/` は csproj が出力へコピーする。ビルドと配置は [DLL 形式エクステンションの開発環境](../docs/dll-extension-setup.md)。実機での読み込みは未確認。

@@ -5,6 +5,11 @@
     ソースは記載順に並べる。テスト（Tools/csproj_sources.py）もこの順で連結して読む。
     PlantUML 出力は PlantUmlTool/src を直接ビルドする（修正は PlantUmlTool 側で行う）。
   -->
+  <!-- 上位文書の選択画面は WinForms を直接使う（以前はリフレクション経由で遅かった） -->
+  <PropertyGroup>
+    <UseWindowsForms>true</UseWindowsForms>
+  </PropertyGroup>
+
   <ItemGroup>
     <Using Include="System" />
     <Using Include="System.Collections.Generic" />
