@@ -1,6 +1,6 @@
 # クラス図同期実験（ClassImportProbe）の版履歴と実機手順
 
-ClassImportProbe は 0.1.0〜0.7.2 でクラス図の PlantUML 同期を実機検証するために使った実験拡張。2026-09-22 に同期本体を PlantUmlTool 2.2.0（`PlantUmlTool/src/60〜62`）へ統合し、拡張フォルダは削除した（履歴は git にある）。以下は当時の README をそのまま残したもので、扱える差分・停止条件・各版の実機手順の記録として参照する。ボタン名は PlantUmlTool では「差分を検証」「PlantUMLを反映」「試行して戻す」「診断表示」に対応する。
+ClassImportProbe は 0.1.0〜0.7.2 でクラス図の PlantUML 同期を実機検証するために使った実験拡張。2026-09-22 に同期本体を PlantUmlTool 2.2.0（`PlantUmlTool/src/60〜62`）へ統合し、拡張フォルダは削除した（履歴は git にある）。0.8.0 で開発用の拡張として復活しており、現在の構成は [ClassImportProbe/README.md](../ClassImportProbe/README.md) にある。以下は当時の README をそのまま残したもので、扱える差分・停止条件・各版の実機手順の記録として参照する。ボタン名は PlantUmlTool では「差分を検証」「PlantUMLを反映」「試行して戻す」「診断表示」に対応する。
 
 ---
 

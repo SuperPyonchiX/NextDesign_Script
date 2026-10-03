@@ -1,6 +1,6 @@
 # クラス図の差分同期：実装計画と進捗
 
-[シーケンス図の計画](sequence-sync-plan.md)と同じ進め方を、別拡張 `ClassImportProbe` で繰り返した。共有部品を切り出さずに写したのは、クラス図で得た知見を独立に積み上げるため。2026-09-22 に PlantUmlTool 2.2.0 へ統合し、ClassImportProbe は削除した（版履歴は [class-sync-history.md](class-sync-history.md)）。
+[シーケンス図の計画](sequence-sync-plan.md)と同じ進め方を、別拡張 `ClassImportProbe` で繰り返した。共有部品を切り出さずに写したのは、クラス図で得た知見を独立に積み上げるため。2026-09-22 に PlantUmlTool 2.2.0 へ統合し、ClassImportProbe は削除した（版履歴は [class-sync-history.md](class-sync-history.md)）。その後 0.8.0 で、差分検証・診断表示・調査を受け持つ開発用の拡張として復活した。同期本体の正本は PlantUmlTool/src のままで、ClassImportProbe の csproj がそれを直接ビルドする（[ClassImportProbe/README.md](../ClassImportProbe/README.md)）。
 
 ## 完成条件
 

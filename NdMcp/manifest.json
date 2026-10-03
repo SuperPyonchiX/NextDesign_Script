@@ -1,7 +1,7 @@
 {
   "name": "NdMcp",
   "displayName": "NdMcp",
-  "description": "Next Design のモデルを MCP クライアント（Claude Code 等）から読み出し、クラス図を PlantUML で更新するための HTTP サーバー",
+  "description": "Next Design のモデルを MCP クライアント（Claude Code 等）から読み書きするための HTTP サーバー。設計書・図の出力、クラス図・シーケンス図の PlantUML 同期、図以外のモデル編集を扱う",
   "version": "0.7.7",
   "publisher": "ksk01",
   "main": "NdMcp.dll",

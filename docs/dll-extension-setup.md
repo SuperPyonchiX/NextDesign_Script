@@ -175,10 +175,10 @@ Next Design が .NET 6 上で動いていれば、VS Code の「C#」拡張で�
 
 ## このリポジトリの拡張をビルドして配置する
 
-PlantUmlTool・AgentReview・NdMcp・SequenceImportProbe は DLL 方式。各フォルダの `<名前>.csproj` がソースを記載順に列挙し、共通の設定はリポジトリ直下の `Directory.Build.props` にある。main.cs の生成（旧 `build_main.py` / `bundle.py`）は無い。
+PlantUmlTool・AgentReview・NdMcp・SequenceImportProbe・ClassImportProbe は DLL 方式（後ろ2つは開発用）。各フォルダの `<名前>.csproj` がソースを記載順に列挙し、共通の設定はリポジトリ直下の `Directory.Build.props` にある。main.cs の生成（旧 `build_main.py` / `bundle.py`）は無い。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1            # 4つをビルドして work\publish\<名前> に出力し、検査する
+powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1            # 5つをビルドして work\publish\<名前> に出力し、検査する
 powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1 -Deploy    # 加えて extensions フォルダへ配置する（Next Design を終了してから）
 powershell -NoProfile -ExecutionPolicy Bypass -File Tools/Publish-Extensions.ps1 -Name PlantUmlTool -Deploy   # 1つだけ
 ```
